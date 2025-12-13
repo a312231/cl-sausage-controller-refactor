@@ -20,7 +20,7 @@ object KaoPanHelper {
     private const val KEY_KAO_PAN_CONFIG = "key_kao_pan_config"
     private const val KEY_TASTE_LIST = "key_taste_list" // 添加口味列表的键
     //烤制时间 烤制时间40分钟
-    val bakingTime= 40*60*1000L //10*60*1000L
+    val bakingTime= 1*60*1000L //10*60*1000L
     //保温时间
     val holdingTime=0L
     //丢弃时间 6h丢弃

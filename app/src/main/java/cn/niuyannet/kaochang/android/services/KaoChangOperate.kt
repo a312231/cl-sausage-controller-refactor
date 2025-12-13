@@ -55,7 +55,7 @@ object KaoChangOperate {
     //保温温度
     val keepWarmTemperature=90 //150 // 60
     //加热温度
-    val heatingTemperature=130 //250 //160
+    val heatingTemperature=180 //250 //160
 
     /**
      * 从烤肠箱把烤肠搬运到烤盘1-33

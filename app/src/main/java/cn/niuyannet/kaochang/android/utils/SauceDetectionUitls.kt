@@ -46,7 +46,7 @@ object SauceDetectionUitls {
      * 
      * 使用后台服务进行拍照和检测
      */
-    fun captureAndDetect(roiFlag: Int): SauceDetectionProcessor.SausageInfo? {
+    fun captureAndDetect(roiFlag: Int, retry: Boolean = true): SauceDetectionProcessor.SausageInfo? {
         LogUtils.d("使用后台服务进行拍照检测，roiFlag: $roiFlag")
         
         val latch = CountDownLatch(1)
@@ -67,18 +67,26 @@ object SauceDetectionUitls {
         
         // 等待检测完成，最多等待15秒
         try {
-            val completed = latch.await(15, TimeUnit.SECONDS)
+            val completed = latch.await(5, TimeUnit.SECONDS)
             if (completed) {
                 LogUtils.d("拍照检测完成，返回结果")
                 return result
             } else {
-                LogUtils.d("拍照检测超时（15秒），返回null")
+                LogUtils.d("拍照检测超时（5秒），返回null")
                 // 确保回调被调用（防止服务端未调用回调）
                 synchronized(lock) {
                     if (!callbackInvoked) {
                         callbackInvoked = true
                         latch.countDown()
                     }
+                }
+
+                if (retry) {
+                    LogUtils.d("超时，尝试重启相机并重试一次")
+                    // 重启 CameraX
+                    PhotoCaptureService.getInstance()?.restartCamera()
+                    // 重试一次，不再递归调用避免无限循环
+                    return captureAndDetect(roiFlag, retry = false)
                 }
                 return null
             }

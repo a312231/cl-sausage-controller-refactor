@@ -42,9 +42,6 @@ class PhotoCaptureService : LifecycleService() {
     
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    // 监听相机状态
-    //private var camera: Camera? = null
-//    private val cameraReady = CompletableDeferred<Unit>()
 
     companion object {
         private const val TAG = "PhotoCaptureService"
@@ -81,7 +78,12 @@ class PhotoCaptureService : LifecycleService() {
             }
             context.stopService(intent)
         }
-        
+
+        // 提供公开方法获取实例
+        fun getInstance(): PhotoCaptureService? {
+            return serviceInstance
+        }
+
         /**
          * 拍照并检测（异步）
          * @param context 上下文
@@ -311,7 +313,36 @@ class PhotoCaptureService : LifecycleService() {
         stopForeground(true)
         stopSelf()
     }
-    
+
+    fun restartCamera() {
+        serviceScope.launch {
+            synchronized(initializationLock) {
+                isInitialized = false
+                cameraProvider?.unbindAll()
+                imageCapture = null
+
+                // 重新初始化 ImageCapture 并绑定
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
+                cameraProvider = cameraProviderFuture.get()
+
+                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+                imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setTargetResolution(Size(832, 448))
+                    .build()
+
+                cameraProvider?.bindToLifecycle(
+                    this@PhotoCaptureService,
+                    cameraSelector,
+                    imageCapture
+                )
+
+                isInitialized = true
+                updateNotification("相机已重启")
+                LogUtils.d("相机已重启")
+            }
+        }
+    }
     /**
      * 拍照并检测（内部方法，直接使用已初始化的相机）
      */
@@ -326,20 +357,8 @@ class PhotoCaptureService : LifecycleService() {
         
         detectionProcessor?.roiFlag = roiFlag
         updateNotification("正在拍照检测...")
-
-//        val cam = camera ?: run {
-//            LogUtils.e(TAG, "camera is null !!!")
-//            return
-//        }
-
-        // 1. 获取 CameraInfo
-        //val cameraInfo = cam.cameraInfo
-
-        // 2. 获取当前状态（同步读取最新值）
-        //val currentState = cameraInfo.cameraState.value?.type
         LogUtils.d("正在拍照...")
-        // 3. 打印日志
-        //LogUtils.d("拍照前 CameraState = $currentState")
+
         LogUtils.d("executorAlive=${cameraExecutor.isShutdown}, terminated=${cameraExecutor.isTerminated}")
         LogUtils.d("imageCapture hash=${imageCapture}")
         imageCapture!!.takePicture(
