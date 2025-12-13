@@ -58,6 +58,9 @@ class PhotoCaptureService : LifecycleService() {
         // 服务实例引用
         @Volatile
         private var serviceInstance: PhotoCaptureService? = null
+        // 防止并发炸相机（比如按钮抖动 / 后台任务）
+        @Volatile
+        private var isCapturing = false
         
         /**
          * 启动并初始化服务（在应用启动时调用）
@@ -157,6 +160,8 @@ class PhotoCaptureService : LifecycleService() {
     var isInitialized = false
         private set
     private val initializationLock = Any()
+    // 专门为“拍照事务”准备的锁对象
+    private val captureLock = Any()
     
     override fun onCreate() {
         super.onCreate()
@@ -171,9 +176,9 @@ class PhotoCaptureService : LifecycleService() {
             ACTION_INIT_SERVICE -> {
                 // 初始化服务并保持运行
                 startForegroundService()
-                serviceScope.launch {
-                    initializeCameraOnce()
-                }
+//                serviceScope.launch {
+//                    initializeCameraOnce()
+//                }
             }
             ACTION_CAPTURE_AND_DETECT -> {
                 val roiFlag = intent.getIntExtra("roiFlag", 0)
@@ -183,7 +188,7 @@ class PhotoCaptureService : LifecycleService() {
                 if (!isInitialized) {
                     startForegroundService()
                     serviceScope.launch {
-                        initializeCameraOnce()
+                        //initializeCameraOnce()
                         captureAndDetectInternal(roiFlag, callbackId)
                     }
                 } else {
@@ -231,7 +236,55 @@ class PhotoCaptureService : LifecycleService() {
             startForeground(NOTIFICATION_ID, notification)
         }
     }
-    
+
+    /**
+     * “初始化相机”改成按需函数
+     * **/
+    private suspend fun ensureCameraReady() {
+        synchronized(initializationLock) {
+            if (isInitialized) return
+
+            LogUtils.d("captureAndDetect：初始化相机")
+
+            val cameraProviderFuture =
+                ProcessCameraProvider.getInstance(this@PhotoCaptureService)
+            cameraProvider = cameraProviderFuture.get()
+
+            imageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .setTargetRotation(Surface.ROTATION_0)
+                .setTargetResolution(Size(832, 448))
+                .build()
+
+            cameraProvider!!.unbindAll()
+            cameraProvider!!.bindToLifecycle(
+                this@PhotoCaptureService,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                imageCapture
+            )
+
+            if (detectionProcessor == null) {
+                detectionProcessor = SauceDetectionProcessor(this@PhotoCaptureService)
+            }
+
+            isInitialized = true
+            LogUtils.d("相机 bind 完成")
+        }
+    }
+
+    /**
+     * 新增“释放相机”的统一出口
+     * **/
+    private fun releaseCamera() {
+        synchronized(initializationLock) {
+            LogUtils.d("captureAndDetect：释放相机")
+            cameraProvider?.unbindAll()
+            cameraProvider = null
+            imageCapture = null
+            isInitialized = false
+        }
+    }
+
     /**
      * 初始化相机（只初始化一次）
      */
@@ -303,13 +356,21 @@ class PhotoCaptureService : LifecycleService() {
      * 停止服务（内部方法）
      */
     private fun stopService() {
-        synchronized(initializationLock) {
-            isInitialized = false
-            cameraProvider?.unbindAll()
-            cameraProvider = null
-            imageCapture = null
-            detectionProcessor = null
+        // 如果正在拍照，直接强制结束
+        synchronized(captureLock) {
+            isCapturing = false
         }
+
+        releaseCamera()          // ✅ 统一释放相机
+        detectionProcessor = null
+
+//        synchronized(initializationLock) {
+//            isInitialized = false
+//            cameraProvider?.unbindAll()
+//            cameraProvider = null
+//            imageCapture = null
+//            detectionProcessor = null
+//        }
         stopForeground(true)
         stopSelf()
     }
@@ -347,6 +408,75 @@ class PhotoCaptureService : LifecycleService() {
      * 拍照并检测（内部方法，直接使用已初始化的相机）
      */
     fun captureAndDetectInternal(roiFlag: Int, callbackId: String) {
+        synchronized(captureLock) {
+            if (isCapturing) {
+                invokeCallback(callbackId, null)
+                return
+            }
+            isCapturing = true
+        }
+
+        serviceScope.launch {
+            try {
+                // ① 用之前再初始化相机
+                ensureCameraReady()
+
+                detectionProcessor?.roiFlag = roiFlag
+                updateNotification("正在拍照检测...")
+                LogUtils.d("正在拍照...")
+
+                imageCapture!!.takePicture(
+                    cameraExecutor,
+                    object : ImageCapture.OnImageCapturedCallback() {
+
+                        override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                            try {
+                                val img = imageProxyToMat(imageProxy)
+                                val result = detectSausageSync(img)
+                                invokeCallback(callbackId, result)
+                            } catch (e: Exception) {
+                                LogUtils.d(TAG,"处理图像时出错: " + e.message)
+                                invokeCallback(callbackId, null)
+                            } finally {
+                                imageProxy.close()
+                                releaseCamera()   // ✅ 用完立刻解绑
+                                updateNotification("拍照服务就绪")
+                                // 释放
+                                synchronized(captureLock) {
+                                    isCapturing = false
+                                }
+                            }
+                        }
+
+                        override fun onError(exception: ImageCaptureException) {
+                            Log.e(TAG, "拍照失败", exception)
+                            invokeCallback(callbackId, null)
+                            releaseCamera()       // ✅ 出错也解绑
+                            updateNotification("拍照失败")
+                            // 释放
+                            synchronized(captureLock) {
+                                isCapturing = false
+                            }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "captureAndDetectInternal 异常", e)
+                invokeCallback(callbackId, null)
+                releaseCamera()
+                // 释放
+                synchronized(captureLock) {
+                    isCapturing = false
+                }
+            }
+        }
+    }
+
+    /**
+     * 拍照并检测（旧的内部方法，暂时弃用，直接使用已初始化的相机）
+     */
+    @Deprecated("使用每次拍照再开启相机的版本", ReplaceWith("captureAndDetectInternal(roiFlag, callbackId)"))
+    fun captureAndDetectInternalOld(roiFlag: Int, callbackId: String) {
         // 确保相机已初始化
         if (!isInitialized || imageCapture == null || detectionProcessor == null) {
             LogUtils.d("相机未初始化，无法拍照")
@@ -484,13 +614,20 @@ class PhotoCaptureService : LifecycleService() {
     
     override fun onDestroy() {
         super.onDestroy()
-        synchronized(initializationLock) {
-            isInitialized = false
-            cameraProvider?.unbindAll()
-            cameraProvider = null
-            imageCapture = null
-            detectionProcessor = null
+
+        // 如果正在拍照，直接强制结束
+        synchronized(captureLock) {
+            isCapturing = false
         }
+        releaseCamera()
+        detectionProcessor = null
+//        synchronized(initializationLock) {
+//            isInitialized = false
+//            cameraProvider?.unbindAll()
+//            cameraProvider = null
+//            imageCapture = null
+//            detectionProcessor = null
+//        }
         cameraExecutor.shutdown()
         serviceScope.cancel()
         Companion.setServiceInstance(null)

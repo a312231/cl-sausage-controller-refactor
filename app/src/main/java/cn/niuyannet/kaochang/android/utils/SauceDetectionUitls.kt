@@ -67,12 +67,12 @@ object SauceDetectionUitls {
         
         // 等待检测完成，最多等待15秒
         try {
-            val completed = latch.await(5, TimeUnit.SECONDS)
+            val completed = latch.await(20, TimeUnit.SECONDS)
             if (completed) {
                 LogUtils.d("拍照检测完成，返回结果")
                 return result
             } else {
-                LogUtils.d("拍照检测超时（5秒），返回null")
+                LogUtils.d("拍照检测超时（20秒），返回null")
                 // 确保回调被调用（防止服务端未调用回调）
                 synchronized(lock) {
                     if (!callbackInvoked) {
@@ -81,13 +81,13 @@ object SauceDetectionUitls {
                     }
                 }
 
-                if (retry) {
-                    LogUtils.d("超时，尝试重启相机并重试一次")
-                    // 重启 CameraX
-                    PhotoCaptureService.getInstance()?.restartCamera()
-                    // 重试一次，不再递归调用避免无限循环
-                    return captureAndDetect(roiFlag, retry = false)
-                }
+//                if (retry) {
+//                    LogUtils.d("超时，尝试重启相机并重试一次")
+//                    // 重启 CameraX
+//                    PhotoCaptureService.getInstance()?.restartCamera()
+//                    // 重试一次，不再递归调用避免无限循环
+//                    return captureAndDetect(roiFlag, retry = false)
+//                }
                 return null
             }
         } catch (e: InterruptedException) {
