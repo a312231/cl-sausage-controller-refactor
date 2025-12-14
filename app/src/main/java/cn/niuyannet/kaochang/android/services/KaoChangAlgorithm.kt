@@ -8,6 +8,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -41,8 +42,16 @@ object KaoChangAlgorithm {
         LogUtils.d(TAG, "算法准备1 运动状态：${config.moveStatus}")
         serviceStartTime = System.currentTimeMillis() // 记录服务启动时间
         LogUtils.d(TAG, "智能烤肠算法服务启动开始工作")
+        // 20s 空拍一次
+        var tag = 0
         GlobalScope.launch(Dispatchers.IO) {
             while (isRunning){
+                tag = tag + 1
+                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 2) {
+                    LogUtils.d(TAG, "轮询前定时空拍一次")
+                    tag = 0
+                    SauceDetectionUitls.captureAndDetect(1)
+                }
                 pollKaoPanStatus()
                 if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
                 LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")

@@ -32,6 +32,7 @@ import org.opencv.imgproc.Imgproc
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import kotlinx.coroutines.time.delay
 
 class PhotoCaptureService : LifecycleService() {
     
@@ -103,7 +104,7 @@ class PhotoCaptureService : LifecycleService() {
             
             // 如果服务实例存在且已初始化，直接调用
             serviceInstance?.let { service ->
-                if (service.isInitialized) {
+                if (service.isInitializedService) {
                     service.captureAndDetectInternal(roiFlag, callbackId)
                 } else {
                     // 服务未初始化，等待初始化完成后再调用
@@ -111,11 +112,11 @@ class PhotoCaptureService : LifecycleService() {
                     service.serviceScope.launch {
                         // 等待初始化完成，最多等待5秒
                         var waited = 0
-                        while (!service.isInitialized && waited < 5000) {
+                        while (!service.isInitializedService && waited < 5000) {
                             kotlinx.coroutines.delay(100)
                             waited += 100
                         }
-                        if (service.isInitialized) {
+                        if (service.isInitializedService) {
                             service.captureAndDetectInternal(roiFlag, callbackId)
                         } else {
                             Log.e(TAG, "服务初始化超时")
@@ -155,10 +156,13 @@ class PhotoCaptureService : LifecycleService() {
             serviceInstance = service
         }
     }
-    
+
+    // 相机初始化
     @Volatile
     var isInitialized = false
         private set
+    // 服务初始化
+    var isInitializedService = false
     private val initializationLock = Any()
     // 专门为“拍照事务”准备的锁对象
     private val captureLock = Any()
@@ -176,6 +180,7 @@ class PhotoCaptureService : LifecycleService() {
             ACTION_INIT_SERVICE -> {
                 // 初始化服务并保持运行
                 startForegroundService()
+                isInitializedService=true
 //                serviceScope.launch {
 //                    initializeCameraOnce()
 //                }
@@ -185,8 +190,9 @@ class PhotoCaptureService : LifecycleService() {
                 val callbackId = intent.getStringExtra("callbackId") ?: ""
                 
                 // 如果服务未初始化，先初始化
-                if (!isInitialized) {
+                if (!isInitializedService) {
                     startForegroundService()
+                    isInitializedService=true
                     serviceScope.launch {
                         //initializeCameraOnce()
                         captureAndDetectInternal(roiFlag, callbackId)
@@ -363,6 +369,7 @@ class PhotoCaptureService : LifecycleService() {
 
         releaseCamera()          // ✅ 统一释放相机
         detectionProcessor = null
+        isInitializedService = false
 
 //        synchronized(initializationLock) {
 //            isInitialized = false
@@ -377,32 +384,36 @@ class PhotoCaptureService : LifecycleService() {
 
     fun restartCamera() {
         serviceScope.launch {
-            synchronized(initializationLock) {
-                isInitialized = false
-                cameraProvider?.unbindAll()
-                imageCapture = null
-
-                // 重新初始化 ImageCapture 并绑定
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
-                cameraProvider = cameraProviderFuture.get()
-
-                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-                imageCapture = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                    .setTargetResolution(Size(832, 448))
-                    .build()
-
-                cameraProvider?.bindToLifecycle(
-                    this@PhotoCaptureService,
-                    cameraSelector,
-                    imageCapture
-                )
-
-                isInitialized = true
-                updateNotification("相机已重启")
-                LogUtils.d("相机已重启")
-            }
+            while (isCapturing) delay(500)
+            releaseCamera()
         }
+//        serviceScope.launch {
+//            synchronized(initializationLock) {
+//                isInitialized = false
+//                cameraProvider?.unbindAll()
+//                imageCapture = null
+//
+//                // 重新初始化 ImageCapture 并绑定
+//                val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
+//                cameraProvider = cameraProviderFuture.get()
+//
+//                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+//                imageCapture = ImageCapture.Builder()
+//                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+//                    .setTargetResolution(Size(832, 448))
+//                    .build()
+//
+//                cameraProvider?.bindToLifecycle(
+//                    this@PhotoCaptureService,
+//                    cameraSelector,
+//                    imageCapture
+//                )
+//
+//                isInitialized = true
+//                updateNotification("相机已重启")
+//                LogUtils.d("相机已重启")
+//            }
+//        }
     }
     /**
      * 拍照并检测（内部方法，直接使用已初始化的相机）
@@ -439,7 +450,7 @@ class PhotoCaptureService : LifecycleService() {
                                 invokeCallback(callbackId, null)
                             } finally {
                                 imageProxy.close()
-                                releaseCamera()   // ✅ 用完立刻解绑
+                                //releaseCamera()   // ✅ 用完立刻解绑
                                 updateNotification("拍照服务就绪")
                                 // 释放
                                 synchronized(captureLock) {
@@ -451,7 +462,7 @@ class PhotoCaptureService : LifecycleService() {
                         override fun onError(exception: ImageCaptureException) {
                             Log.e(TAG, "拍照失败", exception)
                             invokeCallback(callbackId, null)
-                            releaseCamera()       // ✅ 出错也解绑
+                            //releaseCamera()       // ✅ 出错也解绑
                             updateNotification("拍照失败")
                             // 释放
                             synchronized(captureLock) {
@@ -461,14 +472,18 @@ class PhotoCaptureService : LifecycleService() {
                     }
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "captureAndDetectInternal 异常", e)
+                //Log.e(TAG, "captureAndDetectInternal 异常", e)
+                LogUtils.e(TAG, "captureAndDetectInternal 异常", e)
                 invokeCallback(callbackId, null)
-                releaseCamera()
+                //releaseCamera()
                 // 释放
                 synchronized(captureLock) {
                     isCapturing = false
                 }
             }
+//            finally {
+//                releaseCamera()       // ✅ 出错也解绑
+//            }
         }
     }
 
@@ -621,6 +636,7 @@ class PhotoCaptureService : LifecycleService() {
         }
         releaseCamera()
         detectionProcessor = null
+        isInitializedService = false
 //        synchronized(initializationLock) {
 //            isInitialized = false
 //            cameraProvider?.unbindAll()

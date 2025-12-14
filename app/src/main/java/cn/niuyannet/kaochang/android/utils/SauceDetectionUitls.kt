@@ -70,9 +70,11 @@ object SauceDetectionUitls {
             val completed = latch.await(20, TimeUnit.SECONDS)
             if (completed) {
                 LogUtils.d("拍照检测完成，返回结果")
+                //PhotoCaptureService.getInstance()?.restartCamera()
                 return result
             } else {
                 LogUtils.d("拍照检测超时（20秒），返回null")
+                //PhotoCaptureService.getInstance()?.restartCamera()
                 // 确保回调被调用（防止服务端未调用回调）
                 synchronized(lock) {
                     if (!callbackInvoked) {
@@ -92,6 +94,7 @@ object SauceDetectionUitls {
             }
         } catch (e: InterruptedException) {
             LogUtils.d("拍照检测被中断")
+            //PhotoCaptureService.getInstance()?.restartCamera()
             // 确保回调被调用
             synchronized(lock) {
                 if (!callbackInvoked) {
