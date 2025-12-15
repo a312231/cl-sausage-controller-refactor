@@ -32,6 +32,7 @@ import org.opencv.imgproc.Imgproc
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import cn.niuyannet.kaochang.android.MyApp.Companion.instance
 import kotlinx.coroutines.time.delay
 
 class PhotoCaptureService : LifecycleService() {
@@ -382,8 +383,17 @@ class PhotoCaptureService : LifecycleService() {
         stopSelf()
     }
     // 重启服务
-    fun stopServicePublic() {
-        stopService()
+    fun restartService(context: Context) {
+        serviceScope.launch {
+            LogUtils.d("关闭服务")
+            stopService()
+            delay(500)
+            while(!isInitialized) {
+                LogUtils.d("开启服务")
+                startService(context)
+                delay(500)
+            }
+        }
     }
     fun restartCamera() {
         serviceScope.launch {

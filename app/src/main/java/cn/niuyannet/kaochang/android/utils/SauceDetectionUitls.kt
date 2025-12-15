@@ -46,8 +46,8 @@ object SauceDetectionUitls {
      * 
      * 使用后台服务进行拍照和检测
      */
-    fun captureAndDetect(roiFlag: Int, retry: Boolean = true): SauceDetectionProcessor.SausageInfo? {
-        LogUtils.d("使用后台服务进行拍照检测，roiFlag: $roiFlag")
+    fun captureAndDetect(roiFlag: Int, retry: Boolean = true, tag: String = "KaoChangAlgorithm"): SauceDetectionProcessor.SausageInfo? {
+        LogUtils.d(tag,"使用后台服务进行拍照检测，roiFlag: $roiFlag")
         
         val latch = CountDownLatch(1)
         val lock = Any()
@@ -59,7 +59,7 @@ object SauceDetectionUitls {
                 if (!callbackInvoked) {
                     callbackInvoked = true
                     result = sausageInfo
-                    LogUtils.d("拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
+                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
                     latch.countDown()
                 }
             }
@@ -69,11 +69,11 @@ object SauceDetectionUitls {
         try {
             val completed = latch.await(20, TimeUnit.SECONDS)
             if (completed) {
-                LogUtils.d("拍照检测完成，返回结果")
+                LogUtils.d(tag,"拍照检测完成，返回结果")
                 //PhotoCaptureService.getInstance()?.restartCamera()
                 return result
             } else {
-                LogUtils.d("拍照检测超时（20秒），返回null")
+                LogUtils.d(tag,"拍照检测超时（20秒），返回null")
                 //PhotoCaptureService.getInstance()?.restartCamera()
                 // 确保回调被调用（防止服务端未调用回调）
                 synchronized(lock) {
@@ -83,18 +83,17 @@ object SauceDetectionUitls {
                     }
                 }
                 if (retry) {
-                    LogUtils.d("超时，尝试重启相机并重试一次")
+                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
                     // 重启 CameraX
                     //PhotoCaptureService.getInstance()?.restartCamera()
-                    PhotoCaptureService.getInstance()?.stopServicePublic()
-                    PhotoCaptureService.startService(instance())
+                    PhotoCaptureService.getInstance()?.restartService(instance())
                     // 重试一次，不再递归调用避免无限循环
-                    return captureAndDetect(roiFlag, retry = false)
+                    return captureAndDetect(roiFlag, retry = false, tag = tag)
                 }
                 return null
             }
         } catch (e: InterruptedException) {
-            LogUtils.d("拍照检测被中断")
+            LogUtils.d(tag,"拍照检测被中断")
             //PhotoCaptureService.getInstance()?.restartCamera()
             // 确保回调被调用
             synchronized(lock) {

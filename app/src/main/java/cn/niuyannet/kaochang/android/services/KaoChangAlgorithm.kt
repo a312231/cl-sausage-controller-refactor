@@ -58,9 +58,13 @@ object KaoChangAlgorithm {
 //                delay(10*1000)// 10秒种检测一次
 //            }
             while (isRunning){
-                LogUtils.d(TAG, "轮询前定时空拍一次")
-
-                SauceDetectionUitls.captureAndDetect(1)
+                var status = AppConfig.getAppConfig().moveStatus
+                if (status == 0) {
+                    LogUtils.d(TAG, "轮询前定时空拍一次")
+                    AppConfig.getAppConfig().moveStatus = 1
+                    SauceDetectionUitls.captureAndDetect(1,true,"lunxun")
+                    AppConfig.getAppConfig().moveStatus = 0
+                }
 
                 tag = tag + 1
                 if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 10) {
