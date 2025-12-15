@@ -383,16 +383,17 @@ class PhotoCaptureService : LifecycleService() {
         stopSelf()
     }
     // 重启服务
-    fun restartService(context: Context) {
+    fun stopServicePublic(context: Context) {
         serviceScope.launch {
             LogUtils.d("关闭服务")
             stopService()
             delay(500)
-            while(!isInitialized) {
-                LogUtils.d("开启服务")
-                startService(context)
-                delay(500)
-            }
+
+//            while(!isInitialized) {
+//                LogUtils.d("开启服务")
+//                startService(context)
+//                delay(500)
+//            }
         }
     }
     fun restartCamera() {
