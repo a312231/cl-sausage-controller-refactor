@@ -45,17 +45,31 @@ object KaoChangAlgorithm {
         // 20s 空拍一次
         var tag = 0
         GlobalScope.launch(Dispatchers.IO) {
+//            while (isRunning){
+//                tag = tag + 1
+//                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 2) {
+//                    LogUtils.d(TAG, "轮询前定时空拍一次")
+//                    tag = 0
+//                    SauceDetectionUitls.captureAndDetect(1)
+//                }
+//                pollKaoPanStatus()
+//                if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
+//                LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
+//                delay(10*1000)// 10秒种检测一次
+//            }
             while (isRunning){
+                LogUtils.d(TAG, "轮询前定时空拍一次")
+
+                SauceDetectionUitls.captureAndDetect(1)
+
                 tag = tag + 1
-                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 2) {
-                    LogUtils.d(TAG, "轮询前定时空拍一次")
+                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 10) {
                     tag = 0
-                    SauceDetectionUitls.captureAndDetect(1)
+                    pollKaoPanStatus()
+                    if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
+                    LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
                 }
-                pollKaoPanStatus()
-                if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
-                LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
-                delay(10*1000)// 10秒种检测一次
+                delay(1*1000)// 1秒空拍一次
             }
         }
     }

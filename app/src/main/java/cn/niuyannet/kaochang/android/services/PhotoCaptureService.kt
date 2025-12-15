@@ -381,39 +381,42 @@ class PhotoCaptureService : LifecycleService() {
         stopForeground(true)
         stopSelf()
     }
-
+    // 重启服务
+    fun stopServicePublic() {
+        stopService()
+    }
     fun restartCamera() {
         serviceScope.launch {
             while (isCapturing) delay(500)
             releaseCamera()
         }
-//        serviceScope.launch {
-//            synchronized(initializationLock) {
-//                isInitialized = false
-//                cameraProvider?.unbindAll()
-//                imageCapture = null
-//
-//                // 重新初始化 ImageCapture 并绑定
-//                val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
-//                cameraProvider = cameraProviderFuture.get()
-//
-//                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-//                imageCapture = ImageCapture.Builder()
-//                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-//                    .setTargetResolution(Size(832, 448))
-//                    .build()
-//
-//                cameraProvider?.bindToLifecycle(
-//                    this@PhotoCaptureService,
-//                    cameraSelector,
-//                    imageCapture
-//                )
-//
-//                isInitialized = true
-//                updateNotification("相机已重启")
-//                LogUtils.d("相机已重启")
-//            }
-//        }
+        serviceScope.launch {
+            synchronized(initializationLock) {
+                isInitialized = false
+                cameraProvider?.unbindAll()
+                imageCapture = null
+
+                // 重新初始化 ImageCapture 并绑定
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
+                cameraProvider = cameraProviderFuture.get()
+
+                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+                imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setTargetResolution(Size(832, 448))
+                    .build()
+
+                cameraProvider?.bindToLifecycle(
+                    this@PhotoCaptureService,
+                    cameraSelector,
+                    imageCapture
+                )
+
+                isInitialized = true
+                updateNotification("相机已重启")
+                LogUtils.d("相机已重启")
+            }
+        }
     }
     /**
      * 拍照并检测（内部方法，直接使用已初始化的相机）

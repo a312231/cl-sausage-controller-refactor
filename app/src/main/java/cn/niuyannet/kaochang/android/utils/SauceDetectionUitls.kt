@@ -82,14 +82,15 @@ object SauceDetectionUitls {
                         latch.countDown()
                     }
                 }
-
-//                if (retry) {
-//                    LogUtils.d("超时，尝试重启相机并重试一次")
-//                    // 重启 CameraX
-//                    PhotoCaptureService.getInstance()?.restartCamera()
-//                    // 重试一次，不再递归调用避免无限循环
-//                    return captureAndDetect(roiFlag, retry = false)
-//                }
+                if (retry) {
+                    LogUtils.d("超时，尝试重启相机并重试一次")
+                    // 重启 CameraX
+                    //PhotoCaptureService.getInstance()?.restartCamera()
+                    PhotoCaptureService.getInstance()?.stopServicePublic()
+                    PhotoCaptureService.startService(instance())
+                    // 重试一次，不再递归调用避免无限循环
+                    return captureAndDetect(roiFlag, retry = false)
+                }
                 return null
             }
         } catch (e: InterruptedException) {
