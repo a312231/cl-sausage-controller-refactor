@@ -221,6 +221,8 @@ object LowCurrentTrafficMode {
 
         // 确保有足够的空位
         if (emptyPositions.size >= 3 && emptyPositions13_15.size >= 3) {
+            // 开启2区加热
+            KaoChangOperate.heating(2)
             // 取前3个空位的口味信息
             val neededTastes = emptyPositions.take(3).map { it.taste.tasteCode }
 
@@ -240,8 +242,6 @@ object LowCurrentTrafficMode {
                     }
                 }
             }
-            // 开启2区加热
-            KaoChangOperate.heating(2)
         }
 
     }

@@ -86,7 +86,7 @@ object KaoChangOperate {
         var result=1
         while (result==1){  
             //delay(5000)
-            delay(5000) //
+            delay(2000) //
             result= readHoldingRegisters(action_address_status,1)?.get(0) ?: 1//todo 默认值改成1
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
         }
@@ -116,7 +116,7 @@ object KaoChangOperate {
         var result2=1
         //读取命令执行的状态
         while (result2==1){
-            delay(5000)
+            delay(2000)
             result2=readHoldingRegisters(action_address_status,1)?.get(0) ?: 1//todo 默认值改成1
         }
         LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从平台搬运到烤盘完成${result2}")
@@ -187,7 +187,7 @@ object KaoChangOperate {
         //轮询读取命令执行的状态，直至为正常为0
         var result=1
         while (result==1){
-            delay(5000)
+            delay(2000)
             result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_move_result)
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
         }

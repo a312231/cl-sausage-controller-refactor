@@ -59,12 +59,12 @@ object KaoChangAlgorithm {
 //            }
             while (isRunning){
                 tag = tag + 1
-                var status = AppConfig.getAppConfig().moveStatus
-                var onlinestatus = AppConfig.getAppConfig().onlineStatus
-                if (status == 0 && tag >= 10 && onlinestatus != 4) {
+                val moStatus = AppConfig.getAppConfig().moveStatus
+                val status = AppConfig.getAppConfig().onlineStatus
+                if (moStatus == 0 && tag >= 10 && status != 4) {
                     LogUtils.d(TAG, "轮询前定时空拍一次")
                     AppConfig.getAppConfig().moveStatus = 1
-                    SauceDetectionUitls.captureAndDetect(1,true,"lunxun")
+                    SauceDetectionUitls.captureAndDetect(1,true,"lunXun")
                     AppConfig.getAppConfig().moveStatus = 0
                 }
 
