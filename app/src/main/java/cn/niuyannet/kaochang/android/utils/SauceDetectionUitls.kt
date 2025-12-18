@@ -86,9 +86,11 @@ object SauceDetectionUitls {
                     LogUtils.d(tag,"超时，尝试重启相机并重试一次")
                     // 重启 CameraX
                     //PhotoCaptureService.getInstance()?.restartCamera()
-                    PhotoCaptureService.getInstance()?.stopServicePublic(instance())
-                    LogUtils.d("开启服务")
-                    PhotoCaptureService.startService(instance())
+                    //PhotoCaptureService.getInstance()?.stopServicePublic()
+                    PhotoCaptureService.stopService(instance())
+                    //PhotoCaptureService.stopService(instance())
+                    //LogUtils.d("开启服务")
+                    //PhotoCaptureService.startService(instance())
                     // 重试一次，不再递归调用避免无限循环
                     return captureAndDetect(roiFlag, retry = false, tag = tag)
                 }

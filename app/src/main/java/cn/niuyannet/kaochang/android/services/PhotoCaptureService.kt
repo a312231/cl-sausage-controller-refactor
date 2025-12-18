@@ -63,6 +63,9 @@ class PhotoCaptureService : LifecycleService() {
         // 防止并发炸相机（比如按钮抖动 / 后台任务）
         @Volatile
         private var isCapturing = false
+
+        @Volatile
+        private var isRestarted = false
         
         /**
          * 启动并初始化服务（在应用启动时调用）
@@ -102,7 +105,10 @@ class PhotoCaptureService : LifecycleService() {
         ) {
             val callbackId = "callback_${callbackCounter++}"
             pendingCallbacks[callbackId] = callback
-            
+            if (isRestarted) {
+                setServiceInstance(null)
+                isRestarted = false
+            }
             // 如果服务实例存在且已初始化，直接调用
             serviceInstance?.let { service ->
                 if (service.isInitializedService) {
@@ -128,6 +134,7 @@ class PhotoCaptureService : LifecycleService() {
                 }
             } ?: run {
                 // 服务未启动，先启动服务
+                LogUtils.d("服务重启")
                 val intent = Intent(context, PhotoCaptureService::class.java).apply {
                     action = ACTION_CAPTURE_AND_DETECT
                     putExtra("roiFlag", roiFlag)
@@ -289,6 +296,7 @@ class PhotoCaptureService : LifecycleService() {
             cameraProvider = null
             imageCapture = null
             isInitialized = false
+            detectionProcessor = null
         }
     }
 
@@ -367,11 +375,8 @@ class PhotoCaptureService : LifecycleService() {
         synchronized(captureLock) {
             isCapturing = false
         }
-
-        releaseCamera()          // ✅ 统一释放相机
-        detectionProcessor = null
         isInitializedService = false
-
+        releaseCamera()          // ✅ 统一释放相机
 //        synchronized(initializationLock) {
 //            isInitialized = false
 //            cameraProvider?.unbindAll()
@@ -383,18 +388,21 @@ class PhotoCaptureService : LifecycleService() {
         stopSelf()
     }
     // 重启服务
-    fun stopServicePublic(context: Context) {
-        serviceScope.launch {
-            LogUtils.d("关闭服务")
-            stopService()
-            delay(500)
-
-//            while(!isInitialized) {
-//                LogUtils.d("开启服务")
-//                startService(context)
-//                delay(500)
-//            }
-        }
+    fun stopServicePublic() {
+        LogUtils.d("关闭服务")
+        stopService()
+        isRestarted = true
+//        serviceScope.launch {
+//            LogUtils.d("关闭服务")
+//            stopService()
+//            Companion.setServiceInstance(null)
+//            //delay(500)
+////            while(!isInitialized) {
+////                LogUtils.d("开启服务")
+////                startService(context)
+////                delay(500)
+////            }
+//        }
     }
     fun restartCamera() {
         serviceScope.launch {
@@ -649,7 +657,6 @@ class PhotoCaptureService : LifecycleService() {
             isCapturing = false
         }
         releaseCamera()
-        detectionProcessor = null
         isInitializedService = false
 //        synchronized(initializationLock) {
 //            isInitialized = false
