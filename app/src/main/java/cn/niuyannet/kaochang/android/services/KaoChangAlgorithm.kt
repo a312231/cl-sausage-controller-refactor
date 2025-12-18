@@ -60,13 +60,13 @@ object KaoChangAlgorithm {
             while (isRunning){
                 tag = tag + 1
                 var status = AppConfig.getAppConfig().moveStatus
-                if (status == 0 && tag >= 10) {
+                var onlinestatus = AppConfig.getAppConfig().onlineStatus
+                if (status == 0 && tag >= 10 && onlinestatus != 4) {
                     LogUtils.d(TAG, "轮询前定时空拍一次")
                     AppConfig.getAppConfig().moveStatus = 1
                     SauceDetectionUitls.captureAndDetect(1,true,"lunxun")
                     AppConfig.getAppConfig().moveStatus = 0
                 }
-
 
                 if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 10) {
                     tag = 0

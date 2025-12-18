@@ -257,7 +257,9 @@ object KaoChangOperate {
                 }
                 LogUtils.d("售卖台第二次拍照失败")
             }else if (sausageInfo_2.code == 2){
-                writeSingleRegister(action_address_shoumaitai,sausageInfo.code)
+                // writeSingleRegister(action_address_shoumaitai,sausageInfo.code)
+                // 暂时发1，等待下位机修改
+                writeSingleRegister(action_address_shoumaitai,1)
                 LogUtils.d("客户未及时取肠，执行丢弃...")
 //                AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
 //                GlobalScope.launch(Dispatchers.Main) {
@@ -267,7 +269,10 @@ object KaoChangOperate {
             }
             else {
                 //TODO: 下位机执行烤肠丢弃动作，丢弃完成后上位机判断是否丢弃完成
-                writeSingleRegister(action_address_shoumaitai,sausageInfo.code)
+
+                // writeSingleRegister(action_address_shoumaitai,sausageInfo.code)
+                // 暂时发1，等待下位机修改
+                writeSingleRegister(action_address_shoumaitai,1)
                 LogUtils.d("客户已经把肠取走")
             }
         } else { // 未识别到 顾客取走了
