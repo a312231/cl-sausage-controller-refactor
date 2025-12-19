@@ -488,8 +488,8 @@ public class SauceDetectionProcessor {
                 // kaopan_Roi_mask_1[int(corners[3][1]): int(corners[3][1] + 7.5 * 25), int(corners[3][0] - 2.5 * 25): int(corners[3][0]-8)] = 1
                 int h1Start = (int)cornerY;
                 int h1End = (int)(cornerY + 7.5 * markerSizeH);
-                int w1Start = (int)(cornerX - 2.5 * markerSizeW);
-                int w1End = (int)(cornerX - 8);
+                int w1Start = (int)(cornerX - 3.2 * markerSizeW);
+                int w1End = (int)(cornerX - 10);
                 
                 // 确保坐标在有效范围内
                 h1Start = Math.max(0, h1Start);
@@ -505,9 +505,9 @@ public class SauceDetectionProcessor {
                 // 计算售卖台ROI区域 - 与Python代码保持一致
                 // kaopan_Roi_mask_2[0: int(corners[3][1] - 1.5 * 25), int(corners[3][0] - 2 - 5 * 25): int(corners[3][0] - 4 - 3 * 25)] = 1
                 int h2Start = 0;
-                int h2End = (int)(cornerY - 1.5 * markerSizeH);
-                int w2Start = (int)(cornerX - 2 - 5 * markerSizeW);
-                int w2End = (int)(cornerX - 4 - 3 * markerSizeW);
+                int h2End = (int)(cornerY - 1.6 * markerSizeH);
+                int w2Start = (int)(cornerX - 2 - 4 * markerSizeW);
+                int w2End = (int)(cornerX - 4 - 2.7 * markerSizeW);
                 
                 // 确保坐标在有效范围内
                 h2Start = Math.max(0, h2Start);
