@@ -238,7 +238,9 @@ object KaoChangOperate {
         delay(3000)
         val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
         if (sausageInfo==null){ // 拍照失败
-            writeSingleRegister(action_address_shoumaitai,0)
+            //writeSingleRegister(action_address_shoumaitai,0)
+            delay(3000)
+            writeSingleRegister(action_address_shoumaitai,1)
             AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
             GlobalScope.launch(Dispatchers.Main) {
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())

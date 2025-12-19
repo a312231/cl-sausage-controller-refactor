@@ -71,10 +71,12 @@ class PhotoCaptureService : LifecycleService() {
          * 启动并初始化服务（在应用启动时调用）
          */
         fun startService(context: Context) {
+            LogUtils.d("启动服务")
             val intent = Intent(context, PhotoCaptureService::class.java).apply {
                 action = ACTION_INIT_SERVICE
             }
             ContextCompat.startForegroundService(context, intent)
+            isRestarted = false
         }
         
         /**
@@ -101,17 +103,17 @@ class PhotoCaptureService : LifecycleService() {
         fun captureAndDetect(
             context: Context,
             roiFlag: Int,
+            isRetry: Boolean,
             callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
         ) {
             val callbackId = "callback_${callbackCounter++}"
             pendingCallbacks[callbackId] = callback
-            if (isRestarted) {
-                setServiceInstance(null)
-                isRestarted = false
-            }
+
+
             // 如果服务实例存在且已初始化，直接调用
             serviceInstance?.let { service ->
-                if (service.isInitializedService) {
+                if (service.isInitializedService && !isRestarted && isRetry) {
+                    LogUtils.d("直接调用")
                     service.captureAndDetectInternal(roiFlag, callbackId)
                 } else {
                     // 服务未初始化，等待初始化完成后再调用
@@ -119,11 +121,11 @@ class PhotoCaptureService : LifecycleService() {
                     service.serviceScope.launch {
                         // 等待初始化完成，最多等待5秒
                         var waited = 0
-                        while (!service.isInitializedService && waited < 5000) {
+                        while (!(service.isInitializedService && !isRestarted) && waited < 5000) {
                             kotlinx.coroutines.delay(100)
                             waited += 100
                         }
-                        if (service.isInitializedService) {
+                        if (service.isInitializedService && !isRestarted) {
                             service.captureAndDetectInternal(roiFlag, callbackId)
                         } else {
                             Log.e(TAG, "服务初始化超时")
@@ -149,6 +151,7 @@ class PhotoCaptureService : LifecycleService() {
             if (callback != null) {
                 try {
                     callback(result)
+                    LogUtils.d("回调已调用，callbackId: $callbackId")
                     Log.d(TAG, "回调已调用，callbackId: $callbackId")
                 } catch (e: Exception) {
                     LogUtils.d("调用回调时出错")
@@ -177,6 +180,7 @@ class PhotoCaptureService : LifecycleService() {
     
     override fun onCreate() {
         super.onCreate()
+        LogUtils.d("相机服务启动")
         createNotificationChannel()
         Companion.setServiceInstance(this)
     }
@@ -196,7 +200,6 @@ class PhotoCaptureService : LifecycleService() {
             ACTION_CAPTURE_AND_DETECT -> {
                 val roiFlag = intent.getIntExtra("roiFlag", 0)
                 val callbackId = intent.getStringExtra("callbackId") ?: ""
-                
                 // 如果服务未初始化，先初始化
                 if (!isInitializedService) {
                     startForegroundService()
@@ -212,6 +215,7 @@ class PhotoCaptureService : LifecycleService() {
             }
             ACTION_STOP_SERVICE -> {
                 stopService()
+                isRestarted = true
             }
         }
         
@@ -370,13 +374,30 @@ class PhotoCaptureService : LifecycleService() {
     /**
      * 停止服务（内部方法）
      */
+    private fun stopServiceSafe() {
+        isInitializedService = false
+        // 如果正在拍照，直接强制结束
+        synchronized(captureLock) {
+            isCapturing = false
+        }
+        releaseCamera()          // ✅ 统一释放相机
+//        synchronized(initializationLock) {
+//            isInitialized = false
+//            cameraProvider?.unbindAll()
+//            cameraProvider = null
+//            imageCapture = null
+//            detectionProcessor = null
+//        }
+        stopForeground(true)
+        //stopSelf()
+    }
     private fun stopService() {
         // 如果正在拍照，直接强制结束
         synchronized(captureLock) {
             isCapturing = false
         }
         isInitializedService = false
-        releaseCamera()          // ✅ 统一释放相机
+        //releaseCamera()          // ✅ 统一释放相机
 //        synchronized(initializationLock) {
 //            isInitialized = false
 //            cameraProvider?.unbindAll()
@@ -388,21 +409,27 @@ class PhotoCaptureService : LifecycleService() {
         stopSelf()
     }
     // 重启服务
-    fun stopServicePublic() {
-        LogUtils.d("关闭服务")
-        stopService()
-        isRestarted = true
+//    fun stopServicePublic() {
 //        serviceScope.launch {
-//            LogUtils.d("关闭服务")
-//            stopService()
-//            Companion.setServiceInstance(null)
-//            //delay(500)
-////            while(!isInitialized) {
-////                LogUtils.d("开启服务")
-////                startService(context)
-////                delay(500)
-////            }
+//                LogUtils.d("关闭服务")
+//                stopServiceSafe()
+//                delay(500)
+//                isRestarted = true
 //        }
+//    }
+    fun stopServicePublic(callback: (success: Boolean) -> Unit) {
+        serviceScope.launch {
+            try {
+                LogUtils.d("关闭服务")
+                isRestarted = true
+                stopServiceSafe()
+                delay(500)
+                callback(true)
+            } catch (e: Exception) {
+                LogUtils.e("停止服务失败", e)
+                callback(false)
+            }
+        }
     }
     fun restartCamera() {
         serviceScope.launch {
@@ -651,7 +678,7 @@ class PhotoCaptureService : LifecycleService() {
     
     override fun onDestroy() {
         super.onDestroy()
-
+        LogUtils.d("服务销毁")
         // 如果正在拍照，直接强制结束
         synchronized(captureLock) {
             isCapturing = false

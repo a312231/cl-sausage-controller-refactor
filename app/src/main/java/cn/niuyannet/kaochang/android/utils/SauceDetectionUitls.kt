@@ -54,7 +54,7 @@ object SauceDetectionUitls {
         var result: SauceDetectionProcessor.SausageInfo? = null
         var callbackInvoked = false
         
-        PhotoCaptureService.captureAndDetect(instance(), roiFlag) { sausageInfo ->
+        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
             synchronized(lock) {
                 if (!callbackInvoked) {
                     callbackInvoked = true
@@ -68,6 +68,8 @@ object SauceDetectionUitls {
         // 等待检测完成，最多等待15秒
         try {
             val completed = latch.await(20, TimeUnit.SECONDS)
+            //var completed = latch.await(20, TimeUnit.SECONDS)
+            //completed = !retry
             if (completed) {
                 LogUtils.d(tag,"拍照检测完成，返回结果")
                 //PhotoCaptureService.getInstance()?.restartCamera()
@@ -86,8 +88,10 @@ object SauceDetectionUitls {
                     LogUtils.d(tag,"超时，尝试重启相机并重试一次")
                     // 重启 CameraX
                     //PhotoCaptureService.getInstance()?.restartCamera()
-                    //PhotoCaptureService.getInstance()?.stopServicePublic()
-                    PhotoCaptureService.stopService(instance())
+                    PhotoCaptureService.getInstance()?.stopServicePublic(){success ->
+                        PhotoCaptureService.startService(instance())
+                    }
+                    //PhotoCaptureService.stopService(instance())
                     //PhotoCaptureService.stopService(instance())
                     //LogUtils.d("开启服务")
                     //PhotoCaptureService.startService(instance())
@@ -97,7 +101,7 @@ object SauceDetectionUitls {
                 return null
             }
         } catch (e: InterruptedException) {
-            LogUtils.d(tag,"拍照检测被中断")
+            LogUtils.e(tag,"拍照检测被中断",e)
             //PhotoCaptureService.getInstance()?.restartCamera()
             // 确保回调被调用
             synchronized(lock) {
