@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -21,7 +22,9 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+
 
 class CameraMonitor {
 
@@ -34,6 +37,9 @@ class CameraMonitor {
     //
     private var weakReference: WeakReference<Context>? = null
     private var cameraService: AtomicReference<CameraService?> = AtomicReference(null)
+
+    // 拍照锁
+    private val takeStatus = AtomicBoolean(true)
 
     // 检测
     private var detectionProcessor: SauceDetectionProcessor? = null
@@ -93,13 +99,26 @@ class CameraMonitor {
                    retry: Int,
                    callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
-        detectionProcessor?.roiFlag = roiFlag
         //
         val callbackId = "callback_${callbackCounter++}"
         pendingCallbacks[callbackId] = callback
-        //
-        // 开始拍照
-        takePhoto(delay, retry) { invokeCallback(callbackId, it) }
+
+        // 是否可以拍照
+        if (takeStatus.get()) {
+            takeStatus.set(false)
+            // 设置属性
+            detectionProcessor?.roiFlag = roiFlag
+            // 开始拍照
+            takePhoto(delay, retry) {
+                // 回调
+                invokeCallback(callbackId, it)
+                takeStatus.set(true)
+            }
+        } else {
+            LogUtils.d("请等待上一个拍照任务结束...")
+            // 等待上一个拍照任务结束
+            invokeCallback(callbackId, null)
+        }
     }
 
     /**
