@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.MenuItem
 import androidx.appcompat.app.AppCompatActivity
 import cn.niuyannet.kaochang.android.databinding.ActivityLogDetailBinding
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import java.io.File
 
 class LogDetailActivity : AppCompatActivity() {
@@ -15,7 +16,8 @@ class LogDetailActivity : AppCompatActivity() {
         binding = ActivityLogDetailBinding.inflate(layoutInflater)
         setContentView(binding.root)
         binding.btnBack.setOnClickListener {
-            finish()
+            // finish()
+            CameraMonitor.instance.close { finish() }
         }
         
         // 设置标题栏
@@ -34,10 +36,16 @@ class LogDetailActivity : AppCompatActivity() {
             }
         }
     }
-    
+
+    override fun onResume() {
+        super.onResume()
+        CameraMonitor.instance.startService(this)
+    }
+
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         if (item.itemId == android.R.id.home) {
-            finish()
+//            finish()
+            CameraMonitor.instance.close { finish() }
             return true
         }
         return super.onOptionsItemSelected(item)

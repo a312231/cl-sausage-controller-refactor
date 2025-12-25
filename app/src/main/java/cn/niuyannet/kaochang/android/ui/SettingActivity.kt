@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import androidx.viewpager2.widget.ViewPager2
 import cn.niuyannet.kaochang.android.adapters.SettingPagerAdapter
 import cn.niuyannet.kaochang.android.databinding.ActivitySettingBinding
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.google.android.material.tabs.TabLayoutMediator
 
@@ -28,7 +29,8 @@ class SettingActivity : AppCompatActivity() {
         setContentView(binding.root)
         setupViewPager()
         binding.btnBack.setOnClickListener {
-            finish()
+//            finish()
+            CameraMonitor.instance.close { finish() }
         }
 
         binding.btnExit.setOnClickListener {
@@ -50,6 +52,7 @@ class SettingActivity : AppCompatActivity() {
         }
     }
 
+
     private fun setupViewPager() {
         viewPager = binding.viewPager
         viewPager.adapter = SettingPagerAdapter(this)
@@ -67,7 +70,10 @@ class SettingActivity : AppCompatActivity() {
 
     companion object {
         fun start(context: Context?) {
-            context?.startActivity(Intent(context, SettingActivity::class.java))
+//            context?.startActivity(Intent(context, SettingActivity::class.java))
+            CameraMonitor.instance.close {
+                context?.startActivity(Intent(context, SettingActivity::class.java))
+            }
         }
     }
     
@@ -109,6 +115,9 @@ class SettingActivity : AppCompatActivity() {
                 REQUIRED_PERMISSIONS,
                 REQUEST_CODE_PERMISSIONS
             )
+        } else {
+            // 启动后台拍照服务
+            CameraMonitor.instance.startService(this)
         }
     }
     

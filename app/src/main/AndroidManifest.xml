@@ -41,6 +41,7 @@
             android:value="true" />
 
         <service android:name="org.eclipse.paho.android.service.MqttService" />
+
         <!-- 后台拍照服务 -->
         <service
             android:name=".services.PhotoCaptureService"
@@ -48,6 +49,11 @@
             android:exported="false"
             android:foregroundServiceType="camera"
             tools:targetApi="34" />
+
+        <service
+            android:name=".services.CameraService"
+            android:exported="false" />
+
         <activity
             android:name=".ui.MainActivity"
             android:screenOrientation="landscape"

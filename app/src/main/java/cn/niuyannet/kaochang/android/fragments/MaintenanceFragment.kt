@@ -19,6 +19,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
@@ -235,8 +236,12 @@ class MaintenanceFragment : Fragment() {
         }
         binding.btnLogs.setOnClickListener {
            // LogUtils.d("标签", "这是一条调试日志")
-            val intent = Intent(requireContext(), LogViewActivity::class.java)
-            startActivity(intent)
+//            val intent = Intent(requireContext(), LogViewActivity::class.java)
+//            startActivity(intent)
+            CameraMonitor.instance.close {
+                val intent = Intent(requireContext(), LogViewActivity::class.java)
+                startActivity(intent)
+            }
         }
 //        binding.btnShijue.setOnClickListener {
 //            SauceDetectionLauncher.launch(requireContext())

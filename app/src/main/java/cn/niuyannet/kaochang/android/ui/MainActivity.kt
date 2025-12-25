@@ -11,6 +11,7 @@ import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.PhotoCaptureService
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
@@ -33,9 +34,16 @@ class MainActivity : OrderActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 启动后台拍照服务
-        PhotoCaptureService.startService(this)
+//        PhotoCaptureService.startService(this)
         initView()
     }
+
+    override fun onResume() {
+        super.onResume()
+        // 启动后台拍照服务
+        CameraMonitor.instance.startService(this)
+    }
+
     override fun initData() {
         initAdsData()//获取广告数据
         loadDeviceInfo()//获取设备初始化信息
@@ -183,7 +191,7 @@ class MainActivity : OrderActivity() {
         ConnectManageHelper.disConnect()
         KaoChangAlgorithm.stopServer()
         // 停止后台拍照服务
-        PhotoCaptureService.stopService(this)
+//        PhotoCaptureService.stopService(this)
         exitProcess(0)
     }
 

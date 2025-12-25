@@ -17,6 +17,7 @@ import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.detecition.SauceDetector
 import cn.niuyannet.kaochang.android.services.PhotoCaptureService
 import androidx.lifecycle.LifecycleOwner
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -46,15 +47,15 @@ object SauceDetectionUitls {
      * 
      * 使用后台服务进行拍照和检测
      */
-    fun captureAndDetect(roiFlag: Int, retry: Boolean = true, tag: String = "KaoChangAlgorithm"): SauceDetectionProcessor.SausageInfo? {
+    fun captureAndDetect(roiFlag: Int, retry: Int = 5, tag: String = "KaoChangAlgorithm"): SauceDetectionProcessor.SausageInfo? {
         LogUtils.d(tag,"使用后台服务进行拍照检测，roiFlag: $roiFlag")
         
         val latch = CountDownLatch(1)
         val lock = Any()
         var result: SauceDetectionProcessor.SausageInfo? = null
         var callbackInvoked = false
-        
-        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
+
+        CameraMonitor.instance.takePhoto(roiFlag, 3000L, retry) { sausageInfo ->
             synchronized(lock) {
                 if (!callbackInvoked) {
                     callbackInvoked = true
@@ -64,6 +65,16 @@ object SauceDetectionUitls {
                 }
             }
         }
+//        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
+//            synchronized(lock) {
+//                if (!callbackInvoked) {
+//                    callbackInvoked = true
+//                    result = sausageInfo
+//                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
+//                    latch.countDown()
+//                }
+//            }
+//        }
         
         // 等待检测完成，最多等待15秒
         try {
@@ -84,20 +95,20 @@ object SauceDetectionUitls {
                         latch.countDown()
                     }
                 }
-                if (retry) {
-                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
-                    // 重启 CameraX
-                    //PhotoCaptureService.getInstance()?.restartCamera()
-                    PhotoCaptureService.getInstance()?.stopServicePublic(){success ->
-                        PhotoCaptureService.startService(instance())
-                    }
+//                if (retry) {
+//                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
+//                    // 重启 CameraX
+//                    //PhotoCaptureService.getInstance()?.restartCamera()
+//                    PhotoCaptureService.getInstance()?.stopServicePublic(){success ->
+//                        PhotoCaptureService.startService(instance())
+//                    }
                     //PhotoCaptureService.stopService(instance())
                     //PhotoCaptureService.stopService(instance())
                     //LogUtils.d("开启服务")
                     //PhotoCaptureService.startService(instance())
                     // 重试一次，不再递归调用避免无限循环
-                    return captureAndDetect(roiFlag, retry = false, tag = tag)
-                }
+//                    return captureAndDetect(roiFlag, retry = 0, tag = tag)
+//                }
                 return null
             }
         } catch (e: InterruptedException) {
