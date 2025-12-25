@@ -21,6 +21,7 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicReference
 
 class CameraMonitor {
 
@@ -32,7 +33,7 @@ class CameraMonitor {
     private val handle by lazy { Handler(Looper.getMainLooper()) }
     //
     private var weakReference: WeakReference<Context>? = null
-    private var cameraService: CameraService? = null
+    private var cameraService: AtomicReference<CameraService?> = AtomicReference(null)
 
     // 检测
     private var detectionProcessor: SauceDetectionProcessor? = null
@@ -41,13 +42,22 @@ class CameraMonitor {
     private var callbackCounter = 0
 
     /**
+     * 重新启动 service
+     */
+    fun restartService() {
+        weakReference?.get()?.let { startService(it, true) }
+    }
+
+    /**
      * 启动 service
      */
-    fun startService(context: Context) {
+    fun startService(context: Context, restart: Boolean = false) {
         close()
-        /// ==
-        weakReference = WeakReference(context)
-        if (cameraService == null) {
+        // 不是是重新启动的
+        if (!restart) {
+            weakReference = WeakReference(context)
+        }
+        if (cameraService.get() == null) {
             // 初始化
             val serviceIntent = Intent(context, CameraService::class.java)
             // 绑定服务
@@ -55,7 +65,7 @@ class CameraMonitor {
         }
         // 初始化
         if (detectionProcessor == null) {
-            detectionProcessor = SauceDetectionProcessor(context)
+            detectionProcessor = SauceDetectionProcessor(context.applicationContext)
         }
     }
 
@@ -64,10 +74,10 @@ class CameraMonitor {
         override fun onServiceConnected(componentName: ComponentName, iBinder: IBinder) {
             val binder: CameraService.ClientBinder = iBinder as CameraService.ClientBinder
             // service
-            cameraService = binder.service
+            cameraService.set(binder.service)
         }
         override fun onServiceDisconnected(componentName: ComponentName) {
-            this@CameraMonitor.cameraService = null
+            this@CameraMonitor.cameraService.set(null)
         }
     }
 
@@ -99,7 +109,7 @@ class CameraMonitor {
      */
     private fun takePhoto(delay: Long, retry: Int, callback: (SauceDetectionProcessor. SausageInfo?) -> Unit) {
         try {
-            cameraService!!.takePhoto(object : ImageCapture.OnImageCapturedCallback(){
+            cameraService.get()!!.takePhoto(object : ImageCapture.OnImageCapturedCallback(){
                 override fun onCaptureSuccess(image: ImageProxy) {
                     try {
                         val img = imageProxyToMat(image)
@@ -133,11 +143,11 @@ class CameraMonitor {
      * 解绑服务
      */
     fun close(callback: (() -> Unit)? = null) {
-        if (cameraService != null) {
+        if (cameraService.get() != null) {
             weakReference?.get()?.let {
                 it.unbindService(serviceConnection)
                 // null
-                cameraService = null
+                cameraService.set(null)
                 callback?.invoke()
                 return
             }
