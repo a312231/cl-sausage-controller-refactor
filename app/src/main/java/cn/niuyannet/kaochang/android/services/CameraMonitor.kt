@@ -21,10 +21,16 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import java.lang.ref.WeakReference
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-
+/**
+ * 后台摄像头服务拍照
+ * 如果窗口运行期间需要拍照 则在@onResume方法内调用startService(context: Context, restart: Boolean = false)启动服务
+ * 在窗口销毁finish()或跳转窗口startActivity(...)之前调用close(callback: (() -> Unit)? = null)方法
+ * 例:  CameraMonitor.instance.close { finish() }
+ */
 class CameraMonitor {
 
     companion object {
@@ -45,6 +51,9 @@ class CameraMonitor {
     // 用于存储回调的 Map
     private val pendingCallbacks = mutableMapOf<String, (SauceDetectionProcessor.SausageInfo?) -> Unit>()
     private var callbackCounter = 0
+
+    // 拍照队列
+    private val deque = ConcurrentLinkedDeque<QueueData>()
 
     /**
      * 重新启动 service
@@ -72,6 +81,10 @@ class CameraMonitor {
         if (detectionProcessor == null) {
             detectionProcessor = SauceDetectionProcessor(context.applicationContext)
         }
+
+        // 启动定时任务
+        handle.removeCallbacks(runnable)
+        handle.postDelayed(runnable, 1000)
     }
 
     // 服务
@@ -87,21 +100,65 @@ class CameraMonitor {
     }
 
     /**
+     * 定时任务
+     */
+    private val runnable = object : Runnable {
+        override fun run() {
+            if (takeStatus.get()) {
+                deque.poll()?.let { takePhoto(it.roiFlag, it.delay, it.retry, it.callback) }
+            }
+            handle.postDelayed(this, 500)
+        }
+    }
+
+    /**
+     * 清空拍照队列
+     */
+    fun clearQueue() = deque.clear()
+
+    /**
+     * 添加拍照任务
+     * @param roiFlag       0: 运输台; 1: 售卖台
+     * @param delay         重试延迟
+     * @param retry         重试次数
+     * @param priority      优先
+     * @param callback      检测结果回调
+     */
+    fun takePhotoQueue(roiFlag: Int,
+                       delay: Long,
+                       retry: Int,
+                       priority: Boolean,
+                       callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
+    ) {
+        if (deque.size < 10) {
+            if (priority) {
+                deque.offerFirst(QueueData(roiFlag, delay, retry, callback))
+            } else {
+                deque.offer(QueueData(roiFlag, delay, retry, callback))
+            }
+        } else if (priority) {
+            deque.pollLast()
+            deque.offerFirst(QueueData(roiFlag, delay, retry, callback))
+        } else {
+            LogUtils.d("拍照任务队列已满!")
+        }
+    }
+
+    /**
      * 拍照 失败时重试
      * @param roiFlag 0: 运输台; 1: 售卖台
      * @param delay     重试延迟
      * @param retry     重试次数
      * @param callback 检测结果回调
      */
-    fun takePhoto(roiFlag: Int,
-                   delay: Long,
-                   retry: Int,
-                   callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
+    private fun takePhoto(roiFlag: Int,
+                          delay: Long,
+                          retry: Int,
+                          callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
         //
         val callbackId = "callback_${callbackCounter++}"
         pendingCallbacks[callbackId] = callback
-
         // 是否可以拍照
         if (takeStatus.get()) {
             takeStatus.set(false)
@@ -125,7 +182,7 @@ class CameraMonitor {
      * @param delay     重试延迟
      * @param retry     重试次数
      */
-    private fun takePhoto(delay: Long, retry: Int, callback: (SauceDetectionProcessor. SausageInfo?) -> Unit) {
+    private fun takePhoto(delay: Long, retry: Int, callback: (SauceDetectionProcessor.SausageInfo?) -> Unit) {
         try {
             cameraService.get()!!.takePhoto(object : ImageCapture.OnImageCapturedCallback(){
                 override fun onCaptureSuccess(image: ImageProxy) {
@@ -161,6 +218,8 @@ class CameraMonitor {
      * 解绑服务
      */
     fun close(callback: (() -> Unit)? = null) {
+        handle.removeCallbacks(runnable)
+        //
         if (cameraService.get() != null) {
             weakReference?.get()?.let {
                 it.unbindService(serviceConnection)

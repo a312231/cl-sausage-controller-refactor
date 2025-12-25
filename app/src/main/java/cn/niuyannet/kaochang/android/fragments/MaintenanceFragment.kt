@@ -29,6 +29,7 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.blankj.utilcode.util.ToastUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MaintenanceFragment : Fragment() {
     private var _binding: FragmentMaintenanceBinding? = null
@@ -36,6 +37,8 @@ class MaintenanceFragment : Fragment() {
     
     private lateinit var kaoPanAdapter: KaoPanAdapter
     private var refreshJob: Job? = null
+
+    private val status = AtomicBoolean(true)
 
     // 记录是否处于冷却中
     // 烤制算法
@@ -252,6 +255,7 @@ class MaintenanceFragment : Fragment() {
             DataManagementAPI.uploadDeviceInfo()
         }
     }
+
     /**
      * 弹出对话框，点击确认取烤肠
      */
@@ -264,25 +268,31 @@ class MaintenanceFragment : Fragment() {
         builder.setTitle("确认")
             .setMessage("是否要取出烤肠?")
             .setPositiveButton("确定") { dialog, _ ->
-                lifecycleScope.launch(Dispatchers.IO) {
-                    var appState = AppConfig.getAppConfig().moveStatus
-                    // 运动状态 为0是说明机械臂闲置
-                    while (appState!=0) {
-                        delay(2000)
-                        appState = AppConfig.getAppConfig().moveStatus
-                        LogUtils.d("KaoChangAlgorithm", "取出烤肠 等待上位机闲置 ${appState}")
-                    }
-                    AppConfig.getAppConfig().moveStatus = 1
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    // 调用取烤肠的算法
-                    KaoChangOperate.takeSausage(kaoPan)
-                    AppConfig.getAppConfig().moveStatus = 0
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                // 判断
+                if (status.get()) {
+                    status.set(false)
+                    //
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        var appState = AppConfig.getAppConfig().moveStatus
+                        // 运动状态 为0是说明机械臂闲置
+                        while (appState != 0) {
+                            delay(2000)
+                            appState = AppConfig.getAppConfig().moveStatus
+                            LogUtils.d("KaoChangAlgorithm", "取出烤肠 等待上位机闲置 $appState")
+                        }
+                        AppConfig.getAppConfig().moveStatus = 1
+                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                        // 调用取烤肠的算法
+                        KaoChangOperate.takeSausage(kaoPan)
+                        AppConfig.getAppConfig().moveStatus = 0
+                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
-                    lifecycleScope.launch(Dispatchers.Main) {
-                        dialog.dismiss()
+                        lifecycleScope.launch(Dispatchers.Main) {
+                            dialog.dismiss()
+                            status.set(true)
+                        }
                     }
-                }
+                } else ToastUtils.showShort("请等待当前操作完成")
             }
             .setNegativeButton("取消") { dialog, _ ->
                 dialog.dismiss()
@@ -290,6 +300,7 @@ class MaintenanceFragment : Fragment() {
             .create()
             .show()
     }
+
     /**
      * 启动2秒定时刷新
      */

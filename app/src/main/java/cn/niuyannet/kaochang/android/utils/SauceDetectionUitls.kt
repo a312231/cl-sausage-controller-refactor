@@ -32,7 +32,7 @@ import java.util.concurrent.Executors
 
 object SauceDetectionUitls {
     // 烤肠检测处理器
-     var processor: SauceDetectionProcessor? = null
+    var processor: SauceDetectionProcessor? = null
     // 相机相关（保留用于向后兼容，但不再使用）
     var cameraProvider: ProcessCameraProvider? = null
     var imageCapture: ImageCapture? = null
@@ -60,7 +60,8 @@ object SauceDetectionUitls {
         var result: SauceDetectionProcessor.SausageInfo? = null
         var callbackInvoked = false
 
-        CameraMonitor.instance.takePhoto(roiFlag, 3000L, retry) { sausageInfo ->
+        // 拍照
+        CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
             synchronized(lock) {
                 if (!callbackInvoked) {
                     callbackInvoked = true
