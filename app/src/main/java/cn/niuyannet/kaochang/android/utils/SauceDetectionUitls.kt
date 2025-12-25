@@ -39,7 +39,8 @@ object SauceDetectionUitls {
     var camera: Camera? = null
     val executor: Executor = Executors.newSingleThreadExecutor()
     var lifecycleOwner: LifecycleOwner? = null
-    
+
+
     /**
      * 拍照并检测返回结果，为空即没有结果
      * roiFlag 0: 运输台; 1: 售卖台
@@ -47,7 +48,11 @@ object SauceDetectionUitls {
      * 
      * 使用后台服务进行拍照和检测
      */
-    fun captureAndDetect(roiFlag: Int, retry: Int = 5, tag: String = "KaoChangAlgorithm"): SauceDetectionProcessor.SausageInfo? {
+    fun captureAndDetect(roiFlag: Int,
+                         retry: Int = 5,
+                         tag: String = "KaoChangAlgorithm"
+    ): SauceDetectionProcessor.SausageInfo? {
+
         LogUtils.d(tag,"使用后台服务进行拍照检测，roiFlag: $roiFlag")
         
         val latch = CountDownLatch(1)
