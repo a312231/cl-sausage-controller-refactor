@@ -108,7 +108,7 @@ class CameraMonitor {
         override fun run() {
             if (takeStatus.get()) {
                 deque.poll()?.let { takePhoto(it.roiFlag, it.delay, it.retry, it.callback) }
-            } else if(count.decrementAndGet() > 50) {
+            } else if(count.incrementAndGet() > 40) {
                 LogUtils.d("拍照任务超时 自动解锁")
                 takeStatus.set(false)
             }
