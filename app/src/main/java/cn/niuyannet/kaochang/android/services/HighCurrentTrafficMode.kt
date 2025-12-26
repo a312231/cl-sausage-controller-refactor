@@ -8,6 +8,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -46,7 +47,8 @@ object HighCurrentTrafficMode {
         list: List<KaoPan>,
         listBox: List<KaoPanBox>
     ) {
-
+        LogUtils.d("KaoChangAlgorithm", "高并发检查加热")
+        LogUtils.d("KaoChangAlgorithm", "config.transitionMode----${config.transitionMode}")
         when (config.transitionMode) {
             0 -> {
                 val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
@@ -142,9 +144,18 @@ object HighCurrentTrafficMode {
         if (!hasSausageIn25_33) {
             // 计算烤肠箱口味比例
             val boxTasteDistribution = mutableMapOf<String, Int>()
-            listBox.forEach { box ->
-                boxTasteDistribution[box.tasteCode] =
-                    (boxTasteDistribution[box.tasteCode] ?: 0) + box.num
+            val flavorTypes = listBox.filter { it.num>0 }.mapNotNull { it.tasteCode }.distinct()
+            try {
+                flavorTypes.forEach { flavor ->
+                    if (flavor.isNotEmpty()) {
+                        val count = listBox.count { it.tasteCode == flavor }
+                        boxTasteDistribution[flavor] = count
+                    }else{
+                        LogUtils.d("KaoChangAlgorithm", "警告: 发现 tasteCode 为 null 的 box, box=$flavor")
+                    }
+                }
+            } catch (e: Exception) {
+                LogUtils.d("KaoChangAlgorithm", "异常--, box=${e.message}")
             }
             val totalSausages = boxTasteDistribution.values.sum()
 
@@ -196,8 +207,8 @@ object HighCurrentTrafficMode {
                     list1_21[currentPosition].taste = Taste().apply {
                         tasteCode = sortedTastes.last().first
                     }
-                    currentPosition++
                 }
+                currentPosition++
 
             }
             // 如果25-33区域没有烤肠,需要添加烤肠进行加热
@@ -259,7 +270,8 @@ object HighCurrentTrafficMode {
                 transitionMode = 0 // 取消过渡态
             }
             AppConfig.saveAppConfig(config)
-
+            //同步到云端去
+            NetApi.updateDeviceInfo()
         }
 
 
