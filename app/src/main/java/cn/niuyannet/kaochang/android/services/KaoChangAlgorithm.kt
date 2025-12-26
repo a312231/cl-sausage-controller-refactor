@@ -64,7 +64,7 @@ object KaoChangAlgorithm {
                 if (moStatus == 0 && tag >= 10 && status != 4) {
                     LogUtils.d(TAG, "轮询前定时空拍一次")
                     AppConfig.getAppConfig().moveStatus = 1
-                    SauceDetectionUitls.captureAndDetect(1,5,"lunXun")
+                    SauceDetectionUitls.captureAndDetect(1,2,"lunXun")
                     AppConfig.getAppConfig().moveStatus = 0
                 }
 

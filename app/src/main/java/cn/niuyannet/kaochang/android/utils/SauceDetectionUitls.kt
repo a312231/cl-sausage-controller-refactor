@@ -49,7 +49,7 @@ object SauceDetectionUitls {
      * 使用后台服务进行拍照和检测
      */
     fun captureAndDetect(roiFlag: Int,
-                         retry: Int = 5,
+                         retry: Int = 3,
                          tag: String = "KaoChangAlgorithm"
     ): SauceDetectionProcessor.SausageInfo? {
 

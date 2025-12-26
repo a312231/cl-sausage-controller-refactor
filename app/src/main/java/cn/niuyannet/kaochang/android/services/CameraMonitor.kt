@@ -59,6 +59,7 @@ class CameraMonitor {
      * 重新启动 service
      */
     fun restartService() {
+        LogUtils.e("重新启动拍照服务")
         weakReference?.get()?.let { startService(it, true) }
     }
 
@@ -247,6 +248,7 @@ class CameraMonitor {
             if (!completed.get()) {
                 completed.set(true)
                 LogUtils.e("拍照超时，耗时超过${timeoutMs}ms")
+                restartService()
                 handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
             }
         }
