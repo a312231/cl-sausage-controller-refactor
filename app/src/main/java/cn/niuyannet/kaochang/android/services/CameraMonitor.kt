@@ -23,6 +23,7 @@ import org.opencv.imgproc.Imgproc
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -54,6 +55,7 @@ class CameraMonitor {
 
     // 拍照队列
     private val deque = ConcurrentLinkedDeque<QueueData>()
+    private val count = AtomicInteger(0)
 
     /**
      * 重新启动 service
@@ -106,6 +108,9 @@ class CameraMonitor {
         override fun run() {
             if (takeStatus.get()) {
                 deque.poll()?.let { takePhoto(it.roiFlag, it.delay, it.retry, it.callback) }
+            } else if(count.decrementAndGet() > 50) {
+                LogUtils.d("拍照任务超时 自动解锁")
+                takeStatus.set(false)
             }
             handle.postDelayed(this, 500)
         }
@@ -130,6 +135,7 @@ class CameraMonitor {
                        priority: Boolean,
                        callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
+        LogUtils.d("添加拍照任务到队列: ${deque.size}")
         if (deque.size < 10) {
             if (priority) {
                 deque.offerFirst(QueueData(roiFlag, delay, retry, callback))
@@ -141,6 +147,7 @@ class CameraMonitor {
             deque.offerFirst(QueueData(roiFlag, delay, retry, callback))
         } else {
             LogUtils.d("拍照任务队列已满!")
+            callback(null)
         }
     }
 
@@ -187,6 +194,8 @@ class CameraMonitor {
             cameraService.get()!!.takePhoto(object : ImageCapture.OnImageCapturedCallback(){
                 override fun onCaptureSuccess(image: ImageProxy) {
                     try {
+                        LogUtils.d("拍照成功 开始解析")
+                        //
                         val img = imageProxyToMat(image)
                         val result = detectSausageSync(img)
                         callback(result)

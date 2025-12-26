@@ -13,6 +13,7 @@ import androidx.lifecycle.LifecycleService
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraService : LifecycleService() {
 
@@ -21,6 +22,7 @@ class CameraService : LifecycleService() {
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
+    private val initializer = AtomicBoolean(false)
     //
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
@@ -56,25 +58,29 @@ class CameraService : LifecycleService() {
      * 初始化
      **/
     private fun initCamera() {
-        try {
-            LogUtils.d("初始化相机")
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-            imageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                .setTargetRotation(Surface.ROTATION_0)
-                .setTargetResolution(Size(832, 448))
-                .build()
-            cameraProvider = cameraProviderFuture.get()!!.apply {
-                unbindAll()
-                bindToLifecycle(
-                    this@CameraService,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    imageCapture
-                )
+        if (!initializer.get()) {
+            initializer.set(true)
+            try {
+                LogUtils.d("初始化相机")
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+                imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setTargetRotation(Surface.ROTATION_0)
+                    .setTargetResolution(Size(832, 448))
+                    .build()
+                cameraProvider = cameraProviderFuture.get()!!.apply {
+                    unbindAll()
+                    bindToLifecycle(
+                        this@CameraService,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        imageCapture
+                    )
+                }
+                LogUtils.d("相机绑定完成")
+            } catch (e: Exception) {
+                initializer.set(false)
+                LogUtils.e("相机初始化失败 -> ${e.message}")
             }
-            LogUtils.d("相机绑定完成")
-        } catch (e: Exception) {
-            LogUtils.e("相机初始化失败 -> ${e.message}")
         }
     }
 
@@ -94,7 +100,8 @@ class CameraService : LifecycleService() {
      */
     fun takePhoto(callback: ImageCapture.OnImageCapturedCallback) {
         try {
-            LogUtils.d("正在拍照...")
+            LogUtils.d("正在拍照... ${initializer.get()}")
+            initCamera()
             imageCapture!!.takePicture(cameraExecutor, callback)
         } catch (e: Exception) {
             callback.onError(ImageCaptureException(ImageCapture.ERROR_UNKNOWN, "imageCapture == null", e))

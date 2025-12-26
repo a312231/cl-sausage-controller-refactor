@@ -58,18 +58,18 @@ object SauceDetectionUitls {
         val latch = CountDownLatch(1)
         val lock = Any()
         var result: SauceDetectionProcessor.SausageInfo? = null
-        var callbackInvoked = false
+//        var callbackInvoked = false
 
         // 拍照
         CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
-            synchronized(lock) {
-                if (!callbackInvoked) {
-                    callbackInvoked = true
+//            synchronized(lock) {
+//                if (!callbackInvoked) {
+//                    callbackInvoked = true
                     result = sausageInfo
                     LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
                     latch.countDown()
-                }
-            }
+//                }
+//            }
         }
 //        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
 //            synchronized(lock) {
@@ -96,10 +96,10 @@ object SauceDetectionUitls {
                 //PhotoCaptureService.getInstance()?.restartCamera()
                 // 确保回调被调用（防止服务端未调用回调）
                 synchronized(lock) {
-                    if (!callbackInvoked) {
-                        callbackInvoked = true
+//                    if (!callbackInvoked) {
+//                        callbackInvoked = true
                         latch.countDown()
-                    }
+//                    }
                 }
 //                if (retry) {
 //                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
@@ -122,10 +122,10 @@ object SauceDetectionUitls {
             //PhotoCaptureService.getInstance()?.restartCamera()
             // 确保回调被调用
             synchronized(lock) {
-                if (!callbackInvoked) {
-                    callbackInvoked = true
+//                if (!callbackInvoked) {
+//                    callbackInvoked = true
                     latch.countDown()
-                }
+//                }
             }
             return null
         }
