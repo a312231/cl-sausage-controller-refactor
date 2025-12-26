@@ -55,9 +55,6 @@ class CameraMonitor {
     // 拍照队列
     private val deque = ConcurrentLinkedDeque<QueueData>()
 
-    // 超时回调
-    private var timeoutCallback: ((SauceDetectionProcessor.SausageInfo?) -> Unit)? = null
-
     /**
      * 重新启动 service
      */
@@ -112,14 +109,6 @@ class CameraMonitor {
             }
             handle.postDelayed(this, 500)
         }
-    }
-
-    /**
-     * 超时检查
-     */
-    private val timeout = Runnable {
-        LogUtils.d("拍照超时 可能由于权限问题或相机资源被占用")
-        timeoutCallback?.invoke(null)
     }
 
     /**
@@ -195,19 +184,12 @@ class CameraMonitor {
      * @param delay     重试延迟
      * @param retry     重试次数
      */
+    @Deprecated("暂时弃用")
     private fun takePhoto(delay: Long, retry: Int, callback: (SauceDetectionProcessor.SausageInfo?) -> Unit) {
         try {
-            // 定时任务
-            timeoutCallback = callback
-            handle.postDelayed(timeout, 3500)
-            //
             cameraService.get()!!.takePhoto(object : ImageCapture.OnImageCapturedCallback(){
                 override fun onCaptureSuccess(image: ImageProxy) {
                     try {
-                        //
-                        timeoutCallback = null
-                        handle.removeCallbacks(timeout)
-                        //
                         LogUtils.d("拍照成功 开始解析")
                         //
                         val img = imageProxyToMat(image)
@@ -221,10 +203,6 @@ class CameraMonitor {
                     }
                 }
                 override fun onError(e: ImageCaptureException) {
-                    //
-                    timeoutCallback = null
-                    handle.removeCallbacks(timeout)
-                    //
                     LogUtils.e(TAG,"拍照失败-$retry: " + e.message)
                     if (retry > 0) {
                         // 延迟递归
@@ -233,10 +211,6 @@ class CameraMonitor {
                 }
             })
         } catch (e: Exception) {
-            //
-            timeoutCallback = null
-            handle.removeCallbacks(timeout)
-            //
             LogUtils.e(TAG,"服务未启动-$retry: " + e.message)
             if (retry > 0) {
                 // 延迟递归
@@ -245,7 +219,105 @@ class CameraMonitor {
         }
     }
 
+
     /**
+     * 拍照（带超时检查）
+     * @param delay     重试延迟
+     * @param retry     重试次数
+     * @param timeoutMs 超时时间（毫秒）
+     */
+    private fun takePhoto(
+        delay: Long,
+        retry: Int,
+        timeoutMs: Long,
+        callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
+    ) {
+        //
+        val cameraService = cameraService.get()
+        if (cameraService == null) {
+            LogUtils.e(TAG, "相机服务未启动")
+            handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
+            return
+        }
+
+        // 超时和重试状态管理
+        val completed = AtomicBoolean(false)
+        // 超时任务
+        val timeoutRunnable = Runnable {
+            if (!completed.get()) {
+                completed.set(true)
+                LogUtils.e("拍照超时，耗时超过${timeoutMs}ms")
+                handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
+            }
+        }
+        //
+        try {
+            // 启动超时计时器
+            handle.postDelayed(timeoutRunnable, timeoutMs)
+            cameraService.takePhoto(object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    // 检查是否已经完成（防止超时和成功同时触发）
+                    if (completed.get()) {
+                        LogUtils.w("拍照成功回调被忽略（已超时）")
+                        image.close()
+                        return
+                    }
+                    //
+                    completed.set(true)
+                    handle.removeCallbacks(timeoutRunnable)
+                    try {
+                        LogUtils.d("拍照成功，开始解析")
+                        val img = imageProxyToMat(image)
+                        val result = detectSausageSync(img)
+                        callback(result)
+                    } catch (e: Exception) {
+                        LogUtils.e("处理图像时出错: ${e.message}")
+                        callback(null)
+                    } finally {
+                        image.close()
+                    }
+                }
+                override fun onError(e: ImageCaptureException) {
+                    // 检查是否已经完成
+                    if (completed.get()) {
+                        LogUtils.w("拍照错误回调被忽略（已超时）")
+                        return
+                    }
+                    completed.set(true)
+                    handle.removeCallbacks(timeoutRunnable)
+                    //
+                    LogUtils.e("拍照失败-$retry: ${e.message}")
+                    handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
+                }
+            })
+        } catch (e: Exception) {
+            // 移除超时任务
+            handle.removeCallbacks(timeoutRunnable)
+            LogUtils.e("服务调用异常-$retry: ${e.message}")
+            handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
+        }
+    }
+
+    /**
+     * 处理超时和重试的通用逻辑
+     */
+    private fun handleTimeoutAndRetry(
+        delay: Long,
+        retry: Int,
+        timeoutMs: Long,
+        callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
+    ) {
+        if (retry > 0) {
+            LogUtils.d("异常重试，剩余重试次数: ${retry - 1}")
+            handle.postDelayed({
+                takePhoto(delay, retry - 1, timeoutMs, callback)
+            }, delay)
+        } else {
+            callback(null)
+        }
+    }
+
+     /**
      * 解绑服务
      */
     fun close(callback: (() -> Unit)? = null) {
