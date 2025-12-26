@@ -23,7 +23,6 @@ import org.opencv.imgproc.Imgproc
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -55,7 +54,9 @@ class CameraMonitor {
 
     // 拍照队列
     private val deque = ConcurrentLinkedDeque<QueueData>()
-    private val count = AtomicInteger(0)
+
+    // 超时回调
+    private var timeoutCallback: ((SauceDetectionProcessor.SausageInfo?) -> Unit)? = null
 
     /**
      * 重新启动 service
@@ -108,12 +109,17 @@ class CameraMonitor {
         override fun run() {
             if (takeStatus.get()) {
                 deque.poll()?.let { takePhoto(it.roiFlag, it.delay, it.retry, it.callback) }
-            } else if(count.incrementAndGet() > 40) {
-                LogUtils.d("拍照任务超时 自动解锁")
-                takeStatus.set(false)
             }
             handle.postDelayed(this, 500)
         }
+    }
+
+    /**
+     * 超时检查
+     */
+    private val timeout = Runnable {
+        LogUtils.d("拍照超时 可能由于权限问题或相机资源被占用")
+        timeoutCallback?.invoke(null)
     }
 
     /**
@@ -191,9 +197,17 @@ class CameraMonitor {
      */
     private fun takePhoto(delay: Long, retry: Int, callback: (SauceDetectionProcessor.SausageInfo?) -> Unit) {
         try {
+            // 定时任务
+            timeoutCallback = callback
+            handle.postDelayed(timeout, 3500)
+            //
             cameraService.get()!!.takePhoto(object : ImageCapture.OnImageCapturedCallback(){
                 override fun onCaptureSuccess(image: ImageProxy) {
                     try {
+                        //
+                        timeoutCallback = null
+                        handle.removeCallbacks(timeout)
+                        //
                         LogUtils.d("拍照成功 开始解析")
                         //
                         val img = imageProxyToMat(image)
@@ -207,6 +221,10 @@ class CameraMonitor {
                     }
                 }
                 override fun onError(e: ImageCaptureException) {
+                    //
+                    timeoutCallback = null
+                    handle.removeCallbacks(timeout)
+                    //
                     LogUtils.e(TAG,"拍照失败-$retry: " + e.message)
                     if (retry > 0) {
                         // 延迟递归
@@ -215,6 +233,10 @@ class CameraMonitor {
                 }
             })
         } catch (e: Exception) {
+            //
+            timeoutCallback = null
+            handle.removeCallbacks(timeout)
+            //
             LogUtils.e(TAG,"服务未启动-$retry: " + e.message)
             if (retry > 0) {
                 // 延迟递归
