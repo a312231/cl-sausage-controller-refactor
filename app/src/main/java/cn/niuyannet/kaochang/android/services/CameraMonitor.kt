@@ -167,7 +167,7 @@ class CameraMonitor {
             // 设置属性
             detectionProcessor?.roiFlag = roiFlag
             // 开始拍照
-            takePhoto(delay, retry) {
+            takePhoto(delay, retry, 4000) {
                 // 回调
                 invokeCallback(callbackId, it)
                 takeStatus.set(true)
