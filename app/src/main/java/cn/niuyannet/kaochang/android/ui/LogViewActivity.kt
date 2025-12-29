@@ -27,8 +27,7 @@ class LogViewActivity : AppCompatActivity() {
         binding = ActivityLogViewBinding.inflate(layoutInflater)
         setContentView(binding.root)
         binding.btnBack.setOnClickListener {
-//            finish()
-            CameraMonitor.instance.close { finish() }
+            finish()
         }
         
         // 设置标题栏
@@ -51,11 +50,6 @@ class LogViewActivity : AppCompatActivity() {
 //        binding.btnShareLogs.setOnClickListener {
 //            shareLatestLog()
 //        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        CameraMonitor.instance.startService(this)
     }
 
     private fun loadLogFiles() {
@@ -87,14 +81,9 @@ class LogViewActivity : AppCompatActivity() {
     
     private fun viewLogFile(file: File) {
         // 在新的Activity中显示日志内容
-//        val intent = Intent(this, LogDetailActivity::class.java)
-//        intent.putExtra("log_file_path", file.absolutePath)
-//        startActivity(intent)
-        CameraMonitor.instance.close {
-            val intent = Intent(this, LogDetailActivity::class.java)
-            intent.putExtra("log_file_path", file.absolutePath)
-            startActivity(intent)
-        }
+        val intent = Intent(this, LogDetailActivity::class.java)
+        intent.putExtra("log_file_path", file.absolutePath)
+        startActivity(intent)
     }
     
     private fun shareLatestLog() {
@@ -123,8 +112,7 @@ class LogViewActivity : AppCompatActivity() {
     
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         if (item.itemId == android.R.id.home) {
-//            finish()
-            CameraMonitor.instance.close { finish() }
+            finish()
             return true
         }
         return super.onOptionsItemSelected(item)

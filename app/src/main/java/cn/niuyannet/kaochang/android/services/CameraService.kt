@@ -33,7 +33,7 @@ class CameraService : LifecycleService() {
     private val cameraLock = Any()
 
     // 使用线程池而
-    private val cameraExecutor: ExecutorService = Executors.newFixedThreadPool(2)
+    private val cameraExecutor: ExecutorService = Executors.newFixedThreadPool(1)
     private val handler by lazy { Handler(Looper.getMainLooper()) }
 
     // 用于Activity和service通讯
@@ -157,11 +157,7 @@ class CameraService : LifecycleService() {
                         try {
                             callback.onCaptureSuccess(image)
                         } finally {
-                            // 拍照完成后重置相机状态
-                            handler.postDelayed({
-                                isCameraReady.set(true)
-                                LogUtils.d("相机已恢复就绪状态")
-                            }, 500)
+                            isCameraReady.set(true)
                         }
                     }
                     override fun onError(exception: ImageCaptureException) {

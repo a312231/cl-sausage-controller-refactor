@@ -29,8 +29,7 @@ class SettingActivity : AppCompatActivity() {
         setContentView(binding.root)
         setupViewPager()
         binding.btnBack.setOnClickListener {
-//            finish()
-            CameraMonitor.instance.close { finish() }
+            finish()
         }
 
         binding.btnExit.setOnClickListener {
@@ -70,10 +69,7 @@ class SettingActivity : AppCompatActivity() {
 
     companion object {
         fun start(context: Context?) {
-//            context?.startActivity(Intent(context, SettingActivity::class.java))
-            CameraMonitor.instance.close {
-                context?.startActivity(Intent(context, SettingActivity::class.java))
-            }
+            context?.startActivity(Intent(context, SettingActivity::class.java))
         }
     }
     
@@ -115,9 +111,6 @@ class SettingActivity : AppCompatActivity() {
                 REQUIRED_PERMISSIONS,
                 REQUEST_CODE_PERMISSIONS
             )
-        } else {
-            // 启动后台拍照服务
-            CameraMonitor.instance.startService(this)
         }
     }
     

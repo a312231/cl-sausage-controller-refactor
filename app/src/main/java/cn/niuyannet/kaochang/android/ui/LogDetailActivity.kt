@@ -16,8 +16,7 @@ class LogDetailActivity : AppCompatActivity() {
         binding = ActivityLogDetailBinding.inflate(layoutInflater)
         setContentView(binding.root)
         binding.btnBack.setOnClickListener {
-            // finish()
-            CameraMonitor.instance.close { finish() }
+             finish()
         }
         
         // 设置标题栏
@@ -37,15 +36,9 @@ class LogDetailActivity : AppCompatActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        CameraMonitor.instance.startService(this)
-    }
-
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         if (item.itemId == android.R.id.home) {
-//            finish()
-            CameraMonitor.instance.close { finish() }
+            finish()
             return true
         }
         return super.onOptionsItemSelected(item)

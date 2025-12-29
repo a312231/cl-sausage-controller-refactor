@@ -175,7 +175,7 @@ class CameraMonitor {
             // 设置属性
             detectionProcessor?.roiFlag = roiFlag
             // 开始拍照
-            takePhoto(delay, retry, 6000) {
+            takePhoto(delay, retry, 5000) {
                 // 回调
                 invokeCallback(callbackId, it)
                 takeStatus.set(true)
@@ -233,9 +233,7 @@ class CameraMonitor {
                     try {
                         val img = image.use { imageProxyToMat(it) }
                         LogUtils.e("图像信息是否为空: ${img == null}")
-                        //
-                        val result = detectSausageSync(img)
-                        callback(result)
+                        callback(detectSausageSync(img))
                     } catch (e: Exception) {
                         callback(null)
                     }
@@ -285,7 +283,7 @@ class CameraMonitor {
      /**
      * 解绑服务
      */
-    fun close(callback: (() -> Unit)? = null) {
+    private fun close(callback: (() -> Unit)? = null) {
         handle.removeCallbacks(runnable)
         //
         if (cameraService.get() != null) {

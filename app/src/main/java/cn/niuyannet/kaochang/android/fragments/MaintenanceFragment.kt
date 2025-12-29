@@ -239,12 +239,8 @@ class MaintenanceFragment : Fragment() {
         }
         binding.btnLogs.setOnClickListener {
            // LogUtils.d("标签", "这是一条调试日志")
-//            val intent = Intent(requireContext(), LogViewActivity::class.java)
-//            startActivity(intent)
-            CameraMonitor.instance.close {
-                val intent = Intent(requireContext(), LogViewActivity::class.java)
-                startActivity(intent)
-            }
+            val intent = Intent(requireContext(), LogViewActivity::class.java)
+            startActivity(intent)
         }
 //        binding.btnShijue.setOnClickListener {
 //            SauceDetectionLauncher.launch(requireContext())

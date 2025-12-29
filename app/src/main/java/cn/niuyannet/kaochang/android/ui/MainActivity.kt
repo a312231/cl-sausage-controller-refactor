@@ -36,10 +36,6 @@ class MainActivity : OrderActivity() {
         // 启动后台拍照服务
 //        PhotoCaptureService.startService(this)
         initView()
-    }
-
-    override fun onResume() {
-        super.onResume()
         // 启动后台拍照服务
         CameraMonitor.instance.startService(this)
     }
