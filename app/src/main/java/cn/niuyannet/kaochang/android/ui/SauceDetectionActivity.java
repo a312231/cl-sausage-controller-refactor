@@ -120,144 +120,141 @@ public class SauceDetectionActivity extends AppCompatActivity {
             Toast.makeText(this, "已切换到售卖台检测模式", Toast.LENGTH_SHORT).show();
             updateButtonState();
         });
-        arUcoButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                // 显示正在处理的提示
-                Toast.makeText(SauceDetectionActivity.this, "正在检测 ArUco 标记...", Toast.LENGTH_SHORT).show();
-                
-                // 使用与检测烤肠相同的方式拍照
-                if (imageCapture == null) {
-                    Toast.makeText(SauceDetectionActivity.this, "相机未初始化", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                
-                // 拍照
-                imageCapture.takePicture(executor, new ImageCapture.OnImageCapturedCallback() {
-                    @Override
-                    public void onCaptureSuccess(@NonNull ImageProxy imageProxy) {
-                        // 将 ImageProxy 转换为 Bitmap
-                        ByteBuffer buffer = imageProxy.getPlanes()[0].getBuffer();
-                        byte[] bytes = new byte[buffer.remaining()];
-                        buffer.get(bytes);
-                        
-                        Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-                        
-                        // 根据图像旋转角度旋转位图
-                        int rotation = imageProxy.getImageInfo().getRotationDegrees();
-                        if (rotation != 0) {
-                            Matrix matrix = new Matrix();
-                            matrix.postRotate(rotation);
-                            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-                        }
-                        
-                        // 执行 ArUco 标记检测
-                        final Bitmap finalBitmap = bitmap;
-                        runOnUiThread(() -> {
-                            ArucoHelper.DetectionResult result;
-                            try {
-                                // 隐藏预览，显示图像视图
-                                previewView.setVisibility(View.GONE);
-                                imageView.setVisibility(View.VISIBLE);
+        arUcoButton.setOnClickListener(view -> {
+            // 显示正在处理的提示
+            Toast.makeText(SauceDetectionActivity.this, "正在检测 ArUco 标记...", Toast.LENGTH_SHORT).show();
 
-                                // 检测 ArUco 标记
-                                result = arucoHelper.detectArucoMarkers(finalBitmap, 1);
+            // 使用与检测烤肠相同的方式拍照
+            if (imageCapture == null) {
+                Toast.makeText(SauceDetectionActivity.this, "相机未初始化", Toast.LENGTH_SHORT).show();
+                return;
+            }
 
-                                // 显示图像结果
-                                if (result != null && result.resultImage != null) {
-                                    imageView.setImageBitmap(result.resultImage);
-                                } else {
-                                    // 如果处理失败，显示原始图像
-                                    imageView.setImageBitmap(finalBitmap);
-                                    resultTextView.setText("⚠️ ArUco标记检测失败，请重试");
-                                    return;
-                                }
-                            } catch (Exception e) {
-                                Log.e(TAG, "ArUco检测失败: " + e.getMessage(), e);
-                                // 显示原始图像
+            // 拍照
+            imageCapture.takePicture(executor, new ImageCapture.OnImageCapturedCallback() {
+                @Override
+                public void onCaptureSuccess(@NonNull ImageProxy imageProxy) {
+                    // 将 ImageProxy 转换为 Bitmap
+                    ByteBuffer buffer = imageProxy.getPlanes()[0].getBuffer();
+                    byte[] bytes = new byte[buffer.remaining()];
+                    buffer.get(bytes);
+
+                    Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+
+                    // 根据图像旋转角度旋转位图
+                    int rotation = imageProxy.getImageInfo().getRotationDegrees();
+                    if (rotation != 0) {
+                        Matrix matrix = new Matrix();
+                        matrix.postRotate(rotation);
+                        bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                    }
+
+                    // 执行 ArUco 标记检测
+                    final Bitmap finalBitmap = bitmap;
+                    runOnUiThread(() -> {
+                        ArucoHelper.DetectionResult result;
+                        try {
+                            // 隐藏预览，显示图像视图
+                            previewView.setVisibility(View.GONE);
+                            imageView.setVisibility(View.VISIBLE);
+
+                            // 检测 ArUco 标记
+                            result = arucoHelper.detectArucoMarkers(finalBitmap, 1);
+
+                            // 显示图像结果
+                            if (result != null && result.resultImage != null) {
+                                imageView.setImageBitmap(result.resultImage);
+                            } else {
+                                // 如果处理失败，显示原始图像
                                 imageView.setImageBitmap(finalBitmap);
-                                resultTextView.setText("⚠️ ArUco标记检测失败: " + e.getMessage());
+                                resultTextView.setText("⚠️ ArUco标记检测失败，请重试");
                                 return;
                             }
+                        } catch (Exception e) {
+                            Log.e(TAG, "ArUco检测失败: " + e.getMessage(), e);
+                            // 显示原始图像
+                            imageView.setImageBitmap(finalBitmap);
+                            resultTextView.setText("⚠️ ArUco标记检测失败: " + e.getMessage());
+                            return;
+                        }
 
-                            // 构建详细的检测结果文本
-                            StringBuilder resultText = new StringBuilder();
+                        // 构建详细的检测结果文本
+                        StringBuilder resultText = new StringBuilder();
 
-                            if (result != null && result.markersCount > 0) {
-                                resultText.append("✅ 检测到 ").append(result.markersCount).append(" 个 ArUco 标记\n");
-                                resultText.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-                                resultText.append("📋 标记 ID: ");
+                        if (result != null && result.markersCount > 0) {
+                            resultText.append("✅ 检测到 ").append(result.markersCount).append(" 个 ArUco 标记\n");
+                            resultText.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+                            resultText.append("📋 标记 ID: ");
 
-                                for (int i = 0; i < result.markerIds.size(); i++) {
-                                    resultText.append(result.markerIds.get(i));
-                                    if (i < result.markerIds.size() - 1) {
-                                        resultText.append(", ");
-                                    }
+                            for (int i = 0; i < result.markerIds.size(); i++) {
+                                resultText.append(result.markerIds.get(i));
+                                if (i < result.markerIds.size() - 1) {
+                                    resultText.append(", ");
                                 }
-
-                                if (result.targetFound) {
-                                    resultText.append("\n\n🎯 目标标记 (ID=1) 已找到");
-                                    if (!result.targetCorners.isEmpty()) {
-                                        resultText.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                                        resultText.append("\n📍 角点坐标:");
-                                        for (int i = 0; i < result.targetCorners.size() && i < 4; i++) {
-                                            List<Double> point = result.targetCorners.get(i);
-                                            if (point.size() >= 2) {
-                                                resultText.append("\n   ").append(i + 1).append(": (")
-                                                        .append(String.format("%.1f", point.get(0))).append(", ")
-                                                        .append(String.format("%.1f", point.get(1))).append(")");
-                                            }
-                                        }
-
-                                        // 添加中心点计算
-                                        if (result.targetCorners.size() >= 4) {
-                                            double centerX = 0, centerY = 0;
-                                            for (int i = 0; i < 4; i++) {
-                                                List<Double> point = result.targetCorners.get(i);
-                                                if (point.size() >= 2) {
-                                                    centerX += point.get(0);
-                                                    centerY += point.get(1);
-                                                }
-                                            }
-                                            centerX /= 4;
-                                            centerY /= 4;
-
-                                            resultText.append("\n\n🔴 标记中心点: (")
-                                                    .append(String.format("%.1f", centerX)).append(", ")
-                                                    .append(String.format("%.1f", centerY)).append(")");
-                                        }
-                                    }
-                                } else {
-                                    resultText.append("\n\n❌ 未找到目标标记 (ID=1)");
-                                }
-                            } else {
-                                resultText.append("❌ 未检测到任何 ArUco 标记\n");
-                                resultText.append("请确保图像中包含清晰可见的 ArUco 标记");
                             }
 
-                            // 显示结果文本
-                            resultTextView.setText(resultText.toString());
+                            if (result.targetFound) {
+                                resultText.append("\n\n🎯 目标标记 (ID=1) 已找到");
+                                if (!result.targetCorners.isEmpty()) {
+                                    resultText.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                                    resultText.append("\n📍 角点坐标:");
+                                    for (int i = 0; i < result.targetCorners.size() && i < 4; i++) {
+                                        List<Double> point = result.targetCorners.get(i);
+                                        if (point.size() >= 2) {
+                                            resultText.append("\n   ").append(i + 1).append(": (")
+                                                    .append(String.format("%.1f", point.get(0))).append(", ")
+                                                    .append(String.format("%.1f", point.get(1))).append(")");
+                                        }
+                                    }
 
-                            // 记录日志
-                            Log.d(TAG, "ArUco 检测结果: " + resultText.toString());
+                                    // 添加中心点计算
+                                    if (result.targetCorners.size() >= 4) {
+                                        double centerX = 0, centerY = 0;
+                                        for (int i = 0; i < 4; i++) {
+                                            List<Double> point = result.targetCorners.get(i);
+                                            if (point.size() >= 2) {
+                                                centerX += point.get(0);
+                                                centerY += point.get(1);
+                                            }
+                                        }
+                                        centerX /= 4;
+                                        centerY /= 4;
 
-                            // 修改检测按钮文本为"返回相机"
-                            detectButton.setText("返回相机");
-                            // 修改检测按钮点击事件为返回相机预览
-                            detectButton.setOnClickListener(v -> returnToCamera());
-                        });
-                        
-                        // 关闭 ImageProxy
-                        imageProxy.close();
-                    }
-                    
-                    @Override
-                    public void onError(@NonNull ImageCaptureException exception) {
-                        Log.e(TAG, "拍照失败: " + exception.getMessage());
-                        runOnUiThread(() -> Toast.makeText(SauceDetectionActivity.this, "拍照失败: " + exception.getMessage(), Toast.LENGTH_SHORT).show());
-                    }
-                });
-            }
+                                        resultText.append("\n\n🔴 标记中心点: (")
+                                                .append(String.format("%.1f", centerX)).append(", ")
+                                                .append(String.format("%.1f", centerY)).append(")");
+                                    }
+                                }
+                            } else {
+                                resultText.append("\n\n❌ 未找到目标标记 (ID=1)");
+                            }
+                        } else {
+                            resultText.append("❌ 未检测到任何 ArUco 标记\n");
+                            resultText.append("请确保图像中包含清晰可见的 ArUco 标记");
+                        }
+
+                        // 显示结果文本
+                        resultTextView.setText(resultText.toString());
+
+                        // 记录日志
+                        Log.d(TAG, "ArUco 检测结果: " + resultText.toString());
+
+                        // 修改检测按钮文本为"返回相机"
+                        detectButton.setText("返回相机");
+                        // 修改检测按钮点击事件为返回相机预览
+                        detectButton.setOnClickListener(v -> returnToCamera());
+                    });
+
+                    // 关闭 ImageProxy
+                    imageProxy.close();
+                }
+
+                @Override
+                public void onError(@NonNull ImageCaptureException exception) {
+                    Log.e(TAG, "拍照失败: " + exception.getMessage());
+                    runOnUiThread(() -> Toast.makeText(SauceDetectionActivity.this, "拍照失败: " + exception.getMessage(), Toast.LENGTH_SHORT).show());
+                }
+            });
         });
         // 初始化按钮状态
         updateButtonState();

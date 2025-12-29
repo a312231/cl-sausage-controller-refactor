@@ -58,13 +58,13 @@ object KaoChangAlgorithm {
 //                delay(10*1000)// 10秒种检测一次
 //            }
             while (isRunning){
-                tag = tag + 1
+                tag += 1
                 val moStatus = AppConfig.getAppConfig().moveStatus
                 val status = AppConfig.getAppConfig().onlineStatus
                 if (moStatus == 0 && tag >= 10 && status != 4) {
                     LogUtils.d(TAG, "轮询前定时空拍一次")
                     AppConfig.getAppConfig().moveStatus = 1
-                    SauceDetectionUitls.captureAndDetect(1,3,"lunXun")
+//                    SauceDetectionUitls.captureAndDetect(1,3,"lunXun")
                     AppConfig.getAppConfig().moveStatus = 0
                 }
 

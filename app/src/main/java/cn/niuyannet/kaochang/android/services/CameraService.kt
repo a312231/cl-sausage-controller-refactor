@@ -92,7 +92,7 @@ class CameraService : LifecycleService() {
                         imageCapture = ImageCapture.Builder()
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                             .setTargetRotation(Surface.ROTATION_0)
-                            .setTargetResolution(Size(832, 448))
+//                            .setTargetResolution(Size(832, 448))
                             .build()
                         // 后置摄像头
                         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA

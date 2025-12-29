@@ -18,17 +18,30 @@ import cn.niuyannet.kaochang.android.detecition.SauceDetector
 import cn.niuyannet.kaochang.android.services.PhotoCaptureService
 import androidx.lifecycle.LifecycleOwner
 import cn.niuyannet.kaochang.android.services.CameraMonitor
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import kotlin.coroutines.resume
 
 object SauceDetectionUitls {
     // 烤肠检测处理器
@@ -41,6 +54,74 @@ object SauceDetectionUitls {
     var lifecycleOwner: LifecycleOwner? = null
 
 
+    // 互斥锁，防止并发问题
+    private val captureMutex = Mutex()
+    // 用于存储回调的映射表
+    private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<SauceDetectionProcessor.SausageInfo?>>()
+
+    /**
+     * 协程风格的拍照检测（挂起函数）
+     */
+    suspend fun captureAndDetect(
+        roiFlag: Int,
+        retry: Int = 3,
+        timeoutMs: Long = 20000,
+        tag: String = "KaoChangAlgorithm"
+    ): SauceDetectionProcessor.SausageInfo? = withContext(Dispatchers.IO) {
+
+        LogUtils.d(tag, "开始拍照检测，roiFlag: $roiFlag, retry: $retry")
+        val requestId = "${tag}_${System.currentTimeMillis()}_${(0..1000).random()}"
+        return@withContext try {
+            // 使用协程的超时机制
+            withTimeoutOrNull(timeoutMs) {
+                // 创建Deferred来等待结果
+                val deferred = CompletableDeferred<SauceDetectionProcessor.SausageInfo?>()
+                pendingRequests[requestId] = deferred
+                try {
+                    // 使用互斥锁确保同一时间只有一个拍照操作
+                    captureMutex.withLock {
+                        LogUtils.d(tag, "获取拍照锁，开始拍照")
+                        // 将回调转换为协程挂起
+                        suspendCancellableCoroutine { continuation ->
+                            CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
+                                // 回调执行
+                                LogUtils.d(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
+                                // 通知等待的Deferred
+                                pendingRequests.remove(requestId)?.let { deferredRef ->
+                                    if (deferredRef.isActive) {
+                                        deferredRef.complete(sausageInfo)
+                                    }
+                                }
+                                // 如果continuation还在活动状态，恢复协程
+                                if (continuation.isActive) {
+                                    continuation.resume(Unit)
+                                }
+                            }
+                            // 设置协程取消监听
+                            continuation.invokeOnCancellation {
+                                LogUtils.d(tag, "拍照被取消，清理资源")
+                                pendingRequests.remove(requestId)
+                            }
+                        }
+                    }
+                    // 等待结果
+                    val result = deferred.await()
+                    LogUtils.d(tag, "收到拍照结果: ${result != null}")
+                    result
+                } finally {
+                    // 清理资源
+                    pendingRequests.remove(requestId)
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            LogUtils.e(tag, "拍照超时，耗时超过${timeoutMs}ms")
+            null
+        } catch (e: Exception) {
+            LogUtils.e(tag,"拍照异常: ${e.message}")
+            null
+        }
+    }
+
     /**
      * 拍照并检测返回结果，为空即没有结果
      * roiFlag 0: 运输台; 1: 售卖台
@@ -48,88 +129,88 @@ object SauceDetectionUitls {
      * 
      * 使用后台服务进行拍照和检测
      */
-    fun captureAndDetect(roiFlag: Int,
-                         retry: Int = 3,
-                         tag: String = "KaoChangAlgorithm"
-    ): SauceDetectionProcessor.SausageInfo? {
-
-        LogUtils.d(tag,"使用后台服务进行拍照检测，roiFlag: $roiFlag")
-        
-        val latch = CountDownLatch(1)
-        val lock = Any()
-        var result: SauceDetectionProcessor.SausageInfo? = null
-//        var callbackInvoked = false
-
-        // 拍照
-        CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
-//            synchronized(lock) {
-//                if (!callbackInvoked) {
-//                    callbackInvoked = true
-                    result = sausageInfo
-                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
-                    latch.countDown()
-//                }
-//            }
-        }
-//        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
-//            synchronized(lock) {
-//                if (!callbackInvoked) {
-//                    callbackInvoked = true
+//    fun captureAndDetect(roiFlag: Int,
+//                         retry: Int = 3,
+//                         tag: String = "KaoChangAlgorithm"
+//    ): SauceDetectionProcessor.SausageInfo? {
+//
+//        LogUtils.d(tag,"使用后台服务进行拍照检测，roiFlag: $roiFlag")
+//
+//        val latch = CountDownLatch(1)
+//        val lock = Any()
+//        var result: SauceDetectionProcessor.SausageInfo? = null
+////        var callbackInvoked = false
+//
+//        // 拍照
+//        CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
+////            synchronized(lock) {
+////                if (!callbackInvoked) {
+////                    callbackInvoked = true
 //                    result = sausageInfo
 //                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
 //                    latch.countDown()
-//                }
-//            }
+////                }
+////            }
 //        }
-        
-        // 等待检测完成，最多等待15秒
-        try {
-            val completed = latch.await(20, TimeUnit.SECONDS)
-            //var completed = latch.await(20, TimeUnit.SECONDS)
-            //completed = !retry
-            if (completed) {
-                LogUtils.d(tag,"拍照检测完成，返回结果")
-                //PhotoCaptureService.getInstance()?.restartCamera()
-                return result
-            } else {
-                LogUtils.d(tag,"拍照检测超时（20秒），返回null")
-                //PhotoCaptureService.getInstance()?.restartCamera()
-                // 确保回调被调用（防止服务端未调用回调）
-                synchronized(lock) {
-//                    if (!callbackInvoked) {
-//                        callbackInvoked = true
-                        latch.countDown()
-//                    }
-                }
-//                if (retry) {
-//                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
-//                    // 重启 CameraX
-//                    //PhotoCaptureService.getInstance()?.restartCamera()
-//                    PhotoCaptureService.getInstance()?.stopServicePublic(){success ->
-//                        PhotoCaptureService.startService(instance())
-//                    }
-                    //PhotoCaptureService.stopService(instance())
-                    //PhotoCaptureService.stopService(instance())
-                    //LogUtils.d("开启服务")
-                    //PhotoCaptureService.startService(instance())
-                    // 重试一次，不再递归调用避免无限循环
-//                    return captureAndDetect(roiFlag, retry = 0, tag = tag)
+////        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
+////            synchronized(lock) {
+////                if (!callbackInvoked) {
+////                    callbackInvoked = true
+////                    result = sausageInfo
+////                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
+////                    latch.countDown()
+////                }
+////            }
+////        }
+//
+//        // 等待检测完成，最多等待15秒
+//        try {
+//            val completed = latch.await(20, TimeUnit.SECONDS)
+//            //var completed = latch.await(20, TimeUnit.SECONDS)
+//            //completed = !retry
+//            if (completed) {
+//                LogUtils.d(tag,"拍照检测完成，返回结果")
+//                //PhotoCaptureService.getInstance()?.restartCamera()
+//                return result
+//            } else {
+//                LogUtils.d(tag,"拍照检测超时（20秒），返回null")
+//                //PhotoCaptureService.getInstance()?.restartCamera()
+//                // 确保回调被调用（防止服务端未调用回调）
+//                synchronized(lock) {
+////                    if (!callbackInvoked) {
+////                        callbackInvoked = true
+//                        latch.countDown()
+////                    }
 //                }
-                return null
-            }
-        } catch (e: InterruptedException) {
-            LogUtils.e(tag,"拍照检测被中断",e)
-            //PhotoCaptureService.getInstance()?.restartCamera()
-            // 确保回调被调用
-            synchronized(lock) {
-//                if (!callbackInvoked) {
-//                    callbackInvoked = true
-                    latch.countDown()
-//                }
-            }
-            return null
-        }
-    }
+////                if (retry) {
+////                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
+////                    // 重启 CameraX
+////                    //PhotoCaptureService.getInstance()?.restartCamera()
+////                    PhotoCaptureService.getInstance()?.stopServicePublic(){success ->
+////                        PhotoCaptureService.startService(instance())
+////                    }
+//                    //PhotoCaptureService.stopService(instance())
+//                    //PhotoCaptureService.stopService(instance())
+//                    //LogUtils.d("开启服务")
+//                    //PhotoCaptureService.startService(instance())
+//                    // 重试一次，不再递归调用避免无限循环
+////                    return captureAndDetect(roiFlag, retry = 0, tag = tag)
+////                }
+//                return null
+//            }
+//        } catch (e: InterruptedException) {
+//            LogUtils.e(tag,"拍照检测被中断",e)
+//            //PhotoCaptureService.getInstance()?.restartCamera()
+//            // 确保回调被调用
+//            synchronized(lock) {
+////                if (!callbackInvoked) {
+////                    callbackInvoked = true
+//                    latch.countDown()
+////                }
+//            }
+//            return null
+//        }
+//    }
     
     /**
      * 旧的拍照检测方法（已废弃，保留用于向后兼容）

@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * 烤盘操作类
@@ -94,7 +95,7 @@ object KaoChangOperate {
         kaoPanBox.cmdStatusTake=result
 
         //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
-        var sausageInfo=SauceDetectionUitls.captureAndDetect(0)
+        val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
         if (sausageInfo==null){
             writeSingleRegister(action_address_shenjiatai,0)
             //未检测到烤肠，报错

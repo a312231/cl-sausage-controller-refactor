@@ -113,6 +113,7 @@ class MaintenanceBoxFragment : Fragment() {
                     targetPosition.taste = Taste().apply {
                        tasteCode = boxPosition.tasteCode
                     }
+
                     val result = KaoChangOperate.moveSausageToKaoPan(targetPosition,boxPosition)
                     GlobalScope.launch(Dispatchers.Main) {
                         dismissLoadingExt()
