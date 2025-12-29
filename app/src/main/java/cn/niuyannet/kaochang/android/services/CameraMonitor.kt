@@ -231,15 +231,13 @@ class CameraMonitor {
                     //
                     handle.removeCallbacks(timeoutRunnable)
                     try {
-                        LogUtils.d("拍照成功 -> 开始处理数据")
-                        val img = imageProxyToMat(image)
+                        val img = image.use { imageProxyToMat(it) }
+                        LogUtils.e("图像信息是否为空: ${img == null}")
+                        //
                         val result = detectSausageSync(img)
                         callback(result)
                     } catch (e: Exception) {
-                        LogUtils.e("处理图像时出错: ${e.message}")
                         callback(null)
-                    } finally {
-                        image.close()
                     }
                 }
                 override fun onError(e: ImageCaptureException) {

@@ -31,7 +31,7 @@ public class SauceDetector {
     private static final String TAG = "SauceDetector";
     
     // 是否保存中间处理结果的图像用于调试
-    public static final boolean SAVE_DEBUG_IMAGES = true;
+    public static final boolean SAVE_DEBUG_IMAGES = false;
 
     static {
         // 初始化OpenCV库
