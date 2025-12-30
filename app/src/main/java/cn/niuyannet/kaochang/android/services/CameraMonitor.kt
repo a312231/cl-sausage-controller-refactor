@@ -170,8 +170,7 @@ class CameraMonitor {
         val callbackId = "callback_${callbackCounter++}"
         pendingCallbacks[callbackId] = callback
         // 是否可以拍照
-        if (takeStatus.get()) {
-            takeStatus.set(false)
+        if (takeStatus.getAndSet(false)) {
             // 设置属性
             detectionProcessor?.roiFlag = roiFlag
             // 开始拍照

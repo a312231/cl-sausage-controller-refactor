@@ -5,7 +5,6 @@ import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.util.Size
 import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -94,8 +93,8 @@ class CameraService : LifecycleService() {
                             .setTargetRotation(Surface.ROTATION_0)
 //                            .setTargetResolution(Size(832, 448))
                             .build()
-                        // 后置摄像头
-                        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+                        // 摄像头
+                        val cameraSelector = selectAnyAvailableCamera(provider)!!
                         // 绑定用例到生命周期
                         provider.bindToLifecycle(
                             this,
@@ -175,5 +174,28 @@ class CameraService : LifecycleService() {
 //        } catch (e: Exception) {
 //            callback.onError(ImageCaptureException(ImageCapture.ERROR_UNKNOWN, "imageCapture == null", e))
 //        }
+    }
+
+    private fun selectAnyAvailableCamera(cameraProvider: ProcessCameraProvider): CameraSelector? {
+        return try {
+            if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+                LogUtils.d("找到并选择‘后置’摄像头")
+                return CameraSelector.DEFAULT_BACK_CAMERA
+            }
+            if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                LogUtils.d("找到并选择‘前置’摄像头")
+                return CameraSelector.DEFAULT_FRONT_CAMERA
+            }
+            val availableCameraInfos = cameraProvider.availableCameraInfos
+            if (availableCameraInfos.isNotEmpty()) {
+                LogUtils.d("使用第一个摄像头")
+                return availableCameraInfos.first().cameraSelector
+            }
+            LogUtils.e("未找到任何可用的摄像头！")
+            null
+        } catch (e: Exception) {
+            LogUtils.e("选择摄像头时发生异常: ${e.message}")
+            null
+        }
     }
 }

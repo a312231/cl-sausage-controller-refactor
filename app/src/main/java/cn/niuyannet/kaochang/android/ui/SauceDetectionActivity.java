@@ -18,6 +18,8 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.Camera;
+import androidx.camera.core.CameraInfo;
+import androidx.camera.core.CameraInfoUnavailableException;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageCapture;
@@ -30,6 +32,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.lifecycle.LifecycleOwner;
 
+import com.google.common.util.concurrent.ExecutionError;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import org.opencv.android.Utils;
@@ -311,8 +314,6 @@ public class SauceDetectionActivity extends AppCompatActivity {
         }
     }
 
-
-
     /**
      * 初始化相机
      */
@@ -334,23 +335,24 @@ public class SauceDetectionActivity extends AppCompatActivity {
                         .setTargetRotation(Surface.ROTATION_0)
                         .setTargetResolution(new Size(832, 448)) // 与处理器中的尺寸保持一致
                         .build();
-                
                 // 选择后置相机
-                CameraSelector cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA;
-                
-                // 绑定生命周期
-                cameraProvider.unbindAll();
-                camera = cameraProvider.bindToLifecycle(
-                        this,
-                        cameraSelector,
-                        preview,
-                        imageCapture);
-                
-                Log.d(TAG, "相机初始化成功");
-                
+                CameraSelector cameraSelector = selectAnyAvailableCamera(cameraProvider);
+                if (cameraSelector != null) {
+                    // 绑定生命周期
+                    cameraProvider.unbindAll();
+                    camera = cameraProvider.bindToLifecycle(
+                            this,
+                            cameraSelector,
+                            preview,
+                            imageCapture);
+                    Log.d(TAG, "相机初始化成功");
+                } else throw new ExecutionException(new Throwable("没有可使用的相机"));
+                //
             } catch (ExecutionException | InterruptedException e) {
                 Log.e(TAG, "相机初始化失败: " + e.getMessage());
                 Toast.makeText(this, "相机初始化失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            } catch (CameraInfoUnavailableException e) {
+                Log.e(TAG, "相机枚举失败: " + e.getMessage());
             }
         }, ContextCompat.getMainExecutor(this));
     }
@@ -560,5 +562,29 @@ public class SauceDetectionActivity extends AppCompatActivity {
         
         // 清空结果文本
         resultTextView.setText("当前模式：" + (roiFlag == 0 ? "运输台检测" : "售卖台检测"));
+    }
+
+    /**
+     * 动态选择摄像头
+     * @param cameraProvider
+     * @return
+     * @throws CameraInfoUnavailableException
+     */
+    private CameraSelector selectAnyAvailableCamera(ProcessCameraProvider cameraProvider) throws CameraInfoUnavailableException {
+        if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+            Log.d(TAG, "找到并选择‘后置’摄像头");
+            return CameraSelector.DEFAULT_BACK_CAMERA;
+        }
+        if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+            Log.d(TAG, "找到并选择‘前置’摄像头");
+            return CameraSelector.DEFAULT_FRONT_CAMERA;
+        }
+        List<CameraInfo> infos = cameraProvider.getAvailableCameraInfos();
+        if (!infos.isEmpty()) {
+            Log.d(TAG, "使用第一个摄像头");
+            return infos.get(0).getCameraSelector();
+        }
+        Log.e(TAG, "未找到任何可用的摄像头！");
+        return null;
     }
 }
