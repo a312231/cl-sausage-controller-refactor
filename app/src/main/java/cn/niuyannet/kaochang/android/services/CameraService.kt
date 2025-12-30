@@ -5,6 +5,7 @@ import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Size
 import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -91,7 +92,7 @@ class CameraService : LifecycleService() {
                         imageCapture = ImageCapture.Builder()
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                             .setTargetRotation(Surface.ROTATION_0)
-//                            .setTargetResolution(Size(832, 448))
+                            .setTargetResolution(Size(832, 448))
                             .build()
                         // 摄像头
                         val cameraSelector = selectAnyAvailableCamera(provider)!!
