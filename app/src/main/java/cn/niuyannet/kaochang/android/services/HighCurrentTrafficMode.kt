@@ -166,6 +166,8 @@ object HighCurrentTrafficMode {
                 .toSet()
 
             // 按优先级和比例排序口味
+            //todo lzy20251229
+            //计算烤肠箱每种口味的数量，占总烤肠数的比例。
             val sortedTastes = boxTasteDistribution.entries
                 .map { (taste, count) ->
                     val priority = if (taste in existingTastes1_21) 1 else 0
@@ -181,7 +183,7 @@ object HighCurrentTrafficMode {
                 ?.groupBy { it.taste?.tasteCode }
                 ?.mapValues { entry -> entry.value.count { it.taste?.tasteCode == entry.key } }
                 ?: emptyMap()
-            // 将口味分配到1-21号工位
+            // 将口味分配到1-21号工位， todo 打标签 lzy
             var currentPosition = 0
             sortedTastes.forEach { (taste, ratio, _) ->
                 // 计算该口味应占用的工位数量,最少1个
@@ -202,7 +204,8 @@ object HighCurrentTrafficMode {
             }
 
             // 如果还有未分配的工位,用最后一个口味补齐
-            while (currentPosition < (21 - existingTastes.keys.size)) {
+//            while (currentPosition < (21 - existingTastes.keys.size)) {
+            while (currentPosition < 21) {
                 if (!list1_21[currentPosition].isHasSausage) {
                     list1_21[currentPosition].taste = Taste().apply {
                         tasteCode = sortedTastes.last().first

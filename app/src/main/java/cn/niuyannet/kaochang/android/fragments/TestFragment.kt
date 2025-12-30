@@ -197,9 +197,9 @@ class TestFragment : Fragment() {
         }
         binding.btnReadTemps2.setOnClickListener {
             readRegister(503,3, "烤盘温度") { value ->
-                binding.etTempSet0.setText("温度0: ${value[0]}°C")
-                binding.etTempSet1.setText("温度1: ${value[1]}°C")
-                binding.etTempSet2.setText("温度2: ${value[2]}°C")
+                binding.etTempSet0.setText("${value[0]}")
+                binding.etTempSet1.setText("${value[1]}")
+                binding.etTempSet2.setText("${value[2]}")
             }
         }
     }
