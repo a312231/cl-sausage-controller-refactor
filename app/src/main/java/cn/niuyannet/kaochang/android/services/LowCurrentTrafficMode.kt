@@ -87,38 +87,7 @@ object LowCurrentTrafficMode {
         //1区开始预热->加热
         KaoChangOperate.heating(1)
 
-        // 获取所有不同的口味类型,过滤空值
-        val flavorTypes = listBox.filter { it.num>0 }.mapNotNull { it.tasteCode }.distinct()
-        // 统计每种口味的数量,确保tasteCode不为空
-        val flavorDistribution = mutableMapOf<String, Int>()
-        flavorTypes.forEach { flavor ->
-            if (flavor.isNotEmpty()) {
-                val count = listBox.count { it.tasteCode == flavor }
-                flavorDistribution[flavor] = count
-            }
-        }
-        // 计算每种口味的比例
-        val totalSausages = listBox.size
-        val flavorRatios = mutableMapOf<String, Float>()
-        flavorDistribution.forEach { (flavor, count) ->
-            flavorRatios[flavor] = count.toFloat() / totalSausages
-        }
-        // 按照口味比例从高到低排序
-        val sortedFlavors = flavorRatios.entries.sortedByDescending { it.value }
-        // 计算每个口味应分配的烤盘数量
-        val flavorAllocation = mutableMapOf<String, Int>()
-        var remainingPositions = list1_9.size
-        sortedFlavors.forEachIndexed { index, (flavor, ratio) ->
-            if (index == sortedFlavors.lastIndex) {
-                // 最后一个口味分配剩余所有位置
-                flavorAllocation[flavor] = remainingPositions
-            } else {
-                // 根据比例计算应分配的烤盘数量，向上取整
-                val positions = (list1_9.size * ratio).toInt().coerceAtLeast(1)
-                flavorAllocation[flavor] = positions.coerceAtMost(remainingPositions)
-                remainingPositions -= flavorAllocation[flavor]!!
-            }
-        }
+        val flavorAllocation = KaoPanHelper.computeKaoPamRatio(list,listBox,list1_9.size)
 
         // 将口味分配到具体烤盘位置
         var currentPosition = 0
@@ -223,7 +192,7 @@ object LowCurrentTrafficMode {
         if (emptyPositions.size >= 3 && emptyPositions13_15.size >= 3) {
             // 开启2区加热
             KaoChangOperate.heating(2)
-            // 取前3个空位的口味信息
+            // 取前3个空位的口味信息 TODO 目前是卖口味补什么口味，没有判断库存是否足够
             val neededTastes = emptyPositions.take(3).map { it.taste.tasteCode }
 
             // 将烤肠从烤肠箱移动到13-15工位

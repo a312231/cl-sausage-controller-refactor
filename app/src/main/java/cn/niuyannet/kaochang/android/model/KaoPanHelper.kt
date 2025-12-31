@@ -4,11 +4,15 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlin.collections.component1
+import kotlin.collections.component2
+import kotlin.text.isNotEmpty
 
 /**
  * 烤盘数据类
@@ -20,7 +24,7 @@ object KaoPanHelper {
     private const val KEY_KAO_PAN_CONFIG = "key_kao_pan_config"
     private const val KEY_TASTE_LIST = "key_taste_list" // 添加口味列表的键
     //烤制时间 烤制时间40分钟
-    val bakingTime= 40*60*1000L //10*60*1000L
+    val bakingTime= 1*60*1000L //10*60*1000L
     //保温时间
     val holdingTime=0L
     //丢弃时间 6h丢弃
@@ -206,5 +210,66 @@ object KaoPanHelper {
         PreferenceUtils.deletePreference(FILE_SP_URL,KEY_KAO_PAN_LIST)
     }
 
+    /**
+     * listKaoPan 烤盘
+     * listPanBox 烤箱
+     * list_size 烤盘工位数
+     */
+    fun computeKaoPamRatio(listKaoPan: List<KaoPan>, listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
+        // 1. 统计每种口味总数量
+        val flavorTypes2 = listPanBox
+            .filter { it.num > 0 && it.tasteCode != null }
+            .groupBy { it.tasteCode!! }
+            .mapValues { (_, items) -> items.sumOf { it.num } }
+
+        // 2. 检查是否可分配
+        if (flavorTypes2.size > list_size) {
+            LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
+            // 返回每种口味至少1个的分配（按数量从高到低取前list_size个）
+//            return flavorTypes2.entries
+//                .sortedByDescending { it.value }
+//                .take(list_size)
+//                .associate { it.key to 1 }
+//                .toMutableMap()
+        }
+        //烤箱库存总数
+        val totalCount = flavorTypes2.values.sum().toFloat()
+
+        // 3. 计算比例并排序
+        val sortedFlavors = flavorTypes2.map { (flavor, count) ->
+            flavor to count / totalCount
+        }.sortedByDescending { (_, ratio) -> ratio }
+
+        // 4. 初始化每个口味至少1个位置
+        val allocation = sortedFlavors.associate { (flavor, _) ->
+            flavor to 1
+        }.toMutableMap()
+
+        // 5. 按比例分配剩余位置
+        var remainingPositions = list_size - allocation.size
+        if (remainingPositions > 0) {
+            // 计算每个口味的额外分配
+            val extraAllocations = sortedFlavors.map { (flavor, ratio) ->
+                flavor to (remainingPositions * ratio).toInt()
+            }.toMap()
+
+            // 应用额外分配
+            extraAllocations.forEach { (flavor, extra) ->
+                allocation[flavor] = allocation[flavor]!! + extra
+            }
+
+            // 处理剩余位置（由于取整可能未完全分配）
+            var unallocated = remainingPositions - extraAllocations.values.sum()
+            var index = 0
+            while (unallocated > 0) {
+                val flavor = sortedFlavors[index].first
+                allocation[flavor] = allocation[flavor]!! + 1
+                unallocated--
+                index = (index + 1) % sortedFlavors.size
+            }
+        }
+
+        return allocation
+    }
 
 }

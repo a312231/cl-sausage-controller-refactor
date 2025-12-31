@@ -172,7 +172,7 @@ class MaintenanceBoxFragment : Fragment() {
                 }
                 // 保存更新并刷新UI
                 showLoadingExt("设置中...")
-                NetApi.updateStock(JSON.toJSONString( KaoPanHelper.getKaoPanBoxList())) { code, content ->
+                NetApi.clearStock(JSON.toJSONString( KaoPanHelper.getKaoPanBoxList())) { code, content ->
                     dismissLoadingExt()
                     if (code==0){
                         val json=JSON.parseObject(content)
@@ -298,7 +298,7 @@ class MaintenanceBoxFragment : Fragment() {
                 box.tasteCode = selectedTaste.tasteCode
                 box.tasteName = selectedTaste.productName+"("+selectedTaste.tasteName+")"
                 box.checkStatus = false
-                box.num = 14
+                box.num = 12
             }
             // 保存更新并刷新UI
             showLoadingExt("设置中...")
