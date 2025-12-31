@@ -113,7 +113,7 @@ class CameraMonitor {
                     }
                 }
             } finally {
-                LogUtils.d("执行拍照队列循环 -> ${deque.size}")
+//                LogUtils.d("执行拍照队列循环 -> ${deque.size}")
                 handle.postDelayed(this, 500)
             }
         }

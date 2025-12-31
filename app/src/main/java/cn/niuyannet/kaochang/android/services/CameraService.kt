@@ -11,6 +11,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -24,6 +25,7 @@ class CameraService : LifecycleService() {
     // binder this
     private val mBinder = ClientBinder()
 
+    private var preview: Preview? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
 
@@ -88,6 +90,12 @@ class CameraService : LifecycleService() {
                 cameraProviderFuture.addListener({
                     try {
                         val provider = cameraProviderFuture.get()
+
+                        // 配置Preview
+                        preview = Preview.Builder()
+                            .setTargetResolution(Size(832, 448))
+                            .setTargetRotation(Surface.ROTATION_0)
+                            .build()
                         // 配置ImageCapture
                         imageCapture = ImageCapture.Builder()
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
@@ -100,6 +108,7 @@ class CameraService : LifecycleService() {
                         provider.bindToLifecycle(
                             this,
                             cameraSelector,
+                            preview,
                             imageCapture
                         )
                         //
