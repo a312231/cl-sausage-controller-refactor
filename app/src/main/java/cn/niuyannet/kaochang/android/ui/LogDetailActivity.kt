@@ -4,7 +4,6 @@ import android.os.Bundle
 import android.view.MenuItem
 import androidx.appcompat.app.AppCompatActivity
 import cn.niuyannet.kaochang.android.databinding.ActivityLogDetailBinding
-import cn.niuyannet.kaochang.android.services.CameraMonitor
 import java.io.File
 
 class LogDetailActivity : AppCompatActivity() {

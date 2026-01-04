@@ -4,8 +4,6 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -14,21 +12,22 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import cn.niuyannet.kaochang.android.adapter.KaoPanAdapter
 import cn.niuyannet.kaochang.android.databinding.FragmentMaintenanceBinding
-import cn.niuyannet.kaochang.android.detecition.SauceDetectionLauncher
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
-import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
-import cn.niuyannet.kaochang.android.ui.SauceDetectionActivity
-import cn.niuyannet.kaochang.android.ui.SauceDetectionActivity_备份
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.blankj.utilcode.util.ToastUtils
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MaintenanceFragment : Fragment() {

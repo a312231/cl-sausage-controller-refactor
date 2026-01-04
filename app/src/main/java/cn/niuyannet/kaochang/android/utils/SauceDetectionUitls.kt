@@ -12,35 +12,29 @@ import androidx.camera.core.ImageCapture.OnImageCapturedCallback
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.lifecycle.LifecycleOwner
 import cn.niuyannet.kaochang.android.MyApp.Companion.instance
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.detecition.SauceDetector
-import cn.niuyannet.kaochang.android.services.PhotoCaptureService
-import androidx.lifecycle.LifecycleOwner
-import cn.niuyannet.kaochang.android.services.CameraMonitor
+import cn.niuyannet.kaochang.android.services.CameraUvc
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineName
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 object SauceDetectionUitls {
@@ -83,7 +77,7 @@ object SauceDetectionUitls {
                         LogUtils.d(tag, "获取拍照锁，开始拍照")
                         // 将回调转换为协程挂起
                         suspendCancellableCoroutine { continuation ->
-                            CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
+                            CameraUvc.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
                                 // 回调执行
                                 LogUtils.d(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
                                 // 通知等待的Deferred

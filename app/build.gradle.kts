@@ -1,6 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.jetbrains.kotlin.android)
+    alias(libs.plugins.kotlin.android)
 }
 
 android {
@@ -82,6 +82,9 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // UVC 摄像头
+    implementation(project(":libausbc"))
 
     // 集成库
     implementation("io.github.justson:agentweb-core:v5.1.1-androidx")

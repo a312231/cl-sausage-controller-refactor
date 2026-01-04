@@ -6,7 +6,6 @@ import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
-import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -15,7 +14,9 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 /**
  * 智能烤肠算法
@@ -64,7 +65,7 @@ object KaoChangAlgorithm {
                 if (moStatus == 0 && tag >= 10 && status != 4) {
                     LogUtils.d(TAG, "轮询前定时空拍一次")
                     AppConfig.getAppConfig().moveStatus = 1
-//                    SauceDetectionUitls.captureAndDetect(1,3,"lunXun")
+                    SauceDetectionUitls.captureAndDetect(1,3, tag = "lunXun")
                     AppConfig.getAppConfig().moveStatus = 0
                 }
 

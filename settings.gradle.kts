@@ -25,3 +25,8 @@ dependencyResolutionManagement {
 
 rootProject.name = "KaoChangAndroid"
 include(":app")
+
+include(":libausbc")            // UVC摄像头
+include(":libuvc")              // UVC摄像头
+include(":libnative")           // UVC摄像头
+include(":libuvccommon")        // UVC摄像头

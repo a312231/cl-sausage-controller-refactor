@@ -4,13 +4,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.MenuItem
 import android.widget.ArrayAdapter
-import android.widget.ListView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
-import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.databinding.ActivityLogViewBinding
-import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import java.io.File
 import java.text.SimpleDateFormat

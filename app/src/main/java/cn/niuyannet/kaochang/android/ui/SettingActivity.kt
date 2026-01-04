@@ -11,7 +11,6 @@ import androidx.core.content.ContextCompat
 import androidx.viewpager2.widget.ViewPager2
 import cn.niuyannet.kaochang.android.adapters.SettingPagerAdapter
 import cn.niuyannet.kaochang.android.databinding.ActivitySettingBinding
-import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.google.android.material.tabs.TabLayoutMediator
 

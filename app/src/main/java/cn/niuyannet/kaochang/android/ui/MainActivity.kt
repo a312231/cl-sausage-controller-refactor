@@ -3,7 +3,11 @@ package cn.niuyannet.kaochang.android.ui
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.SurfaceTexture
+import android.hardware.usb.UsbDevice
+import android.opengl.GLES11Ext
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
@@ -11,33 +15,38 @@ import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
-import cn.niuyannet.kaochang.android.services.CameraMonitor
+import cn.niuyannet.kaochang.android.services.CameraUvc
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
-import cn.niuyannet.kaochang.android.services.PhotoCaptureService
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 import com.blankj.utilcode.util.ToastUtils
 import com.bumptech.glide.Glide
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import com.jiangdg.ausbc.MultiCameraClient
+import com.jiangdg.ausbc.callback.ICameraStateCallBack
+import com.jiangdg.ausbc.callback.IDeviceConnectCallBack
+import com.jiangdg.ausbc.camera.CameraUVC
+import com.jiangdg.ausbc.camera.bean.CameraRequest
+import com.jiangdg.ausbc.render.env.RotateType
+import com.jiangdg.usb.USBMonitor
 import kotlin.system.exitProcess
 
 /**
  * 主界面
  */
-class MainActivity : OrderActivity() {
+class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 启动后台拍照服务
 //        PhotoCaptureService.startService(this)
         initView()
+        initCameraData()
+        // 初始化
+        CameraUvc.instance.init(this) { findFirstCamera(this) }
         // 启动后台拍照服务
-        CameraMonitor.instance.startService(this)
+//        CameraMonitor.instance.startService(this)
     }
 
     override fun initData() {
@@ -52,6 +61,13 @@ class MainActivity : OrderActivity() {
             }
             DataManagementAPI.getDeviceInfo()
             DataManagementAPI.uploadDataToServer()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if(mCameraClient == null) {
+            initCameraData()
         }
     }
 
@@ -187,6 +203,7 @@ class MainActivity : OrderActivity() {
         ConnectManageHelper.disConnect()
         KaoChangAlgorithm.stopServer()
         // 停止后台拍照服务
+        clearCamera()
 //        PhotoCaptureService.stopService(this)
         exitProcess(0)
     }
@@ -195,9 +212,124 @@ class MainActivity : OrderActivity() {
      *  启动
      */
     companion object {
+
+        init {
+            System.loadLibrary("UVCCamera")
+        }
+
         fun start(context: Context?) {
             context?.startActivity(Intent(context,MainActivity::class.java))
         }
     }
 
+    /// =================================== 摄像头初始化 =====================
+    private var mCameraClient: MultiCameraClient? = null
+    private val mCameraMap = hashMapOf<Int, MultiCameraClient.ICamera>()
+
+    private fun initCameraData() {
+        mCameraClient = MultiCameraClient(this, object : IDeviceConnectCallBack {
+            override fun onAttachDev(device: UsbDevice?) {
+                device ?: return
+                generateCamera(this@MainActivity, device).apply {
+                    mCameraMap[device.deviceId] = this
+                    onCameraAttached(this)
+                }
+//                if (isAutoRequestPermission()) {
+//                    mCameraClient?.requestPermission(device)
+//                }
+            }
+
+            override fun onDetachDec(device: UsbDevice?) {
+                mCameraMap.remove(device?.deviceId)?.apply {
+                    setUsbControlBlock(null)
+                    onCameraDetached(this)
+                }
+            }
+
+            override fun onConnectDev(device: UsbDevice?, ctrlBlock: USBMonitor.UsbControlBlock?) {
+                device ?: return
+                ctrlBlock ?: return
+                mCameraMap[device.deviceId]?.apply {
+                    setUsbControlBlock(ctrlBlock)
+                    onCameraConnected(this)
+                }
+            }
+
+            override fun onDisConnectDec(
+                device: UsbDevice?,
+                ctrlBlock: USBMonitor.UsbControlBlock?
+            ) {
+                mCameraMap[device?.deviceId]?.apply {
+                    onCameraDisConnected(this)
+                }
+            }
+
+            override fun onCancelDev(device: UsbDevice?) {
+                mCameraMap[device?.deviceId]?.apply {
+                    onCameraDisConnected(this)
+                }
+            }
+        })
+        mCameraClient?.register()
+    }
+
+    /**
+     * 获取并打开第一个摄像头
+     */
+    private fun findFirstCamera(callback: ICameraStateCallBack?): MultiCameraClient.ICamera? {
+        try {
+            mCameraMap.values.first().let { camera ->
+                if(!camera.isCameraOpened()) {
+                    camera.setCameraStateCallBack(callback)
+                    camera.openCamera(SurfaceTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES), getCameraRequest())
+                }
+                return camera
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
+    // ========================== 摄像头相关 ===================================================
+    private fun generateCamera(ctx: Context, device: UsbDevice): MultiCameraClient.ICamera {
+        return CameraUVC(ctx, device)
+    }
+    private fun onCameraAttached(camera: MultiCameraClient.ICamera) {
+        LogUtils.d("发现摄像头 -> ${camera.device.deviceName}")
+    }
+    private fun onCameraConnected(camera: MultiCameraClient.ICamera) {}
+    private fun onCameraDetached(camera: MultiCameraClient.ICamera) {
+        camera.closeCamera()
+        LogUtils.d("摄像头断开 -> ${camera.device.deviceName}")
+    }
+    private fun onCameraDisConnected(camera: MultiCameraClient.ICamera) {
+        camera.closeCamera()
+    }
+
+    private fun getCameraRequest(): CameraRequest {
+        return CameraRequest.Builder()
+            .setPreviewWidth(1280)
+            .setPreviewHeight(720)
+            .setDefaultRotateType(RotateType.ANGLE_0)
+            .setAudioSource(CameraRequest.AudioSource.NONE)
+            .create()
+    }
+
+    private fun clearCamera() {
+        mCameraMap.values.forEach {
+            Log.d("Main", "close camera: ${it.device.deviceId}")
+            it.closeCamera()
+        }
+        mCameraMap.clear()
+        mCameraClient?.unRegister()
+        mCameraClient?.destroy()
+        mCameraClient = null
+    }
+
+    override fun onCameraState(
+        self: MultiCameraClient.ICamera,
+        code: ICameraStateCallBack.State,
+        msg: String?
+    ) {
+        LogUtils.d("摄像头状态: ${code.name} - msg: $msg")
+    }
 }
