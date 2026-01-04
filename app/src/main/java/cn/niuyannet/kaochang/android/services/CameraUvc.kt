@@ -205,7 +205,7 @@ class CameraUvc {
                         LogUtils.e(TAG, "处理数据异常 = ${e.message}")
                         callback(null)
                     } finally {
-                        path?.let { File(it).delete() }
+//                        path?.let { File(it).delete() }
                     }
                 }
             })

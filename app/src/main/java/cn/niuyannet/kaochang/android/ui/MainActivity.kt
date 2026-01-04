@@ -296,9 +296,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         return CameraUVC(ctx, device)
     }
     private fun onCameraAttached(camera: MultiCameraClient.ICamera) {
-        LogUtils.d("发现摄像头 -> ${camera.device.deviceName}")
+        LogUtils.d("摄像头附加 -> ${camera.device.deviceName}")
     }
-    private fun onCameraConnected(camera: MultiCameraClient.ICamera) {}
+    private fun onCameraConnected(camera: MultiCameraClient.ICamera) {
+        LogUtils.d("摄像头连接 -> ${camera.device.deviceName}")
+    }
     private fun onCameraDetached(camera: MultiCameraClient.ICamera) {
         camera.closeCamera()
         LogUtils.d("摄像头断开 -> ${camera.device.deviceName}")
