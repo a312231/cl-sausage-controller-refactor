@@ -30,6 +30,7 @@ import com.jiangdg.ausbc.camera.CameraUVC
 import com.jiangdg.ausbc.camera.bean.CameraRequest
 import com.jiangdg.ausbc.render.env.RotateType
 import com.jiangdg.usb.USBMonitor
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.system.exitProcess
 
 /**
@@ -224,7 +225,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     /// =================================== 摄像头初始化 =====================
     private var mCameraClient: MultiCameraClient? = null
-    private val mCameraMap = hashMapOf<Int, MultiCameraClient.ICamera>()
+    private val mCameraMap = ConcurrentHashMap<Int, MultiCameraClient.ICamera>()
 
     private fun initCameraData() {
         mCameraClient = MultiCameraClient(this, object : IDeviceConnectCallBack {
