@@ -236,9 +236,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     mCameraMap[device.deviceId] = this
                     onCameraAttached(this)
                 }
-//                if (isAutoRequestPermission()) {
-//                    mCameraClient?.requestPermission(device)
-//                }
+                mCameraClient?.requestPermission(device)
             }
 
             override fun onDetachDec(device: UsbDevice?) {
