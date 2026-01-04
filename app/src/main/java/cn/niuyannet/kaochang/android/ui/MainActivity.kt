@@ -43,9 +43,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         // 启动后台拍照服务
 //        PhotoCaptureService.startService(this)
         initView()
-        initCameraData()
+
         // 初始化
         CameraUvc.instance.init(this) { findFirstCamera(this) }
+        initCameraData()
         // 启动后台拍照服务
 //        CameraMonitor.instance.startService(this)
     }
