@@ -244,7 +244,7 @@ public class SauceDetectionProcessor {
         }
         
         // 检测烤肠
-        Log.d(TAG, "开始检测烤肠，HSV阈值范围: 低阈值=" + lower.toString() + ", 高阈值=" + upper.toString());
+        Log.d(TAG, "开始检测烤肠，HSV阈值范围: 低阈值=" + lower + ", 高阈值=" + upper);
         SauceDetector.DetectionResult result = SauceDetector.detectSausageCentroid(workPlace, lower, upper, "transport_platform");
 
         // 处理检测结果
