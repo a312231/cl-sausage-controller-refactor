@@ -16,7 +16,7 @@ android {
         ndk {
             moduleName = "jssc"
             abiFilters.add("armeabi-v7a")
-            abiFilters.add("x86")
+//            abiFilters.add("x86")
         }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
