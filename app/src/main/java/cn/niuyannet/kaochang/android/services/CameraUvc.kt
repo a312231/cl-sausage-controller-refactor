@@ -47,12 +47,12 @@ class CameraUvc {
     private val deque = ConcurrentLinkedDeque<QueueData>()
 
     // 获取摄像头
-    private var cameraListener: (() -> MultiCameraClient.ICamera?)? = null
+    private var cameraListener: (() -> Pair<Boolean,MultiCameraClient.ICamera?>)? = null
 
     /**
      * 启动 service
      */
-    fun init(context: Context, cameraListener: () -> MultiCameraClient.ICamera?) {
+    fun init(context: Context, cameraListener: () -> Pair<Boolean,MultiCameraClient.ICamera?>) {
         //
         this.cameraListener = cameraListener
         this.weakReference = WeakReference(context)
@@ -176,47 +176,71 @@ class CameraUvc {
         }
         //
         try {
-            // 启动超时计时器
-            handle.postDelayed(timeoutRunnable, timeoutMs)
-            cameraListener!!.invoke()!!.captureImage(object : ICaptureCallBack {
-                override fun onBegin() {}
-                override fun onError(error: String?) {
-                    // 检查是否已经完成
-                    if (completed.getAndSet(true)) {
-                        LogUtils.w(TAG, "拍照错误回调被忽略（已超时）")
-                        return
-                    }
-                    handle.removeCallbacks(timeoutRunnable)
-                    handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
-                }
-                override fun onComplete(path: String?) {
-                    if (completed.getAndSet(true)) {
-                        LogUtils.w(TAG, "拍照成功回调被忽略（已超时）")
-                        return
-                    }
-                    handle.removeCallbacks(timeoutRunnable)
-                    //
-                    try {
-                        LogUtils.d(TAG, "拍照成功 处理数据")
-                        val img = imageProxyToMat(BitmapFactory.decodeFile(path!!)!!)
-                        LogUtils.d(TAG, "处理数据 Mat is Null == ${img == null}")
-                        callback(detectSausageSync(img))
-                    } catch (e: Exception) {
-                        LogUtils.e(TAG, "处理数据异常 = ${e.message}")
-                        callback(null)
-                    } finally {
-//                        path?.let { File(it).delete() }
-                    }
-                }
-            })
+            val pair = cameraListener!!.invoke()
+            if (pair.first) {
+                // 延迟2500ms再拍照
+                handle.postDelayed({
+                    takePhoto(pair.second!!, completed, timeoutRunnable, delay, retry, timeoutMs, callback)
+                }, 2500)
+            } else {
+                takePhoto(pair.second!!, completed, timeoutRunnable, delay, retry, timeoutMs, callback)
+            }
         } catch (e: Exception) {
             // 移除超时任务
             handle.removeCallbacks(timeoutRunnable)
             if (!completed.getAndSet(true)) {
-                LogUtils.e(TAG, "服务调用异常: ${e.message}")
+                LogUtils.e(TAG, "摄像头打开失败或无可用摄像头: ${e.message}")
                 handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
             }
         }
+    }
+
+    /**
+     * 调用摄像头拍照
+     */
+    private fun takePhoto(
+        camera: MultiCameraClient.ICamera,
+        completed: AtomicBoolean,
+        timeoutRunnable: Runnable,
+        delay: Long,
+        retry: Int,
+        timeoutMs: Long,
+        callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
+    ) {
+        // 启动超时计时器
+        handle.postDelayed(timeoutRunnable, timeoutMs)
+        camera.captureImage(object : ICaptureCallBack {
+            override fun onBegin() {}
+            override fun onError(error: String?) {
+                // 检查是否已经完成
+                if (completed.getAndSet(true)) {
+                    LogUtils.w(TAG, "拍照错误回调被忽略（已超时）")
+                    return
+                }
+                handle.removeCallbacks(timeoutRunnable)
+                handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
+            }
+            override fun onComplete(path: String?) {
+                if (completed.getAndSet(true)) {
+                    LogUtils.w(TAG, "拍照成功回调被忽略（已超时）")
+                    return
+                }
+                handle.removeCallbacks(timeoutRunnable)
+                //
+                try {
+                    LogUtils.d(TAG, "拍照成功 处理数据")
+                    val img = imageProxyToMat(BitmapFactory.decodeFile(path!!)!!)
+                    LogUtils.d(TAG, "处理数据 Mat is Null == ${img == null}")
+                    callback(detectSausageSync(img))
+                } catch (e: Exception) {
+                    LogUtils.e(TAG, "处理数据异常 = ${e.message}")
+                    callback(null)
+                } finally {
+                    // 删除照片
+                    path?.let { File(it).delete() }
+                }
+            }
+        })
     }
 
     /**

@@ -143,8 +143,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             .setView(editText)
             .setPositiveButton("确定") { _, _ ->
                 val password = editText.text.toString()
-                if (password == "changle@leye") {
-                //if (password == "1") {
+                //if (password == "changle@leye") {
+                if (password == "1") {
                     SettingActivity.start(this)
                 } else {
                     ToastUtils.showShort("密码错误")
@@ -276,17 +276,17 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     /**
      * 获取并打开第一个摄像头
      */
-    private fun findFirstCamera(callback: ICameraStateCallBack?): MultiCameraClient.ICamera? {
+    private fun findFirstCamera(callback: ICameraStateCallBack?): Pair<Boolean,MultiCameraClient.ICamera?> {
         try {
             mCameraMap.values.first().let { camera ->
-                if(!camera.isCameraOpened()) {
+                return if(!camera.isCameraOpened()) {
                     camera.setCameraStateCallBack(callback)
                     camera.openCamera(SurfaceTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES), getCameraRequest())
-                }
-                return camera
+                    Pair(true, camera)
+                } else Pair(false, camera)
             }
         } catch (_: Exception) {}
-        return null
+        return Pair(false, null)
     }
 
     // ========================== 摄像头相关 ===================================================
