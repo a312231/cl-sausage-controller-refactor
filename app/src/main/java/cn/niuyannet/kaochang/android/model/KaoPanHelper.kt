@@ -123,7 +123,7 @@ object KaoPanHelper {
             kaoPan.cmdStatusDiscard = 0
         }
         // 保存更新后的烤盘列表
-        saveKaoPanList(kaoPanList)  
+        saveKaoPanList(kaoPanList)
     }
 
     /**
@@ -162,25 +162,25 @@ object KaoPanHelper {
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun saveKaoPanList(list: List<KaoPan>) {
-      GlobalScope.launch(Dispatchers.Main) {
-          kaoPanList = list.toMutableList()
-          PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
-      }
+        GlobalScope.launch(Dispatchers.Main) {
+            kaoPanList = list.toMutableList()
+            PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
+        }
     }
 
-    
+
     /**
      * 保存烤箱列表
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun saveKaoPanBoxList(list: List<KaoPanBox>) {
-       GlobalScope.launch(Dispatchers.Main) {
-           kaoPanBoxList = list.toMutableList()
-           PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
-       }
+        GlobalScope.launch(Dispatchers.Main) {
+            kaoPanBoxList = list.toMutableList()
+            PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
+        }
     }
 
-    
+
     /**
      * 保存口味列表
      */
@@ -188,14 +188,14 @@ object KaoPanHelper {
         tasteList = list.toMutableList()
         PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_TASTE_LIST, tasteList)
     }
-    
+
     /**
      * 根据位置获取烤盘
      */
     fun getKaoPanByPosition(positionSn: Int): KaoPan? {
         return kaoPanList.find { it.positionSn == positionSn }
     }
-    
+
     /**
      * 清除所有数据
      */
@@ -211,11 +211,12 @@ object KaoPanHelper {
     }
 
     /**
+     * 低并发，高并发初烤肠初始化口味分配
      * listKaoPan 烤盘
      * listPanBox 烤箱
      * list_size 烤盘工位数
      */
-    fun computeKaoPamRatio(listKaoPan: List<KaoPan>, listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
+    fun computeKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
             .filter { it.num > 0 && it.tasteCode != null }
@@ -225,12 +226,6 @@ object KaoPanHelper {
         // 2. 检查是否可分配
         if (flavorTypes2.size > list_size) {
             LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
-            // 返回每种口味至少1个的分配（按数量从高到低取前list_size个）
-//            return flavorTypes2.entries
-//                .sortedByDescending { it.value }
-//                .take(list_size)
-//                .associate { it.key to 1 }
-//                .toMutableMap()
         }
         //烤箱库存总数
         val totalCount = flavorTypes2.values.sum().toFloat()
@@ -266,6 +261,64 @@ object KaoPanHelper {
                 allocation[flavor] = allocation[flavor]!! + 1
                 unallocated--
                 index = (index + 1) % sortedFlavors.size
+            }
+        }
+
+        return allocation
+    }
+
+
+
+    /**
+     * 低转高并发打标签初始化
+     * listKaoPan 烤盘
+     * listPanBox 烤箱
+     * list_size 烤盘工位数
+     */
+    fun computeHighKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
+        // 1. 统计每种口味总数量
+        val flavorTypes2 = listPanBox
+            .filter { it.num > 0 && it.tasteCode != null }
+            .groupBy { it.tasteCode!! }
+            .mapValues { (_, items) -> items.sumOf { it.num } }
+
+        // 2. 检查是否可分配
+        if (flavorTypes2.size > list_size) {
+            LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
+        }
+        //烤箱库存总数
+        val totalCount = flavorTypes2.values.sum().toFloat()
+
+        // 3. 计算比例并排序
+        val sortedFlavors = flavorTypes2.map { (flavor, count) ->
+            flavor to count / totalCount
+        }.sortedByDescending { (_, ratio) -> ratio }
+
+        // 4. 初始化每个口味
+        val allocation = mutableMapOf<String, Int>()
+
+        // 5. 按比例分配剩余位置
+        var remainingPositions = list_size
+        if (remainingPositions > 0) {
+            // 计算每个口味的额外分配
+            val extraAllocations = sortedFlavors.map { (flavor, ratio) ->
+                flavor to (remainingPositions * ratio).toInt()
+            }.toMap()
+
+            // 处理剩余位置（由于取整可能未完全分配）
+            var unallocated = remainingPositions - extraAllocations.values.sum()
+            var index = 0
+            while (unallocated > 0) {
+                // 循环遍历所有口味，按比例高低顺序分配
+                val flavor = sortedFlavors[index % sortedFlavors.size].first
+                // 增加该口味一个工位
+                allocation[flavor] = (allocation[flavor] ?: 0) + 1
+                unallocated--
+                index++
+            }
+            // 将额外分配的结果合并到总分配中
+            extraAllocations.forEach { (flavor, count) ->
+                allocation[flavor] = (allocation[flavor] ?: 0) + count
             }
         }
 
