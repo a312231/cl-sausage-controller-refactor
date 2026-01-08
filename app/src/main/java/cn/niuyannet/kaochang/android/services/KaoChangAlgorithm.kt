@@ -43,40 +43,37 @@ object KaoChangAlgorithm {
         LogUtils.d(TAG, "算法准备1 运动状态：${config.moveStatus}")
         serviceStartTime = System.currentTimeMillis() // 记录服务启动时间
         LogUtils.d(TAG, "智能烤肠算法服务启动开始工作")
-        // 20s 空拍一次
-        var tag = 0
-        GlobalScope.launch(Dispatchers.IO) {
-//            while (isRunning){
-//                tag = tag + 1
-//                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 2) {
-//                    LogUtils.d(TAG, "轮询前定时空拍一次")
-//                    tag = 0
-//                    SauceDetectionUitls.captureAndDetect(1)
-//                }
-//                pollKaoPanStatus()
-//                if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
-//                LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
-//                delay(10*1000)// 10秒种检测一次
-//            }
-            while (isRunning){
-                tag += 1
-                val moStatus = AppConfig.getAppConfig().moveStatus
-                val status = AppConfig.getAppConfig().onlineStatus
-                if (moStatus == 0 && tag >= 10 && status != 4) {
-                    LogUtils.d(TAG, "轮询前定时空拍一次")
-                    AppConfig.getAppConfig().moveStatus = 1
-                    SauceDetectionUitls.captureAndDetect(1,3, tag = "lunXun")
-                    AppConfig.getAppConfig().moveStatus = 0
-                }
 
-                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 10) {
-                    tag = 0
+//        var tag = 0
+        GlobalScope.launch(Dispatchers.IO) {
+            while (isRunning){
+                if (AppConfig.getAppConfig().moveStatus == 0) {
                     pollKaoPanStatus()
                     if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
                     LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
                 }
-                delay(1*1000)// 1秒空拍一次
+                delay(10*1000)// 1秒空拍一次
             }
+
+//            while (isRunning){
+//                tag += 1
+//                val moStatus = AppConfig.getAppConfig().moveStatus
+//                val status = AppConfig.getAppConfig().onlineStatus
+//                if (moStatus == 0 && tag >= 10 && status != 4) {
+//                    LogUtils.d(TAG, "轮询前定时空拍一次")
+//                    AppConfig.getAppConfig().moveStatus = 1
+//                    SauceDetectionUitls.captureAndDetect(1,3, tag = "lunXun")
+//                    AppConfig.getAppConfig().moveStatus = 0
+//                }
+//
+//                if (AppConfig.getAppConfig().moveStatus == 0 && tag >= 10) {
+//                    tag = 0
+//                    pollKaoPanStatus()
+//                    if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
+//                    LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
+//                }
+//                delay(1*1000)// 1秒空拍一次
+//            }
         }
     }
     /**
