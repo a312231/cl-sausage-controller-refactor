@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
@@ -21,17 +22,13 @@ object LowCurrentTrafficMode {
 
 
     /**
-     *         低并发模式处理器
-     *         如果p=9 就是初始化敌低并发模式
-     *         如果p=3 并且2区没有烤肠加热【就是就是要添加烤肠】【检查是否已经加热完成，加热完成需要关闭加热和移动烤肠】
-     *         如果p=5或者=6 就需要切换并发模式到高并发
-     *
-     *
-     *
-     *
+     * 低并发模式处理器
+     *     如果p=9 就是初始化敌低并发模式
+     *     如果p=3 并且2区没有烤肠加热【就是就是要添加烤肠】【检查是否已经加热完成，加热完成需要关闭加热和移动烤肠】
+     *     如果p=5或者=6 就需要切换并发模式到高并发
      */
     suspend fun lowTrafficMode( config: AppConfigBean,kaoPanList: List<KaoPan>, listBox: List<KaoPanBox>): Int {
-        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, kaoPanList)
+        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
         //val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
         val list_13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, kaoPanList)
         val p1_9 = list1_6.filter { !it.isHasSausage }.size//空位数
@@ -40,19 +37,19 @@ object LowCurrentTrafficMode {
         LogUtils.d("KaoChangAlgorithm", "1区坑位 P= ${p}")
         LogUtils.d("KaoChangAlgorithm", "1区坑位 p1_6= ${p1_9}")
 
-        if (p == 9) {
-//        if (p == 12) {
+        //一区9 加 二区6
+        if (p == (list1_6.size+list_13_15.size)) {
             if (config.errorStatus==0){ //todo 如果没有错误才进行初始化
                 initLowTrafficMode(kaoPanList, listBox)//初始化低并发
             }
-        } else if (p1_9 >= 3) {//todo 改成大于等于3补烤肠动作
+        } else if (p1_9 >= list_13_15.size) {//todo 改成大于等于3补烤肠动作
             LogUtils.d("KaoChangAlgorithm", "加热区空位 ${p_13_15} 检测加热状态")
-            if (p_13_15 < 3) {
+            if (p_13_15 < list_13_15.size) {
                 checkLowHeatSausage(kaoPanList)//烤肠正在加热，检查是否已经加热完成，移动烤肠到指定的位置去
-            } else if (p_13_15 == 3) {
+            } else if (p_13_15 == list_13_15.size) {
                 if (config.errorStatus==0){
                     //todo 如果没有错误才进行添加烤肠的动作
-                    addLowHeatSausage(kaoPanList,listBox)//需要加烤肠了，满足少了3个空位
+                    addLowHeatSausage(kaoPanList,listBox,list_13_15.size)//需要加烤肠了，满足少了3个空位
                     LogUtils.d("KaoChangAlgorithm", "补肠完成")
                 }
             }
@@ -61,7 +58,7 @@ object LowCurrentTrafficMode {
         checkLowHeatEnd(list1_6)
         //检查低并发是否超过保鲜时间，超过保鲜时间需要丢弃掉
         checkLowHeatDiscard(list1_6)
-        if (p1_9 >= 5&&p_13_15==0) {
+        if (p1_9 >= 7&&p_13_15==0) {
             LogUtils.d("KaoChangAlgorithm", "1区坑位 p_13_15= ${p_13_15} 切换并发模式到高并发")
              switchLowToHigh()//切换并发模式到高并发
             LogUtils.d("KaoChangAlgorithm", "切换后模式 ${AppConfig.getAppConfig().modeType}")
@@ -83,7 +80,7 @@ object LowCurrentTrafficMode {
         LogUtils.d("KaoChangAlgorithm", "初始化低并发")
         //1-6工位
         //val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
-        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
+        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         //1区开始预热->加热
         KaoChangOperate.heating(1)
 
@@ -163,7 +160,7 @@ object LowCurrentTrafficMode {
 
             list_13_15.forEach{ kaoPan->
                 // 获取1-6区域空位
-                    val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
+                    val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
                     //查找空的位置
                     val emptyPosition =
                         list1_6.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) }
@@ -178,11 +175,12 @@ object LowCurrentTrafficMode {
 
     /**
      * 低并发模式添加烤肠
+     * p_num 空位数
      */
-    private suspend fun addLowHeatSausage(list: List<KaoPan>, listBox: List<KaoPanBox>) {
+    private suspend fun addLowHeatSausage(list: List<KaoPan>, listBox: List<KaoPanBox> ,p_num: Int) {
         //1-6区域内的烤肠
         //val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
-        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
+        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         //13-15区域的烤肠
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
         //检查13-15区域是否有烤肠
@@ -196,11 +194,11 @@ object LowCurrentTrafficMode {
         val emptyPositions13_15 = list13_15.filter { !it.isHasSausage }
 
         // 确保有足够的空位
-        if (emptyPositions.size >= 3 && emptyPositions13_15.size >= 3) {
+        if (emptyPositions.size >= p_num && emptyPositions13_15.size >= p_num) {
             // 开启2区加热
             KaoChangOperate.heating(2)
             // 取前3个空位的口味信息 TODO 目前是卖口味补什么口味，没有判断库存是否足够
-            val neededTastes = emptyPositions.take(3).map { it.taste.tasteCode }
+            val neededTastes = emptyPositions.take(p_num).map { it.taste.tasteCode }
 
             // 将烤肠从烤肠箱移动到13-15工位
             neededTastes.forEachIndexed { index, tasteCode ->
@@ -227,7 +225,7 @@ object LowCurrentTrafficMode {
      */
     private fun checkLowHeatEnd(list: List<KaoPan>) {
         //1-6区域内的烤肠
-        var list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
+        var list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         //如果1-6区域内的烤肠 如果有烤肠，检查是否所有肠加热时间到了，加热时间到了就结束加热进入保温的状态
         var stop_1_6 = true
         var hasHeat = 0
@@ -275,7 +273,7 @@ object LowCurrentTrafficMode {
      */
     private suspend fun checkLowHeatDiscard(list: List<KaoPan>) {
         //1-6区域内的烤肠
-        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
+        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         //遍历1-6区域内的烤肠
         list1_6.forEach { kaoPan ->
             //如果烤肠已经开始保温
