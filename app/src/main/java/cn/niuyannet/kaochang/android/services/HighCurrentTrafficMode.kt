@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -30,10 +31,10 @@ object HighCurrentTrafficMode {
     private var lastFillPitTime = 0L
 
     // 两次p=9的时间间隔阈值，超过此值考虑转为低并发
-    private val TIME_THRESHOLD_HIGH_TO_LOW = 30 * 60 * 1000L // 30分钟
+    private val TIME_THRESHOLD_HIGH_TO_LOW = 5 * 60 * 1000L // 30分钟
 
     // 停止营业前的时间阈值
-    private val TIME_BEFORE_CLOSE = 60 * 60 * 1000L // 1小时
+    private val TIME_BEFORE_CLOSE = 30 * 60 * 1000L // 30分钟
 
     /**
      * 过渡态，从低并发切换到高并发，从高并发切换到低并发
@@ -93,7 +94,7 @@ object HighCurrentTrafficMode {
                 checkHighHeatDiscard(list1_21)
 
                 // 检查是否需要切换到低并发模式
-                // checkSwitchToLow()
+                checkSwitchToLow()
                 //执行完成，保存状态
                 GlobalScope.launch(Dispatchers.Main) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
@@ -128,13 +129,13 @@ object HighCurrentTrafficMode {
 
 
         // 检查13-15区域烤肠是否加热完成
-        var isStop = false
+        var isStop = true
+        var hasHeat = 0
         list13_15.forEach { kaoPan ->
-            if (kaoPan.isHasSausage) {
+            if (kaoPan.isHasSausage && kaoPan.startTime>0) {
+                hasHeat += 1
                 val heatTime = System.currentTimeMillis() - kaoPan.startTime
-                if (heatTime >= kaoPan.bakingTime) {
-                    kaoPan.holdingTime = System.currentTimeMillis()
-                    kaoPan.status = 2 // 设置为保温状态
+                if (heatTime < kaoPan.bakingTime) {
                     isStop = true
                 }
             }
@@ -142,78 +143,41 @@ object HighCurrentTrafficMode {
         // 检测25-33区域是否有烤肠在加热
         val hasSausageIn25_33 = list25_33.any { it.isHasSausage }
         if (!hasSausageIn25_33) {
-            // 计算烤肠箱口味比例
-            val boxTasteDistribution = mutableMapOf<String, Int>()
-            val flavorTypes = listBox.filter { it.num>0 }.mapNotNull { it.tasteCode }.distinct()
-            try {
-                flavorTypes.forEach { flavor ->
-                    if (flavor.isNotEmpty()) {
-                        val count = listBox.count { it.tasteCode == flavor }
-                        boxTasteDistribution[flavor] = count
-                    }else{
-                        LogUtils.d("KaoChangAlgorithm", "警告: 发现 tasteCode 为 null 的 box, box=$flavor")
-                    }
-                }
-            } catch (e: Exception) {
-                LogUtils.d("KaoChangAlgorithm", "异常--, box=${e.message}")
-            }
-            val totalSausages = boxTasteDistribution.values.sum()
 
-            // 获取1-21区域已有烤肠的口味
-            val existingTastes1_21 = list1_21
-                .filter { it.isHasSausage && it.taste?.tasteCode != null }
-                .map { it.taste.tasteCode }
-                .toSet()
+            //口味分配。
+            //1：获取1-21坑位P位数量，去除已有烤肠数
+            val exisTastes1_21 = list1_21.filter { !it.isHasSausage }.toSet().size  // 返回集合的大小（整数）
 
-            // 按优先级和比例排序口味
-            //todo lzy20251229
-            //计算烤肠箱每种口味的数量，占总烤肠数的比例。
-            val sortedTastes = boxTasteDistribution.entries
-                .map { (taste, count) ->
-                    val priority = if (taste in existingTastes1_21) 1 else 0
-                    Triple(taste, count.toFloat() / totalSausages, priority)
-                }
-                .sortedWith(compareByDescending<Triple<String, Float, Int>> { it.third }
-                    .thenByDescending { it.second })
-            //把烤肠箱的口味比例映射到1-21工位上，但是工位上可能存车4个根烤肠，需要按照烤肠箱口味比例映射到1-21位置上
-            // 统计1-21区域已有烤肠的口味和数量
-            val existingTastes = list1_21
-                .filter { it.isHasSausage && it.taste?.tasteCode != null }
-                .takeIf { it.isNotEmpty() }
-                ?.groupBy { it.taste?.tasteCode }
-                ?.mapValues { entry -> entry.value.count { it.taste?.tasteCode == entry.key } }
-                ?: emptyMap()
-            // 将口味分配到1-21号工位， todo 打标签 lzy
+            //2: P坑位数重新打标签
+            val flavorAllocation = KaoPanHelper.computeHighKaoPamRatio(listBox,exisTastes1_21)
+
+            //3:将口味分配到1-21号工位
             var currentPosition = 0
-            sortedTastes.forEach { (taste, ratio, _) ->
-                // 计算该口味应占用的工位数量,最少1个
-                val positions = ((((21 - existingTastes.keys.size) * ratio).toInt()
-                    .coerceAtLeast(1) - existingTastes[taste]!!))
-
-                // 为每个工位分配口味
-                repeat(positions) {
-                    if (currentPosition < (21 - existingTastes.keys.size)) {
-                        if (!list1_21[currentPosition].isHasSausage) {
-                            list1_21[currentPosition].taste = Taste().apply {
-                                tasteCode = sortedTastes.last().first
-                            }
-                            currentPosition++
+            flavorAllocation.forEach { (flavor, count) ->
+                var allocated = 0
+                while (allocated < count && currentPosition < list1_21.size) {
+                    // 跳过已有烤肠的位置
+                    while (currentPosition < list1_21.size && list1_21[currentPosition].isHasSausage) {
+                        currentPosition++
+                    }
+                    // 如果找到可用位置，分配口味
+                    if (currentPosition < list1_21.size) {
+                        list1_21[currentPosition].taste = Taste().apply {
+                            tasteCode = flavor
                         }
+                        allocated++
+                        currentPosition++
+                    } else {
+                        // 没有更多可用位置了
+                        break
                     }
+                }
+                // 记录日志（可选）
+                if (allocated < count) {
+                    LogUtils.d("KaoChangAlgorithm", "口味 $flavor 需要分配 $count 个，但只分配了 $allocated 个（位置不足）")
                 }
             }
 
-            // 如果还有未分配的工位,用最后一个口味补齐
-//            while (currentPosition < (21 - existingTastes.keys.size)) {
-            while (currentPosition < 21) {
-                if (!list1_21[currentPosition].isHasSausage) {
-                    list1_21[currentPosition].taste = Taste().apply {
-                        tasteCode = sortedTastes.last().first
-                    }
-                }
-                currentPosition++
-
-            }
             // 如果25-33区域没有烤肠,需要添加烤肠进行加热
             val emptyPositions25_33 = list25_33.filter { !it.isHasSausage }
             // 获取1-21区域缺少烤肠的工位口味信息
@@ -241,30 +205,20 @@ object HighCurrentTrafficMode {
             }
         }
 
-        if (isStop) {
+        if (isStop && hasHeat>0) {
+
             // 关闭2区加热,进入保温状态
             KaoChangOperate.stopHeating(2)
             KaoChangOperate.keepWarm(2)
 
-            // 获取1-21区域的烤盘列表
-            val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
-
-            // 获取13-15区域的烤盘
-            val list13_15 = list.filter { it.positionSn in 13..15 && it.isHasSausage }
-
-            // 将13-15区域的烤肠移动到1-21区域对应口味的空位
-            list13_15.forEach { sourcePan ->
-                // 在1-21区域查找相同口味的空位
-                val targetPan = list1_21.find {
-                    !it.isHasSausage &&
-                            it.taste.tasteCode == sourcePan.taste.tasteCode
-                }
-
-                // 如果找到匹配的空位,执行移动
-                targetPan?.let {
-                    sourcePan.holdingTime = System.currentTimeMillis()
-                    sourcePan.status = 2 // 设置为保温状态
-                    KaoChangOperate.moveKaoPanToKaoPan(sourcePan, it)
+            list13_15.forEach { kaoPan ->
+                if (kaoPan.isHasSausage && kaoPan.startTime>0) {
+                    //清空加热时间
+                    kaoPan.startTime=0
+                    //记录保温开始时间
+                    kaoPan.holdingTime = System.currentTimeMillis()
+                    //进入保温
+                    kaoPan.status=2
                 }
             }
 
@@ -273,11 +227,9 @@ object HighCurrentTrafficMode {
                 transitionMode = 0 // 取消过渡态
             }
             AppConfig.saveAppConfig(config)
-            //同步到云端去
+            //同步更新云端状态
             NetApi.updateDeviceInfo()
         }
-
-
     }
 
     /**
@@ -375,6 +327,9 @@ object HighCurrentTrafficMode {
                 modeType = 1//真正意义的切换到低并发模式
             }
             AppConfig.saveAppConfig(config)
+
+            //同步更新云端状态
+            NetApi.updateDeviceInfo()
         }
         // 检查高并发是否超过保鲜时间，超过保鲜时间需要丢弃掉
         checkHighHeatDiscard(list1_21)
@@ -392,42 +347,8 @@ object HighCurrentTrafficMode {
         KaoChangOperate.heating(1)
         KaoChangOperate.heating(2)
 
-        // 获取所有不同的口味类型
-        val flavorTypes = listBox.filter { it.num>0 }.mapNotNull { it.tasteCode }.distinct()
-
-        // 统计每种口味的数量
-        val flavorDistribution = mutableMapOf<String, Int>()
-        flavorTypes.forEach { flavor ->
-            if (flavor.isNotEmpty()) {
-                val count = listBox.count { it.tasteCode == flavor }
-                flavorDistribution[flavor] = count
-            }
-        }
-
-        // 计算每种口味的比例
-        val totalSausages = listBox.size
-        val flavorRatios = mutableMapOf<String, Float>()
-        flavorDistribution.forEach { (flavor, count) ->
-            flavorRatios[flavor] = count.toFloat() / totalSausages
-        }
-
-        // 按照口味比例从高到低排序
-        val sortedFlavors = flavorRatios.entries.sortedByDescending { it.value }
-
-        // 计算每个口味应分配的烤盘数量
-        val flavorAllocation = mutableMapOf<String, Int>()
-        var remainingPositions = list1_21.size
-        sortedFlavors.forEachIndexed { index, (flavor, ratio) ->
-            if (index == sortedFlavors.lastIndex) {
-                // 最后一个口味分配剩余所有位置
-                flavorAllocation[flavor] = remainingPositions
-            } else {
-                // 根据比例计算应分配的烤盘数量，向上取整
-                val positions = (list1_21.size * ratio).toInt().coerceAtLeast(1)
-                flavorAllocation[flavor] = positions.coerceAtMost(remainingPositions)
-                remainingPositions -= flavorAllocation[flavor]!!
-            }
-        }
+        //计算烤肠口味分配数量
+        var flavorAllocation = KaoPanHelper.computeKaoPamRatio(listBox,list1_21.size);
 
         // 将口味分配到具体烤盘位置
         var currentPosition = 0
@@ -516,10 +437,8 @@ object HighCurrentTrafficMode {
             if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                 hasHeat += 1
                 val heatTime = System.currentTimeMillis() - kaoPan.startTime
-                // 如果加热时间达到要求
-                //if (heatTime >= kaoPan.bakingTime) { // 大于加热的时间
                 if (heatTime < kaoPan.bakingTime) { //大于加热的时间
-                    stop = false //true
+                    stop = false
                 }
             }
         }
@@ -531,18 +450,29 @@ object HighCurrentTrafficMode {
             KaoChangOperate.keepWarm(2)
             // 1区也保温
             KaoChangOperate.keepWarm(1)
+            list_25_33.forEach {kaoPan ->
+                if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
+                    kaoPan.holdingTime = System.currentTimeMillis() // 开始保温
+                    kaoPan.status = 2 // 进入保温的状态
+                    kaoPan.startTime=0;
+                }
+            }
 
             list_25_33.forEach {kaoPan ->
                 // 获取1-21区域空位
                 val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
                 // 查找空的位置
-                val emptyPosition =
-                    list1_21.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) }
-                emptyPosition?.let { targetPan ->
-                    // 移动烤盘位置到1-21空位
-                    kaoPan.holdingTime = System.currentTimeMillis() // 开始保温
-                    kaoPan.status = 2 // 进入保温的状态
-                    KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
+                if (kaoPan.taste != null) {
+                    val tasteCode = kaoPan.taste.tasteCode
+                    // 查找空的位置
+                    val emptyPosition = list1_21.find {
+                        !it.isHasSausage &&
+                                it.taste?.tasteCode?.equals(tasteCode) == true
+                    }
+                    emptyPosition?.let { targetPan ->
+                        // 移动烤盘位置到1-21空位
+                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
+                    }
                 }
             }
             // 三区停止加热
@@ -624,25 +554,26 @@ object HighCurrentTrafficMode {
      * 如果两次填坑时间间隔超过阈值，或者距离营业结束时间不足阈值，切换到低并发模式
      */
     private fun checkSwitchToLow() {
-        if (lastFillPitTime > 0) {
-            val currentTime = System.currentTimeMillis()
-            val timeSinceLastFill = currentTime - lastFillPitTime
-
-            // 如果距离上次填坑时间超过阈值，切换到低并发模式
-            if (timeSinceLastFill > TIME_THRESHOLD_HIGH_TO_LOW) {
-                switchHighToLow()
-                return
-            }
-
-            // 如果距离营业结束时间不足阈值，切换到低并发模式
-            val businessTime = AppConfig.getAppConfig().businessTime
-            if (businessTime != null) {
-                val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
-                if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < TIME_BEFORE_CLOSE) {
-                    switchHighToLow()
-                }
-            }
-        }
+        switchHighToLow()
+//        if (lastFillPitTime > 0) {
+//            val currentTime = System.currentTimeMillis()
+//            val timeSinceLastFill = currentTime - lastFillPitTime
+//
+//            // 如果距离上次填坑时间超过阈值，切换到低并发模式
+//            if (timeSinceLastFill > TIME_THRESHOLD_HIGH_TO_LOW) {
+//                switchHighToLow()
+//                return
+//            }
+//
+//            // 如果距离营业结束时间不足阈值，切换到低并发模式
+//            val businessTime = AppConfig.getAppConfig().businessTime
+//            if (businessTime != null) {
+//                val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
+//                if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < TIME_BEFORE_CLOSE) {
+//                    switchHighToLow()
+//                }
+//            }
+//        }
     }
 
     /**
@@ -731,6 +662,8 @@ object HighCurrentTrafficMode {
             transitionMode = 2
         }
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        //同步更新云端状态
+        NetApi.updateDeviceInfo()
         // 重置坑位计数和填坑时间
         pitCount = 0
         lastFillPitTime = 0L

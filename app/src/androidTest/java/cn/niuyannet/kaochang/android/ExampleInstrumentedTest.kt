@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android
 
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,4 +22,13 @@ class ExampleInstrumentedTest {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals("cn.niuyannet.kaochang.android", appContext.packageName)
     }
+
+    @Test
+    fun useAppContext11() {
+        // Context of the app under test.
+        val kaoPanBoxList=KaoPanHelper.getKaoPanBoxList()
+        val appContext = KaoPanHelper.computeHighKaoPamRatio(kaoPanBoxList,21)
+        assertEquals("cn.niuyannet.kaochang.android", appContext)
+    }
+
 }

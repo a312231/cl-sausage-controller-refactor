@@ -87,7 +87,7 @@ object LowCurrentTrafficMode {
         //1区开始预热->加热
         KaoChangOperate.heating(1)
 
-        val flavorAllocation = KaoPanHelper.computeKaoPamRatio(list,listBox,list1_9.size)
+        val flavorAllocation = KaoPanHelper.computeKaoPamRatio(listBox,list1_9.size)
 
         // 将口味分配到具体烤盘位置
         var currentPosition = 0
@@ -130,17 +130,15 @@ object LowCurrentTrafficMode {
     private suspend fun checkLowHeatSausage(list: List<KaoPan>) {
         val list_13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
         // 检查13-15区域的烤肠是否已经加热完成
-        var stop = true //false
-        var hasHeat = 0
-
+        var stop = true
+        var hasHeat =0
         list_13_15.forEach { kaoPan ->
             if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                 hasHeat += 1
                 val heatTime = System.currentTimeMillis() - kaoPan.startTime
                 // 如果加热时间达到要求
-                //if (heatTime >= kaoPan.bakingTime) { //大于加热的时间
                 if (heatTime < kaoPan.bakingTime) { //大于加热的时间
-                    stop = false //true
+                    stop = false
                 }
             }
         }
@@ -151,6 +149,18 @@ object LowCurrentTrafficMode {
             KaoChangOperate.keepWarm(2)
             // 1区也保温
             KaoChangOperate.keepWarm(1)
+            //设置保温
+            list_13_15.forEach{ kaoPan->
+                if (kaoPan.isHasSausage&& kaoPan.startTime>0) {
+                    //清空加热时间
+                    kaoPan.startTime=0
+                    //记录保温开始时间
+                    kaoPan.holdingTime = System.currentTimeMillis()
+                    //进入保温
+                    kaoPan.status=2
+                }
+            }
+
             list_13_15.forEach{ kaoPan->
                 // 获取1-6区域空位
                     val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
@@ -158,9 +168,6 @@ object LowCurrentTrafficMode {
                     val emptyPosition =
                         list1_6.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) }
                     emptyPosition?.let { targetPan ->
-                        //移动烤盘位置到1-6空位
-                        kaoPan.holdingTime=System.currentTimeMillis()//开始保温
-                        kaoPan.status=2//进入保温的状态
                         KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
                     }
             }
