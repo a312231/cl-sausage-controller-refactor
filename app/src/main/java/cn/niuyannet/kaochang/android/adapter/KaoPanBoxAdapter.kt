@@ -75,7 +75,7 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                 tvNum.text = "${kaoPanBox.num}"
                 
                 // 根据加满状态设置不同样式
-                if (kaoPanBox.num >= 14) {
+                if (kaoPanBox.num >= 10) {
                     // 已加满状态
                     tvNum.setTextColor(ContextCompat.getColor(root.context, R.color.primary))
                     tvNum.textSize = 26f

@@ -298,7 +298,7 @@ class MaintenanceBoxFragment : Fragment() {
                 box.tasteCode = selectedTaste.tasteCode
                 box.tasteName = selectedTaste.productName+"("+selectedTaste.tasteName+")"
                 box.checkStatus = false
-                box.num = 12
+                box.num = 10
             }
             // 保存更新并刷新UI
             showLoadingExt("设置中...")
