@@ -112,6 +112,8 @@ object DataManagementAPI {
                       appConfigBean.modeType=jsonData.getIntValue("concurrencyMode")
                       appConfigBean.transitionMode=jsonData.getIntValue("transitionMode")//过渡态
                      // appConfigBean.errorStatus=jsonData.getIntValue("errorStatus")//错误状态
+                      appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
+                      appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")//过渡态
                       AppConfig.saveAppConfig(appConfigBean)
                   }catch (e:Exception){
                       e.printStackTrace()

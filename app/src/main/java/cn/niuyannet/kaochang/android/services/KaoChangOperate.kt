@@ -8,12 +8,14 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.ui.MainActivity
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
+import com.alibaba.fastjson.JSONObject
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -58,9 +60,9 @@ object KaoChangOperate {
     val action_address_3_temperature_write=505
 
     //保温温度
-    val keepWarmTemperature=60 //150 // 60
+    val keepWarmTemperature=90 //150 // 60
     //加热温度
-    val heatingTemperature=135 //250 //160
+    val heatingTemperature=150 //250 //160
 
     //debug
     val action_debug=255
@@ -97,6 +99,10 @@ object KaoChangOperate {
             delay(2000) //
             result= readHoldingRegisters(action_address_status,1)?.get(0) ?: 1//todo 默认值改成1
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        }
+        if(result!=0 && result!=1){
+            //下位机错误
+            LogUtils.d("下位机异常！从烤肠箱把烤肠搬运到烤盘1-33-----返回结果result------${result}")
         }
         LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从烤肠箱搬运到平台完成${result}")
         kaoPanBox.cmdStatusTake=result
@@ -200,6 +206,10 @@ object KaoChangOperate {
             result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_move_result)
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
         }
+        if(result!=0 && result!=1){
+            //下位机错误
+            LogUtils.d("下位机异常！把烤肠从烤盘移动到烤盘另外的位置-----返回结果result------${result}")
+        }
         kaoPan.cmdStatusMove=result
         if (result==0){
             //移动新的位置
@@ -242,6 +252,10 @@ object KaoChangOperate {
             delay(5000)
             result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        }
+        if(result!=0 && result!=1){
+            //下位机错误
+            LogUtils.d("下位机异常！用户下单-----返回结果result------${result}")
         }
         // 搬移完成后 等待一定时间再进行视觉检测
         delay(3000)
@@ -329,6 +343,10 @@ object KaoChangOperate {
             result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
         }
+        if(result!=0 && result!=1){
+            //下位机错误
+            LogUtils.d("下位机异常！超过保温时间丢弃烤肠-----返回结果result------${result}")
+        }
         kaoPan.cmdStatusDiscard=result
         if (result==0){
             kaoPan.isHasSausage=false
@@ -372,16 +390,17 @@ object KaoChangOperate {
      * 加热温度 160
      */
     fun heating(area: Int) {
+        LogUtils.d("开始加热温度数-----："+AppConfig.getAppConfig().heatingTemperature)
         //加热管开始工作
         when (area) {
             1 -> {
-                 writeSingleRegister(action_address_1_temperature_write,heatingTemperature)
+                 writeSingleRegister(action_address_1_temperature_write,AppConfig.getAppConfig().heatingTemperature)
             }
             2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,heatingTemperature)
+                 writeSingleRegister(action_address_2_temperature_write,AppConfig.getAppConfig().heatingTemperature)
             }
             3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,heatingTemperature)
+                 writeSingleRegister(action_address_3_temperature_write,AppConfig.getAppConfig().heatingTemperature)
             }
         }
     }
@@ -391,16 +410,18 @@ object KaoChangOperate {
      * 保温 60
      */
     fun keepWarm(area: Int) {
+        LogUtils.d("开始保温温度数-----："+AppConfig.getAppConfig().keepWarmTemperature)
+        LogUtils.d("开始加热温度数-----："+AppConfig.getAppConfig().heatingTemperature)
         //开始保温工作
         when (area) {
             1 -> {
-                 writeSingleRegister(action_address_1_temperature_write,keepWarmTemperature)
+                 writeSingleRegister(action_address_1_temperature_write, AppConfig.getAppConfig().keepWarmTemperature)
             }
             2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,keepWarmTemperature)
+                 writeSingleRegister(action_address_2_temperature_write,AppConfig.getAppConfig().keepWarmTemperature)
             }
             3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,keepWarmTemperature)
+                 writeSingleRegister(action_address_3_temperature_write,AppConfig.getAppConfig().keepWarmTemperature)
             }
         }
     }

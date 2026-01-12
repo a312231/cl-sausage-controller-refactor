@@ -31,4 +31,8 @@ public class AppConfigBean implements Serializable {
     public int transitionMode;//过渡模式0是默认，1是从低并发过渡到高并发，2是高并发过渡到低并发
     public int errorStatus;//0是正常的，其他是错误的
 
+    public int keepWarmTemperature;//保温温度
+
+    public int heatingTemperature; //加热温度
+
 }
