@@ -56,9 +56,9 @@ object KaoChangOperate {
     val action_address_3_temperature_write=505
 
     //保温温度
-    val keepWarmTemperature=75 //150 // 60
+    val keepWarmTemperature=90 //150 // 60
     //加热温度
-    val heatingTemperature=135 //250 //160
+    val heatingTemperature=150 //250 //160
 
     /**
      * 从烤肠箱把烤肠搬运到烤盘1-33
@@ -380,16 +380,17 @@ object KaoChangOperate {
      * 加热温度 160
      */
     fun heating(area: Int) {
+        LogUtils.d("开始加热温度数-----："+AppConfig.getAppConfig().heatingTemperature)
         //加热管开始工作
         when (area) {
             1 -> {
-                 writeSingleRegister(action_address_1_temperature_write,heatingTemperature)
+                 writeSingleRegister(action_address_1_temperature_write,AppConfig.getAppConfig().heatingTemperature)
             }
             2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,heatingTemperature)
+                 writeSingleRegister(action_address_2_temperature_write,AppConfig.getAppConfig().heatingTemperature)
             }
             3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,heatingTemperature)
+                 writeSingleRegister(action_address_3_temperature_write,AppConfig.getAppConfig().heatingTemperature)
             }
         }
     }
@@ -399,16 +400,18 @@ object KaoChangOperate {
      * 保温 60
      */
     fun keepWarm(area: Int) {
+        LogUtils.d("开始保温温度数-----："+AppConfig.getAppConfig().keepWarmTemperature)
+        LogUtils.d("开始加热温度数-----："+AppConfig.getAppConfig().heatingTemperature)
         //开始保温工作
         when (area) {
             1 -> {
-                 writeSingleRegister(action_address_1_temperature_write,keepWarmTemperature)
+                 writeSingleRegister(action_address_1_temperature_write, AppConfig.getAppConfig().keepWarmTemperature)
             }
             2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,keepWarmTemperature)
+                 writeSingleRegister(action_address_2_temperature_write,AppConfig.getAppConfig().keepWarmTemperature)
             }
             3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,keepWarmTemperature)
+                 writeSingleRegister(action_address_3_temperature_write,AppConfig.getAppConfig().keepWarmTemperature)
             }
         }
     }
