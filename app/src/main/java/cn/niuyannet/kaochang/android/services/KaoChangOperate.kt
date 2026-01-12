@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.services
 
+import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
@@ -8,6 +10,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.ui.MainActivity
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
@@ -17,6 +20,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 
 /**
  * 烤盘操作类
@@ -58,6 +62,9 @@ object KaoChangOperate {
     //加热温度
     val heatingTemperature=135 //250 //160
 
+    //debug
+    val action_debug=255
+
     /**
      * 从烤肠箱把烤肠搬运到烤盘1-33
      * kaoPan 烤盘的位置
@@ -95,7 +102,7 @@ object KaoChangOperate {
         kaoPanBox.cmdStatusTake=result
 
         //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
+        //val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
         if (false){
 //        if (sausageInfo==null){
             writeSingleRegister(action_address_shenjiatai,0)
@@ -238,7 +245,7 @@ object KaoChangOperate {
         }
         // 搬移完成后 等待一定时间再进行视觉检测
         delay(3000)
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
+        //val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
         if (false){ // 拍照失败
 //        if (sausageInfo==null){ // 拍照失败
             //writeSingleRegister(action_address_shoumaitai,0)
@@ -422,9 +429,30 @@ object KaoChangOperate {
      * 停止加热和保温
      */
     fun pauseBusiness() {
+        //1，2，3 区停止保温
         writeSingleRegister(action_address_1_temperature_write,0)
         writeSingleRegister(action_address_2_temperature_write,0)
         writeSingleRegister(action_address_3_temperature_write,0)
+
+    }
+
+    /**
+     * 营业时间结束
+     */
+    suspend fun endBusinessHours(config: AppConfigBean){
+        //修改设备状态 改为休息中
+        config.apply {
+            onlineStatus = 2
+        }
+        AppConfig.saveAppConfig(config)
+        //同步更新云端状态
+        NetApi.updateDeviceInfo()
+        //执行丢弃操作
+        try {
+            KaoChangAlgorithm.resetKaoPan()
+        } catch (e: Exception) {
+            TODO("Not yet implemented")
+        }
     }
 
     /**
@@ -440,6 +468,11 @@ object KaoChangOperate {
     fun writeSingleRegister(address: Int,value:Int){
         LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
         VMModbusHelper.writeSingleRegister(modbus_address,address,value)
+
+    }
+
+    fun actionDebug() {
+        writeSingleRegister(action_debug,5555)
 
     }
 

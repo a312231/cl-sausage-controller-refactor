@@ -16,6 +16,8 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.collections.component1
+import kotlin.collections.component2
 
 
 /**
@@ -59,11 +61,16 @@ object HighCurrentTrafficMode {
                 val p = p1_21 + p_25_33
 //                LogUtils.d("KaoChangAlgorithm", "1 2区空位 ${p1_21} 检测加热状态")
 //                LogUtils.d("KaoChangAlgorithm", "3区空位 ${p_25_33} 检测加热状态")
+
+                val businessHours =
+                    KaoPanHelper.isBeforeBusinessHours(config.businessTime,30)
                 if (p == 30) {
                     // 初始化高并发
-                    if (config.errorStatus==0) {//todo 如果状态是正常的才开始初始化
+                    if (config.errorStatus==0 && !businessHours) {//todo 如果状态是正常的才开始初始化
                         initHighTrafficMode(list, listBox)
                         pitCount = 0
+                    }else{
+                        LogUtils.d("KaoChangAlgorithm", "营业时间前半小时停止补肠..")
                     }
                 } else if (p1_21 >= 9) {
                     LogUtils.d("KaoChangAlgorithm", "加热区空位 ${p_25_33} 检测加热状态")
@@ -71,10 +78,16 @@ object HighCurrentTrafficMode {
                     if (p_25_33 == 9) {
                         // 如果25-33区域也有9个空位，说明需要添加烤肠到25-33区域
                         if (config.errorStatus==0){//todo 如果状态是正常的才开始填坑算法
-                            addHighHeatSausage(list, listBox)
-                            LogUtils.d("KaoChangAlgorithm", "补肠完成")
-                            pitCount = 9
-                            lastFillPitTime = System.currentTimeMillis()
+
+                            if(!businessHours){
+                                addHighHeatSausage(list, listBox)
+                                LogUtils.d("KaoChangAlgorithm", "补肠完成")
+                                pitCount = 9
+                                lastFillPitTime = System.currentTimeMillis()
+                            }else{
+                                LogUtils.d("KaoChangAlgorithm", "营业时间前半小时停止补肠..")
+                            }
+
                         }
                     } else {
                         // 检查25-33区域的烤肠是否已经加热完成，如果完成则移动到1-21区域
@@ -172,10 +185,6 @@ object HighCurrentTrafficMode {
                         break
                     }
                 }
-                // 记录日志（可选）
-                if (allocated < count) {
-                    LogUtils.d("KaoChangAlgorithm", "口味 $flavor 需要分配 $count 个，但只分配了 $allocated 个（位置不足）")
-                }
             }
 
             // 如果25-33区域没有烤肠,需要添加烤肠进行加热
@@ -245,6 +254,8 @@ object HighCurrentTrafficMode {
          * - 无论是发生那种触发条件，都先保持高并发列表l=21不变，只不过不进行p=9就新加热烤肠的动作，且保持烤盘上的烤肠位置不变，因售卖不断减少数量。当烤盘上只剩下3根烤肠时，才进行大预设列表到小预设列表的切换，即l=21到l=6的切换。
          */
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
+        val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
+
         val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
         // 获取1-21区域内有烤肠的工位数量
         val sausageCount = list1_21.count { it.isHasSausage }
@@ -269,58 +280,55 @@ object HighCurrentTrafficMode {
         }
 
         // 如果烤肠数量小于等于3，切换到低并发模式
-        if ((sausageCount_25_33 + sausageCount) <= 3) {
-            // 统计烤肠箱中各口味的比例
-            val tasteDistribution = mutableMapOf<String, Int>()
-            listBox.forEach { box ->
-                tasteDistribution[box.tasteCode] = (tasteDistribution[box.tasteCode] ?: 0) + box.num
-            }
-
-            // 计算每种口味的比例并排序
-            val totalSausages = tasteDistribution.values.sum()
-            val sortedTastes = tasteDistribution.entries
-                .map { (taste, count) -> Pair(taste, count.toFloat() / totalSausages) }
-                .sortedByDescending { it.second }
-                .take(6) // 只取前6种口味
-
-            // 根据口味比例分配1-6号工位生成预设列表
-            val presetList = mutableListOf<String>()
-            sortedTastes.take(6).forEach { (taste, ratio) ->
-                // 计算每个口味应分配的工位数量,最少1个
-                val positions = (6 * ratio).toInt().coerceAtLeast(1)
-                repeat(positions) {
-                    presetList.add(taste)
+        if ((sausageCount_25_33 + sausageCount) <= 6) {
+            //获取1-9
+            val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
+            //1-9 已有烤肠P数
+            val alreadySausages1_9 = list1_9.filter {it.isHasSausage }
+            //如果是一区还剩6根不进行搬移操作。
+            if(alreadySausages1_9.size<6){
+                // 获取10-21区域内剩余的烤肠,1-9剩余烤肠不用搬，只需搬10-21 的烤肠改为低并发
+                val remainingSausages = list10_21.filter { it.isHasSausage }
+                // 遍历剩余的烤肠，尝试放置到对应口味的预设工位
+                val remainingSausages1_9 = list1_9.filter {!it.isHasSausage }
+                remainingSausages1_9.forEachIndexed {index, kaoPan ->
+                    if(index< remainingSausages.size){
+                        //按循环搬移到1-9区域
+                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, list1_9[index])
+                    }
                 }
-            }
 
-            // 如果预设列表不足6个工位,用最后一个口味补齐
-            while (presetList.size < 6) {
-                presetList.add(sortedTastes.last().first)
-            }
-            // 获取1-21区域内剩余的烤肠
-            val remainingSausages = list1_21.filter { it.isHasSausage }
+                //剩余 P 打标签
+                val flavorAllocation =
+                    KaoPanHelper.computeKaoPamRatio(listBox, (9 - list1_9.size))
 
-            // 遍历剩余的烤肠，尝试放置到对应口味的预设工位
-            remainingSausages.forEach { kaoPan ->
-                // 在1-6号工位中查找相同口味且没有烤肠的工位 3根烤肠的位置不确定，重新设置口味分布比例。
-                val matchingPosition = presetList.indexOf(kaoPan.taste.tasteCode)
-                if (matchingPosition > -1) {
-                    // 找到匹配的预设工位
-                    KaoChangOperate.moveKaoPanToKaoPan(kaoPan, list[matchingPosition])
-                } else {
-                    // 没找到匹配工位，放到7-9号工位
-                    val backupPosition = list.find { it.positionSn in 7..9 && !it.isHasSausage }
-                    backupPosition?.let {
-                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, it)
+                //打标签
+                var currentPosition = 0
+                flavorAllocation.forEach { (flavor, count) ->
+                    var allocated = 0
+                    while (allocated < count && currentPosition < list1_9.size) {
+                        // 跳过已有烤肠的位置
+                        while (currentPosition < list1_9.size && list1_9[currentPosition].isHasSausage) {
+                            currentPosition++
+                        }
+                        // 如果找到可用位置，分配口味
+                        if (currentPosition < list1_9.size) {
+                            list1_9[currentPosition].taste = Taste().apply {
+                                tasteCode = flavor
+                            }
+                            allocated++
+                            currentPosition++
+                        } else {
+                            // 没有更多可用位置了
+                            break
+                        }
                     }
                 }
             }
-            //把预设列表1-6映射到烤盘list上
-            list.filter { it.positionSn in 1..6 }.forEachIndexed { index, kaoPan ->
-                kaoPan.taste.apply {
-                    tasteCode = presetList[index]
-                }
-            }
+
+            //2:二区停止保温
+            KaoChangOperate.stopHeating(2)
+
             // 更新配置为低并发模式
             config.apply {
                 transitionMode = 0 // 切换回正常模式

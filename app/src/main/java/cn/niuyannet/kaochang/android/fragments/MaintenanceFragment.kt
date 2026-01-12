@@ -121,6 +121,7 @@ class MaintenanceFragment : Fragment() {
             }
         }
         binding.swKzAlgorithm.setOnCheckedChangeListener { buttonView, isChecked ->
+
             // 根据开关状态启用/禁用烤制算法
             if (isCoolingDown_1) {
                 // 恢复上一个状态（避免UI错乱）

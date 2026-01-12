@@ -37,20 +37,27 @@ object LowCurrentTrafficMode {
         LogUtils.d("KaoChangAlgorithm", "1区坑位 P= ${p}")
         LogUtils.d("KaoChangAlgorithm", "1区坑位 p1_6= ${p1_9}")
 
-        //一区9 加 二区6
+        //营业时间前半小时停止补肠
+        val businessHours =
+            KaoPanHelper.isBeforeBusinessHours(config.businessTime,30)
+        //一区9 加 二区
         if (p == (list1_6.size+list_13_15.size)) {
-            if (config.errorStatus==0){ //todo 如果没有错误才进行初始化
+            if (config.errorStatus==0 && !businessHours){ //todo 如果没有错误才进行初始化
                 initLowTrafficMode(kaoPanList, listBox)//初始化低并发
+            }else{
+                LogUtils.d("KaoChangAlgorithm", "营业时间前半小时停止补肠..")
             }
         } else if (p1_9 >= list_13_15.size) {//todo 改成大于等于3补烤肠动作
             LogUtils.d("KaoChangAlgorithm", "加热区空位 ${p_13_15} 检测加热状态")
             if (p_13_15 < list_13_15.size) {
                 checkLowHeatSausage(kaoPanList)//烤肠正在加热，检查是否已经加热完成，移动烤肠到指定的位置去
             } else if (p_13_15 == list_13_15.size) {
-                if (config.errorStatus==0){
-                    //todo 如果没有错误才进行添加烤肠的动作
+                //todo 如果没有错误才进行添加烤肠的动作
+                if (config.errorStatus==0 && !businessHours){
                     addLowHeatSausage(kaoPanList,listBox,list_13_15.size)//需要加烤肠了，满足少了3个空位
                     LogUtils.d("KaoChangAlgorithm", "补肠完成")
+                }else{
+                    LogUtils.d("KaoChangAlgorithm", "营业时间前半小时停止补肠..")
                 }
             }
         }

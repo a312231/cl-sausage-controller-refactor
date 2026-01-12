@@ -6,6 +6,10 @@ import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.services.KaoChangOperate.action_address_1_temperature_write
+import cn.niuyannet.kaochang.android.services.KaoChangOperate.action_address_2_temperature_write
+import cn.niuyannet.kaochang.android.services.KaoChangOperate.heatingTemperature
+import cn.niuyannet.kaochang.android.services.KaoChangOperate.writeSingleRegister
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -33,6 +37,7 @@ object KaoChangAlgorithm {
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun runServer() {
+
         if (isRunning) return
         isRunning = true
         val config = AppConfig.getAppConfig()
@@ -70,9 +75,11 @@ object KaoChangAlgorithm {
         val isWithinBusinessHours=isWithinBusinessHours(getCurrentTime(), config.businessTime)// 检查是否在营业时间内
         if (!isWithinBusinessHours){
             Log.d(TAG, "非营业时间，暂停烤制，不工作")
-            //LogUtils.d(TAG, "非营业时间，暂停烤制，不工作")
             //需要移除烤盘的所有数据，并且停止加热
             KaoChangOperate.pauseBusiness()
+            //营业时间结束清除烤肠
+            Log.d(TAG, "营业时间结束清除烤肠！")
+            KaoChangOperate.endBusinessHours(config)
             return
         }
         if (!(onlineStatus==1||onlineStatus==4)){
@@ -236,6 +243,7 @@ object KaoChangAlgorithm {
     }
 
     fun enableRoastAlgorithm() {
+        KaoChangOperate.actionDebug()
         isEnabled = true
     }
 

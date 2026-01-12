@@ -17,6 +17,7 @@ import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraUvc
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
+import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -52,6 +53,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     }
 
     override fun initData() {
+//        KaoChangOperate.actionDebug()
         initAdsData()//获取广告数据
         loadDeviceInfo()//获取设备初始化信息
         KaoChangAlgorithm.runServer()//运行烤肠服务
