@@ -54,6 +54,8 @@ abstract class LoadNetActivity: BaseActivity() {
                     appConfigBean.qcodeURL=jsonData.getString("qrcodeUrl")
                     appConfigBean.modeType=jsonData.getIntValue("concurrencyMode")
                     appConfigBean.errorStatus=jsonData.getIntValue("errorStatus")//错误状态
+                    appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
+                    appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")
                     AppConfig.saveAppConfig(appConfigBean)
                 }else{
                     binding.mainContent.visibility= View.GONE
