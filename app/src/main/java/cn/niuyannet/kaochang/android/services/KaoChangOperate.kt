@@ -19,6 +19,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlin.math.log
 
 /**
  * 烤盘操作类
@@ -114,7 +115,12 @@ object KaoChangOperate {
             //未检测到烤肠直接就结束了
             return false
         }else{
-            val value = (1 shl 8) or sausageInfo.worldY.toInt()
+            var value = (1 shl 8) or sausageInfo.worldY.toInt()
+            LogUtils.d("KaoChangAlgorithm", "-------坐标--前value-----${value}")
+            if(value<60){
+                value=60
+            }
+            LogUtils.d("KaoChangAlgorithm", "-------坐标--后value-------${value}")
             writeSingleRegister(action_address_shenjiatai,value)
         }
 
