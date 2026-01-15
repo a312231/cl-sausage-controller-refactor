@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import kotlin.math.log
 
 /**
  * 烤盘操作类
@@ -91,7 +92,8 @@ object KaoChangOperate {
 
         LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运开始")
         // 从烤肠箱取出来
-         writeSingleRegister(action_address,kaoPanBox.cmdValueTake)
+         writeSingleRegister2(action_address,kaoPanBox.cmdValueTake)
+
         //轮询读取命令执行的状态，直至为正常为0
         var result=1
         while (result==1){  
@@ -108,10 +110,9 @@ object KaoChangOperate {
         kaoPanBox.cmdStatusTake=result
 
         //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
-        //val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
-        if (false){
-//        if (sausageInfo==null){
-            writeSingleRegister(action_address_shenjiatai,0)
+        val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
+        if (sausageInfo==null){
+            writeSingleRegister2(action_address_shenjiatai,0)
             //未检测到烤肠，报错
             AppConfig.getAppConfig().errorStatus=1//未识别到烤肠报错
             AppConfig.getAppConfig().moveStatus = 0
@@ -122,12 +123,21 @@ object KaoChangOperate {
             //未检测到烤肠直接就结束了
             return false
         }else{
-            val value = (1 shl 8) // or sausageInfo.worldY.toInt()
-            writeSingleRegister(action_address_shenjiatai,value)
+            var value_y=sausageInfo.worldY.toInt()
+            LogUtils.d("KaoChangAlgorithm", "-------坐标--前value-----${value_y}")
+            if(value_y < 60){
+                value_y=60
+            }
+            LogUtils.d("KaoChangAlgorithm", "-------坐标--后value-------${value_y}")
+            var value = (1 shl 8) or value_y
+            LogUtils.d("KaoChangAlgorithm", "-------实际value-------${value}")
+
+            writeSingleRegister2(action_address_shenjiatai,value)
         }
 
         //从平台把烤肠搬运到烤盘
-        writeSingleRegister(action_address,kaoPan.cmdValueMove)
+        delay(200)
+        writeSingleRegister2(action_address,kaoPan.cmdValueMove)
         var result2=1
         //读取命令执行的状态
         while (result2==1){
@@ -198,7 +208,7 @@ object KaoChangOperate {
 
         // 将起始位置左移8位，然后与目标位置进行或运算
         val value = (sourcePosition shl 8) or targetPosition
-         writeSingleRegister(action_address_move,value)
+         writeSingleRegister2(action_address_move,value)
         //轮询读取命令执行的状态，直至为正常为0
         var result=1
         while (result==1){
@@ -245,7 +255,7 @@ object KaoChangOperate {
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
         //取出烤肠
-         writeSingleRegister(action_address,kaoPan.cmdValueTake)
+         writeSingleRegister2(action_address,kaoPan.cmdValueTake)
         //轮询读取命令执行的状态，直至为正常为0
         var result=1
         while (result==1){
@@ -259,24 +269,22 @@ object KaoChangOperate {
         }
         // 搬移完成后 等待一定时间再进行视觉检测
         delay(3000)
-        //val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
-        if (false){ // 拍照失败
-//        if (sausageInfo==null){ // 拍照失败
-            //writeSingleRegister(action_address_shoumaitai,0)
+        val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
+        if (sausageInfo==null){ // 拍照失败
+            //writeSingleRegister2(action_address_shoumaitai,0)
             delay(3000)
-            writeSingleRegister(action_address_shoumaitai,1)
+            writeSingleRegister2(action_address_shoumaitai,1)
             AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
             GlobalScope.launch(Dispatchers.Main) {
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 DataManagementAPI.uploadDeviceInfo()
             }
             LogUtils.d("售卖台第一次拍照失败")
-        }else if (false){ // 识别到烤肠，再确认一次客户是否没取走
-//        }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
+        }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
             delay(3000)
             val sausageInfo_2 = SauceDetectionUitls.captureAndDetect(1)
             if (sausageInfo_2 == null) {
-                //writeSingleRegister(action_address_shoumaitai,0)
+                //writeSingleRegister2(action_address_shoumaitai,0)
                 AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
                 GlobalScope.launch(Dispatchers.Main) {
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -284,9 +292,9 @@ object KaoChangOperate {
                 }
                 LogUtils.d("售卖台第二次拍照失败")
             }else if (sausageInfo_2.code == 2){
-                // writeSingleRegister(action_address_shoumaitai,sausageInfo.code)
+                // writeSingleRegister2(action_address_shoumaitai,sausageInfo.code)
                 // 暂时发1，等待下位机修改
-                writeSingleRegister(action_address_shoumaitai,1)
+                writeSingleRegister2(action_address_shoumaitai,1)
                 LogUtils.d("客户未及时取肠，执行丢弃...")
 //                AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
 //                GlobalScope.launch(Dispatchers.Main) {
@@ -297,13 +305,13 @@ object KaoChangOperate {
             else {
                 //TODO: 下位机执行烤肠丢弃动作，丢弃完成后上位机判断是否丢弃完成
 
-                // writeSingleRegister(action_address_shoumaitai,sausageInfo.code)
+                // writeSingleRegister2(action_address_shoumaitai,sausageInfo.code)
                 // 暂时发1，等待下位机修改
-                writeSingleRegister(action_address_shoumaitai,1)
+                writeSingleRegister2(action_address_shoumaitai,1)
                 LogUtils.d("客户已经把肠取走")
             }
         } else { // 未识别到 顾客取走了
-            writeSingleRegister(action_address_shoumaitai,1)
+            writeSingleRegister2(action_address_shoumaitai,1)
             LogUtils.d("客户已经把肠取走")
         }
         kaoPan.cmdStatusTake=result
@@ -335,7 +343,7 @@ object KaoChangOperate {
         AppConfig.getAppConfig().moveStatus = 4
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
-         writeSingleRegister(action_address,kaoPan.cmdValueDiscard)
+         writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
         //轮询读取命令执行的状态，直至为正常为0
         var result=1
         while (result==1){
@@ -483,10 +491,22 @@ object KaoChangOperate {
         return VMModbusHelper.readHoldingRegisters(modbus_address,address,quantity)
     }
 
+
+
     /**
      * 写入寄存器的值
      */
     fun writeSingleRegister(address: Int,value:Int){
+        LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
+        VMModbusHelper.writeSingleRegister(modbus_address,address,value)
+
+    }
+
+    /**
+     * 由于下位机处理频率过低需要延迟150毫秒，读取都需要加延迟150发送，每个读取方法已经加了delay
+     */
+    suspend fun writeSingleRegister2(address: Int,value:Int){
+        delay(150)
         LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
         VMModbusHelper.writeSingleRegister(modbus_address,address,value)
 

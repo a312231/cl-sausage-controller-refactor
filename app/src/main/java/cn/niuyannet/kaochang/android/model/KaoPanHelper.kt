@@ -260,13 +260,15 @@ object KaoPanHelper {
             }
 
             // 处理剩余位置（由于取整可能未完全分配）
-            var unallocated = remainingPositions - extraAllocations.values.sum()
-            var index = 0
-            while (unallocated > 0) {
-                val flavor = sortedFlavors[index].first
-                allocation[flavor] = allocation[flavor]!! + 1
-                unallocated--
-                index = (index + 1) % sortedFlavors.size
+            if(totalCount>0){
+                var unallocated = remainingPositions - extraAllocations.values.sum()
+                var index = 0
+                while (unallocated > 0) {
+                    val flavor = sortedFlavors[index].first
+                    allocation[flavor] = allocation[flavor]!! + 1
+                    unallocated--
+                    index = (index + 1) % sortedFlavors.size
+                }
             }
         }
 
