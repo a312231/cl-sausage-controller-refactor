@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.model
 
+import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
@@ -113,7 +114,7 @@ object KaoPanHelper {
             kaoPan.startTime = 0L
             kaoPan.bakingTime = bakingTime
             kaoPan.holdingTime = holdingTime
-            kaoPan.closeTime = discardTime
+            kaoPan.closeTime =discardTime
             kaoPan.taste = null
             kaoPan.temperature = 0
             kaoPan.status = 0

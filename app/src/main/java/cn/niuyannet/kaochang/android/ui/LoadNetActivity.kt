@@ -56,6 +56,11 @@ abstract class LoadNetActivity: BaseActivity() {
                     appConfigBean.errorStatus=jsonData.getIntValue("errorStatus")//错误状态
                     appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
                     appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")
+                    appConfigBean.bakingTime=jsonData.getIntValue("bakingTime")
+                    appConfigBean.discardTime=jsonData.getIntValue("discardTime")
+                    appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
+                    appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")
+
                     AppConfig.saveAppConfig(appConfigBean)
                 }else{
                     binding.mainContent.visibility= View.GONE

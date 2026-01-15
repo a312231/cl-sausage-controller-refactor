@@ -35,4 +35,11 @@ public class AppConfigBean implements Serializable {
 
     public int heatingTemperature; //加热温度
 
+    public int bakingTime;//烤制时间 单位毫秒 20分钟
+    public int discardTime; //丢弃时间(小时)
+
+    public int timeThresholdLow; //两次p=9的时间间隔阈值，超过此值考虑转为低并发
+
+    public int timeBeforeClose; //停止营业前的时间阈值
+
 }

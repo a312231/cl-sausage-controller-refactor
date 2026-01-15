@@ -19,8 +19,8 @@ import kotlinx.coroutines.launch
  */
 
 object LowCurrentTrafficMode {
-
-
+    //控制温度关闭
+    var TEMPERATURE_OFF = 0 //0写入 ,1 是关闭
     /**
      * 低并发模式处理器
      *     如果p=9 就是初始化敌低并发模式
@@ -59,17 +59,24 @@ object LowCurrentTrafficMode {
             }
             if (supP1_9 == 1) {
                 if (config.errorStatus==0){
+                    TEMPERATURE_OFF =0;
                     //todo 如果没有错误才进行添加烤肠的动作
                     addLowHeatSausage(kaoPanList,listBox,list_13_15.size)//需要加烤肠了，满足少了3个空位
                     LogUtils.d("KaoChangAlgorithm", "13_15补肠完成")
                 }
             }else if (supP1_9 == 2) {
                 if (config.errorStatus==0){
+                    TEMPERATURE_OFF =0;
                     //todo 如果没有错误才进行添加烤肠的动作
                     addLowHeatSausage16_18(kaoPanList,listBox,list_16_18.size)//需要加烤肠了，满足少了3个空位
                     LogUtils.d("KaoChangAlgorithm", "16-18补肠完成")
                 }
             }
+        }
+        if(supP1_9 ==3 && TEMPERATURE_OFF!=1){
+            TEMPERATURE_OFF=1
+            LogUtils.d("KaoChangAlgorithm", "2区停止加热-p_13_18")
+            KaoChangOperate.stopHeating(2)
         }
         //检查是否已经加热结束，加热结束需要关闭加热进行保温
         checkLowHeatEnd(list1_6)
@@ -93,10 +100,13 @@ object LowCurrentTrafficMode {
      * p_1_9 空位数
      * 13-15 空位数
      * list_16_18 p_1_9 空位数
-     * return 0 不补肠，1补肠13-16,2补肠16-18
+     * return 0 不补肠，1补肠13-16,2补肠16-18,3:停止加热
      */
     private  fun lowConcurrencyIntestinalSupplementation(p_1_9: Int,list_13_15:Int,list_16_18:Int): Int{
         var list13_18 = (list_13_15+list_16_18);
+        if(p_1_9<3 && list13_18==6){
+            return 3;
+        }
         //一区P=3,二区13-18 P=0
         if(p_1_9==3 && list13_18==0){
             return 1;
