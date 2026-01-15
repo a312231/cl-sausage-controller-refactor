@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.model
 
 import android.util.Log
+import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
@@ -29,11 +30,11 @@ object KaoPanHelper {
     private const val KEY_KAO_PAN_CONFIG = "key_kao_pan_config"
     private const val KEY_TASTE_LIST = "key_taste_list" // 添加口味列表的键
     //烤制时间 烤制时间40分钟
-    val bakingTime= 40*60*1000L //10*60*1000L
+    //val bakingTime= 1*60*1000L //10*60*1000L
     //保温时间
     val holdingTime=0L
     //丢弃时间 6h丢弃
-    val discardTime=6*60*60*1000L //10*60*1000L
+   // val discardTime=6*60*60*1000L //10*60*1000L
     //口味列表
     private var tasteList= mutableListOf<Taste>()
     //烤盘
@@ -90,9 +91,9 @@ object KaoPanHelper {
                     kaoPan.positionSn = positionSn
                     kaoPan.positionRegion = region
                     kaoPan.startTime = 0L
-                    kaoPan.bakingTime = bakingTime
+                    kaoPan.bakingTime = AppConfig.getAppConfig().bakingTime *60*1000L
                     kaoPan.holdingTime = holdingTime
-                    kaoPan.closeTime = discardTime
+                    kaoPan.closeTime = AppConfig.getAppConfig().discardTime *60*60*1000L
                     kaoPan.taste = null
                     kaoPan.temperature = 0
                     kaoPan.status = 0
@@ -116,9 +117,9 @@ object KaoPanHelper {
         // 重置所有烤盘的状态
         for (kaoPan in kaoPanList) {
             kaoPan.startTime = 0L
-            kaoPan.bakingTime = bakingTime
+            kaoPan.bakingTime = AppConfig.getAppConfig().bakingTime*60*1000L
             kaoPan.holdingTime = holdingTime
-            kaoPan.closeTime = discardTime
+            kaoPan.closeTime = AppConfig.getAppConfig().discardTime *60*60*1000L
             kaoPan.taste = null
             kaoPan.temperature = 0
             kaoPan.status = 0

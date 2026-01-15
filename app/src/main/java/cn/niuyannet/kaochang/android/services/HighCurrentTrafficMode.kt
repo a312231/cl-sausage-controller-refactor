@@ -50,8 +50,7 @@ object HighCurrentTrafficMode {
         list: List<KaoPan>,
         listBox: List<KaoPanBox>
     ) {
-        LogUtils.d("KaoChangAlgorithm", "高并发检查加热")
-        LogUtils.d("KaoChangAlgorithm", "config.transitionMode----${config.transitionMode}")
+        LogUtils.d("KaoChangAlgorithm", "高并发检查 config.transitionMode----${config.transitionMode}")
         when (config.transitionMode) {
             0 -> {
                 val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
@@ -230,15 +229,14 @@ object HighCurrentTrafficMode {
                     kaoPan.status=2
                 }
             }
-
-            // 切换到正常高并发模式
-            config.apply {
-                transitionMode = 0 // 取消过渡态
-            }
-            AppConfig.saveAppConfig(config)
-            //同步更新云端状态
-            NetApi.updateDeviceInfo()
         }
+        // 切换到正常高并发模式
+        config.apply {
+            transitionMode = 0 // 取消过渡态
+        }
+        AppConfig.saveAppConfig(config)
+        //同步更新云端状态
+        NetApi.updateDeviceInfo()
     }
 
     /**
@@ -279,7 +277,7 @@ object HighCurrentTrafficMode {
             }
         }
 
-        // 如果烤肠数量小于等于3，切换到低并发模式
+        // 如果烤肠数量小于等于6，切换到低并发模式
         if ((sausageCount_25_33 + sausageCount) <= 6) {
             //获取1-9
             val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
@@ -291,11 +289,9 @@ object HighCurrentTrafficMode {
                 val remainingSausages = list10_21.filter { it.isHasSausage }
                 // 遍历剩余的烤肠，尝试放置到对应口味的预设工位
                 val remainingSausages1_9 = list1_9.filter {!it.isHasSausage }
-                remainingSausages1_9.forEachIndexed {index, kaoPan ->
-                    if(index< remainingSausages.size){
-                        //按循环搬移到1-9区域
-                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, list1_9[index])
-                    }
+                remainingSausages.forEachIndexed {index, kaoPan ->
+                    //按循环搬移到1-9区域
+                    KaoChangOperate.moveKaoPanToKaoPan(kaoPan, remainingSausages1_9[index])
                 }
 
                 //剩余 P 打标签
@@ -562,26 +558,26 @@ object HighCurrentTrafficMode {
      * 如果两次填坑时间间隔超过阈值，或者距离营业结束时间不足阈值，切换到低并发模式
      */
     private fun checkSwitchToLow() {
-        switchHighToLow()
-//        if (lastFillPitTime > 0) {
-//            val currentTime = System.currentTimeMillis()
-//            val timeSinceLastFill = currentTime - lastFillPitTime
-//
-//            // 如果距离上次填坑时间超过阈值，切换到低并发模式
-//            if (timeSinceLastFill > TIME_THRESHOLD_HIGH_TO_LOW) {
-//                switchHighToLow()
-//                return
-//            }
-//
-//            // 如果距离营业结束时间不足阈值，切换到低并发模式
-//            val businessTime = AppConfig.getAppConfig().businessTime
-//            if (businessTime != null) {
-//                val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
-//                if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < TIME_BEFORE_CLOSE) {
-//                    switchHighToLow()
-//                }
-//            }
-//        }
+        if (lastFillPitTime > 0) {
+            val currentTime = System.currentTimeMillis()
+            val timeSinceLastFill = currentTime - lastFillPitTime
+
+            // 如果距离上次填坑时间超过阈值，切换到低并发模式
+            val timeThresholdLow = AppConfig.getAppConfig().timeThresholdLow* 60 * 1000L
+            if (timeSinceLastFill > timeThresholdLow) {
+                switchHighToLow()
+                return
+            }
+
+            // 如果距离营业结束时间不足阈值，切换到低并发模式
+            val businessTime = AppConfig.getAppConfig().businessTime
+            if (businessTime != null) {
+                val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
+                if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < TIME_BEFORE_CLOSE) {
+                    switchHighToLow()
+                }
+            }
+        }
     }
 
     /**
@@ -666,6 +662,7 @@ object HighCurrentTrafficMode {
      * 切换高并发到低并发
      */
     private fun switchHighToLow() {
+        Log.e("HighCurrentTrafficMode", "并发切换-- 切换高并发转低并发--- 两次补肠时间间隔----${TIME_THRESHOLD_HIGH_TO_LOW}")
         AppConfig.getAppConfig().apply {
             transitionMode = 2
         }

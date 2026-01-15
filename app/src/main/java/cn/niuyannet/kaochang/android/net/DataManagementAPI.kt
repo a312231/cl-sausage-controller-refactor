@@ -114,6 +114,9 @@ object DataManagementAPI {
                      // appConfigBean.errorStatus=jsonData.getIntValue("errorStatus")//错误状态
                       appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
                       appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")//过渡态
+                      appConfigBean.discardTime=jsonData.getIntValue("discardTime")
+                      appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
+                      appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")
                       AppConfig.saveAppConfig(appConfigBean)
                   }catch (e:Exception){
                       e.printStackTrace()
