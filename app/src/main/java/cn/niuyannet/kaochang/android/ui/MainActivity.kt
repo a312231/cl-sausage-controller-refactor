@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.View
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
@@ -56,6 +57,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 //        KaoChangOperate.actionDebug()
         initAdsData()//获取广告数据
         loadDeviceInfo()//获取设备初始化信息
+        KaoPanHelper.init() // 烤盘初始化
         KaoChangAlgorithm.runServer()//运行烤肠服务
         //开始定时更新拉去任务
         ConnectManageHelper.lunStatus{
@@ -145,8 +147,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             .setView(editText)
             .setPositiveButton("确定") { _, _ ->
                 val password = editText.text.toString()
-//                if (password == "changle@leye") {
-                if (password == "1") {
+                if (password == "changle@leye") {
+//                if (password == "1") {
                     SettingActivity.start(this)
                 } else {
                     ToastUtils.showShort("密码错误")
@@ -189,6 +191,13 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }else{
             binding.deviceStatusText.text="离线"
             binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
+        }
+
+        if (appConfigBean.available > 0) {
+            val minutes = kotlin.math.ceil(appConfigBean.available / 60000.0).toInt()
+            binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
+        } else {
+            binding.tvScanTip.text = "扫码下单 🍽️ 纯肉烤肠"
         }
 
         binding.deviceNameText.text=appConfigBean.deviceName+"("+appConfigBean.deviceCode+")"

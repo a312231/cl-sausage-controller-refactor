@@ -19,8 +19,8 @@ class MyApp: Application() {
         // 记录应用启动日志
         LogUtils.i("Application started")
         OkGo.getInstance().init(this)
-        //烤盘初始化
-        KaoPanHelper.init()
+        //烤盘初始化 （改到MainActivity中再次初始化）
+        //KaoPanHelper.init()
         //网络数据初始化更新
         DataManagementAPI.dataSyncServer()
         //是否初始化，如果没有初始化就先进行初始化， 否则进行初始化
