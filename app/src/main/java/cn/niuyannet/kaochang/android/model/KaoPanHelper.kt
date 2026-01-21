@@ -241,6 +241,82 @@ object KaoPanHelper {
             flavor to count / totalCount
         }.sortedByDescending { (_, ratio) -> ratio }
 
+        // 4. 按比例计算“理论分配值”
+        val rawAllocations = sortedFlavors.associate { (flavor, ratio) ->
+            flavor to (list_size * ratio)
+        }
+
+        // 5. 取整，并保证每种至少 1 个
+        val allocation = rawAllocations.mapValues { (_, value) ->
+            maxOf(1, value.toInt())
+        }.toMutableMap()
+
+        // 6. 修正总数，使分配总和严格等于 list_size
+        var currentSum = allocation.values.sum()
+
+        if (currentSum < list_size) {
+            // 6.1 不足：按小数部分从大到小补
+            val sortedByRemainder = rawAllocations
+                .map { (flavor, value) ->
+                    flavor to (value - value.toInt())
+                }
+                .sortedByDescending { it.second }
+
+            var idx = 0
+            while (currentSum < list_size) {
+                val flavor = sortedByRemainder[idx % sortedByRemainder.size].first
+                allocation[flavor] = allocation[flavor]!! + 1
+                currentSum++
+                idx++
+            }
+
+        } else if (currentSum > list_size) {
+            // 6.2 超出：从分配最多的口味开始减，但不能减到 < 1
+            val sortedByCount = allocation.entries
+                .sortedByDescending { it.value }
+                .map { it.key }
+
+            var idx = 0
+            while (currentSum > list_size) {
+                val flavor = sortedByCount[idx % sortedByCount.size]
+                if (allocation[flavor]!! > 1) {
+                    allocation[flavor] = allocation[flavor]!! - 1
+                    currentSum--
+                }
+                idx++
+            }
+        }
+
+        return allocation
+    }
+
+
+    /**
+     * (比例计算有问题，已弃用)
+     * 低并发，高并发初烤肠初始化口味分配
+     * listKaoPan 烤盘
+     * listPanBox 烤箱
+     * list_size 烤盘工位数
+     */
+    fun computeKaoPamRatio_old(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
+        // 1. 统计每种口味总数量
+        val flavorTypes2 = listPanBox
+            .filter { it.num > 0 && it.tasteCode != null }
+            .groupBy { it.tasteCode!! }
+            .mapValues { (_, items) -> items.sumOf { it.num } }
+
+        // 2. 检查是否可分配
+        if (flavorTypes2.size > list_size) {
+            LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
+        }
+        //烤箱库存总数
+        val totalCount = flavorTypes2.values.sum().toFloat()
+
+        // 3. 计算比例并排序
+        val sortedFlavors = flavorTypes2.map { (flavor, count) ->
+            flavor to count / totalCount
+        }.sortedByDescending { (_, ratio) -> ratio }
+
         // 4. 初始化每个口味至少1个位置
         val allocation = sortedFlavors.associate { (flavor, _) ->
             flavor to 1
