@@ -175,18 +175,62 @@
            android:layout_alignParentBottom="true"
            android:layout_margin="10dp"
            android:layout_height="256dp">
-           <ImageView
-               android:layout_width="match_parent"
-               android:src="@mipmap/qcode_bg"
-               android:scaleType="fitXY"
-               android:layout_height="match_parent"/>
-           <ImageView
-               android:id="@+id/qrCodeImage"
+
+           <!-- 二维码背景 -->
+
+<!--           <ImageView-->
+<!--               android:layout_width="match_parent"-->
+<!--               android:src="@mipmap/qcode_bg"-->
+<!--               android:scaleType="fitXY"-->
+<!--               android:layout_height="match_parent"/>-->
+
+           <View
                android:layout_width="match_parent"
                android:layout_height="match_parent"
-               android:layout_marginTop="20dp"
-               android:padding="24dp"
+               android:background="@drawable/bg_qrcode_glass"
+               android:elevation="12dp"/>
+           <!-- 扫码提示文字（高级感） -->
+           <TextView
+               android:id="@+id/tvScanTip"
+               android:layout_width="match_parent"
+               android:layout_height="wrap_content"
+               android:layout_marginTop="12dp"
+               android:layout_marginBottom="6dp"
+               android:gravity="center"
+               android:text="扫码下单 🍽️ 纯肉烤肠"
+               android:textSize="18sp"
+               android:textColor="#CCFFFFFF"
+               android:textStyle="bold"
+               android:letterSpacing="0.04"
+               android:includeFontPadding="false"
+               android:elevation="13dp"
+               android:visibility="visible"/>
+           <!-- 二维码 -->
+           <ImageView
+               android:id="@+id/qrCodeImage"
+               android:layout_width="213dp"
+               android:layout_height="233dp"
+               android:layout_marginTop="18dp"
+               android:elevation="14dp"
+               android:padding="22dp"
                android:scaleType="fitCenter" />
+
+           <!-- 底部商标名-->
+           <TextView
+               android:id="@+id/tvBottomText"
+               android:layout_width="match_parent"
+               android:layout_height="wrap_content"
+               android:layout_marginTop="228dp"
+               android:layout_marginBottom="6dp"
+               android:gravity="center"
+               android:text="cheerluck"
+               android:textSize="18sp"
+               android:textColor="#CCFFFFFF"
+               android:textStyle="bold"
+               android:letterSpacing="0.04"
+               android:includeFontPadding="false"
+               android:elevation="13dp"/>
+
        </RelativeLayout>
 
         <TextView

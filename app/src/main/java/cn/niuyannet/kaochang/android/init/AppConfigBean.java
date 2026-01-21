@@ -26,7 +26,8 @@ public class AppConfigBean implements Serializable {
     public int onlineStatus; // 在线状态（0未启用 1运营中 2休息中 3维护中 4工作中（正在出烤肠））
     //运动状态
     public int moveStatus=0; // （0 待机状态 1 补肠状态 2 夹取状态 3 搬运状态 4 丢弃烤肠）
-
+    //可售状态（烤盘上是否有烤肠）
+    public long available=0; // （0 可售， 其他 剩余等待时间（分钟））
     public int modeType; // 模式类型：1低并发，2高并发
     public int transitionMode;//过渡模式0是默认，1是从低并发过渡到高并发，2是高并发过渡到低并发
     public int errorStatus;//0是正常的，其他是错误的
