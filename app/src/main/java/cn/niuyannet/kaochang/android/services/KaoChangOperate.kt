@@ -466,6 +466,19 @@ object KaoChangOperate {
     }
 
     /**
+     * 营业时间开始
+     */
+    suspend fun startBusinessHours(config: AppConfigBean){
+        //修改设备状态 改为运营中
+        config.apply {
+            onlineStatus = 1
+        }
+        AppConfig.saveAppConfig(config)
+        //同步更新云端状态
+        NetApi.updateDeviceInfo()
+    }
+
+    /**
      * 营业时间结束
      */
     suspend fun endBusinessHours(config: AppConfigBean){
