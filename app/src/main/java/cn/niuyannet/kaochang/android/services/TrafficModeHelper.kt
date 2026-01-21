@@ -13,7 +13,7 @@ object TrafficModeHelper {
      * 根据positionSn排序，低并发获取1-6范围的烤盘数据 高并发获取烤盘1-21工位
      */
      fun getTrafficModePositions(start:Int,end:Int,list: List<KaoPan>): List<KaoPan> {
-        return list.filter { it.positionSn in start..end }
+        return list.filter { it.positionSn in start..end }.sortedBy { it.positionSn }
     }
 
 
