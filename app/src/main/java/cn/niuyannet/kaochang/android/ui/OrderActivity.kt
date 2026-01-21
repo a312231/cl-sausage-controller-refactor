@@ -174,8 +174,8 @@ abstract class OrderActivity: BaseSauceDetection() {
 
             GlobalScope.launch(Dispatchers.IO) {
 
-                // 最多等待机械臂空闲 120 秒
-                val maxWaitTime = 120_000L
+                // 最多等待机械臂空闲 240 秒
+                val maxWaitTime = 240_000L
                 val checkInterval = 1000L
                 var waited = 0L
 
