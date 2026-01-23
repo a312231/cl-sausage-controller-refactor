@@ -194,8 +194,15 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
 
         if (appConfigBean.available > 0) {
-            val minutes = kotlin.math.ceil(appConfigBean.available / 60000.0).toInt()
-            binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
+            val leftTime = appConfigBean.available
+            if (leftTime >= 60_000) {
+                val minutes = kotlin.math.ceil(appConfigBean.available / 60000.0).toInt()
+                binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
+            }
+            else {
+                val seconds = kotlin.math.ceil(appConfigBean.available / 1000.0).toInt()
+                binding.tvScanTip.text = "⏳ 预计烤制 ${seconds} 秒"
+            }
         } else {
             binding.tvScanTip.text = "扫码下单 🍽️ 纯肉烤肠"
         }
