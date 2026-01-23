@@ -182,6 +182,7 @@ object NetApi {
         json["onlineStatus"] = AppConfig.getAppConfig().onlineStatus
         json["modeType"] = AppConfig.getAppConfig().modeType
         json["transitionMode"] = AppConfig.getAppConfig().transitionMode
+        json["isEnable"] = AppConfig.getAppConfig().isEnable
         OkGo.post<String>(updateDeviceInfo_url)
             .upJson(json.toJSONString())
             .execute(object : StringCallback() {
