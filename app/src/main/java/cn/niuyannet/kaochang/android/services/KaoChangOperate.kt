@@ -224,6 +224,7 @@ object KaoChangOperate {
         if (result==0){
             //移动新的位置
             newKaoPan.isHasSausage=true
+            newKaoPan.isHasGrilling=false
             newKaoPan.taste.apply {
                 productId=kaoPan.taste.productId
                 productName=kaoPan.taste.tasteName

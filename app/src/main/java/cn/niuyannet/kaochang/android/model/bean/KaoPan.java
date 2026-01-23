@@ -39,6 +39,9 @@ public class KaoPan implements Serializable {
     
     @SerializedName("has_sausage")
     private boolean hasSausage; // 是否有烤肠
+
+    @SerializedName("has_sausage")
+    private boolean hasGrilling; // 烤制区是否有对应口味的烤肠在烤制
     
     @SerializedName("cmd_value_move")
     private int cmdValueMove; // 从平台把烤肠移动到烤盘
@@ -71,6 +74,7 @@ public class KaoPan implements Serializable {
         this.temperature = 0;
         this.status = 0;
         this.hasSausage = false;
+        this.hasGrilling = false;
         this.cmdValueMove = 0;
         this.cmdValueTake = 0;
         this.cmdStatusMove = 0;
@@ -82,7 +86,7 @@ public class KaoPan implements Serializable {
     // 带参数的构造函数
     public KaoPan(int id, int positionSn, int positionRegion, long startTime, 
                   long bakingTime, long holdingTime, long closeTime, Taste taste, 
-                  int temperature, int status, boolean hasSausage, 
+                  int temperature, int status, boolean hasSausage,
                   int cmdValueMove, int cmdValueTake, int cmdStatusMove, 
                   int cmdStatusTake, int cmdValueDiscard, int cmdStatusDiscard) {
         this.id = id;
@@ -96,6 +100,7 @@ public class KaoPan implements Serializable {
         this.temperature = temperature;
         this.status = status;
         this.hasSausage = hasSausage;
+        this.hasGrilling = false;
         this.cmdValueMove = cmdValueMove;
         this.cmdValueTake = cmdValueTake;
         this.cmdStatusMove = cmdStatusMove;
@@ -191,6 +196,14 @@ public class KaoPan implements Serializable {
     
     public void setHasSausage(boolean hasSausage) {
         this.hasSausage = hasSausage;
+    }
+
+    public boolean isHasGrilling() {
+        return hasGrilling;
+    }
+
+    public void setHasGrilling(boolean hasGrilling) {
+        this.hasGrilling = hasGrilling;
     }
     
     public int getCmdValueMove() {

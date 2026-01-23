@@ -98,6 +98,7 @@ object KaoPanHelper {
                     kaoPan.temperature = 0
                     kaoPan.status = 0
                     kaoPan.isHasSausage = false
+                    kaoPan.isHasGrilling = false
                     kaoPan.cmdValueMove = cmdValueMove
                     kaoPan.cmdValueTake = cmdValueTake
                     kaoPan.cmdStatusMove = 0
@@ -124,6 +125,7 @@ object KaoPanHelper {
             kaoPan.temperature = 0
             kaoPan.status = 0
             kaoPan.isHasSausage = false
+            kaoPan.isHasGrilling = false
             kaoPan.cmdStatusMove = 0
             kaoPan.cmdStatusTake = 0
             kaoPan.cmdStatusDiscard = 0

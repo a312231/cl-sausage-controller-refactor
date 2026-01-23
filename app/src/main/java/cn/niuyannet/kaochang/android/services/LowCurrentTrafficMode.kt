@@ -237,7 +237,7 @@ object LowCurrentTrafficMode {
                     val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
                     //查找空的位置 TODO：如果没有相同口味，则找不同口味的空位
                     val emptyPosition =
-                        list1_6.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) }
+                        list1_6.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) && it.isHasGrilling}
                     emptyPosition?.let { targetPan ->
                         //清空加热时间
                         kaoPan.startTime = 0
@@ -293,7 +293,7 @@ object LowCurrentTrafficMode {
                     val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
                     //查找空的位置 TODO：如果没有相同口味，则找不同口味的空位
                     val emptyPosition =
-                        list1_6.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) }
+                        list1_6.find { !it.isHasSausage && it.taste.tasteCode.equals(kaoPan.taste.tasteCode) && it.isHasGrilling }
                     emptyPosition?.let { targetPan ->
                         //移动烤盘位置到1-6空位
 
@@ -304,6 +304,7 @@ object LowCurrentTrafficMode {
                         //进入保温的状态
                         kaoPan.status=2
                         KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
+
                     }
                 }
             }
@@ -333,7 +334,58 @@ object LowCurrentTrafficMode {
             return  //如果13-15区域有烤肠，直接返回不执行添加操作
         }
         // 获取1-6区域缺少烤肠的工位
-        val emptyPositions = list1_6.filter { !it.isHasSausage }
+        val emptyPositions = list1_6.filter { !it.isHasSausage  && !it.isHasGrilling }
+        // 获取13-15区域的空工位
+        val emptyPositions13_15 = list13_15.filter { !it.isHasSausage}
+
+        // 确保有足够的空位
+        if (emptyPositions.size >= p_num && emptyPositions13_15.size >= p_num) {
+            // 开启2区加热
+            KaoChangOperate.heating(2)
+            // 取前3个空位的口味信息 TODO 目前是卖口味补什么口味，没有判断库存是否足够
+            val neededTastes = emptyPositions.take(p_num).map { it.taste.tasteCode }
+
+            // 将烤肠从烤肠箱移动到13-15工位
+            neededTastes.forEachIndexed { index, tasteCode ->
+                // 找到对应口味的烤肠箱
+                val matchingBox = listBox.find { it.tasteCode == tasteCode && it.num > 0 }
+                matchingBox?.let { box ->
+                    if (box.num > 0) {
+                        val targetPosition = emptyPositions13_15[index]
+                        // 设置目标工位的口味
+                        targetPosition.taste = Taste().apply {
+                            this.tasteCode = tasteCode
+                        }
+                        // 控制设备进行搬运
+                        KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
+                    }
+                }
+            }
+            // 标记为 烤制区已有对应口味的烤肠在加热
+            emptyPositions.forEach {
+                it.isHasGrilling = true
+            }
+        }
+
+    }
+
+    /**
+     * 低并发模式添加烤肠
+     *  p_num 空位数
+     */
+    private suspend fun addLowHeatSausage16_18(list: List<KaoPan>, listBox: List<KaoPanBox> ,p_num: Int) {
+        //1-6区域内的烤肠
+        //val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
+        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
+        //13-15区域的烤肠
+        val list13_15 = TrafficModeHelper.getTrafficModePositions(16, 18, list)
+        //检查13-15区域是否有烤肠
+        val hasSausageIn13_15 = list13_15.any { it.isHasSausage }
+        if (hasSausageIn13_15) {
+            return  //如果13-15区域有烤肠，直接返回不执行添加操作
+        }
+        // 获取1-6区域缺少烤肠的工位
+        val emptyPositions = list1_6.filter { !it.isHasSausage  &&  !it.isHasGrilling}
         // 获取13-15区域的空工位
         val emptyPositions13_15 = list13_15.filter { !it.isHasSausage }
 
@@ -360,52 +412,10 @@ object LowCurrentTrafficMode {
                     }
                 }
             }
-        }
 
-    }
-
-    /**
-     * 低并发模式添加烤肠
-     *  p_num 空位数
-     */
-    private suspend fun addLowHeatSausage16_18(list: List<KaoPan>, listBox: List<KaoPanBox> ,p_num: Int) {
-        //1-6区域内的烤肠
-        //val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 6, list)
-        val list1_6 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-        //13-15区域的烤肠
-        val list13_15 = TrafficModeHelper.getTrafficModePositions(16, 18, list)
-        //检查13-15区域是否有烤肠
-        val hasSausageIn13_15 = list13_15.any { it.isHasSausage }
-        if (hasSausageIn13_15) {
-            return  //如果13-15区域有烤肠，直接返回不执行添加操作
-        }
-        // 获取1-6区域缺少烤肠的工位
-        val emptyPositions = list1_6.filter { !it.isHasSausage }
-        // 获取13-15区域的空工位
-        val emptyPositions13_15 = list13_15.filter { !it.isHasSausage }
-
-        // 确保有足够的空位
-        if (emptyPositions.size >= p_num && emptyPositions13_15.size >= p_num) {
-            // 开启2区加热
-            KaoChangOperate.heating(2)
-            // 取前3个空位的口味信息 TODO 目前是卖口味补什么口味，没有判断库存是否足够
-            val neededTastes = emptyPositions.take(p_num).map { it.taste.tasteCode }
-
-            // 将烤肠从烤肠箱移动到13-15工位
-            neededTastes.forEachIndexed { index, tasteCode ->
-                // 找到对应口味的烤肠箱
-                val matchingBox = listBox.find { it.tasteCode == tasteCode && it.num > 0 }
-                matchingBox?.let { box ->
-                    if (box.num > 0) {
-                        val targetPosition = emptyPositions13_15[index]
-                        // 设置目标工位的口味
-                        targetPosition.taste = Taste().apply {
-                            this.tasteCode = tasteCode
-                        }
-                        // 控制设备进行搬运
-                        KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
-                    }
-                }
+            // 标记为 烤制区已有对应口味的烤肠在加热
+            emptyPositions.forEach {
+                it.isHasGrilling = true
             }
         }
 
