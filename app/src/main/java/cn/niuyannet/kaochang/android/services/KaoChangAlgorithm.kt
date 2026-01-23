@@ -92,7 +92,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .minOrNull()                // ✅ 关键：可空
+                .maxOrNull()                // ✅ 关键：可空
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -118,7 +118,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .minOrNull()                // ✅ 关键：可空
+                .maxOrNull()                // ✅ 关键：可空
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -145,7 +145,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .minOrNull()                // ✅ 关键：可空
+                .maxOrNull()                // ✅ 关键：可空
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -172,7 +172,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .minOrNull()                // ✅ 关键：可空
+                .maxOrNull()                // ✅ 关键：可空
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -394,10 +394,18 @@ object KaoChangAlgorithm {
     fun enableRoastAlgorithm() {
         KaoChangOperate.actionDebug()
         isEnabled = true
+        AppConfig.getAppConfig().isEnable = 1
+        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        //同步更新云端状态
+        NetApi.updateDeviceInfo()
     }
 
     fun disableRoastAlgorithm() {
         isEnabled = false
+        AppConfig.getAppConfig().isEnable = 0
+        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        //同步更新云端状态
+        NetApi.updateDeviceInfo()
     }
 
 }
