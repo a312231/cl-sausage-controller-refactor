@@ -91,6 +91,9 @@ object HighCurrentTrafficMode {
                     } else {
                         // 检查25-33区域的烤肠是否已经加热完成，如果完成则移动到1-21区域
                         LogUtils.d("KaoChangAlgorithm", "高并发检查加热")
+                        // 先检查加热状态，加热完毕就转保温
+                        checkHighHeatEnd(list,3)
+                        // 转保温后再进行搬移，允许被购买程序阻塞
                         checkHighHeatSausage(list)
                     }
                 }
@@ -253,6 +256,7 @@ object HighCurrentTrafficMode {
          */
         // 检查25-33区域的烤肠是否加热完成，需要移动到1-21区域
         LogUtils.d("KaoChangAlgorithm", "高转低检查加热")
+        checkHighHeatEnd(list,3)
         checkHighHeatSausage(list)
 //        list_25_33.forEach { kaoPan ->
 //            if (kaoPan.isHasSausage) {
@@ -457,18 +461,22 @@ object HighCurrentTrafficMode {
         val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
         // 检查25-33区域的烤肠是否已经加热完成
         var stop = true //false
-        var hasHeat = 0
+        // var hasHeat = 0
 
         list_25_33.forEach { kaoPan ->
-            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                hasHeat += 1
-                val heatTime = System.currentTimeMillis() - kaoPan.startTime
-                if (heatTime < kaoPan.bakingTime) { //小于加热的时间
-                    stop = false
-                }
+//            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
+//                hasHeat += 1
+//                val heatTime = System.currentTimeMillis() - kaoPan.startTime
+//                if (heatTime < kaoPan.bakingTime) { //小于加热的时间
+//                    stop = false
+//                }
+//            }
+            if (kaoPan.isHasSausage && kaoPan.status==1) {
+                stop = false
             }
         }
-        if (stop && hasHeat > 0) {
+        //if (stop && hasHeat > 0) {
+        if (stop) {
             LogUtils.d("KaoChangAlgorithm", "高并发检查加热 满足保温时间")
             // 3区先保温
             KaoChangOperate.keepWarm(3)
@@ -512,8 +520,8 @@ object HighCurrentTrafficMode {
      * 检查高并发模式下的烤肠是否加热完成
      */
     private fun checkHighHeatEnd(list: List<KaoPan>, area: Int) {
-        // 如果1-21区域内的烤肠 如果有烤肠，检查是否加热时间到了，加热时间到了就结束加热进入保温的状态
-        var stop_1_21 = true //false
+        // 如果1-21或加热区域内有烤肠，检查是否加热时间到了，加热时间到了就结束加热进入保温的状态
+        var stop = true //false
         var hasHeat = 0
         list.forEach { kaoPan ->
             // 如果烤肠已经开始加热
@@ -524,7 +532,7 @@ object HighCurrentTrafficMode {
                 val heatTime = System.currentTimeMillis() - kaoPan.startTime
                 // 如果加热时间达到要求
                 if (heatTime < kaoPan.bakingTime) {
-                    stop_1_21 = false
+                    stop = false
 //                    //清空加热时间
 //                    kaoPan.startTime=0
 //                    // 记录保温开始时间
@@ -534,7 +542,7 @@ object HighCurrentTrafficMode {
                 }
             }
         }
-        if (stop_1_21 && (hasHeat > 0)) {
+        if (stop && (hasHeat > 0)) {
             // 结束加热进入保温状态
             KaoChangOperate.stopHeating(area)
             //KaoChangOperate.stopHeating(2)
