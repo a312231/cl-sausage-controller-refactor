@@ -461,7 +461,7 @@ object HighCurrentTrafficMode {
         val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
         // 检查25-33区域的烤肠是否已经加热完成
         var stop = true //false
-        // var hasHeat = 0
+        var hasHeat = 0
 
         list_25_33.forEach { kaoPan ->
 //            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
@@ -471,12 +471,15 @@ object HighCurrentTrafficMode {
 //                    stop = false
 //                }
 //            }
-            if (kaoPan.isHasSausage && kaoPan.status==1) {
-                stop = false
+            if (kaoPan.isHasSausage) {
+                hasHeat += 1
+                if (kaoPan.status==1) {
+                    stop = false
+                }
             }
         }
-        //if (stop && hasHeat > 0) {
-        if (stop) {
+        if (stop && hasHeat > 0) {
+        //if (stop) {
             LogUtils.d("KaoChangAlgorithm", "高并发检查加热 满足保温时间")
             // 3区先保温
             KaoChangOperate.keepWarm(3)
@@ -484,13 +487,13 @@ object HighCurrentTrafficMode {
             KaoChangOperate.keepWarm(2)
             // 1区也保温
             KaoChangOperate.keepWarm(1)
-            list_25_33.forEach {kaoPan ->
-                if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                    kaoPan.holdingTime = System.currentTimeMillis() // 开始保温
-                    kaoPan.status = 2 // 进入保温的状态
-                    kaoPan.startTime=0;
-                }
-            }
+//            list_25_33.forEach {kaoPan ->
+//                if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
+//                    kaoPan.holdingTime = System.currentTimeMillis() // 开始保温
+//                    kaoPan.status = 2 // 进入保温的状态
+//                    kaoPan.startTime=0;
+//                }
+//            }
 
             list_25_33.forEach {kaoPan ->
                 // 获取1-21区域空位
