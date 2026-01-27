@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.net
 
+import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
@@ -7,8 +8,10 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
+import kotlin.math.log
 
 /**
  * 数据请求接口管理api
@@ -115,6 +118,7 @@ object DataManagementAPI {
                       appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
                       appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")//过渡态
                       appConfigBean.bakingTime=jsonData.getIntValue("bakingTime")
+                      Log.d("DataManagementAPI---服务端获取值-", "bakingTime:---"+jsonData.getIntValue("bakingTime")+"---  discardTime:"+jsonData.getIntValue("discardTime"))
                       appConfigBean.discardTime=jsonData.getIntValue("discardTime")
                       appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
                       appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")

@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.ui
 
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.view.Window
 import android.view.WindowManager
@@ -56,6 +57,8 @@ abstract class LoadNetActivity: BaseActivity() {
                     appConfigBean.errorStatus=jsonData.getIntValue("errorStatus")//错误状态
                     appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
                     appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")
+                    Log.d("LoadNetActivity---服务端获取值-", "bakingTime:---"+jsonData.getIntValue("bakingTime")+"---  discardTime:"+jsonData.getIntValue("discardTime"))
+
                     appConfigBean.bakingTime=jsonData.getIntValue("bakingTime")
                     appConfigBean.discardTime=jsonData.getIntValue("discardTime")
                     appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")

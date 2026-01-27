@@ -5,6 +5,8 @@ import com.google.gson.annotations.SerializedName;
 import java.io.Serializable;
 
 public class AppConfigBean implements Serializable {
+//    public String mqttHost="tcp://mqtt.cheerluck.com";//mqtt连接信息
+
     public String mqttHost="tcp://mqtt.cheerluck.com";//mqtt连接信息
     public String mqttUsername="";//mqtt 初始化用户名
     public String mqttPassword="";//mqtt 初始化密码

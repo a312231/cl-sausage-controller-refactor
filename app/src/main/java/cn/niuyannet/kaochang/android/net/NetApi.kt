@@ -11,8 +11,10 @@ import com.lzy.okgo.request.base.Request
  */
 
 object NetApi {
-//     var API_URL_START: String = "http://10.10.40.185:8080/api/app/device" //接口地址
+//     var API_URL_START: String = "http://10.10.43.26:8080/api/app/device" //接口地址
      var API_URL_START: String = "https://iotadmin.cheerluck.com/prod-api/api/app/device" //接口地址
+
+//    var API_URL_START: String = "https://iotadmintest.cheerluck.com/stage-api/api/app/device" //接口地址
     //设备初始化
     var init_url=API_URL_START+"/init"
     //获取烤肠箱结构

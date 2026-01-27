@@ -110,8 +110,8 @@ object KaoChangOperate {
         kaoPanBox.cmdStatusTake=result
 
         //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
-        if (sausageInfo==null){
+        //val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
+        if (false){
             writeSingleRegister2(action_address_shenjiatai,0)
             //未检测到烤肠，报错
             AppConfig.getAppConfig().errorStatus=1//未识别到烤肠报错
@@ -123,7 +123,7 @@ object KaoChangOperate {
             //未检测到烤肠直接就结束了
             return false
         }else{
-            var value_y=sausageInfo.worldY.toInt()
+            var value_y=0//sausageInfo.worldY.toInt()
             LogUtils.d("KaoChangAlgorithm", "-------坐标--前value-----${value_y}")
             if(value_y < 60){
                 value_y=60
@@ -270,8 +270,8 @@ object KaoChangOperate {
         }
         // 搬移完成后 等待一定时间再进行视觉检测
         delay(3000)
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
-        if (sausageInfo==null){ // 拍照失败
+        //val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
+        if (false){ // 拍照失败
             //writeSingleRegister2(action_address_shoumaitai,0)
             delay(3000)
             writeSingleRegister2(action_address_shoumaitai,1)
@@ -281,7 +281,7 @@ object KaoChangOperate {
                 DataManagementAPI.uploadDeviceInfo()
             }
             LogUtils.d("售卖台第一次拍照失败")
-        }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
+        }else if (false){ // 识别到烤肠，再确认一次客户是否没取走
             delay(3000)
             val sausageInfo_2 = SauceDetectionUitls.captureAndDetect(1)
             if (sausageInfo_2 == null) {

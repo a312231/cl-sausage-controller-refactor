@@ -45,7 +45,7 @@ object LowCurrentTrafficMode {
         val p = p1_9 + p_13_18
         LogUtils.d("KaoChangAlgorithm", "1区坑位 P= ${p}")
         LogUtils.d("KaoChangAlgorithm", "1区坑位 p1_9= ${p1_9}")
-
+        //3+3 补肠逻辑
         var supP1_9 = lowConcurrencyIntestinalSupplementation(p1_9,p_13_15,p_16_18)
         LogUtils.d("KaoChangAlgorithm", "supP1_9-补肠返回 supP1_9= ${supP1_9}")
         //营业时间前半小时停止补肠
@@ -333,7 +333,7 @@ object LowCurrentTrafficMode {
         if (hasSausageIn13_15) {
             return  //如果13-15区域有烤肠，直接返回不执行添加操作
         }
-        // 获取1-6区域缺少烤肠的工位
+        // 获取1-9区域缺少烤肠的工位
         val emptyPositions = list1_6.filter { !it.isHasSausage  && !it.isHasGrilling }
         // 获取13-15区域的空工位
         val emptyPositions13_15 = list13_15.filter { !it.isHasSausage}

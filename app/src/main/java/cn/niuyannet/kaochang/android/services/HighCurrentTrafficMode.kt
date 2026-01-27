@@ -109,7 +109,7 @@ object HighCurrentTrafficMode {
                 checkHighHeatDiscard(list1_21)
 
                 // 检查是否需要切换到低并发模式
-                checkSwitchToLow()
+//                checkSwitchToLow()
                 //执行完成，保存状态
                 GlobalScope.launch(Dispatchers.Main) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
