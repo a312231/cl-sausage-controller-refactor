@@ -496,19 +496,21 @@ object HighCurrentTrafficMode {
 //            }
 
             list_25_33.forEach {kaoPan ->
-                // 获取1-21区域空位
-                val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
-                // 查找空的位置
-                if (kaoPan.taste != null) {
-                    val tasteCode = kaoPan.taste.tasteCode
+                if (kaoPan.isHasSausage) {
+                    // 获取1-21区域空位
+                    val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
                     // 查找空的位置
-                    val emptyPosition = list1_21.find {
-                        !it.isHasSausage &&
-                                it.taste?.tasteCode?.equals(tasteCode) == true
-                    }
-                    emptyPosition?.let { targetPan ->
-                        // 移动烤盘位置到1-21空位
-                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
+                    if (kaoPan.taste != null) {
+                        val tasteCode = kaoPan.taste.tasteCode
+                        // 查找空的位置
+                        val emptyPosition = list1_21.find {
+                            !it.isHasSausage &&
+                                    it.taste?.tasteCode?.equals(tasteCode) == true
+                        }
+                        emptyPosition?.let { targetPan ->
+                            // 移动烤盘位置到1-21空位
+                            KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
+                        }
                     }
                 }
             }
@@ -579,6 +581,7 @@ object HighCurrentTrafficMode {
                 val holdTime = System.currentTimeMillis() - kaoPan.holdingTime
                 // 如果保温时间超过保鲜时间
                 if (holdTime > kaoPan.closeTime && kaoPan.holdingTime > 0) {
+                    LogUtils.d("KaoChangAlgorithm", "丢弃时间 ${kaoPan.closeTime}")
                     // 丢弃烤肠
                     KaoChangOperate.discardSausage(kaoPan)
                 }
