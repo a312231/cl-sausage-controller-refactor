@@ -1,7 +1,8 @@
 package cn.niuyannet.kaochang.android.model
 
 import android.util.Log
-import cn.niuyannet.kaochang.android.init.AppConfig
+
+import cn.niuyannet.kaochang.android.init.AppConfig.getAppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
@@ -16,8 +17,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.collections.component1
-import kotlin.collections.component2
 
 
 /**
@@ -85,15 +84,22 @@ object KaoPanHelper {
                     val cmdValueMove = positionSn // 从平台把烤肠搬运到烤盘1-33
                     val cmdValueTake = positionSn + 100 // 把烤好的烤肠取出来 101-133
                     val cmdValueDiscard = positionSn + 300 // 丢弃烤肠 301-333
+                    // 获取配置实例，避免重复调用
+                    val config = getAppConfig()
+                    // 设置烘烤时间（默认40分钟）
+                    val bakingTimeMinutes = if (config.bakingTime != null) config.bakingTime else 40
+                    // 设置关闭/丢弃时间（默认6小时）
+                    val discardTimeHours = if (config.discardTime != null) config.discardTime else 6
+
                     // 创建烤盘对象并设置属性
                     val kaoPan = KaoPan()
                     kaoPan.id = i
                     kaoPan.positionSn = positionSn
                     kaoPan.positionRegion = region
                     kaoPan.startTime = 0L
-                    kaoPan.bakingTime = bakingTime
+                    kaoPan.bakingTime = bakingTimeMinutes * 60L * 1000L
                     kaoPan.holdingTime = holdingTime
-                    kaoPan.closeTime = discardTime
+                    kaoPan.closeTime = discardTimeHours * 60L * 60L * 1000L
                     kaoPan.taste = null
                     kaoPan.temperature = 0
                     kaoPan.status = 0
@@ -115,12 +121,18 @@ object KaoPanHelper {
      * 重置烤盘
      */
     fun resetKaoPan() {
+        // 获取配置实例，避免重复调用
+        val config = getAppConfig()
+        // 设置烘烤时间（默认40分钟）
+        val bakingTimeMinutes = if (config.bakingTime != null) config.bakingTime else 40
+        // 设置关闭/丢弃时间（默认6小时）
+        val discardTimeHours = if (config.discardTime != null) config.discardTime else 6
         // 重置所有烤盘的状态
         for (kaoPan in kaoPanList) {
             kaoPan.startTime = 0L
-            kaoPan.bakingTime = bakingTime
+            kaoPan.bakingTime = bakingTimeMinutes * 60L * 1000L
             kaoPan.holdingTime = holdingTime
-            kaoPan.closeTime = discardTime
+            kaoPan.closeTime = discardTimeHours * 60L * 60L * 1000L
             kaoPan.taste = null
             kaoPan.temperature = 0
             kaoPan.status = 0
