@@ -87,28 +87,39 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     val orderMessage = data.content
                     //下单取烤肠
                     var appState = AppConfig.getAppConfig().moveStatus
-                    if (appState == 2) {
+                    if (appState == 2 || AppConfig.getAppConfig().onlineStatus == 4) {
                         LogUtils.d("上位机正在运行，无法下单，用户退款")
-                        val json = JSON.parseObject(orderMessage)
-                        val orderNo = json.getString("order_no")
-                        val goodsList =
-                            JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
-                        // 遍历商品列表
-                        goodsList.forEach { item ->
-                            // 根据数量循环取出烤肠
-                            repeat(item.quantity) {
-                                // 构建MQTT消息
-                                SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                                    put("order_no", orderNo)
-                                    put("item_id", item.id)
-                                    put("product_id", item.productId)
-                                    put("taste_code", item.tasteCode)
-                                    put("status", 5) // 退钱
-                                })
-                            }
-                        }
+//                        val json = JSON.parseObject(orderMessage)
+//                        val orderNo = json.getString("order_no")
+//                        val goodsList =
+//                            JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
+//                        // 遍历商品列表
+//                        goodsList.forEach { item ->
+//                            // 根据数量循环取出烤肠
+//                            repeat(item.quantity) {
+//                                // 构建MQTT消息
+//                                SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
+//                                    put("order_no", orderNo)
+//                                    put("item_id", item.id)
+//                                    put("product_id", item.productId)
+//                                    put("taste_code", item.tasteCode)
+//                                    put("status", 5) // 退钱
+//                                })
+//                            }
+//                        }
                     }
                     else{
+                        LogUtils.d("order 客户下单购买")
+                        //更新状态到云端
+                        AppConfig.getAppConfig().onlineStatus = 4
+                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                        SendServerHelper.publishServiceUpdateStatus()
+                        // 显示处理中对话框
+                        showProcessingDialog()
+
+                        // 隐藏QRCode
+                        setDataToView()
+
                         purchaseOrder(orderMessage)
                     }
                 }
@@ -193,18 +204,23 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
         }
 
-        if (appConfigBean.available > 0) {
-            val leftTime = appConfigBean.available
-            if (leftTime >= 60_000) {
-                val minutes = kotlin.math.ceil(appConfigBean.available / 60000.0).toInt()
-                binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
+        if (appConfigBean.onlineStatus == 3) {
+            binding.tvScanTip.text = "🔧 设备维护中"
+        }
+        else {
+            if (appConfigBean.available > 0) {
+                val leftTime = appConfigBean.available
+                if (leftTime >= 60_000) {
+                    val minutes = kotlin.math.ceil(appConfigBean.available / 60000.0).toInt()
+                    binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
+                }
+                else {
+                    val seconds = kotlin.math.ceil(appConfigBean.available / 1000.0).toInt()
+                    binding.tvScanTip.text = "⏳ 预计烤制 ${seconds} 秒"
+                }
+            } else {
+                binding.tvScanTip.text = "扫码下单 🍽️ 纯肉烤肠"
             }
-            else {
-                val seconds = kotlin.math.ceil(appConfigBean.available / 1000.0).toInt()
-                binding.tvScanTip.text = "⏳ 预计烤制 ${seconds} 秒"
-            }
-        } else {
-            binding.tvScanTip.text = "扫码下单 🍽️ 纯肉烤肠"
         }
 
         binding.deviceNameText.text=appConfigBean.deviceName+"("+appConfigBean.deviceCode+")"

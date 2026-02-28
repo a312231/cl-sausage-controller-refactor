@@ -161,16 +161,6 @@ abstract class OrderActivity: BaseSauceDetection() {
       */
     @OptIn(DelicateCoroutinesApi::class)
     fun purchaseOrder(orderMessage:String) {
-            LogUtils.d("order 客户下单购买")
-            //更新状态到云端
-            AppConfig.getAppConfig().onlineStatus = 4
-            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            SendServerHelper.publishServiceUpdateStatus()
-            // 显示处理中对话框
-            showProcessingDialog()
-
-            // 隐藏QRCode
-            setDataToView()
 
             GlobalScope.launch(Dispatchers.IO) {
 
@@ -208,13 +198,14 @@ abstract class OrderActivity: BaseSauceDetection() {
                     repeat(item.quantity) {
                         if (appState != 2) { // 若机械臂不处于夹取状态
                             // 构建MQTT消息
-                            SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                                put("order_no", orderNo)
-                                put("item_id", item.id)
-                                put("product_id", item.productId)
-                                put("taste_code", item.tasteCode)
-                                put("status", 5) // 退钱
-                            })
+//                            SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
+//                                put("order_no", orderNo)
+//                                put("item_id", item.id)
+//                                put("product_id", item.productId)
+//                                put("taste_code", item.tasteCode)
+//                                put("status", 5) // 退钱
+//                            })
+                            LogUtils.d( "设备已在夹取中，屏蔽当前订单请求")
                         }
                         else{ // 若机械臂处于夹取状态
                             try {
