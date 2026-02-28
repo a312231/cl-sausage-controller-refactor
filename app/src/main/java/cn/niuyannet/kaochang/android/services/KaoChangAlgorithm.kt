@@ -51,11 +51,11 @@ object KaoChangAlgorithm {
         LogUtils.d(TAG, "智能烤肠算法服务启动开始工作")
         GlobalScope.launch(Dispatchers.IO) {
             while (isRunning) {
-                if (AppConfig.getAppConfig().moveStatus == 0) {
-                    pollKaoPanStatus()
-                    if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
-                    LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
-                }
+                //if (AppConfig.getAppConfig().moveStatus == 0) {
+                pollKaoPanStatus()
+                if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
+                LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
+                //}
                 delay(10 * 1000)// 1秒空拍一次
             }
         }

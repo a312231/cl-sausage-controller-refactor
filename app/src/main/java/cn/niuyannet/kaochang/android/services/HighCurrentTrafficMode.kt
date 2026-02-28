@@ -69,7 +69,8 @@ object HighCurrentTrafficMode {
                         initHighTrafficMode(list, listBox)
                         pitCount = 0
                     }else{
-                        LogUtils.d("KaoChangAlgorithm", "营业时间前半小时停止补肠..")
+
+                        LogUtils.d("KaoChangAlgorithm", "营业时间前半小时或错误停止补肠..")
                     }
                 } else if (p1_21 >= 9) {
                     LogUtils.d("KaoChangAlgorithm", "加热区空位 ${p_25_33} 检测加热状态")
