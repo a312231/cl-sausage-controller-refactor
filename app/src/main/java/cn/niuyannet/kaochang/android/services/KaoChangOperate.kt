@@ -134,6 +134,9 @@ object KaoChangOperate {
 
             writeSingleRegister2(action_address_shenjiatai,value)
         }
+//        val value_y = 60
+//        var value = (1 shl 8) or value_y
+//        writeSingleRegister2(action_address_shenjiatai,value)
 
         //从平台把烤肠搬运到烤盘
         delay(200)
@@ -261,71 +264,94 @@ object KaoChangOperate {
         //轮询读取命令执行的状态，直至为正常为0
         var result=1
         while (result==1){
-            delay(5000)
+            delay(2000)
             result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
             //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
         }
-        if(result!=0 && result!=1){
+        if(result!=0){
             //下位机错误
-            LogUtils.d("下位机异常！用户下单-----返回结果result------${result}")
-        }
-        // 搬移完成后 等待一定时间再进行视觉检测
-        delay(3000)
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
-        if (sausageInfo==null){ // 拍照失败
-            //writeSingleRegister2(action_address_shoumaitai,0)
-            delay(3000)
-            writeSingleRegister2(action_address_shoumaitai,1)
-            AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
+            AppConfig.getAppConfig().errorStatus=2  // 错误状态
+            AppConfig.getAppConfig().onlineStatus=3 // 维护中
             GlobalScope.launch(Dispatchers.Main) {
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 DataManagementAPI.uploadDeviceInfo()
             }
-            LogUtils.d("售卖台第一次拍照失败")
-        }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
+            LogUtils.d("下位机异常！用户下单-----返回结果result------${result}")
+        }
+        else {
+            // 搬移完成后 等待一定时间再进行视觉检测
             delay(3000)
-            val sausageInfo_2 = SauceDetectionUitls.captureAndDetect(1)
-            if (sausageInfo_2 == null) {
+            val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
+            if (sausageInfo==null){ // 拍照失败
                 //writeSingleRegister2(action_address_shoumaitai,0)
-                AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
+                delay(3000)
+                // 拍照失败，执行丢弃
+                writeSingleRegister2(action_address_shoumaitai,2)
+                // AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
+                AppConfig.getAppConfig().onlineStatus=3 // 维护中
                 GlobalScope.launch(Dispatchers.Main) {
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
                     DataManagementAPI.uploadDeviceInfo()
                 }
-                LogUtils.d("售卖台第二次拍照失败")
-            }else if (sausageInfo_2.code == 2){
-                // writeSingleRegister2(action_address_shoumaitai,sausageInfo.code)
-                // 暂时发1，等待下位机修改
-                writeSingleRegister2(action_address_shoumaitai,1)
-                LogUtils.d("客户未及时取肠，执行丢弃...")
-//                AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
-//                GlobalScope.launch(Dispatchers.Main) {
-//                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-//                    DataManagementAPI.uploadDeviceInfo()
-//                }
-            }
-            else {
-                //TODO: 下位机执行烤肠丢弃动作，丢弃完成后上位机判断是否丢弃完成
-
-                // writeSingleRegister2(action_address_shoumaitai,sausageInfo.code)
-                // 暂时发1，等待下位机修改
+                LogUtils.d("售卖台第一次拍照失败")
+            }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
+                delay(3000)
+                val sausageInfo_2 = SauceDetectionUitls.captureAndDetect(1)
+                if (sausageInfo_2 == null) {
+                    // 拍照失败，执行丢弃
+                    writeSingleRegister2(action_address_shoumaitai,2)
+                    //AppConfig.getAppConfig().errorStatus=2// 未识别到烤肠报错
+                    AppConfig.getAppConfig().onlineStatus=3 // 维护中
+                    GlobalScope.launch(Dispatchers.Main) {
+                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                        DataManagementAPI.uploadDeviceInfo()
+                    }
+                    LogUtils.d("售卖台第二次拍照失败")
+                }else if (sausageInfo_2.code == 2){
+                    // 未及时取走，执行丢弃
+                    writeSingleRegister2(action_address_shoumaitai,2)
+                    LogUtils.d("客户未及时取肠，执行丢弃...")
+                }
+                else{
+                    writeSingleRegister2(action_address_shoumaitai,1)
+                    LogUtils.d("客户已经把肠取走")
+                }
+            } else { // 未识别到 顾客取走了
                 writeSingleRegister2(action_address_shoumaitai,1)
                 LogUtils.d("客户已经把肠取走")
             }
-        } else { // 未识别到 顾客取走了
-            writeSingleRegister2(action_address_shoumaitai,1)
-            LogUtils.d("客户已经把肠取走")
         }
+
         kaoPan.cmdStatusTake=result
+
         if (result==0){
             kaoPan.isHasSausage=false
             kaoPan.holdingTime=0L
             kaoPan.startTime = 0
             kaoPan.status=0
         }
+
         GlobalScope.launch(Dispatchers.Main) {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         }
+
+        var result2=1
+        while (result2==1){
+            delay(2000)
+            result2=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
+            //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        }
+        if(result2!=0){
+            //下位机错误
+            AppConfig.getAppConfig().errorStatus=2  // 错误状态
+            AppConfig.getAppConfig().onlineStatus=3 // 维护中
+            GlobalScope.launch(Dispatchers.Main) {
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                DataManagementAPI.uploadDeviceInfo()
+            }
+            LogUtils.d("下位机异常！（关门或丢弃出错）")
+        }
+
         return result==0
     }
 
