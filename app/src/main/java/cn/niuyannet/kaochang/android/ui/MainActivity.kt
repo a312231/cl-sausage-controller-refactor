@@ -58,7 +58,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         initAdsData()//获取广告数据
         loadDeviceInfo()//获取设备初始化信息
         KaoPanHelper.init() // 烤盘初始化
+        KaoChangAlgorithm.restoreRoastAlgorithmState()
         KaoChangAlgorithm.runServer()//运行烤肠服务
+        syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
         //开始定时更新拉去任务
         ConnectManageHelper.lunStatus{
             if (!isFinishing&&!isDestroyed){
@@ -113,7 +115,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                         //更新状态到云端
                         AppConfig.getAppConfig().onlineStatus = 4
                         AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                        SendServerHelper.publishServiceUpdateStatus()
+                        syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
                         // 显示处理中对话框
                         showProcessingDialog()
 
@@ -223,14 +225,19 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             }
         }
 
-        binding.deviceNameText.text=appConfigBean.deviceName+"("+appConfigBean.deviceCode+")"
-        if (AppConfig.getAppConfig().onlineStatus == 4) {
-            // 正在出烤肠时隐藏二维码
-            binding.qrCodeImage.visibility = View.GONE
-        } else {
-            // 恢复显示并加载图片
+        binding.deviceNameText.text = appConfigBean.deviceName + "(" + appConfigBean.deviceCode + ")"
+        if (appConfigBean.status == 1 && appConfigBean.onlineStatus == 1) {
+            clearErrorStatusIfRecovered(
+                reason = "main_screen_operating",
+                retryDelaysMs = listOf(3000L)
+            )
+        }
+        // Only show the QR code when the device is enabled and operating normally.
+        if (appConfigBean.status == 1 && AppConfig.getAppConfig().onlineStatus == 1) {
             binding.qrCodeImage.visibility = View.VISIBLE
             Glide.with(this).load(AppConfig.getAppConfig().qcodeURL).into(binding.qrCodeImage)
+        } else {
+            binding.qrCodeImage.visibility = View.GONE
         }
     }
 

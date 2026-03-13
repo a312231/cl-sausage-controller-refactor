@@ -5,14 +5,23 @@ plugins {
 
 android {
     namespace = "cn.niuyannet.kaochang.android"
-    compileSdk = 35
+    compileSdk = 34
+
+    signingConfigs {
+        create("kaochang") {
+            storeFile = file("$rootDir/kaochang.jks")
+            storePassword = "a123456"
+            keyAlias = "kaochang"
+            keyPassword = "a123456"
+        }
+    }
 
     defaultConfig {
         applicationId = "cn.niuyannet.kaochang.android"
         minSdk = 24
         targetSdk = 34
-        versionCode = 18
-        versionName = "1.2.42"
+        versionCode = 26
+        versionName = "1.2.50"
         ndk {
             moduleName = "jssc"
             abiFilters.add("armeabi-v7a")
@@ -26,8 +35,13 @@ android {
 
 
     buildTypes {
+        debug {
+            // Keep debug installs compatible with the currently deployed app signature.
+            signingConfig = signingConfigs.getByName("kaochang")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("kaochang")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

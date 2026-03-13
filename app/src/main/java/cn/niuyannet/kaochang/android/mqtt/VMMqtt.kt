@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.mqtt
 import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.MyApp
+import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import org.eclipse.paho.android.service.MqttAndroidClient
 import org.eclipse.paho.client.mqttv3.IMqttActionListener
@@ -103,13 +104,22 @@ open class VMMqtt {
     /**
      * 发布消息到主题
      */
-    fun publish(topic: String, msg: String, qos: Int = 1, retained: Boolean = false) {
+    fun publish(topic: String, msg: String, qos: Int = 1, retained: Boolean = false): Boolean {
+        val client = mqttClient
+        if (client == null) {
+            LogUtils.w("MQTT publish skipped because client is not initialized: topic=$topic")
+            return false
+        }
+        if (!client.isConnected) {
+            LogUtils.w("MQTT publish skipped because client is not connected: topic=$topic")
+            return false
+        }
         try {
             val message = MqttMessage()
             message.payload = msg.toByteArray()
             message.qos = qos
             message.isRetained = retained
-            mqttClient?.publish(topic, message, null, object : IMqttActionListener {
+            client.publish(topic, message, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
                     Log.d(TAG, "$msg published to $topic")
                 }
@@ -118,9 +128,12 @@ open class VMMqtt {
                     Log.d(TAG, "Failed to publish $msg to $topic")
                 }
             })
-        } catch (e: MqttException) {
+            return true
+        } catch (e: Throwable) {
             e.printStackTrace()
+            LogUtils.e("MQTT publish failed: topic=$topic, error=${e.message}")
         }
+        return false
     }
 
     /**
@@ -145,8 +158,8 @@ open class VMMqtt {
     /**
      * 发送消息给服务端
      */
-    fun publishService(it: TopicMessage) {
-        publish(AppConfig.getTopicDeviceIdUrl(topic_by_device), JSON.toJSONString(it))
+    fun publishService(it: TopicMessage): Boolean {
+        return publish(AppConfig.getTopicDeviceIdUrl(topic_by_device), JSON.toJSONString(it))
     }
 
     /**

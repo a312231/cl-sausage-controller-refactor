@@ -59,6 +59,10 @@ class MaintenanceFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        KaoChangAlgorithm.restoreRoastAlgorithmState()
+        val versionName = requireContext().packageManager
+            .getPackageInfo(requireContext().packageName, 0).versionName
+        binding.versionNo.text = "版本号 v-$versionName"
         setupGrid()
         setupButtons()
         

@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.services
+﻿package cn.niuyannet.kaochang.android.services
 
 import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
@@ -33,6 +33,10 @@ object KaoChangAlgorithm {
     private var isRunning = false
     private var serviceStartTime: Long = 0
     var isEnabled = false //是否开启算法
+
+    fun restoreRoastAlgorithmState() {
+        isEnabled = AppConfig.getAppConfig().isEnable == 1
+    }
     /**
      * 运行这个智能烤肠算法服务
      * 低并发和中并发，可相互切换
@@ -40,6 +44,7 @@ object KaoChangAlgorithm {
     @OptIn(DelicateCoroutinesApi::class)
     fun runServer() {
         if (isRunning) return
+        restoreRoastAlgorithmState()
         isRunning = true
         val config = AppConfig.getAppConfig()
         Log.d(TAG, "智能烤肠算法服务启动开始工作")
@@ -266,7 +271,7 @@ object KaoChangAlgorithm {
      * 1.查询保温直接最长的口味
      * 2.然后取出来
      */
-    suspend fun purchase(tasteCode: String,productId:Int) {
+    suspend fun purchase(tasteCode: String, productId: Int): KaoChangOperate.TakeSausageResult {
         // 获取烤盘信息
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
@@ -293,10 +298,11 @@ object KaoChangAlgorithm {
         
         if (targetKaoPan != null) {
             // 取出烤肠
-            KaoChangOperate.takeSausage(targetKaoPan)
+            return KaoChangOperate.takeSausageResult(targetKaoPan)
         } else {
             LogUtils.w(TAG, "没有找到可供售卖的烤肠")
         }
+        return KaoChangOperate.TakeSausageResult.ERROR
     }
     /**
      * 重置烤盘

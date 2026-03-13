@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.services
+﻿package cn.niuyannet.kaochang.android.services
 
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.init.AppConfig
@@ -37,6 +37,12 @@ import kotlin.math.log
      *  203 烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
  */
 object KaoChangOperate {
+    enum class TakeSausageResult {
+        TAKEN_BY_USER,
+        DISCARDED,
+        ERROR
+    }
+
     // modbus 地址
     val modbus_address=1
     //动作组地址
@@ -353,6 +359,109 @@ object KaoChangOperate {
         }
 
         return result==0
+    }
+
+    /**
+     * 用户出餐结果。
+     * 只有顾客真实取走才算成功；如果超时未取并被丢弃，需要继续补发同一份。
+     */
+    suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
+        writeSingleRegister2(action_address, kaoPan.cmdValueTake)
+        var result = 1
+        while (result == 1) {
+            delay(2000)
+            result = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        }
+        if (result != 0) {
+            AppConfig.getAppConfig().errorStatus = 2
+            AppConfig.getAppConfig().onlineStatus = 3
+            GlobalScope.launch(Dispatchers.Main) {
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                DataManagementAPI.uploadDeviceInfo()
+            }
+            LogUtils.d("下位机异常！用户下单-----返回结果result------${result}")
+            return TakeSausageResult.ERROR
+        }
+
+        delay(3000)
+        val takeResult = when (val sausageInfo = SauceDetectionUitls.captureAndDetect(1)) {
+            null -> {
+                delay(3000)
+                writeSingleRegister2(action_address_shoumaitai, 2)
+                AppConfig.getAppConfig().onlineStatus = 3
+                GlobalScope.launch(Dispatchers.Main) {
+                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                    DataManagementAPI.uploadDeviceInfo()
+                }
+                LogUtils.d("售卖台第一次拍照失败")
+                TakeSausageResult.ERROR
+            }
+
+            else -> {
+                if (sausageInfo.code == 2) {
+                    delay(3000)
+                    val sausageInfo2 = SauceDetectionUitls.captureAndDetect(1)
+                    when {
+                        sausageInfo2 == null -> {
+                            writeSingleRegister2(action_address_shoumaitai, 2)
+                            AppConfig.getAppConfig().onlineStatus = 3
+                            GlobalScope.launch(Dispatchers.Main) {
+                                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                                DataManagementAPI.uploadDeviceInfo()
+                            }
+                            LogUtils.d("售卖台第二次拍照失败")
+                            TakeSausageResult.ERROR
+                        }
+
+                        sausageInfo2.code == 2 -> {
+                            writeSingleRegister2(action_address_shoumaitai, 2)
+                            LogUtils.w("客户未及时取肠，执行丢弃，本次不计为已交付")
+                            TakeSausageResult.DISCARDED
+                        }
+
+                        else -> {
+                            writeSingleRegister2(action_address_shoumaitai, 1)
+                            LogUtils.d("客户已经把肠取走")
+                            TakeSausageResult.TAKEN_BY_USER
+                        }
+                    }
+                } else {
+                    writeSingleRegister2(action_address_shoumaitai, 1)
+                    LogUtils.d("客户已经把肠取走")
+                    TakeSausageResult.TAKEN_BY_USER
+                }
+            }
+        }
+
+        kaoPan.cmdStatusTake = result
+        if (result == 0) {
+            kaoPan.isHasSausage = false
+            kaoPan.holdingTime = 0L
+            kaoPan.startTime = 0
+            kaoPan.status = 0
+        }
+
+        GlobalScope.launch(Dispatchers.Main) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        }
+
+        var result2 = 1
+        while (result2 == 1) {
+            delay(2000)
+            result2 = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        }
+        if (result2 != 0) {
+            AppConfig.getAppConfig().errorStatus = 2
+            AppConfig.getAppConfig().onlineStatus = 3
+            GlobalScope.launch(Dispatchers.Main) {
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                DataManagementAPI.uploadDeviceInfo()
+            }
+            LogUtils.d("下位机异常！（关门或丢弃出错）")
+            return TakeSausageResult.ERROR
+        }
+
+        return takeResult
     }
 
     /**

@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.lzy.okgo.OkGo
 import com.lzy.okgo.callback.StringCallback
 import com.lzy.okgo.model.Response
@@ -160,7 +161,7 @@ object NetApi {
     /**
      * 上传烤盘的状态
      */
-    fun updateKaoPanList(content: String?) {
+    fun updateKaoPanList(content: String?, callback: ((code:Int,content:String?) -> Unit)? = null) {
         val json=com.alibaba.fastjson.JSONObject()
         json["deviceCode"] = AppConfig.getDeviceId()
         json["content"] = content
@@ -168,16 +169,21 @@ object NetApi {
             .upJson(json.toJSONString())
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
+                    LogUtils.d("烤盘状态上传成功")
+                    callback?.invoke(0, response?.body())
                 }
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
+                    LogUtils.e("烤盘状态上传失败：${response?.exception?.message}")
+                    callback?.invoke(1, response?.body())
                 }
             })
     }
     /**
-     * 更新设备状态基本信息
+     * 更新设备营业状态及基础控制参数到云端。
+     * 这是 HTTP 同步通道，和 MQTT 的 action=2 状态上报互为补偿。
      */
-    fun updateDeviceInfo(){
+    fun updateDeviceInfo(callback: ((code:Int,content:String?) -> Unit)? = null){
         val json=com.alibaba.fastjson.JSONObject()
         json["deviceCode"] = AppConfig.getDeviceId()
         json["errorStatus"] = AppConfig.getAppConfig().errorStatus
@@ -189,9 +195,11 @@ object NetApi {
             .upJson(json.toJSONString())
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
+                    callback?.invoke(0, response?.body())
                 }
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
+                    callback?.invoke(1, response?.body())
                 }
             })
     }

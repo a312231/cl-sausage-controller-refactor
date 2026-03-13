@@ -1,6 +1,5 @@
 package cn.niuyannet.kaochang.android.net
 
-import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
@@ -8,6 +7,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.utils.LogUtils
 
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
@@ -60,9 +60,27 @@ object DataManagementAPI {
      */
     fun uploadDataToServer(){
         //上传烤盘的状态数据
-        NetApi.updateKaoPanList(JSON.toJSONString(KaoPanHelper.getKaoPanList()))
+        NetApi.updateKaoPanList(JSON.toJSONString(KaoPanHelper.getKaoPanList())) { code, content ->
+            if (code == 0) {
+                LogUtils.d("烤盘状态同步成功")
+            } else {
+                LogUtils.e("烤盘状态同步失败：code=$code, content=$content")
+            }
+        }
         //上传烤肠箱数据
-        NetApi.updateStock(JSON.toJSONString( KaoPanHelper.getKaoPanBoxList())) { _, _ ->}
+        val kaoPanBoxList = KaoPanHelper.getKaoPanBoxList()
+        val stockPayload = JSON.toJSONString(kaoPanBoxList)
+        val stockItemCount = kaoPanBoxList.size
+        val stockTotalCount = kaoPanBoxList.sumOf { box ->
+            box.num
+        }
+        NetApi.updateStock(stockPayload) { code, content ->
+            if (code == 0) {
+                LogUtils.d("库存同步成功：明细数=$stockItemCount, 总库存=$stockTotalCount")
+            } else {
+                LogUtils.e("库存同步失败：明细数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content")
+            }
+        }
     }
 
     /**
@@ -118,7 +136,7 @@ object DataManagementAPI {
                       appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
                       appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")//过渡态
                       appConfigBean.bakingTime=jsonData.getIntValue("bakingTime")
-                      Log.d("DataManagementAPI---服务端获取值-", "bakingTime:---"+jsonData.getIntValue("bakingTime")+"---  discardTime:"+jsonData.getIntValue("discardTime"))
+                      LogUtils.d("设备配置拉取成功：bakingTime=${jsonData.getIntValue("bakingTime")}, discardTime=${jsonData.getIntValue("discardTime")}")
                       appConfigBean.discardTime=jsonData.getIntValue("discardTime")
                       appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
                       appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")
@@ -132,11 +150,12 @@ object DataManagementAPI {
     }
 
     /**
-     * 上传设备状态到云端
+     * 上传设备营业状态到云端。
+     * 这个 HTTP 通道用于补偿 MQTT 状态上报偶发丢失的情况。
      */
-    fun uploadDeviceInfo(){
-        //上传设备状态基本配置信息
-        NetApi.updateDeviceInfo()
+    fun uploadDeviceInfo(callback: ((code:Int,content:String?) -> Unit)? = null){
+        // 上传设备状态基础配置信息
+        NetApi.updateDeviceInfo(callback)
     }
 
 }
