@@ -1,14 +1,18 @@
 package cn.niuyannet.kaochang.android.ui
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
 import android.opengl.GLES11Ext
 import android.os.Bundle
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.util.Log
 import android.view.View
+import android.widget.EditText
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
@@ -33,6 +37,7 @@ import com.jiangdg.ausbc.camera.bean.CameraRequest
 import com.jiangdg.ausbc.render.env.RotateType
 import com.jiangdg.usb.USBMonitor
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.ceil
 import kotlin.system.exitProcess
 
 /**
@@ -148,14 +153,14 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
     }
     private fun goToSetting(){
-        val editText = android.widget.EditText(this).apply {
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                    android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD or
-                    android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            transformationMethod = android.text.method.PasswordTransformationMethod.getInstance()
+        val editText = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or
+                    InputType.TYPE_TEXT_VARIATION_PASSWORD or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            transformationMethod = PasswordTransformationMethod.getInstance()
             hint = "请输入密码"
         }
-        android.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("设备管理密码")
             .setView(editText)
             .setPositiveButton("确定") { _, _ ->
@@ -213,11 +218,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             if (appConfigBean.available > 0) {
                 val leftTime = appConfigBean.available
                 if (leftTime >= 60_000) {
-                    val minutes = kotlin.math.ceil(appConfigBean.available / 60000.0).toInt()
+                    val minutes = ceil(appConfigBean.available / 60000.0).toInt()
                     binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
                 }
                 else {
-                    val seconds = kotlin.math.ceil(appConfigBean.available / 1000.0).toInt()
+                    val seconds = ceil(appConfigBean.available / 1000.0).toInt()
                     binding.tvScanTip.text = "⏳ 预计烤制 ${seconds} 秒"
                 }
             } else {

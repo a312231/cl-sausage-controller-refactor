@@ -1,5 +1,7 @@
 package com.invertor.modbus.serial;
 
+import com.example.reallin.buyapp.jssc.SerialPortList;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -37,7 +39,7 @@ public class SerialPortFactoryJSSC implements SerialPortAbstractFactory {
 
     @Override
     public List<String> getPortIdentifiers() {
-        return Arrays.asList(com.example.reallin.buyapp.jssc.SerialPortList.getPortNames());
+        return Arrays.asList(SerialPortList.getPortNames());
     }
 
     @Override

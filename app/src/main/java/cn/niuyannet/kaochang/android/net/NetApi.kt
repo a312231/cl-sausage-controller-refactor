@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import com.alibaba.fastjson.JSONObject
 import com.lzy.okgo.OkGo
 import com.lzy.okgo.callback.StringCallback
 import com.lzy.okgo.model.Response
@@ -37,7 +38,7 @@ object NetApi {
      * 初始化设备
      */
     fun initDevice(deviceId:String,callback: (code:Int,content:String?) -> Unit) {
-        val json=com.alibaba.fastjson.JSONObject()
+        val json=JSONObject()
         json["deviceCode"] = deviceId
         OkGo.post<String>(init_url)
             .upJson(json.toJSONString())
@@ -122,7 +123,7 @@ object NetApi {
      * 更新烤肠箱库存
      */
     fun updateStock(content:String,callback: (code:Int,content:String?) -> Unit){
-        val json=com.alibaba.fastjson.JSONObject()
+        val json=JSONObject()
         json["deviceCode"] = AppConfig.getDeviceId()
         json["content"] = content
         OkGo.post<String>(updateStock_url)
@@ -142,7 +143,7 @@ object NetApi {
      * 清空烤盘
      */
     fun clearStock(content:String,callback: (code:Int,content:String?) -> Unit){
-        val json=com.alibaba.fastjson.JSONObject()
+        val json=JSONObject()
         json["deviceCode"] = AppConfig.getDeviceId()
         json["content"] = content
         OkGo.post<String>(clearStock_url)
@@ -162,7 +163,7 @@ object NetApi {
      * 上传烤盘的状态
      */
     fun updateKaoPanList(content: String?, callback: ((code:Int,content:String?) -> Unit)? = null) {
-        val json=com.alibaba.fastjson.JSONObject()
+        val json=JSONObject()
         json["deviceCode"] = AppConfig.getDeviceId()
         json["content"] = content
         OkGo.post<String>(updateKaoPanList_url)
@@ -184,7 +185,7 @@ object NetApi {
      * 这是 HTTP 同步通道，和 MQTT 的 action=2 状态上报互为补偿。
      */
     fun updateDeviceInfo(callback: ((code:Int,content:String?) -> Unit)? = null){
-        val json=com.alibaba.fastjson.JSONObject()
+        val json=JSONObject()
         json["deviceCode"] = AppConfig.getDeviceId()
         json["errorStatus"] = AppConfig.getAppConfig().errorStatus
         json["onlineStatus"] = AppConfig.getAppConfig().onlineStatus
