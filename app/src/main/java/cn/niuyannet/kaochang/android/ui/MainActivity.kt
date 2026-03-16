@@ -16,17 +16,12 @@ import android.widget.EditText
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
-import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
-import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
-import cn.niuyannet.kaochang.android.services.CameraUvc
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
-import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import com.alibaba.fastjson.JSON
-import com.alibaba.fastjson.JSONObject
 import com.blankj.utilcode.util.ToastUtils
 import com.bumptech.glide.Glide
 import com.jiangdg.ausbc.MultiCameraClient
@@ -52,10 +47,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         initView()
 
         // 初始化
-        CameraUvc.instance.init(this) { findFirstCamera(this) }
-        initCameraData()
+//        CameraUvc.instance.init(this) { findFirstCamera(this) }
+//        initCameraData()
+
         // 启动后台拍照服务
-//        CameraMonitor.instance.startService(this)
+        CameraMonitor.instance.startService(this)
     }
 
     override fun initData() {
@@ -245,7 +241,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         ConnectManageHelper.disConnect()
         KaoChangAlgorithm.stopServer()
         // 停止后台拍照服务
-        clearCamera()
+//        clearCamera()
 //        PhotoCaptureService.stopService(this)
         exitProcess(0)
     }
@@ -365,6 +361,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         mCameraClient?.unRegister()
         mCameraClient?.destroy()
         mCameraClient = null
+        Log.d("Main", "clearCamera === ")
     }
 
     override fun onCameraState(

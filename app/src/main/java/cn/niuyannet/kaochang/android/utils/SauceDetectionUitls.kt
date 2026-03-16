@@ -16,7 +16,7 @@ import androidx.lifecycle.LifecycleOwner
 import cn.niuyannet.kaochang.android.MyApp.Companion.instance
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.detecition.SauceDetector
-import cn.niuyannet.kaochang.android.services.CameraUvc
+import cn.niuyannet.kaochang.android.services.CameraMonitor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -77,7 +77,7 @@ object SauceDetectionUitls {
                         LogUtils.d(tag, "获取拍照锁，开始拍照")
                         // 将回调转换为协程挂起
                         suspendCancellableCoroutine { continuation ->
-                            CameraUvc.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
+                            CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
                                 // 回调执行
                                 LogUtils.d(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
                                 // 通知等待的Deferred
