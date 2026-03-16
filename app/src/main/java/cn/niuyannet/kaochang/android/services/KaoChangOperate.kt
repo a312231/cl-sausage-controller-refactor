@@ -607,6 +607,13 @@ object KaoChangOperate {
      * 营业时间开始
      */
     suspend fun startBusinessHours(config: AppConfigBean){
+        if (config.errorStatus != 0) {
+            config.onlineStatus = 3
+            AppConfig.saveAppConfig(config)
+            LogUtils.w("设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到运营中")
+            NetApi.updateDeviceInfo()
+            return
+        }
         //修改设备状态 改为运营中
         config.apply {
             onlineStatus = 1
@@ -620,6 +627,13 @@ object KaoChangOperate {
      * 营业时间结束
      */
     suspend fun endBusinessHours(config: AppConfigBean){
+        if (config.errorStatus != 0) {
+            config.onlineStatus = 3
+            AppConfig.saveAppConfig(config)
+            LogUtils.w("设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到休息中")
+            NetApi.updateDeviceInfo()
+            return
+        }
         //修改设备状态 改为休息中
         config.apply {
             onlineStatus = 2

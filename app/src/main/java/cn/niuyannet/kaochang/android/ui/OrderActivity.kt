@@ -98,33 +98,6 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
 
     /**
-     * 设备已经恢复到可营业态时，自动清掉遗留的错误标记。
-     * 当前项目里 errorStatus 在故障时会被置为 1/2，但只有管理员页有手动清零逻辑，
-     * 所以这里补一层“恢复营业即清错”的自动恢复，避免后台设备列表长期显示“错误”。
-     */
-    protected fun clearErrorStatusIfRecovered(
-        reason: String,
-        retryDelaysMs: List<Long> = emptyList()
-    ): Boolean {
-        val config = AppConfig.getAppConfig()
-        if (config.errorStatus == 0) {
-            return false
-        }
-        if (config.status != 1 || config.onlineStatus != 1 || config.moveStatus != 0) {
-            LogUtils.d(
-                "跳过自动清错：reason=$reason, status=${config.status}, onlineStatus=${config.onlineStatus}, moveStatus=${config.moveStatus}, errorStatus=${config.errorStatus}"
-            )
-            return false
-        }
-        val oldErrorStatus = config.errorStatus
-        config.errorStatus = 0
-        AppConfig.saveAppConfig(config)
-        LogUtils.w("设备已恢复运营，自动清除错误标记：reason=$reason, errorStatus=$oldErrorStatus->0")
-        syncDeviceStatusToServer(retryDelaysMs = retryDelaysMs)
-        return true
-    }
-    
-    /**
      * 隐藏正在出烤肠对话框
      */
      fun hideProcessingDialog() {
@@ -252,23 +225,16 @@ abstract class OrderActivity: BaseSauceDetection() {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 withContext(Dispatchers.Main) {
-                    val status = AppConfig.getAppConfig().onlineStatus
+                    val config = AppConfig.getAppConfig()
+                    val status = config.onlineStatus
                     // 订单动作结束后，如果设备仍停留在 4（工作中），主动回到 1（运营中）
                     if (status == 4){
-                        AppConfig.getAppConfig().onlineStatus = if (orderCompleted) 1 else 3
+                        config.onlineStatus = if (orderCompleted && config.errorStatus == 0) 1 else 3
                     }
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    val errorRecovered = if (orderCompleted) {
-                        clearErrorStatusIfRecovered(
-                            reason = "order_completed",
-                            retryDelaysMs = listOf(2000L, 6000L)
-                        )
-                    } else false
+                    AppConfig.saveAppConfig(config)
                     // 这里上报的是设备营业状态（onlineStatus），不是订单事件 status
                     // 订单结束时同时走 MQTT + HTTP，并做轻量重试，降低“假工作中”概率
-                    if (!errorRecovered) {
-                        syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
-                    }
+                    syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
                     hideProcessingDialog()
                     if (orderCompleted) {
                         showCompletedDialog()

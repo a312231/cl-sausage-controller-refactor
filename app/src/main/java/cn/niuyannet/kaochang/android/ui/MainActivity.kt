@@ -231,12 +231,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
 
         binding.deviceNameText.text = appConfigBean.deviceName + "(" + appConfigBean.deviceCode + ")"
-        if (appConfigBean.status == 1 && appConfigBean.onlineStatus == 1) {
-            clearErrorStatusIfRecovered(
-                reason = "main_screen_operating",
-                retryDelaysMs = listOf(3000L)
-            )
-        }
         // Only show the QR code when the device is enabled and operating normally.
         if (appConfigBean.status == 1 && AppConfig.getAppConfig().onlineStatus == 1) {
             binding.qrCodeImage.visibility = View.VISIBLE
