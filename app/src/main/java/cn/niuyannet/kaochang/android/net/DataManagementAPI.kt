@@ -38,7 +38,7 @@ object DataManagementAPI {
                             productId = item.getIntValue("productId").toString()
                             positionSn = item.getIntValue("positionSn")
                             lastPositionSn = item.getIntValue("lastPositionSn")
-                            num = item.getIntValue("num")
+                            num = maxOf(0, item.getIntValue("num"))
                             tasteCode = item.getString("tasteCode")
                             tasteName = item.getString("tasteName")
                             cmdValueTake = item.getIntValue("cmdValueTake")

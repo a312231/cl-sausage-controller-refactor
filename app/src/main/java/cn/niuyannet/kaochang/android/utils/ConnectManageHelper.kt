@@ -47,7 +47,7 @@ object ConnectManageHelper {
         //关闭mqtt连接
         VMMqttHelper.disconnect()
         //关闭modbus连接
-        VMModbusHelper.disConnectTcpMaster()
+        VMModbusHelper.disconnectModbusMaster()
     }
 
 }

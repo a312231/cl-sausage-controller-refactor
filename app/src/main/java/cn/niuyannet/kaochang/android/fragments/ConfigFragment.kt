@@ -79,7 +79,7 @@ class ConfigFragment : Fragment() {
         }
         binding.btndisModbusConfig.setOnClickListener {
             GlobalScope.launch(Dispatchers.IO) {
-                VMModbusHelper.disConnectTcpMaster()
+        VMModbusHelper.disconnectModbusMaster()
                 GlobalScope.launch(Dispatchers.Main) {
                     ToastUtils.showShort("断开连接成功")
                 }

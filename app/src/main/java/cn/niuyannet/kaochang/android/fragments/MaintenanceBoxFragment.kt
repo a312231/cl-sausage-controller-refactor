@@ -98,6 +98,10 @@ class MaintenanceBoxFragment : Fragment() {
             ToastUtils.showShort("只能选择一个烤肠箱")
             return
         }
+        if (selectedBoxes[0].num <= 0) {
+            ToastUtils.showShort("当前烤肠箱库存不足，无法继续补肠")
+            return
+        }
 
         MaterialDialog(requireContext()).show {
             title(text = "请选择目标烤盘位置")

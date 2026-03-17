@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.ui
+﻿package cn.niuyannet.kaochang.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -21,6 +21,7 @@ import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionLauncher
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
@@ -39,7 +40,13 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutionException
 
 /**
- * 下单流程
+ * 订单履约流程。
+ *
+ * 这里负责：
+ * - 接收已下发到上位机的订单内容
+ * - 串行执行每一根烤肠的出餐
+ * - 在动作开始/完成/失败时向后端上报订单事件
+ * - 在订单结束时把设备营业状态从“工作中”收尾回“运营中/维护中”
  */
 abstract class OrderActivity: BaseSauceDetection() {
 
@@ -80,9 +87,8 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
     
     /**
-     * 由子类实现的 UI 绑定钩子。
-     * OrderActivity 在业务流程中会调用该方法以刷新界面。
-     * 默认不做任何事，避免非 UI 子类需要实现。
+     * 由子类实现的 UI 刷新钩子。
+     * 订单流程结束、二维码需要重新显示时会回调这里。
      */
     open fun setDataToView() {}
 
@@ -165,7 +171,8 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
 
     /**
-     * 取出来保温状态下的烤肠
+     * 执行整单履约。
+     * 一个订单可能包含多个商品项、每个商品项又可能包含多根烤肠，这里按根串行处理。
      */
     fun purchaseOrder(orderMessage:String) {
 
@@ -248,9 +255,11 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
 
     /**
-     * 将当前设备营业状态同步到云端。
-     * 主通道是 MQTT action=2，HTTP updateDeviceInfo 作为补偿通道。
-     * retryDelaysMs 用于在网络瞬时抖动时补发，避免订单已完成但云端仍停留在工作中。
+     * 执行单个商品项的逐根出餐。
+     *
+     * 注意：
+     * - TAKEN_BY_USER 和 DISCARDED 当前都会把 deliveredCount + 1
+     * - 只有 ERROR 才会中断本商品项并上报 status=5
      */
     private suspend fun handleOrderItemDelivery(
         orderNo: String,
@@ -275,6 +284,9 @@ abstract class OrderActivity: BaseSauceDetection() {
             }
 
             try {
+                if (!ensureModbusReadyForDelivery(orderNo, item.id)) {
+                    throw IllegalStateException("出餐前检测到下位机未连接，已终止本次出餐：orderNo=$orderNo, itemId=${item.id}")
+                }
                 SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
                     put("order_no", orderNo)
                     put("item_id", item.id)
@@ -304,8 +316,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                             put("taste_code", item.tasteCode)
                             put("status", 2)
                         })
-                        LogUtils.w("用户未及时取走，按丢弃完成处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
-                        LogUtils.w("鍑洪鍚庣敤鎴锋湭鍙栬蛋锛屽凡涓㈠純锛屽噯澶囪ˉ鍙戝悓涓€浠? orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                        LogUtils.w("顾客未及时取走烤肠，系统已执行丢弃并按本次出餐完成处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                        LogUtils.w("现场请重点排查售卖口视觉识别是否稳定，以及顾客取走动作是否被正确识别：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {
@@ -316,12 +328,15 @@ abstract class OrderActivity: BaseSauceDetection() {
                             put("taste_code", item.tasteCode)
                             put("status", 5)
                         })
-                        throw IllegalStateException("鍙栬偁澶辫触锛屾棤娉曠户缁飽绾? orderNo=$orderNo, itemId=${item.id}")
+                        LogUtils.e("出餐流程进入故障分支，已上报 status=5：orderNo=$orderNo, itemId=${item.id}")
+                        throw IllegalStateException("取肠失败，无法继续履约：orderNo=$orderNo, itemId=${item.id}")
                     }
                 }
             } catch (e: Exception) {
-                LogUtils.e("鏈烘鑷傛墽琛屽け璐? ${e.message}")
+                LogUtils.e("出餐失败，设备切换为维护中：${e.message}")
+                LogUtils.e("设备已上报故障状态，请现场检查下位机连接、售卖口识别和机械执行状态：${e.message}")
                 withContext(Dispatchers.Main) {
+                    AppConfig.getAppConfig().errorStatus = 2
                     AppConfig.getAppConfig().onlineStatus = 3
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
                     syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
@@ -331,7 +346,8 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
 
         if (deliveredCount < item.quantity) {
-            LogUtils.e("璁㈠崟鏈畬鎴愬叏閮ㄥ飽绾︼細orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("出餐数量不足，按故障处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("当前已停止继续履约，请现场检查售卖口与机械链路后再恢复：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
             SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
                 put("order_no", orderNo)
                 put("item_id", item.id)
@@ -345,6 +361,41 @@ abstract class OrderActivity: BaseSauceDetection() {
         return DeliveryResult(true, deliveredCount)
     }
 
+    /**
+     * 出餐前的通信层防御性预检。
+     * 这里只判断下位机是否可通信，不判断 201 的忙闲状态。
+     */
+    private suspend fun ensureModbusReadyForDelivery(
+        orderNo: String,
+        itemId: Int,
+        maxRetryCount: Int = 3,
+        retryDelayMs: Long = 1500L
+    ): Boolean {
+        if (VMModbusHelper.connectStatus()) {
+            return true
+        }
+
+        LogUtils.w("出餐前检测到下位机连接断开，开始短时重连：orderNo=$orderNo, itemId=$itemId")
+        repeat(maxRetryCount) { index ->
+            val attempt = index + 1
+            VMModbusHelper.connectModbus { status ->
+                LogUtils.d("出餐前重连下位机结果：attempt=$attempt/$maxRetryCount, status=$status, orderNo=$orderNo, itemId=$itemId")
+            }
+            delay(retryDelayMs)
+            if (VMModbusHelper.connectStatus()) {
+                LogUtils.d("出餐前下位机重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
+                return true
+            }
+        }
+
+        LogUtils.e("出餐前下位机持续断开，已放弃本次出餐：orderNo=$orderNo, itemId=$itemId")
+        return false
+    }
+
+    /**
+     * 同步设备营业状态。
+     * MQTT 是主通道，HTTP 作为补偿通道；补发只在期望状态未变化时执行。
+     */
     protected fun syncDeviceStatusToServer(retryDelaysMs: List<Long> = emptyList()) {
         val expectedStatus = AppConfig.getAppConfig().onlineStatus
         LogUtils.d("设备状态同步开始：expectedOnlineStatus=$expectedStatus, retryCount=${retryDelaysMs.size}")

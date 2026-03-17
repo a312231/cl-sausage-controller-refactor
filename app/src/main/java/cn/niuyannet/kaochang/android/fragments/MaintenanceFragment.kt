@@ -13,6 +13,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import cn.niuyannet.kaochang.android.adapter.KaoPanAdapter
 import cn.niuyannet.kaochang.android.databinding.FragmentMaintenanceBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
@@ -28,6 +29,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MaintenanceFragment : Fragment() {
@@ -250,9 +255,69 @@ class MaintenanceFragment : Fragment() {
 //            SauceDetectionLauncher.launch(requireContext())
 //        }
         binding.btnErroStatus.setOnClickListener {
-            AppConfig.getAppConfig().errorStatus=0 //恢复正常状态
-            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            DataManagementAPI.uploadDeviceInfo()
+            lifecycleScope.launch(Dispatchers.IO) {
+                val config = AppConfig.getAppConfig()
+                config.errorStatus = 0
+                config.onlineStatus = if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
+                AppConfig.saveAppConfig(config)
+                DataManagementAPI.uploadDeviceInfo()
+            }
+        }
+    }
+
+    private fun getCurrentTime(): String {
+        return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Calendar.getInstance().time)
+    }
+
+    /**
+     * 根据当前设备配置的营业时间判断“恢复正常”后应该回到运营中还是休息中。
+     * 后台当前时间串既可能是 HH:mm，也可能是 HH:mm:ss，这里统一兼容两种格式。
+     */
+    // 根据当前设备配置的营业时间判断，点击“恢复正常状态”后应该回到运营中还是休息中。
+    // 后台当前时间串可能是 HH:mm，也可能是 HH:mm:ss，这里统一兼容两种格式。
+    private fun isWithinBusinessHours(currentTimeStr: String, businessTime: BusinessTime?): Boolean {
+        try {
+            if (businessTime == null) return false
+
+            val current = parseBusinessTime(currentTimeStr) ?: return false
+            val calendar = Calendar.getInstance()
+            val dayOfWeek = if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) 7 else calendar.get(Calendar.DAY_OF_WEEK) - 1
+
+            if ("everyday".equals(businessTime.mode, ignoreCase = true) && businessTime.defaultTime != null && businessTime.defaultTime.size >= 2) {
+                val start = parseBusinessTime(businessTime.defaultTime[0]) ?: return false
+                val end = parseBusinessTime(businessTime.defaultTime[1]) ?: return false
+                return isTimeInRange(current, start, end)
+            } else if ("custom".equals(businessTime.mode, ignoreCase = true) && businessTime.customTimes != null) {
+                for (timeItem in businessTime.customTimes) {
+                    if (timeItem.day == dayOfWeek && timeItem.enabled && timeItem.timeRange != null && timeItem.timeRange.size >= 2) {
+                        val start = parseBusinessTime(timeItem.timeRange[0]) ?: return false
+                        val end = parseBusinessTime(timeItem.timeRange[1]) ?: return false
+                        return isTimeInRange(current, start, end)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            LogUtils.e("恢复设备状态时解析营业时间失败：${e.message}")
+        }
+        return false
+    }
+
+    private fun parseBusinessTime(value: String): Date? {
+        val formats = listOf("HH:mm:ss", "HH:mm")
+        for (pattern in formats) {
+            try {
+                return SimpleDateFormat(pattern, Locale.getDefault()).parse(value)
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
+    private fun isTimeInRange(current: Date, start: Date, end: Date): Boolean {
+        return if (start.before(end) || start == end) {
+            (current.after(start) || current == start) && (current.before(end) || current == end)
+        } else {
+            (current.after(start) || current == start) || (current.before(end) || current == end)
         }
     }
 

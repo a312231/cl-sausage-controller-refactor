@@ -37,7 +37,7 @@ object LogUtils {
     private const val LOG_FILE_RETENTION_DAYS = 7
     
     // 单个日志文件最大大小（5MB）
-    private const val MAX_FILE_SIZE = 20 * 1024//5 * 1024 * 1024
+    private const val MAX_FILE_SIZE = 5 * 1024 * 1024
     
     // 日期格式
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())

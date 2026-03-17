@@ -26,21 +26,50 @@ import kotlinx.coroutines.withContext
 import kotlin.math.log
 
 /**
- * 烤盘操作类
- *  *  【补烤肠到烤盘】从平台把烤肠搬运到烤盘1-33
-     * 【用户下单取烤肠】把烤好的烤肠取出来 101-133
-     * 【补烤肠】从烤肠箱取出来烤肠 201-212
-     * 【超过设置的时间】丢弃烤肠 301-333
-     * 动作组地址：200  （无符号16位整型，动作组号）
-     * 动作状态地址：201  （无符号16位整型，0为正常，1为运动中，其余为错误码）
-     *  202 烤盘搬移 （无符号8位整型，起始位置）（无符号8位整型，起始位置）
-     *  203 烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+ * 上位机机械动作封装。
+ *
+ * 当前项目里和下位机交互最核心的寄存器语义是：
+ * - 200：动作指令寄存器。上位机写入动作号，请求下位机执行动作。
+ * - 201：动作状态寄存器。
+ *   - 0 = 空闲 / 上一次动作已完成
+ *   - 1 = 动作执行中
+ *   - 2 = 设备忙，本次动作未被接收
+ * - 202 / 203：烤盘搬移专用指令和结果寄存器，语义独立于 200 / 201。
+ *
+ * 因此：
+ * - “是否断连”依赖 VMModbusHelper.connectStatus() 判断；
+ * - “201=2”只表示设备忙，不等价于通信断开。
  */
 object KaoChangOperate {
     enum class TakeSausageResult {
         TAKEN_BY_USER,
         DISCARDED,
         ERROR
+    }
+
+    private enum class ActionStatus201 {
+        IDLE,
+        RUNNING,
+        BUSY,
+        DISCONNECTED
+    }
+
+    private enum class ActionExecutionResult {
+        SUCCESS,
+        COMMAND_REJECTED,
+        BUSY_TIMEOUT,
+        DISCONNECTED,
+        RUNNING_TIMEOUT
+    }
+
+    private fun markDeviceErrorAndUpload(logMessage: String) {
+        AppConfig.getAppConfig().errorStatus = 2
+        AppConfig.getAppConfig().onlineStatus = 3
+        GlobalScope.launch(Dispatchers.Main) {
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            DataManagementAPI.uploadDeviceInfo()
+        }
+        LogUtils.e(logMessage)
     }
 
     // modbus 地址
@@ -75,13 +104,169 @@ object KaoChangOperate {
     val action_debug=255
 
     /**
-     * 从烤肠箱把烤肠搬运到烤盘1-33
-     * kaoPan 烤盘的位置
-     * kaoPanBox  烤箱
+     * 仅按当前和嵌入式确认的 201 协议语义解析动作状态。
+     * 这里把读寄存器失败映射成 DISCONNECTED，避免和 201=2 的“设备忙”混淆。
+     */
+    private fun parseActionStatus201(value: Int): ActionStatus201 {
+        return when (value) {
+            0 -> ActionStatus201.IDLE
+            1 -> ActionStatus201.RUNNING
+            2 -> ActionStatus201.BUSY
+            else -> ActionStatus201.DISCONNECTED
+        }
+    }
+
+    /**
+     * 在真正下发动作前做一次通信层预检。
+     * 这里只解决“上下位机通不通”的问题，不负责判断设备忙闲。
+     */
+    private suspend fun ensureModbusReady(actionName: String): Boolean {
+        if (VMModbusHelper.connectStatus()) {
+            return true
+        }
+        LogUtils.w("$actionName 前检测到下位机通信断开，开始短时重连")
+        repeat(3) { index ->
+            val attempt = index + 1
+            VMModbusHelper.connectModbus { status ->
+                LogUtils.d("$actionName 前重连下位机结果：attempt=$attempt/3, status=$status")
+            }
+            delay(1500L)
+            if (VMModbusHelper.connectStatus()) {
+                LogUtils.d("$actionName 前下位机重连成功：attempt=$attempt/3")
+                return true
+            }
+        }
+        LogUtils.e("$actionName 前下位机持续断开，放弃执行动作")
+        return false
+    }
+
+    /**
+     * 统一封装 200/201 协议下的动作执行逻辑。
+     *
+     * 约束：
+     * - 下发动作前先做 connectStatus() 预检
+     * - 201=2 按“设备忙”处理，有限次等待后重试
+     * - 201=1 长时间不回到 0，按执行超时处理
+     * - 通信层失败才走 DISCONNECTED
+     */
+    private suspend fun executeActionWithRetry(
+        actionName: String,
+        maxBusyRetry: Int = 3,
+        busyRetryDelayMs: Long = 1000L,
+        runningPollDelayMs: Long = 1000L,
+        runningTimeoutMs: Long = 60_000L,
+        issueAction: suspend () -> VMModbusHelper.ModbusOperationResult
+    ): ActionExecutionResult {
+        var busyRetryCount = 0
+
+        retryLoop@ while (busyRetryCount <= maxBusyRetry) {
+            if (!ensureModbusReady(actionName)) {
+                return ActionExecutionResult.DISCONNECTED
+            }
+
+            when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
+                ActionStatus201.IDLE -> Unit
+                ActionStatus201.RUNNING, ActionStatus201.BUSY -> {
+                    busyRetryCount++
+                    if (busyRetryCount > maxBusyRetry) {
+                        LogUtils.e("$actionName 前连续检测到设备忙，超过重试阈值：retry=$busyRetryCount")
+                        return ActionExecutionResult.BUSY_TIMEOUT
+                    }
+                    LogUtils.w("$actionName 前检测到设备忙(201!=0)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                    delay(busyRetryDelayMs)
+                    continue@retryLoop
+                }
+                ActionStatus201.DISCONNECTED -> {
+                    LogUtils.e("$actionName 前读取动作状态失败")
+                    return ActionExecutionResult.DISCONNECTED
+                }
+            }
+
+            val issueResult = issueAction()
+            when (issueResult.status) {
+                VMModbusHelper.ModbusOperationStatus.SUCCESS -> Unit
+                VMModbusHelper.ModbusOperationStatus.BUSY -> {
+                    busyRetryCount++
+                    if (busyRetryCount > maxBusyRetry) {
+                        LogUtils.e("$actionName 下发指令时下位机持续返回忙，超过重试阈值")
+                        return ActionExecutionResult.BUSY_TIMEOUT
+                    }
+                    LogUtils.w("$actionName 下发指令时下位机返回忙，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                    delay(busyRetryDelayMs)
+                    continue@retryLoop
+                }
+                VMModbusHelper.ModbusOperationStatus.DISCONNECTED -> {
+                    LogUtils.e("$actionName 下发指令失败：下位机通信断开")
+                    return ActionExecutionResult.DISCONNECTED
+                }
+                VMModbusHelper.ModbusOperationStatus.PARAM_ERROR,
+                VMModbusHelper.ModbusOperationStatus.DEVICE_FAILURE,
+                VMModbusHelper.ModbusOperationStatus.PROTOCOL_ERROR,
+                VMModbusHelper.ModbusOperationStatus.UNKNOWN_ERROR -> {
+                    LogUtils.e("$actionName 下发指令失败：${issueResult.status} ${issueResult.message ?: ""}".trim())
+                    return ActionExecutionResult.COMMAND_REJECTED
+                }
+            }
+            val start = System.currentTimeMillis()
+
+            while (true) {
+                delay(runningPollDelayMs)
+                if (!ensureModbusReady(actionName)) {
+                    return ActionExecutionResult.DISCONNECTED
+                }
+                when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
+                    ActionStatus201.RUNNING -> {
+                        if (System.currentTimeMillis() - start > runningTimeoutMs) {
+                            LogUtils.e("$actionName 长时间处于执行中(201=1)，已超时")
+                            return ActionExecutionResult.RUNNING_TIMEOUT
+                        }
+                    }
+                    ActionStatus201.IDLE -> return ActionExecutionResult.SUCCESS
+                    ActionStatus201.BUSY -> {
+                        busyRetryCount++
+                        if (busyRetryCount > maxBusyRetry) {
+                            LogUtils.e("$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
+                            return ActionExecutionResult.BUSY_TIMEOUT
+                        }
+                        LogUtils.w("$actionName 下发后收到设备忙(201=2)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                        delay(busyRetryDelayMs)
+                        continue@retryLoop
+                    }
+                    ActionStatus201.DISCONNECTED -> {
+                        LogUtils.e("$actionName 执行过程中读取动作状态失败")
+                        return ActionExecutionResult.DISCONNECTED
+                    }
+                }
+            }
+        }
+
+        return ActionExecutionResult.BUSY_TIMEOUT
+    }
+
+    private fun markActionFailure(actionName: String, result: ActionExecutionResult) {
+        val logMessage = when (result) {
+            ActionExecutionResult.SUCCESS -> return
+            ActionExecutionResult.COMMAND_REJECTED -> "$actionName 下发指令失败，设备进入维护中"
+            ActionExecutionResult.BUSY_TIMEOUT -> "$actionName 连续收到设备忙(201=2)，超过重试阈值，设备进入维护中"
+            ActionExecutionResult.DISCONNECTED -> "$actionName 过程中与下位机通信断开，设备进入维护中"
+            ActionExecutionResult.RUNNING_TIMEOUT -> "$actionName 长时间处于执行中(201=1)，设备进入维护中"
+        }
+        markDeviceErrorAndUpload(logMessage)
+    }
+
+    /**
+     * 自动补肠：从烤肠箱取一根生肠，经平台/运输台搬到指定烤盘。
+     *
+     * 只有“烤肠箱 -> 平台”和“平台 -> 烤盘”两个动作都成功时，
+     * 才允许扣减烤肠箱库存并写入目标烤盘状态。
      */
     suspend fun moveSausageToKaoPan(kaoPan: KaoPan, kaoPanBox: KaoPanBox):Boolean {
         if (AppConfig.getAppConfig().errorStatus>0){
             LogUtils.d("KaoChangAlgorithm", "程序处于报错状态，不进行补肠操作")
+            return false
+        }
+        if (kaoPanBox.num <= 0) {
+            LogUtils.e("补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
             return false
         }
 
@@ -97,23 +282,19 @@ object KaoChangOperate {
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
         LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运开始")
-        // 从烤肠箱取出来
-         writeSingleRegister2(action_address,kaoPanBox.cmdValueTake)
-
-        //轮询读取命令执行的状态，直至为正常为0
-        var result=1
-        while (result==1){  
-            //delay(5000)
-            delay(2000) //
-            result= readHoldingRegisters(action_address_status,1)?.get(0) ?: 1//todo 默认值改成1
-            //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        val result = executeActionWithRetry(
+            actionName = "烤肠箱${kaoPanBox.positionSn}到平台"
+        ) {
+            writeSingleRegister2(action_address, kaoPanBox.cmdValueTake)
         }
-        if(result!=0 && result!=1){
-            //下位机错误
-            LogUtils.d("下位机异常！从烤肠箱把烤肠搬运到烤盘1-33-----返回结果result------${result}")
+        if (result != ActionExecutionResult.SUCCESS) {
+            AppConfig.getAppConfig().moveStatus = 0
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            markActionFailure("烤肠箱${kaoPanBox.positionSn}到平台", result)
+            return false
         }
-        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从烤肠箱搬运到平台完成${result}")
-        kaoPanBox.cmdStatusTake=result
+        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从烤肠箱搬运到平台完成")
+        kaoPanBox.cmdStatusTake = 0
 
         //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
         val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
@@ -146,30 +327,36 @@ object KaoChangOperate {
 
         //从平台把烤肠搬运到烤盘
         delay(200)
-        writeSingleRegister2(action_address,kaoPan.cmdValueMove)
-        var result2=1
-        //读取命令执行的状态
-        while (result2==1){
-            delay(2000)
-            result2=readHoldingRegisters(action_address_status,1)?.get(0) ?: 1//todo 默认值改成1
+        val result2 = executeActionWithRetry(
+            actionName = "平台到烤盘${kaoPan.positionSn}"
+        ) {
+            writeSingleRegister2(action_address, kaoPan.cmdValueMove)
         }
-        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从平台搬运到烤盘完成${result2}")
+        if (result2 != ActionExecutionResult.SUCCESS) {
+            AppConfig.getAppConfig().moveStatus = 0
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            markActionFailure("平台到烤盘${kaoPan.positionSn}", result2)
+        }
+        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从平台搬运到烤盘完成：$result2")
 
-        kaoPan.cmdStatusMove=result2
-        if (result==0&&result2==0){
+        kaoPan.cmdStatusMove = if (result2 == ActionExecutionResult.SUCCESS) 0 else 2
+        val moveSuccess = result == ActionExecutionResult.SUCCESS && result2 == ActionExecutionResult.SUCCESS
+        if (moveSuccess){
             kaoPan.isHasSausage=true
+            // 减少烤肠箱中的数量，最低只允许到 0，防止库存被写成负数
+            kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
+            kaoPan.taste.apply {
+                productId=kaoPanBox.productId.toInt()
+                productName=kaoPanBox.tasteName
+                tasteName=kaoPanBox.tasteName
+            }
+            //清空旧位置信息
+            kaoPan.status=1//开始加热烤制
+            // 记录开始时间
+            kaoPan.startTime = System.currentTimeMillis()
+        } else {
+            LogUtils.e("补肠失败，未更新烤盘状态和库存：panId=${kaoPan.id}, boxPosition=${kaoPanBox.positionSn}, result=$result, result2=$result2")
         }
-        // 减少烤肠箱中的数量
-        kaoPanBox.num--
-        kaoPan.taste.apply {
-            productId=kaoPanBox.productId.toInt()
-            productName=kaoPanBox.tasteName
-            tasteName=kaoPanBox.tasteName
-        }
-        //清空旧位置信息
-        kaoPan.status=1//开始加热烤制
-        // 记录开始时间
-        kaoPan.startTime = System.currentTimeMillis()
 
         // 修改运动状态为待机
         AppConfig.getAppConfig().moveStatus = 0
@@ -187,13 +374,20 @@ object KaoChangOperate {
             delay(5000L)
             LogUtils.d("KaoChangAlgorithm", "等待烤肠售卖结束，补下一根烤肠")
         }
-        return result==0&&result2==0
+        return moveSuccess
     }
 
     /**
-     * 把烤肠从烤盘移动到烤盘另外的位置
-     * kaoPan 烤盘
-     * newKaoPan 搬运到的位置
+     * 烤盘间搬移。
+     *
+     * 这条链路走 202/203 寄存器，不复用 200/201 的忙态语义：
+     * - 202：下发搬移动作，值为“起始烤盘 << 8 | 目标烤盘”
+     * - 203：搬移结果，0=完成，1=执行中，其余=错误，-1=上位机读失败
+     *
+     * 因此这里除了写指令预检外，还要单独处理：
+     * - 203 长时间停在 1 的超时
+     * - 203 读失败
+     * - 203 返回非 0/1 的明确错误
      */
     suspend fun moveKaoPanToKaoPan(kaoPan: KaoPan, newKaoPan: KaoPan):Boolean  {
         // 计算16位值：前8位为起始位置，后8位为目标位置
@@ -215,19 +409,46 @@ object KaoChangOperate {
         AppConfig.getAppConfig().moveStatus = 3
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
+        if (!ensureModbusReady("烤盘${sourcePosition}到烤盘${targetPosition}搬移")) {
+            AppConfig.getAppConfig().moveStatus = 0
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移前下位机通信断开，设备进入维护中")
+            return false
+        }
+
         // 将起始位置左移8位，然后与目标位置进行或运算
         val value = (sourcePosition shl 8) or targetPosition
-         writeSingleRegister2(action_address_move,value)
-        //轮询读取命令执行的状态，直至为正常为0
-        var result=1
-        while (result==1){
-            delay(2000)
-            result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_move_result)
-            //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        val writeMoveResult = writeSingleRegister2(action_address_move,value)
+        if (!writeMoveResult.isSuccess) {
+            AppConfig.getAppConfig().moveStatus = 0
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移指令下发失败：${writeMoveResult.status}")
+            return false
         }
-        if(result!=0 && result!=1){
-            //下位机错误
-            LogUtils.d("下位机异常！把烤肠从烤盘移动到烤盘另外的位置-----返回结果result------${result}")
+        val moveStart = System.currentTimeMillis()
+        val moveTimeoutMs = 60_000L
+        var result = 1
+        while (result == 1) {
+            delay(2000)
+            result = VMModbusHelper.readHoldingRegisters(modbus_address,action_address_move_result)
+            if (result == -1) {
+                AppConfig.getAppConfig().moveStatus = 0
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移时读取203失败，设备进入维护中")
+                return false
+            }
+            if (System.currentTimeMillis() - moveStart > moveTimeoutMs) {
+                AppConfig.getAppConfig().moveStatus = 0
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移长时间处于执行中(203=1)，设备进入维护中")
+                return false
+            }
+        }
+        if (result != 0) {
+            AppConfig.getAppConfig().moveStatus = 0
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
+            return false
         }
         kaoPan.cmdStatusMove=result
         if (result==0){
@@ -261,76 +482,69 @@ object KaoChangOperate {
     }   
 
     /**
-     * 用户下单，取出烤肠到售卖台
-     * kaoPan 烤盘
+     * 旧的手动取肠入口，主要给维护页手动操作使用。
+     * 这条路径不参与订单履约状态机，但故障时也会进入维护中并补齐 errorStatus。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
-        //取出烤肠
-         writeSingleRegister2(action_address,kaoPan.cmdValueTake)
-        //轮询读取命令执行的状态，直至为正常为0
-        var result=1
-        while (result==1){
-            delay(2000)
-            result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
-            //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        val result = executeActionWithRetry(
+            actionName = "旧手动取肠-烤盘${kaoPan.positionSn}到售卖口"
+        ) {
+            writeSingleRegister2(action_address,kaoPan.cmdValueTake)
         }
-        if(result!=0){
-            //下位机错误
-            AppConfig.getAppConfig().errorStatus=2  // 错误状态
-            AppConfig.getAppConfig().onlineStatus=3 // 维护中
-            GlobalScope.launch(Dispatchers.Main) {
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                DataManagementAPI.uploadDeviceInfo()
-            }
-            LogUtils.d("下位机异常！用户下单-----返回结果result------${result}")
-        }
-        else {
+        if(result!=ActionExecutionResult.SUCCESS){
+            markActionFailure("旧手动取肠-烤盘${kaoPan.positionSn}到售卖口", result)
+        } else {
             // 搬移完成后 等待一定时间再进行视觉检测
             delay(3000)
             val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
             if (sausageInfo==null){ // 拍照失败
-                //writeSingleRegister2(action_address_shoumaitai,0)
-                delay(3000)
-                // 拍照失败，执行丢弃
-                writeSingleRegister2(action_address_shoumaitai,2)
-                // AppConfig.getAppConfig().errorStatus=2//未识别到烤肠报错
-                AppConfig.getAppConfig().onlineStatus=3 // 维护中
-                GlobalScope.launch(Dispatchers.Main) {
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    DataManagementAPI.uploadDeviceInfo()
-                }
-                LogUtils.d("售卖台第一次拍照失败")
+                markDeviceErrorAndUpload("售卖台第一次拍照失败，旧手动取肠流程进入维护中")
             }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
                 delay(3000)
                 val sausageInfo_2 = SauceDetectionUitls.captureAndDetect(1)
                 if (sausageInfo_2 == null) {
-                    // 拍照失败，执行丢弃
-                    writeSingleRegister2(action_address_shoumaitai,2)
-                    //AppConfig.getAppConfig().errorStatus=2// 未识别到烤肠报错
-                    AppConfig.getAppConfig().onlineStatus=3 // 维护中
-                    GlobalScope.launch(Dispatchers.Main) {
-                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                        DataManagementAPI.uploadDeviceInfo()
-                    }
-                    LogUtils.d("售卖台第二次拍照失败")
+                    markDeviceErrorAndUpload("售卖台第二次拍照失败，旧手动取肠流程进入维护中")
                 }else if (sausageInfo_2.code == 2){
-                    // 未及时取走，执行丢弃
-                    writeSingleRegister2(action_address_shoumaitai,2)
-                    LogUtils.d("客户未及时取肠，执行丢弃...")
+                    val closeResult = executeActionWithRetry(
+                        actionName = "旧手动取肠收尾-丢弃并关门"
+                    ) {
+                        writeSingleRegister2(action_address_shoumaitai,2)
+                    }
+                    if (closeResult != ActionExecutionResult.SUCCESS) {
+                        markActionFailure("旧手动取肠收尾-丢弃并关门", closeResult)
+                        return false
+                    }
+                    LogUtils.d("客户未及时取肠，执行丢弃并关门完成")
                 }
                 else{
-                    writeSingleRegister2(action_address_shoumaitai,1)
-                    LogUtils.d("客户已经把肠取走")
+                    val closeResult = executeActionWithRetry(
+                        actionName = "旧手动取肠收尾-关门"
+                    ) {
+                        writeSingleRegister2(action_address_shoumaitai,1)
+                    }
+                    if (closeResult != ActionExecutionResult.SUCCESS) {
+                        markActionFailure("旧手动取肠收尾-关门", closeResult)
+                        return false
+                    }
+                    LogUtils.d("客户已经把肠取走，关门完成")
                 }
             } else { // 未识别到 顾客取走了
-                writeSingleRegister2(action_address_shoumaitai,1)
-                LogUtils.d("客户已经把肠取走")
+                val closeResult = executeActionWithRetry(
+                    actionName = "旧手动取肠收尾-关门"
+                ) {
+                    writeSingleRegister2(action_address_shoumaitai,1)
+                }
+                if (closeResult != ActionExecutionResult.SUCCESS) {
+                    markActionFailure("旧手动取肠收尾-关门", closeResult)
+                    return false
+                }
+                LogUtils.d("客户已经把肠取走，关门完成")
             }
         }
 
-        kaoPan.cmdStatusTake=result
+        kaoPan.cmdStatusTake=if (result == ActionExecutionResult.SUCCESS) 0 else 2
 
-        if (result==0){
+        if (result==ActionExecutionResult.SUCCESS){
             kaoPan.isHasSausage=false
             kaoPan.holdingTime=0L
             kaoPan.startTime = 0
@@ -340,60 +554,32 @@ object KaoChangOperate {
         GlobalScope.launch(Dispatchers.Main) {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         }
-
-        var result2=1
-        while (result2==1){
-            delay(2000)
-            result2=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
-            //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
-        }
-        if(result2!=0){
-            //下位机错误
-            AppConfig.getAppConfig().errorStatus=2  // 错误状态
-            AppConfig.getAppConfig().onlineStatus=3 // 维护中
-            GlobalScope.launch(Dispatchers.Main) {
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                DataManagementAPI.uploadDeviceInfo()
-            }
-            LogUtils.d("下位机异常！（关门或丢弃出错）")
-        }
-
-        return result==0
+        return result==ActionExecutionResult.SUCCESS
     }
 
     /**
-     * 用户出餐结果。
-     * 只有顾客真实取走才算成功；如果超时未取并被丢弃，需要继续补发同一份。
+     * 正式订单出餐入口。
+     *
+     * 当前真实业务语义：
+     * - 顾客取走：返回 TAKEN_BY_USER
+     * - 超时未取且系统已丢弃：返回 DISCARDED，当前订单逻辑按“本次已处理完成”推进
+     * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
     suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
-        writeSingleRegister2(action_address, kaoPan.cmdValueTake)
-        var result = 1
-        while (result == 1) {
-            delay(2000)
-            result = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        val result = executeActionWithRetry(
+            actionName = "烤盘${kaoPan.positionSn}到售卖口"
+        ) {
+            writeSingleRegister2(action_address, kaoPan.cmdValueTake)
         }
-        if (result != 0) {
-            AppConfig.getAppConfig().errorStatus = 2
-            AppConfig.getAppConfig().onlineStatus = 3
-            GlobalScope.launch(Dispatchers.Main) {
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                DataManagementAPI.uploadDeviceInfo()
-            }
-            LogUtils.d("下位机异常！用户下单-----返回结果result------${result}")
+        if (result != ActionExecutionResult.SUCCESS) {
+            markActionFailure("烤盘${kaoPan.positionSn}到售卖口", result)
             return TakeSausageResult.ERROR
         }
 
         delay(3000)
         val takeResult = when (val sausageInfo = SauceDetectionUitls.captureAndDetect(1)) {
             null -> {
-                delay(3000)
-                writeSingleRegister2(action_address_shoumaitai, 2)
-                AppConfig.getAppConfig().onlineStatus = 3
-                GlobalScope.launch(Dispatchers.Main) {
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    DataManagementAPI.uploadDeviceInfo()
-                }
-                LogUtils.d("售卖台第一次拍照失败")
+                markDeviceErrorAndUpload("售卖台第一次拍照失败，无法确认顾客是否已取走烤肠，设备进入维护中")
                 TakeSausageResult.ERROR
             }
 
@@ -403,38 +589,59 @@ object KaoChangOperate {
                     val sausageInfo2 = SauceDetectionUitls.captureAndDetect(1)
                     when {
                         sausageInfo2 == null -> {
-                            writeSingleRegister2(action_address_shoumaitai, 2)
-                            AppConfig.getAppConfig().onlineStatus = 3
-                            GlobalScope.launch(Dispatchers.Main) {
-                                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                                DataManagementAPI.uploadDeviceInfo()
-                            }
-                            LogUtils.d("售卖台第二次拍照失败")
+                            markDeviceErrorAndUpload("售卖台第二次拍照失败，首次识别到烤肠仍在，但复核失败，设备进入维护中")
                             TakeSausageResult.ERROR
                         }
 
                         sausageInfo2.code == 2 -> {
-                            writeSingleRegister2(action_address_shoumaitai, 2)
-                            LogUtils.w("客户未及时取肠，执行丢弃，本次不计为已交付")
-                            TakeSausageResult.DISCARDED
+                            val closeResult = executeActionWithRetry(
+                                actionName = "售卖台丢弃并关门"
+                            ) {
+                                writeSingleRegister2(action_address_shoumaitai, 2)
+                            }
+                            if (closeResult != ActionExecutionResult.SUCCESS) {
+                                markActionFailure("售卖台丢弃并关门", closeResult)
+                                TakeSausageResult.ERROR
+                            } else {
+                                LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
+                                TakeSausageResult.DISCARDED
+                            }
                         }
 
                         else -> {
-                            writeSingleRegister2(action_address_shoumaitai, 1)
-                            LogUtils.d("客户已经把肠取走")
-                            TakeSausageResult.TAKEN_BY_USER
+                            val closeResult = executeActionWithRetry(
+                                actionName = "售卖台关门"
+                            ) {
+                                writeSingleRegister2(action_address_shoumaitai, 1)
+                            }
+                            if (closeResult != ActionExecutionResult.SUCCESS) {
+                                markActionFailure("售卖台关门", closeResult)
+                                TakeSausageResult.ERROR
+                            } else {
+                                LogUtils.d("客户已经把肠取走")
+                                TakeSausageResult.TAKEN_BY_USER
+                            }
                         }
                     }
                 } else {
-                    writeSingleRegister2(action_address_shoumaitai, 1)
-                    LogUtils.d("客户已经把肠取走")
-                    TakeSausageResult.TAKEN_BY_USER
+                    val closeResult = executeActionWithRetry(
+                        actionName = "售卖台关门"
+                    ) {
+                        writeSingleRegister2(action_address_shoumaitai, 1)
+                    }
+                    if (closeResult != ActionExecutionResult.SUCCESS) {
+                        markActionFailure("售卖台关门", closeResult)
+                        TakeSausageResult.ERROR
+                    } else {
+                        LogUtils.d("客户已经把肠取走")
+                        TakeSausageResult.TAKEN_BY_USER
+                    }
                 }
             }
         }
 
-        kaoPan.cmdStatusTake = result
-        if (result == 0) {
+        kaoPan.cmdStatusTake = 0
+        if (result == ActionExecutionResult.SUCCESS) {
             kaoPan.isHasSausage = false
             kaoPan.holdingTime = 0L
             kaoPan.startTime = 0
@@ -445,28 +652,12 @@ object KaoChangOperate {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         }
 
-        var result2 = 1
-        while (result2 == 1) {
-            delay(2000)
-            result2 = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
-        }
-        if (result2 != 0) {
-            AppConfig.getAppConfig().errorStatus = 2
-            AppConfig.getAppConfig().onlineStatus = 3
-            GlobalScope.launch(Dispatchers.Main) {
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                DataManagementAPI.uploadDeviceInfo()
-            }
-            LogUtils.d("下位机异常！（关门或丢弃出错）")
-            return TakeSausageResult.ERROR
-        }
-
         return takeResult
     }
 
     /**
-     * 超过保温时间丢弃烤肠
-     * kaoPan 烤盘
+     * 过保丢弃：把烤盘中超过保温时长的烤肠丢弃。
+     * 这条链路也按 201=忙时重试、通信失败/超时才判故障。
      */
     suspend fun discardSausage(kaoPan: KaoPan) :Boolean {
 
@@ -481,20 +672,18 @@ object KaoChangOperate {
         AppConfig.getAppConfig().moveStatus = 4
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
-         writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
-        //轮询读取命令执行的状态，直至为正常为0
-        var result=1
-        while (result==1){
-            delay(10*1000)
-            result=VMModbusHelper.readHoldingRegisters(modbus_address,action_address_status)
-            //烤盘搬移执行结果 （无符号16位整型，0为正常，1为运动中，其余为错误码）
+        val result = executeActionWithRetry(
+            actionName = "烤盘${kaoPan.positionSn}过保丢弃",
+            runningPollDelayMs = 2000L,
+            runningTimeoutMs = 120_000L
+        ) {
+            writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
         }
-        if(result!=0 && result!=1){
-            //下位机错误
-            LogUtils.d("下位机异常！超过保温时间丢弃烤肠-----返回结果result------${result}")
+        if(result != ActionExecutionResult.SUCCESS){
+            markActionFailure("烤盘${kaoPan.positionSn}过保丢弃", result)
         }
-        kaoPan.cmdStatusDiscard=result
-        if (result==0){
+        kaoPan.cmdStatusDiscard=if (result == ActionExecutionResult.SUCCESS) 0 else 2
+        if (result==ActionExecutionResult.SUCCESS){
             kaoPan.isHasSausage=false
             kaoPan.holdingTime=0
             kaoPan.startTime=0
@@ -509,7 +698,7 @@ object KaoChangOperate {
             delay(5000L)
             LogUtils.d("KaoChangAlgorithm", "等待烤肠售卖结束，丢弃下一根烤肠")
         }
-        return result==0
+        return result==ActionExecutionResult.SUCCESS
     }
     /**
      * 读取烤盘温度
@@ -661,19 +850,19 @@ object KaoChangOperate {
     /**
      * 写入寄存器的值
      */
-    fun writeSingleRegister(address: Int,value:Int){
+    fun writeSingleRegister(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
         LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
-        VMModbusHelper.writeSingleRegister(modbus_address,address,value)
+        return VMModbusHelper.writeSingleRegister(modbus_address,address,value)
 
     }
 
     /**
      * 由于下位机处理频率过低需要延迟150毫秒，读取都需要加延迟150发送，每个读取方法已经加了delay
      */
-    suspend fun writeSingleRegister2(address: Int,value:Int){
+    suspend fun writeSingleRegister2(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
         delay(150)
         LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
-        VMModbusHelper.writeSingleRegister(modbus_address,address,value)
+        return VMModbusHelper.writeSingleRegister(modbus_address,address,value)
 
     }
 
