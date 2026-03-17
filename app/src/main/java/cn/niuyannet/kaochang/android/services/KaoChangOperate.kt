@@ -41,6 +41,13 @@ import kotlin.math.log
  * - “201=2”只表示设备忙，不等价于通信断开。
  */
 object KaoChangOperate {
+    private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
+    private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
+    private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
+
+    @Volatile
+    private var supplementBlockedUntilMs: Long = 0L
+
     enum class TakeSausageResult {
         TAKEN_BY_USER,
         DISCARDED,
@@ -70,6 +77,86 @@ object KaoChangOperate {
             DataManagementAPI.uploadDeviceInfo()
         }
         LogUtils.e(logMessage)
+    }
+
+    private fun armPostSellSupplementGuard(
+        reason: String,
+        durationMs: Long = getPostSellSupplementGuardMs()
+    ) {
+        val blockUntil = System.currentTimeMillis() + durationMs
+        if (blockUntil > supplementBlockedUntilMs) {
+            supplementBlockedUntilMs = blockUntil
+        }
+        LogUtils.d("KaoChangAlgorithm", "$reason，进入售卖收尾保护窗：${durationMs}ms")
+    }
+
+    private suspend fun waitForPostSellSupplementGuardIfNeeded() {
+        val blockUntil = supplementBlockedUntilMs
+        if (blockUntil <= 0L) {
+            return
+        }
+
+        val remaining = blockUntil - System.currentTimeMillis()
+        if (remaining > 0L) {
+            LogUtils.d("KaoChangAlgorithm", "售卖收尾后延迟补肠：remaining=${remaining}ms")
+            delay(remaining)
+        }
+
+        supplementBlockedUntilMs = 0L
+
+        if (!VMModbusHelper.connectStatus()) {
+            LogUtils.w("售卖收尾保护结束时检测到下位机未连接，跳过空闲稳定检查")
+            return
+        }
+
+        var idleSince = -1L
+        val idleStableMs = getPostSellIdleStableMs()
+        val checkDeadline = System.currentTimeMillis() + getPostSellIdleMaxWaitMs()
+        while (System.currentTimeMillis() < checkDeadline) {
+            when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
+                ActionStatus201.IDLE -> {
+                    val now = System.currentTimeMillis()
+                    if (idleSince < 0L) {
+                        idleSince = now
+                    }
+                    if (now - idleSince >= idleStableMs) {
+                        LogUtils.d("KaoChangAlgorithm", "售卖收尾后下位机已连续空闲 ${now - idleSince}ms，允许补肠")
+                        return
+                    }
+                }
+                ActionStatus201.RUNNING, ActionStatus201.BUSY -> {
+                    idleSince = -1L
+                }
+                ActionStatus201.DISCONNECTED -> {
+                    LogUtils.w("售卖收尾后读取 201 失败，跳过空闲稳定检查")
+                    return
+                }
+            }
+            delay(500L)
+        }
+
+        LogUtils.w("售卖收尾后等待下位机稳定空闲超时，继续按常规补肠流程处理")
+    }
+
+    private fun getPostSellSupplementGuardMs(): Long {
+        val seconds = AppConfig.getAppConfig().postSellSupplementGuardSeconds
+            .takeIf { it > 0 }
+            ?: DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS
+        return seconds * 1000L
+    }
+
+    private fun getPostSellIdleStableMs(): Long {
+        val seconds = AppConfig.getAppConfig().postSellIdleStableSeconds
+            .takeIf { it > 0 }
+            ?: DEFAULT_POST_SELL_IDLE_STABLE_SECONDS
+        return seconds * 1000L
+    }
+
+    private fun getPostSellIdleMaxWaitMs(): Long {
+        val seconds = AppConfig.getAppConfig().postSellIdleMaxWaitSeconds
+            .takeIf { it > 0 }
+            ?: DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS
+        return seconds * 1000L
     }
 
     // modbus 地址
@@ -277,6 +364,7 @@ object KaoChangOperate {
             appState = AppConfig.getAppConfig().moveStatus
             LogUtils.d("KaoChangAlgorithm", "补充烤肠 等待售卖完成 ${appState}")
         }
+        waitForPostSellSupplementGuardIfNeeded()
         // 机械臂状态改为补肠
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -603,6 +691,7 @@ object KaoChangOperate {
                                 markActionFailure("售卖台丢弃并关门", closeResult)
                                 TakeSausageResult.ERROR
                             } else {
+                                armPostSellSupplementGuard("售卖台丢弃并关门成功")
                                 LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
                                 TakeSausageResult.DISCARDED
                             }
@@ -618,6 +707,7 @@ object KaoChangOperate {
                                 markActionFailure("售卖台关门", closeResult)
                                 TakeSausageResult.ERROR
                             } else {
+                                armPostSellSupplementGuard("售卖台关门成功")
                                 LogUtils.d("客户已经把肠取走")
                                 TakeSausageResult.TAKEN_BY_USER
                             }
@@ -633,6 +723,7 @@ object KaoChangOperate {
                         markActionFailure("售卖台关门", closeResult)
                         TakeSausageResult.ERROR
                     } else {
+                        armPostSellSupplementGuard("售卖台关门成功")
                         LogUtils.d("客户已经把肠取走")
                         TakeSausageResult.TAKEN_BY_USER
                     }

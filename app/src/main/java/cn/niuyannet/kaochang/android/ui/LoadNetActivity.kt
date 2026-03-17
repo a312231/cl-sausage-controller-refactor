@@ -64,6 +64,31 @@ abstract class LoadNetActivity: BaseActivity() {
                     appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
                     appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")
 
+                    appConfigBean.postSellSupplementGuardSeconds =
+                        if (jsonData.containsKey("postSellSupplementGuardSeconds")) {
+                            jsonData.getIntValue("postSellSupplementGuardSeconds")
+                        } else {
+                            5
+                        }
+                    appConfigBean.postSellIdleStableSeconds =
+                        if (jsonData.containsKey("postSellIdleStableSeconds")) {
+                            jsonData.getIntValue("postSellIdleStableSeconds")
+                        } else {
+                            2
+                        }
+                    appConfigBean.postSellIdleMaxWaitSeconds =
+                        if (jsonData.containsKey("postSellIdleMaxWaitSeconds")) {
+                            jsonData.getIntValue("postSellIdleMaxWaitSeconds")
+                        } else {
+                            12
+                        }
+                    Log.d(
+                        "LoadNetActivity---服务端获取值-",
+                        "bakingTime=${appConfigBean.bakingTime}, discardTime=${appConfigBean.discardTime}, " +
+                            "postSellSupplementGuardSeconds=${appConfigBean.postSellSupplementGuardSeconds}, " +
+                            "postSellIdleStableSeconds=${appConfigBean.postSellIdleStableSeconds}, " +
+                            "postSellIdleMaxWaitSeconds=${appConfigBean.postSellIdleMaxWaitSeconds}"
+                    )
                     AppConfig.saveAppConfig(appConfigBean)
                 }else{
                     binding.mainContent.visibility= View.GONE

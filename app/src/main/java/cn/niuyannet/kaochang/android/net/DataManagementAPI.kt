@@ -136,10 +136,33 @@ object DataManagementAPI {
                       appConfigBean.keepWarmTemperature=jsonData.getIntValue("keepWarmTemperature")
                       appConfigBean.heatingTemperature=jsonData.getIntValue("heatingTemperature")//过渡态
                       appConfigBean.bakingTime=jsonData.getIntValue("bakingTime")
-                      LogUtils.d("设备配置拉取成功：bakingTime=${jsonData.getIntValue("bakingTime")}, discardTime=${jsonData.getIntValue("discardTime")}")
                       appConfigBean.discardTime=jsonData.getIntValue("discardTime")
                       appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
                       appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")
+                      appConfigBean.postSellSupplementGuardSeconds =
+                          if (jsonData.containsKey("postSellSupplementGuardSeconds")) {
+                              jsonData.getIntValue("postSellSupplementGuardSeconds")
+                          } else {
+                              5
+                          }
+                      appConfigBean.postSellIdleStableSeconds =
+                          if (jsonData.containsKey("postSellIdleStableSeconds")) {
+                              jsonData.getIntValue("postSellIdleStableSeconds")
+                          } else {
+                              2
+                          }
+                      appConfigBean.postSellIdleMaxWaitSeconds =
+                          if (jsonData.containsKey("postSellIdleMaxWaitSeconds")) {
+                              jsonData.getIntValue("postSellIdleMaxWaitSeconds")
+                          } else {
+                              12
+                          }
+                      LogUtils.d(
+                          "设备配置拉取成功：bakingTime=${appConfigBean.bakingTime}, discardTime=${appConfigBean.discardTime}, " +
+                              "postSellSupplementGuardSeconds=${appConfigBean.postSellSupplementGuardSeconds}, " +
+                              "postSellIdleStableSeconds=${appConfigBean.postSellIdleStableSeconds}, " +
+                              "postSellIdleMaxWaitSeconds=${appConfigBean.postSellIdleMaxWaitSeconds}"
+                      )
                       AppConfig.saveAppConfig(appConfigBean)
                   }catch (e:Exception){
                       e.printStackTrace()

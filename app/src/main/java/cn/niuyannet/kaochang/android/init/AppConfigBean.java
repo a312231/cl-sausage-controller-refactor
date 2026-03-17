@@ -46,4 +46,7 @@ public class AppConfigBean implements Serializable {
 
     public int timeBeforeClose; //停止营业前的时间阈值
 
+    public int postSellSupplementGuardSeconds = 5; // 售卖收尾后，补肠保护窗时长（秒）
+    public int postSellIdleStableSeconds = 2; // 售卖收尾后，要求下位机连续空闲的稳定时长（秒）
+    public int postSellIdleMaxWaitSeconds = 12; // 售卖收尾后，等待下位机进入稳定空闲的最长时长（秒）
 }
