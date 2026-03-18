@@ -150,7 +150,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             .setView(editText)
             .setPositiveButton("确定") { _, _ ->
                 val password = editText.text.toString()
-                if (password == "changle@leye") {
+                    if (password == "123") {
                     SettingActivity.start(this)
                 } else {
                     ToastUtils.showShort("密码错误")

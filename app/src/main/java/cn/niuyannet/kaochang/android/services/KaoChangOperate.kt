@@ -148,6 +148,19 @@ object KaoChangOperate {
             tag = tag
         )
 
+    private suspend fun tryCloseSellPlatformOnError(reason: String) {
+        val closeResult = executeActionWithRetry(
+            actionName = "售卖台故障兜底关门"
+        ) {
+            writeSingleRegister2(action_address_shoumaitai, 1)
+        }
+        if (closeResult == ActionExecutionResult.SUCCESS) {
+            LogUtils.w("售卖台进入故障分支前已执行兜底关门：$reason")
+        } else {
+            LogUtils.e("售卖台故障兜底关门失败：$reason, result=$closeResult")
+        }
+    }
+
     private fun getPostSellSupplementGuardMs(): Long {
         val seconds = AppConfig.getAppConfig().postSellSupplementGuardSeconds
             .takeIf { it > 0 }
@@ -690,6 +703,7 @@ object KaoChangOperate {
         val firstDetect = captureSellPlatform()
         val takeResult = when {
             firstDetect == null -> {
+                tryCloseSellPlatformOnError("售卖台第一次拍照失败")
                 markDeviceErrorAndUpload("售卖台第一次拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
                 TakeSausageResult.ERROR
             }
@@ -700,11 +714,13 @@ object KaoChangOperate {
                 val retryDetect = captureSellPlatform()
                 when {
                     retryDetect == null -> {
+                        tryCloseSellPlatformOnError("售卖台第一次识别为空且重试拍照失败")
                         markDeviceErrorAndUpload("售卖台第一次识别为空且重试拍照失败，无法确认是否空夹，设备进入维护中")
                         TakeSausageResult.ERROR
                     }
 
                     retryDetect.code != 2 -> {
+                        tryCloseSellPlatformOnError("售卖台连续两次未检测到烤肠")
                         LogUtils.e("售卖台连续两次未检测到烤肠，判定本次出餐未真正送达售卖口，按故障处理")
                         TakeSausageResult.ERROR
                     }
@@ -714,6 +730,7 @@ object KaoChangOperate {
                         val secondDetect = captureSellPlatform()
                         when {
                             secondDetect == null -> {
+                                tryCloseSellPlatformOnError("售卖台第二次拍照失败，首次重试已识别到烤肠")
                                 markDeviceErrorAndUpload("售卖台第二次拍照失败，首次重试已识别到烤肠，但复核失败，设备进入维护中")
                                 TakeSausageResult.ERROR
                             }
@@ -759,6 +776,7 @@ object KaoChangOperate {
                 val secondDetect = captureSellPlatform()
                 when {
                     secondDetect == null -> {
+                        tryCloseSellPlatformOnError("售卖台第二次拍照失败，首次识别到烤肠仍在")
                         markDeviceErrorAndUpload("售卖台第二次拍照失败，首次识别到烤肠仍在，但复核失败，设备进入维护中")
                         TakeSausageResult.ERROR
                     }
