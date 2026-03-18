@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MaintenanceFragment : Fragment() {
     private var _binding: FragmentMaintenanceBinding? = null
     private val binding get() = _binding!!
-    
+
     private lateinit var kaoPanAdapter: KaoPanAdapter
     private var refreshJob: Job? = null
 
@@ -48,8 +48,10 @@ class MaintenanceFragment : Fragment() {
     // 烤制算法
     private var isCoolingDown_1 = false
     private var cooldownJob_1: Job? = null
+
     // 清空烤盘
     private var cooldownJob_2: Job? = null
+
     // 重置烤盘
     private var cooldownJob_3: Job? = null
 
@@ -70,8 +72,9 @@ class MaintenanceFragment : Fragment() {
         binding.versionNo.text = "版本号 v-$versionName"
         setupGrid()
         setupButtons()
-        
+
     }
+
     /**
      * 设置按钮点击事件
      */
@@ -100,11 +103,11 @@ class MaintenanceFragment : Fragment() {
             lifecycleScope.launch(Dispatchers.IO) {
                 while (AppConfig.getAppConfig().moveStatus != 0) {
                     binding.btnClearAll.text = "等待完成"
-                    delay(2*1000)
+                    delay(2 * 1000)
                 }
                 // KaoChangAlgorithm.resetKaoPan()
                 withContext(Dispatchers.Main) {
-                    delay(10*1000)// 等待15s
+                    delay(10 * 1000)// 等待15s
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
                     KaoChangAlgorithm.runServer()//运行烤肠服务
@@ -114,7 +117,7 @@ class MaintenanceFragment : Fragment() {
             cooldownJob_2 = lifecycleScope.launch {
                 while (AppConfig.getAppConfig().moveStatus != 0) {
                     binding.btnClearAll.text = "等待完成"
-                    delay(2*1000)
+                    delay(2 * 1000)
                 }
                 while (remaining > 0) {
                     delay(1000)
@@ -151,7 +154,7 @@ class MaintenanceFragment : Fragment() {
             cooldownJob_1 = lifecycleScope.launch(Dispatchers.Main) {
                 while (AppConfig.getAppConfig().moveStatus != 0) {
                     binding.tvCooldownHint.text = " 等待完成 "
-                    delay(2*1000)
+                    delay(2 * 1000)
                 }
                 var remaining = 10
                 while (remaining > 0) {
@@ -169,7 +172,7 @@ class MaintenanceFragment : Fragment() {
             }
         }
     }
-    
+
     /**
      * 设置数据
      */
@@ -188,7 +191,7 @@ class MaintenanceFragment : Fragment() {
         kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
         // 开始定时刷新
         startRefreshTimer()
-        
+
         binding.btnCz.setOnClickListener {
             //重置烤盘
             // 如果仍在冷却中，直接返回
@@ -212,11 +215,11 @@ class MaintenanceFragment : Fragment() {
             lifecycleScope.launch(Dispatchers.IO) {
                 while (AppConfig.getAppConfig().moveStatus != 0) {
                     binding.btnCz.text = "请等待上位机动作完成"
-                    delay(2*1000)
+                    delay(2 * 1000)
                 }
 
                 KaoChangAlgorithm.resetKaoPan()
-                delay(10*1000)// 等待10s 确保旧烤肠服务终止
+                delay(10 * 1000)// 等待10s 确保旧烤肠服务终止
                 withContext(Dispatchers.Main) {
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
@@ -227,7 +230,7 @@ class MaintenanceFragment : Fragment() {
             cooldownJob_3 = lifecycleScope.launch {
                 while (AppConfig.getAppConfig().moveStatus != 0) {
                     binding.btnCz.text = "请等待上位机动作完成"
-                    delay(2*1000)
+                    delay(2 * 1000)
                 }
                 while (remaining > 0) {
                     delay(1000)
@@ -247,7 +250,7 @@ class MaintenanceFragment : Fragment() {
             kaoPanAdapter.notifyDataSetChanged()
         }
         binding.btnLogs.setOnClickListener {
-           // LogUtils.d("标签", "这是一条调试日志")
+            // LogUtils.d("标签", "这是一条调试日志")
             val intent = Intent(requireContext(), LogViewActivity::class.java)
             startActivity(intent)
         }
@@ -258,7 +261,8 @@ class MaintenanceFragment : Fragment() {
             lifecycleScope.launch(Dispatchers.IO) {
                 val config = AppConfig.getAppConfig()
                 config.errorStatus = 0
-                config.onlineStatus = if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
+                config.onlineStatus =
+                    if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
                 AppConfig.saveAppConfig(config)
                 DataManagementAPI.uploadDeviceInfo()
             }
@@ -275,19 +279,33 @@ class MaintenanceFragment : Fragment() {
      */
     // 根据当前设备配置的营业时间判断，点击“恢复正常状态”后应该回到运营中还是休息中。
     // 后台当前时间串可能是 HH:mm，也可能是 HH:mm:ss，这里统一兼容两种格式。
-    private fun isWithinBusinessHours(currentTimeStr: String, businessTime: BusinessTime?): Boolean {
+    private fun isWithinBusinessHours(
+        currentTimeStr: String,
+        businessTime: BusinessTime?
+    ): Boolean {
         try {
             if (businessTime == null) return false
 
             val current = parseBusinessTime(currentTimeStr) ?: return false
             val calendar = Calendar.getInstance()
-            val dayOfWeek = if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) 7 else calendar.get(Calendar.DAY_OF_WEEK) - 1
+            val dayOfWeek =
+                if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) 7 else calendar.get(
+                    Calendar.DAY_OF_WEEK
+                ) - 1
 
-            if ("everyday".equals(businessTime.mode, ignoreCase = true) && businessTime.defaultTime != null && businessTime.defaultTime.size >= 2) {
+            if ("everyday".equals(
+                    businessTime.mode,
+                    ignoreCase = true
+                ) && businessTime.defaultTime != null && businessTime.defaultTime.size >= 2
+            ) {
                 val start = parseBusinessTime(businessTime.defaultTime[0]) ?: return false
                 val end = parseBusinessTime(businessTime.defaultTime[1]) ?: return false
                 return isTimeInRange(current, start, end)
-            } else if ("custom".equals(businessTime.mode, ignoreCase = true) && businessTime.customTimes != null) {
+            } else if ("custom".equals(
+                    businessTime.mode,
+                    ignoreCase = true
+                ) && businessTime.customTimes != null
+            ) {
                 for (timeItem in businessTime.customTimes) {
                     if (timeItem.day == dayOfWeek && timeItem.enabled && timeItem.timeRange != null && timeItem.timeRange.size >= 2) {
                         val start = parseBusinessTime(timeItem.timeRange[0]) ?: return false
@@ -325,7 +343,7 @@ class MaintenanceFragment : Fragment() {
      * 弹出对话框，点击确认取烤肠
      */
     private fun showPurchaseOrderDialog(kaoPan: KaoPan) {
-        if (!kaoPan.isHasSausage){
+        if (!kaoPan.isHasSausage) {
             ToastUtils.showShort("没有烤肠")
             return
         }
@@ -345,16 +363,19 @@ class MaintenanceFragment : Fragment() {
                             appState = AppConfig.getAppConfig().moveStatus
                             LogUtils.d("KaoChangAlgorithm", "取出烤肠 等待上位机闲置 $appState")
                         }
-                        AppConfig.getAppConfig().moveStatus = 1
-                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                        // 调用取烤肠的算法
-                        KaoChangOperate.takeSausage(kaoPan)
-                        AppConfig.getAppConfig().moveStatus = 0
-                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                        try {
+                            AppConfig.getAppConfig().moveStatus = 1
+                            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                            // 调用取烤肠的算法
+                            KaoChangOperate.takeSausage(kaoPan)
 
-                        lifecycleScope.launch(Dispatchers.Main) {
-                            dialog.dismiss()
-                            status.set(true)
+                        } finally {
+                            AppConfig.getAppConfig().moveStatus = 0
+                            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                dialog.dismiss()
+                                status.set(true)
+                            }
                         }
                     }
                 } else ToastUtils.showShort("请等待当前操作完成")
@@ -381,13 +402,14 @@ class MaintenanceFragment : Fragment() {
                 kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
                 kaoPanAdapter.notifyDataSetChanged()
                 binding.tvErroStatus.apply {
-                    text = if (AppConfig.getAppConfig().errorStatus == 0) "状态：正常" else "状态：错误"
+                    text =
+                        if (AppConfig.getAppConfig().errorStatus == 0) "状态：正常" else "状态：错误"
                     setTextColor(resources.getColor(if (AppConfig.getAppConfig().errorStatus == 0) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
                 }
             }
         }
     }
-    
+
     override fun onDestroyView() {
         super.onDestroyView()
         refreshJob?.cancel()

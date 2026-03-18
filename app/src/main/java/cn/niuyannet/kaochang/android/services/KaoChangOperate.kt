@@ -579,9 +579,21 @@ object KaoChangOperate {
         ) {
             writeSingleRegister2(action_address,kaoPan.cmdValueTake)
         }
+        var panStateCleared = false
         if(result!=ActionExecutionResult.SUCCESS){
             markActionFailure("旧手动取肠-烤盘${kaoPan.positionSn}到售卖口", result)
         } else {
+            // 只要烤盘到售卖口成功，这根肠就已经离开了原烤盘。
+            // 即使后续售卖口识别或关门收尾失败，也不应继续在烤盘上显示“有肠”。
+            kaoPan.isHasSausage=false
+            kaoPan.holdingTime=0L
+            kaoPan.startTime = 0
+            kaoPan.status=0
+            panStateCleared = true
+            GlobalScope.launch(Dispatchers.Main) {
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            }
+            LogUtils.d("旧手动取肠：烤盘${kaoPan.positionSn}已到售卖口，先清空烤盘状态，再执行售卖口收尾")
             // 搬移完成后 等待一定时间再进行视觉检测
             delay(3000)
             val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
@@ -632,7 +644,7 @@ object KaoChangOperate {
 
         kaoPan.cmdStatusTake=if (result == ActionExecutionResult.SUCCESS) 0 else 2
 
-        if (result==ActionExecutionResult.SUCCESS){
+        if (result==ActionExecutionResult.SUCCESS && !panStateCleared){
             kaoPan.isHasSausage=false
             kaoPan.holdingTime=0L
             kaoPan.startTime = 0
