@@ -677,67 +677,112 @@ object KaoChangOperate {
         }
 
         delay(3000)
-        val takeResult = when (val sausageInfo = SauceDetectionUitls.captureAndDetect(1)) {
-            null -> {
-                markDeviceErrorAndUpload("售卖台第一次拍照失败，无法确认顾客是否已取走烤肠，设备进入维护中")
+        val firstDetect = SauceDetectionUitls.captureAndDetect(1)
+        val takeResult = when {
+            firstDetect == null -> {
+                markDeviceErrorAndUpload("售卖台第一次拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
                 TakeSausageResult.ERROR
             }
 
-            else -> {
-                if (sausageInfo.code == 2) {
-                    delay(3000)
-                    val sausageInfo2 = SauceDetectionUitls.captureAndDetect(1)
-                    when {
-                        sausageInfo2 == null -> {
-                            markDeviceErrorAndUpload("售卖台第二次拍照失败，首次识别到烤肠仍在，但复核失败，设备进入维护中")
-                            TakeSausageResult.ERROR
-                        }
-
-                        sausageInfo2.code == 2 -> {
-                            val closeResult = executeActionWithRetry(
-                                actionName = "售卖台丢弃并关门"
-                            ) {
-                                writeSingleRegister2(action_address_shoumaitai, 2)
-                            }
-                            if (closeResult != ActionExecutionResult.SUCCESS) {
-                                markActionFailure("售卖台丢弃并关门", closeResult)
-                                TakeSausageResult.ERROR
-                            } else {
-                                armPostSellSupplementGuard("售卖台丢弃并关门成功")
-                                LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
-                                TakeSausageResult.DISCARDED
-                            }
-                        }
-
-                        else -> {
-                            val closeResult = executeActionWithRetry(
-                                actionName = "售卖台关门"
-                            ) {
-                                writeSingleRegister2(action_address_shoumaitai, 1)
-                            }
-                            if (closeResult != ActionExecutionResult.SUCCESS) {
-                                markActionFailure("售卖台关门", closeResult)
-                                TakeSausageResult.ERROR
-                            } else {
-                                armPostSellSupplementGuard("售卖台关门成功")
-                                LogUtils.d("客户已经把肠取走")
-                                TakeSausageResult.TAKEN_BY_USER
-                            }
-                        }
-                    }
-                } else {
-                    val closeResult = executeActionWithRetry(
-                        actionName = "售卖台关门"
-                    ) {
-                        writeSingleRegister2(action_address_shoumaitai, 1)
-                    }
-                    if (closeResult != ActionExecutionResult.SUCCESS) {
-                        markActionFailure("售卖台关门", closeResult)
+            firstDetect.code != 2 -> {
+                LogUtils.w("售卖台第一次识别未检测到烤肠，开始短暂重试确认是否为空夹或中途掉落")
+                delay(1500)
+                val retryDetect = SauceDetectionUitls.captureAndDetect(1)
+                when {
+                    retryDetect == null -> {
+                        markDeviceErrorAndUpload("售卖台第一次识别为空且重试拍照失败，无法确认是否空夹，设备进入维护中")
                         TakeSausageResult.ERROR
-                    } else {
-                        armPostSellSupplementGuard("售卖台关门成功")
-                        LogUtils.d("客户已经把肠取走")
-                        TakeSausageResult.TAKEN_BY_USER
+                    }
+
+                    retryDetect.code != 2 -> {
+                        LogUtils.e("售卖台连续两次未检测到烤肠，判定本次出餐未真正送达售卖口，按故障处理")
+                        TakeSausageResult.ERROR
+                    }
+
+                    else -> {
+                        delay(3000)
+                        val secondDetect = SauceDetectionUitls.captureAndDetect(1)
+                        when {
+                            secondDetect == null -> {
+                                markDeviceErrorAndUpload("售卖台第二次拍照失败，首次重试已识别到烤肠，但复核失败，设备进入维护中")
+                                TakeSausageResult.ERROR
+                            }
+
+                            secondDetect.code == 2 -> {
+                                val closeResult = executeActionWithRetry(
+                                    actionName = "售卖台丢弃并关门"
+                                ) {
+                                    writeSingleRegister2(action_address_shoumaitai, 2)
+                                }
+                                if (closeResult != ActionExecutionResult.SUCCESS) {
+                                    markActionFailure("售卖台丢弃并关门", closeResult)
+                                    TakeSausageResult.ERROR
+                                } else {
+                                    armPostSellSupplementGuard("售卖台丢弃并关门成功")
+                                    LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
+                                    TakeSausageResult.DISCARDED
+                                }
+                            }
+
+                            else -> {
+                                val closeResult = executeActionWithRetry(
+                                    actionName = "售卖台关门"
+                                ) {
+                                    writeSingleRegister2(action_address_shoumaitai, 1)
+                                }
+                                if (closeResult != ActionExecutionResult.SUCCESS) {
+                                    markActionFailure("售卖台关门", closeResult)
+                                    TakeSausageResult.ERROR
+                                } else {
+                                    armPostSellSupplementGuard("售卖台关门成功")
+                                    LogUtils.d("售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+                                    TakeSausageResult.TAKEN_BY_USER
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            else -> {
+                delay(3000)
+                val secondDetect = SauceDetectionUitls.captureAndDetect(1)
+                when {
+                    secondDetect == null -> {
+                        markDeviceErrorAndUpload("售卖台第二次拍照失败，首次识别到烤肠仍在，但复核失败，设备进入维护中")
+                        TakeSausageResult.ERROR
+                    }
+
+                    secondDetect.code == 2 -> {
+                        val closeResult = executeActionWithRetry(
+                            actionName = "售卖台丢弃并关门"
+                        ) {
+                            writeSingleRegister2(action_address_shoumaitai, 2)
+                        }
+                        if (closeResult != ActionExecutionResult.SUCCESS) {
+                            markActionFailure("售卖台丢弃并关门", closeResult)
+                            TakeSausageResult.ERROR
+                        } else {
+                            armPostSellSupplementGuard("售卖台丢弃并关门成功")
+                            LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
+                            TakeSausageResult.DISCARDED
+                        }
+                    }
+
+                    else -> {
+                        val closeResult = executeActionWithRetry(
+                            actionName = "售卖台关门"
+                        ) {
+                            writeSingleRegister2(action_address_shoumaitai, 1)
+                        }
+                        if (closeResult != ActionExecutionResult.SUCCESS) {
+                            markActionFailure("售卖台关门", closeResult)
+                            TakeSausageResult.ERROR
+                        } else {
+                            armPostSellSupplementGuard("售卖台关门成功")
+                            LogUtils.d("售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+                            TakeSausageResult.TAKEN_BY_USER
+                        }
                     }
                 }
             }
