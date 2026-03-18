@@ -109,7 +109,7 @@ class CameraMonitor {
                 if (takeStatus.get()) {
                     deque.poll()?.let {
                         LogUtils.d("开始执行拍照任务 -> ")
-                        takePhoto(it.roiFlag, it.delay, it.retry, it.callback)
+                        takePhoto(it.roiFlag, it.delay, it.timeoutMs, it.retry, it.callback)
                     }
                 }
             } finally {
@@ -134,6 +134,7 @@ class CameraMonitor {
      */
     fun takePhotoQueue(roiFlag: Int,
                        delay: Long,
+                       timeoutMs: Long,
                        retry: Int,
                        priority: Boolean,
                        callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
@@ -141,13 +142,13 @@ class CameraMonitor {
         LogUtils.d("添加拍照任务到队列: ${deque.size}")
         if (deque.size < 20) {
             if (priority) {
-                deque.offerFirst(QueueData(roiFlag, delay, retry, callback))
+                deque.offerFirst(QueueData(roiFlag, delay, timeoutMs, retry, callback))
             } else {
-                deque.offer(QueueData(roiFlag, delay, retry, callback))
+                deque.offer(QueueData(roiFlag, delay, timeoutMs, retry, callback))
             }
         } else if (priority) {
             deque.pollLast()
-            deque.offerFirst(QueueData(roiFlag, delay, retry, callback))
+            deque.offerFirst(QueueData(roiFlag, delay, timeoutMs, retry, callback))
         } else {
             LogUtils.d("拍照任务队列已满!")
             handle.postDelayed({ callback(null) }, 2000)
@@ -163,6 +164,7 @@ class CameraMonitor {
      */
     private fun takePhoto(roiFlag: Int,
                           delay: Long,
+                          timeoutMs: Long,
                           retry: Int,
                           callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
@@ -174,7 +176,7 @@ class CameraMonitor {
             // 设置属性
             detectionProcessor?.roiFlag = roiFlag
             // 开始拍照
-            takePhoto(delay, retry, 5000) {
+            takePhoto(delay, retry, timeoutMs) {
                 // 回调
                 invokeCallback(callbackId, it)
                 takeStatus.set(true)
@@ -212,7 +214,7 @@ class CameraMonitor {
         val timeoutRunnable = Runnable {
             if (!completed.getAndSet(true)) {
                 LogUtils.e("拍照超时, 耗时超过${timeoutMs}ms")
-                handle.postDelayed({ restartService() }, 500)
+                restartService()
                 handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
             }
         }
@@ -244,7 +246,7 @@ class CameraMonitor {
                         return
                     }
                     handle.removeCallbacks(timeoutRunnable)
-                    handle.postDelayed({ restartService() }, 500)
+                    restartService()
                     //
                     LogUtils.e("拍照失败-$retry: ${e.message}")
                     handleTimeoutAndRetry(delay, retry, timeoutMs, callback)

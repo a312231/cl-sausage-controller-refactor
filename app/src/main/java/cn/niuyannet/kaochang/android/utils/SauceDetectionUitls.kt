@@ -60,6 +60,8 @@ object SauceDetectionUitls {
         roiFlag: Int,
         retry: Int = 3,
         timeoutMs: Long = 20000,
+        retryDelayMs: Long = 3000L,
+        captureTimeoutMs: Long = 5000L,
         tag: String = "KaoChangAlgorithm"
     ): SauceDetectionProcessor.SausageInfo? = withContext(Dispatchers.IO) {
 
@@ -77,7 +79,7 @@ object SauceDetectionUitls {
                         LogUtils.d(tag, "获取拍照锁，开始拍照")
                         // 将回调转换为协程挂起
                         suspendCancellableCoroutine { continuation ->
-                            CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
+                            CameraMonitor.instance.takePhotoQueue(roiFlag, retryDelayMs, captureTimeoutMs, retry, tag != "lunXun") { sausageInfo ->
                                 // 回调执行
                                 LogUtils.d(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
                                 // 通知等待的Deferred

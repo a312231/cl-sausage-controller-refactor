@@ -44,6 +44,8 @@ object KaoChangOperate {
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
     private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
+    private const val SELL_PLATFORM_RETRY_DELAY_MS = 300L
+    private const val SELL_PLATFORM_CAPTURE_TIMEOUT_MS = 2500L
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -137,6 +139,14 @@ object KaoChangOperate {
 
         LogUtils.w("售卖收尾后等待下位机稳定空闲超时，继续按常规补肠流程处理")
     }
+
+    private suspend fun captureSellPlatform(tag: String = "KaoChangAlgorithm") =
+        SauceDetectionUitls.captureAndDetect(
+            roiFlag = 1,
+            retryDelayMs = SELL_PLATFORM_RETRY_DELAY_MS,
+            captureTimeoutMs = SELL_PLATFORM_CAPTURE_TIMEOUT_MS,
+            tag = tag
+        )
 
     private fun getPostSellSupplementGuardMs(): Long {
         val seconds = AppConfig.getAppConfig().postSellSupplementGuardSeconds
@@ -596,12 +606,12 @@ object KaoChangOperate {
             LogUtils.d("旧手动取肠：烤盘${kaoPan.positionSn}已到售卖口，先清空烤盘状态，再执行售卖口收尾")
             // 搬移完成后 等待一定时间再进行视觉检测
             delay(3000)
-            val sausageInfo=SauceDetectionUitls.captureAndDetect(1)
+        val sausageInfo = captureSellPlatform()
             if (sausageInfo==null){ // 拍照失败
                 markDeviceErrorAndUpload("售卖台第一次拍照失败，旧手动取肠流程进入维护中")
             }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
                 delay(3000)
-                val sausageInfo_2 = SauceDetectionUitls.captureAndDetect(1)
+            val sausageInfo_2 = captureSellPlatform()
                 if (sausageInfo_2 == null) {
                     markDeviceErrorAndUpload("售卖台第二次拍照失败，旧手动取肠流程进入维护中")
                 }else if (sausageInfo_2.code == 2){
@@ -677,7 +687,7 @@ object KaoChangOperate {
         }
 
         delay(3000)
-        val firstDetect = SauceDetectionUitls.captureAndDetect(1)
+        val firstDetect = captureSellPlatform()
         val takeResult = when {
             firstDetect == null -> {
                 markDeviceErrorAndUpload("售卖台第一次拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
@@ -687,7 +697,7 @@ object KaoChangOperate {
             firstDetect.code != 2 -> {
                 LogUtils.w("售卖台第一次识别未检测到烤肠，开始短暂重试确认是否为空夹或中途掉落")
                 delay(1500)
-                val retryDetect = SauceDetectionUitls.captureAndDetect(1)
+                val retryDetect = captureSellPlatform()
                 when {
                     retryDetect == null -> {
                         markDeviceErrorAndUpload("售卖台第一次识别为空且重试拍照失败，无法确认是否空夹，设备进入维护中")
@@ -701,7 +711,7 @@ object KaoChangOperate {
 
                     else -> {
                         delay(3000)
-                        val secondDetect = SauceDetectionUitls.captureAndDetect(1)
+                        val secondDetect = captureSellPlatform()
                         when {
                             secondDetect == null -> {
                                 markDeviceErrorAndUpload("售卖台第二次拍照失败，首次重试已识别到烤肠，但复核失败，设备进入维护中")
@@ -746,7 +756,7 @@ object KaoChangOperate {
 
             else -> {
                 delay(3000)
-                val secondDetect = SauceDetectionUitls.captureAndDetect(1)
+                val secondDetect = captureSellPlatform()
                 when {
                     secondDetect == null -> {
                         markDeviceErrorAndUpload("售卖台第二次拍照失败，首次识别到烤肠仍在，但复核失败，设备进入维护中")
