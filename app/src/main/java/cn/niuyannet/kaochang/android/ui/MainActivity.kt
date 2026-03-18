@@ -39,34 +39,54 @@ import kotlin.system.exitProcess
  * 主界面
  */
 class MainActivity : OrderActivity(), ICameraStateCallBack {
+    private var runtimeStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 启动后台拍照服务
-//        PhotoCaptureService.startService(this)
         initView()
-
-        // 初始化
-//        CameraUvc.instance.init(this) { findFirstCamera(this) }
-//        initCameraData()
-
-        // 启动后台拍照服务
         CameraMonitor.instance.startService(this)
     }
 
     override fun initData() {
-//        KaoChangOperate.actionDebug()
-        initAdsData()//获取广告数据
-        loadDeviceInfo()//获取设备初始化信息
-        KaoPanHelper.init() // 烤盘初始化
+        initAdsData()
+        KaoPanHelper.init()
+
+        val hasValidCachedConfig = AppConfig.hasValidDeviceConfig()
+        if (hasValidCachedConfig) {
+            setDataToView()
+            startRuntimeAfterConfigLoaded("cached")
+        }
+
+        loadDeviceInfo { success ->
+            if (success) {
+                if (!isFinishing && !isDestroyed) {
+                    setDataToView()
+                }
+                startRuntimeAfterConfigLoaded("remote")
+            } else if (!hasValidCachedConfig) {
+                LogUtils.w("设备配置拉取失败且本地无有效配置，跳过算法启动与状态同步，避免默认配置误上报")
+            }
+        }
+    }
+
+    private fun startRuntimeAfterConfigLoaded(source: String) {
+        if (runtimeStarted) {
+            LogUtils.d("运行链路已启动，忽略重复启动请求：source=$source")
+            return
+        }
+        if (!AppConfig.hasValidDeviceConfig()) {
+            LogUtils.w("设备配置仍无效，拒绝启动算法和状态同步：source=$source")
+            return
+        }
+        runtimeStarted = true
+        LogUtils.d("设备配置有效，开始启动算法与状态同步：source=$source")
         KaoChangAlgorithm.restoreRoastAlgorithmState()
-        KaoChangAlgorithm.runServer()//运行烤肠服务
+        KaoChangAlgorithm.runServer()
         syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
-        //开始定时更新拉去任务
-        ConnectManageHelper.lunStatus{
-            if (!isFinishing&&!isDestroyed){
-                setDataToView()//绑定数据
-                mqttMessage()//接受mqtt消息
+        ConnectManageHelper.lunStatus {
+            if (!isFinishing && !isDestroyed) {
+                setDataToView()
+                mqttMessage()
             }
             DataManagementAPI.getDeviceInfo()
             DataManagementAPI.uploadDataToServer()
@@ -75,84 +95,53 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onResume() {
         super.onResume()
-        if(mCameraClient == null) {
+        if (mCameraClient == null) {
             initCameraData()
         }
     }
 
     /**
-     * 接受mqtt消息
+     * 接受 mqtt 消息
      */
-    private fun mqttMessage(){
-        VMMqttHelper.setTopicMessageCallBack(AppConfig.getTopicDeviceIdUrl(VMMqttHelper.topic_by_server)){ data->
-            when(data.action){
-                1->{
+    private fun mqttMessage() {
+        VMMqttHelper.setTopicMessageCallBack(AppConfig.getTopicDeviceIdUrl(VMMqttHelper.topic_by_server)) { data ->
+            when (data.action) {
+                1 -> {
                     val orderMessage = data.content
-                    //下单取烤肠
                     var appState = AppConfig.getAppConfig().moveStatus
                     if (appState == 2 || AppConfig.getAppConfig().onlineStatus == 4) {
                         LogUtils.d("上位机正在运行，无法下单，用户退款")
-//                        val json = JSON.parseObject(orderMessage)
-//                        val orderNo = json.getString("order_no")
-//                        val goodsList =
-//                            JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
-//                        // 遍历商品列表
-//                        goodsList.forEach { item ->
-//                            // 根据数量循环取出烤肠
-//                            repeat(item.quantity) {
-//                                // 构建MQTT消息
-//                                SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-//                                    put("order_no", orderNo)
-//                                    put("item_id", item.id)
-//                                    put("product_id", item.productId)
-//                                    put("taste_code", item.tasteCode)
-//                                    put("status", 5) // 退钱
-//                                })
-//                            }
-//                        }
-                    }
-                    else{
+                    } else {
                         LogUtils.d("order 客户下单购买")
-                        //更新状态到云端
                         AppConfig.getAppConfig().onlineStatus = 4
                         AppConfig.saveAppConfig(AppConfig.getAppConfig())
                         syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
-                        // 显示处理中对话框
                         showProcessingDialog()
-
-                        // 隐藏QRCode
                         setDataToView()
-
                         purchaseOrder(orderMessage)
                     }
                 }
             }
-
         }
     }
 
-    /**
-     * 初始化view
-     * {"msg":"操作成功","code":200,"data":{"createBy":null,"createTime":"2025-05-19 13:33:53","updateBy":null,"updateTime":"2025-05-22 19:14:40","remark":null,"id":100,"deviceCode":"5145a0380ff17f38","qrcodeUrl":"https://image.cheerluck.com/images/qcode/2025/05/19/1747632832808_temp_1747632832755.png","name":"牛研设备1号","description":"","merchantId":100,"agentId":100,"deviceStatus":"{}","businessHours":"{\"mode\":\"custom\",\"customTimes\":[{\"day\":1,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]},{\"day\":2,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]},{\"day\":3,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]},{\"day\":4,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]},{\"day\":5,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]},{\"day\":6,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]},{\"day\":7,\"enabled\":true,\"timeRange\":[\"22:42:48\",\"23:42:48\"]}]}","address":"湖南省长沙市岳麓区麓谷企业广场","longitude":0E-7,"latitude":0E-7,"mqttUrl":"mqtt.cheerluck.com","mqttUsername":"5145a0380ff17f38","mqttPassword":"yJe%0Tea2&IH","modbusAddress":"","totalSales":0,"totalSalesAmount":0.00,"status":"0","onlineStatus":"0"}}
-     *
-     */
     private fun initView() {
         binding.refreshButton.setOnClickListener {
             loadDeviceInfo()
         }
         binding.configButton.setOnClickListener {
-            // 弹出对话框，输入设备密码才能进入到调试界面
             goToSetting()
         }
         binding.tvGly.setOnClickListener {
             goToSetting()
         }
     }
-    private fun goToSetting(){
+
+    private fun goToSetting() {
         val editText = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or
-                    InputType.TYPE_TEXT_VARIATION_PASSWORD or
-                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                InputType.TYPE_TEXT_VARIATION_PASSWORD or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             transformationMethod = PasswordTransformationMethod.getInstance()
             hint = "请输入密码"
         }
@@ -161,8 +150,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             .setView(editText)
             .setPositiveButton("确定") { _, _ ->
                 val password = editText.text.toString()
-               if (password == "changle@leye") {
-//                if (password == "1") {
+                if (password == "changle@leye") {
                     SettingActivity.start(this)
                 } else {
                     ToastUtils.showShort("密码错误")
@@ -172,62 +160,55 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             .show()
     }
 
-    /**
-     * 设置绑定view
-     */
     @SuppressLint("SetTextI18n")
-    override fun setDataToView(){
-        val appConfigBean=AppConfig.getAppConfig()
-      // 在线状态（0离线 1运营中 2休息中 3维护中 4工作中（正在出烤肠））
-        if (appConfigBean.status==1){
-            when( appConfigBean.onlineStatus){
-                0->{
-                    binding.deviceStatusText.text="未启用"
+    override fun setDataToView() {
+        val appConfigBean = AppConfig.getAppConfig()
+        if (appConfigBean.status == 1) {
+            when (appConfigBean.onlineStatus) {
+                0 -> {
+                    binding.deviceStatusText.text = "未启用"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
                 }
-                1->{
-                    binding.deviceStatusText.text="运营中"
+                1 -> {
+                    binding.deviceStatusText.text = "运营中"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_operating))
                 }
-                2->{
-                    binding.deviceStatusText.text="休息中"
+                2 -> {
+                    binding.deviceStatusText.text = "休息中"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_resting))
                 }
-                3->{
-                    binding.deviceStatusText.text="维护中"
+                3 -> {
+                    binding.deviceStatusText.text = "维护中"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_maintaining))
                 }
-                4->{
-                    binding.deviceStatusText.text="正在出烤肠"
+                4 -> {
+                    binding.deviceStatusText.text = "正在出烤肠"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_working))
                 }
             }
-        }else{
-            binding.deviceStatusText.text="离线"
+        } else {
+            binding.deviceStatusText.text = "离线"
             binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
         }
 
         if (appConfigBean.onlineStatus == 3) {
-            binding.tvScanTip.text = "🔧 设备维护中"
-        }
-        else {
+            binding.tvScanTip.text = "设备维护中"
+        } else {
             if (appConfigBean.available > 0) {
                 val leftTime = appConfigBean.available
                 if (leftTime >= 60_000) {
                     val minutes = ceil(appConfigBean.available / 60000.0).toInt()
-                    binding.tvScanTip.text = "⏳ 预计烤制 ${minutes} 分钟"
-                }
-                else {
+                    binding.tvScanTip.text = "预计烤制 ${minutes} 分钟"
+                } else {
                     val seconds = ceil(appConfigBean.available / 1000.0).toInt()
-                    binding.tvScanTip.text = "⏳ 预计烤制 ${seconds} 秒"
+                    binding.tvScanTip.text = "预计烤制 ${seconds} 秒"
                 }
             } else {
-                binding.tvScanTip.text = "扫码下单 🍽️ 纯肉烤肠"
+                binding.tvScanTip.text = "扫码下单 纯肉烤肠"
             }
         }
 
         binding.deviceNameText.text = appConfigBean.deviceName + "(" + appConfigBean.deviceCode + ")"
-        // Only show the QR code when the device is enabled and operating normally.
         if (appConfigBean.status == 1 && AppConfig.getAppConfig().onlineStatus == 1) {
             binding.qrCodeImage.visibility = View.VISIBLE
             Glide.with(this).load(AppConfig.getAppConfig().qcodeURL).into(binding.qrCodeImage)
@@ -240,27 +221,19 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         super.onDestroy()
         ConnectManageHelper.disConnect()
         KaoChangAlgorithm.stopServer()
-        // 停止后台拍照服务
-//        clearCamera()
-//        PhotoCaptureService.stopService(this)
         exitProcess(0)
     }
 
-    /**
-     *  启动
-     */
     companion object {
-
         init {
             System.loadLibrary("UVCCamera")
         }
 
         fun start(context: Context?) {
-            context?.startActivity(Intent(context,MainActivity::class.java))
+            context?.startActivity(Intent(context, MainActivity::class.java))
         }
     }
 
-    /// =================================== 摄像头初始化 =====================
     private var mCameraClient: MultiCameraClient? = null
     private val mCameraMap = ConcurrentHashMap<Int, MultiCameraClient.ICamera>()
 
@@ -291,10 +264,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 }
             }
 
-            override fun onDisConnectDec(
-                device: UsbDevice?,
-                ctrlBlock: USBMonitor.UsbControlBlock?
-            ) {
+            override fun onDisConnectDec(device: UsbDevice?, ctrlBlock: USBMonitor.UsbControlBlock?) {
                 mCameraMap[device?.deviceId]?.apply {
                     onCameraDisConnected(this)
                 }
@@ -309,36 +279,39 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         mCameraClient?.register()
     }
 
-    /**
-     * 获取并打开第一个摄像头
-     */
-    private fun findFirstCamera(callback: ICameraStateCallBack?): Pair<Boolean,MultiCameraClient.ICamera?> {
+    private fun findFirstCamera(callback: ICameraStateCallBack?): Pair<Boolean, MultiCameraClient.ICamera?> {
         try {
             mCameraMap.values.first().let { camera ->
-                return if(!camera.isCameraOpened()) {
+                return if (!camera.isCameraOpened()) {
                     camera.setCameraStateCallBack(callback)
                     camera.openCamera(SurfaceTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES), getCameraRequest())
                     Pair(true, camera)
-                } else Pair(false, camera)
+                } else {
+                    Pair(false, camera)
+                }
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         return Pair(false, null)
     }
 
-    // ========================== 摄像头相关 ===================================================
     private fun generateCamera(ctx: Context, device: UsbDevice): MultiCameraClient.ICamera {
         return CameraUVC(ctx, device)
     }
+
     private fun onCameraAttached(camera: MultiCameraClient.ICamera) {
         LogUtils.d("摄像头附加 -> ${camera.device.deviceName}")
     }
+
     private fun onCameraConnected(camera: MultiCameraClient.ICamera) {
         LogUtils.d("摄像头连接 -> ${camera.device.deviceName}")
     }
+
     private fun onCameraDetached(camera: MultiCameraClient.ICamera) {
         camera.closeCamera()
         LogUtils.d("摄像头断开 -> ${camera.device.deviceName}")
     }
+
     private fun onCameraDisConnected(camera: MultiCameraClient.ICamera) {
         camera.closeCamera()
     }
@@ -369,6 +342,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         code: ICameraStateCallBack.State,
         msg: String?
     ) {
-        LogUtils.d("摄像头状态: ${code.name} - msg: $msg")
+        LogUtils.d("摄像头状态 ${code.name} - msg: $msg")
     }
 }
