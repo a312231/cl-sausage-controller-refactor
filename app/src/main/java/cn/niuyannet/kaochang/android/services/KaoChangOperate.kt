@@ -1,29 +1,20 @@
 ﻿package cn.niuyannet.kaochang.android.services
 
-import androidx.lifecycle.lifecycleScope
+import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
-import cn.niuyannet.kaochang.android.model.bean.Taste
-import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
-import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
-import cn.niuyannet.kaochang.android.ui.MainActivity
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
-import com.alibaba.fastjson.JSONObject
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.withContext
-import kotlin.math.log
 
 /**
  * 上位机机械动作封装。
@@ -46,6 +37,8 @@ object KaoChangOperate {
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
     private const val SELL_PLATFORM_RETRY_DELAY_MS = 300L
     private const val SELL_PLATFORM_CAPTURE_TIMEOUT_MS = 2500L
+    private const val SELL_PLATFORM_FIRST_DETECT_DELAY_MS = 800L
+    private val SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS = listOf(300L, 500L, 800L)
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -147,6 +140,22 @@ object KaoChangOperate {
             captureTimeoutMs = SELL_PLATFORM_CAPTURE_TIMEOUT_MS,
             tag = tag
         )
+
+    private suspend fun captureSellPlatformPresenceSequence(): List<SauceDetectionProcessor.SausageInfo?> {
+        val results = mutableListOf<SauceDetectionProcessor.SausageInfo?>()
+        results += captureSellPlatform()
+        if (results.last()?.code == 2) {
+            return results
+        }
+        SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS.forEach { delayMs ->
+            delay(delayMs)
+            results += captureSellPlatform()
+            if (results.last()?.code == 2) {
+                return results
+            }
+        }
+        return results
+    }
 
     private suspend fun tryCloseSellPlatformOnError(reason: String) {
         val closeResult = executeActionWithRetry(
@@ -699,29 +708,31 @@ object KaoChangOperate {
             return TakeSausageResult.ERROR
         }
 
-        delay(3000)
-        val firstDetect = captureSellPlatform()
+        delay(SELL_PLATFORM_FIRST_DETECT_DELAY_MS)
+        val presenceResults = captureSellPlatformPresenceSequence()
+        val firstDetect = presenceResults.firstOrNull()
+        val detectedSausageInQuickRetries = presenceResults.any { it?.code == 2 }
+        val allPresenceCapturesFailed = presenceResults.all { it == null }
         val takeResult = when {
-            firstDetect == null -> {
-                tryCloseSellPlatformOnError("售卖台第一次拍照失败")
-                markDeviceErrorAndUpload("售卖台第一次拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
+            allPresenceCapturesFailed -> {
+                tryCloseSellPlatformOnError("售卖台首次确认阶段连续拍照失败")
+                markDeviceErrorAndUpload("售卖台首次确认阶段连续拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
                 TakeSausageResult.ERROR
             }
 
-            firstDetect.code != 2 -> {
-                LogUtils.w("售卖台第一次识别未检测到烤肠，开始短暂重试确认是否为空夹或中途掉落")
-                delay(1500)
-                val retryDetect = captureSellPlatform()
+            !detectedSausageInQuickRetries -> {
+                LogUtils.w("售卖台首次确认阶段未检测到烤肠，已完成短频补拍确认是否为空夹或中途掉落")
+                val retryDetect = presenceResults.lastOrNull()
                 when {
                     retryDetect == null -> {
-                        tryCloseSellPlatformOnError("售卖台第一次识别为空且重试拍照失败")
-                        markDeviceErrorAndUpload("售卖台第一次识别为空且重试拍照失败，无法确认是否空夹，设备进入维护中")
+                        tryCloseSellPlatformOnError("售卖台首次确认阶段识别为空且补拍失败")
+                        markDeviceErrorAndUpload("售卖台首次确认阶段识别为空且补拍失败，无法确认是否空夹，设备进入维护中")
                         TakeSausageResult.ERROR
                     }
 
                     retryDetect.code != 2 -> {
-                        tryCloseSellPlatformOnError("售卖台连续两次未检测到烤肠")
-                        LogUtils.e("售卖台连续两次未检测到烤肠，判定本次出餐未真正送达售卖口，按故障处理")
+                        tryCloseSellPlatformOnError("售卖台首次确认阶段短频补拍仍未检测到烤肠")
+                        LogUtils.e("售卖台首次确认阶段短频补拍仍未检测到烤肠，判定本次出餐未真正送达售卖口，按故障处理")
                         TakeSausageResult.ERROR
                     }
 

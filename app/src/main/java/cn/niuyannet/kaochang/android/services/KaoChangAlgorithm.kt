@@ -7,13 +7,9 @@ import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.NetApi
-import cn.niuyannet.kaochang.android.services.KaoChangOperate.action_address_1_temperature_write
-import cn.niuyannet.kaochang.android.services.KaoChangOperate.action_address_2_temperature_write
-import cn.niuyannet.kaochang.android.services.KaoChangOperate.heatingTemperature
-import cn.niuyannet.kaochang.android.services.KaoChangOperate.writeSingleRegister
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -30,8 +26,18 @@ import java.util.Locale
  */
 object KaoChangAlgorithm {
     private val TAG = "KaoChangAlgorithm"
+    private const val MODBUS_MONITOR_INTERVAL_MS = 1_000L
+    private const val MODBUS_DISCONNECT_REPORT_DELAY_MS = 5_000L
+    private const val MODBUS_RECONNECT_STABLE_DELAY_MS = 5_000L
+    private const val MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS = 5_000L
     private var isRunning = false
+    private var modbusMonitorStarted = false
     private var serviceStartTime: Long = 0
+    private var modbusDisconnectSinceMs: Long? = null
+    private var modbusReconnectSinceMs: Long? = null
+    private var lastReconnectAttemptMs: Long = 0L
+    private var modbusReportedUnavailable = false
+    private var lastRecoverableOnlineStatus = 1
     var isEnabled = false //是否开启算法
 
     fun restoreRoastAlgorithmState() {
@@ -47,6 +53,10 @@ object KaoChangAlgorithm {
         restoreRoastAlgorithmState()
         isRunning = true
         val config = AppConfig.getAppConfig()
+        rememberRecoverableOnlineStatus(config.onlineStatus)
+        if (config.onlineStatus == 3 && config.errorStatus == 2 && !VMModbusHelper.connectStatus()) {
+            modbusReportedUnavailable = true
+        }
         Log.d(TAG, "智能烤肠算法服务启动开始工作")
         LogUtils.d(TAG, "算法准备0 运动状态：${config.moveStatus}")
         config.moveStatus = 0
@@ -54,6 +64,7 @@ object KaoChangAlgorithm {
         LogUtils.d(TAG, "算法准备1 运动状态：${config.moveStatus}")
         serviceStartTime = System.currentTimeMillis() // 记录服务启动时间
         LogUtils.d(TAG, "智能烤肠算法服务启动开始工作")
+        startModbusStateMonitor()
         GlobalScope.launch(Dispatchers.IO) {
             while (isRunning) {
                 //if (AppConfig.getAppConfig().moveStatus == 0) {
@@ -240,14 +251,7 @@ object KaoChangAlgorithm {
         }
         if (!VMModbusHelper.connectStatus()){
             LogUtils.d("KaoChangAlgorithm", "modbus串口没有连接上")
-            //todo 调试用，暂时屏蔽调
-            while (!VMModbusHelper.connectStatus()) {
-                delay(5000L)
-                LogUtils.d("KaoChangAlgorithm", "等待modbus串口连接")
-                VMModbusHelper.connectModbus {md->}
-            }
-            LogUtils.d("KaoChangAlgorithm", "modbus串口重新连接上")
-             //return
+            return
         }
         if (!isEnabled){
             Log.d(TAG, "算法未开启，不工作")
@@ -323,7 +327,94 @@ object KaoChangAlgorithm {
      */
     fun stopServer() {
         isRunning = false
+        modbusMonitorStarted = false
         Log.d(TAG, "智能烤肠算法服务停止")
+    }
+
+    private fun startModbusStateMonitor() {
+        if (modbusMonitorStarted) {
+            return
+        }
+        modbusMonitorStarted = true
+        GlobalScope.launch(Dispatchers.IO) {
+            while (isRunning) {
+                val now = System.currentTimeMillis()
+                val connected = VMModbusHelper.connectStatus()
+                val config = AppConfig.getAppConfig()
+
+                if (connected) {
+                    modbusDisconnectSinceMs = null
+                    lastReconnectAttemptMs = 0L
+                    rememberRecoverableOnlineStatus(config.onlineStatus)
+
+                    if (modbusReportedUnavailable) {
+                        if (modbusReconnectSinceMs == null) {
+                            modbusReconnectSinceMs = now
+                            LogUtils.d(TAG, "检测到modbus恢复，开始稳定性观察")
+                        } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
+                            val restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
+                            config.errorStatus = 0
+                            config.onlineStatus = restoredOnlineStatus
+                            AppConfig.saveAppConfig(config)
+                            rememberRecoverableOnlineStatus(restoredOnlineStatus)
+                            modbusReportedUnavailable = false
+                            modbusReconnectSinceMs = null
+                            uploadDeviceStatus(
+                                "modbus串口恢复稳定，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
+                            )
+                        }
+                    } else {
+                        modbusReconnectSinceMs = null
+                    }
+                } else {
+                    modbusReconnectSinceMs = null
+                    if (modbusDisconnectSinceMs == null) {
+                        modbusDisconnectSinceMs = now
+                        LogUtils.w("检测到modbus串口断开，开始不可用状态观察")
+                    }
+                    if (lastReconnectAttemptMs == 0L || now - lastReconnectAttemptMs >= MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS) {
+                        lastReconnectAttemptMs = now
+                        VMModbusHelper.connectModbus { status ->
+                            LogUtils.d("modbus后台重连尝试完成：status=$status")
+                        }
+                    }
+
+                    if (!modbusReportedUnavailable && now - modbusDisconnectSinceMs!! >= MODBUS_DISCONNECT_REPORT_DELAY_MS) {
+                        rememberRecoverableOnlineStatus(config.onlineStatus)
+                        config.errorStatus = 2
+                        config.onlineStatus = 3
+                        AppConfig.saveAppConfig(config)
+                        modbusReportedUnavailable = true
+                        uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，已上报维护中")
+                    }
+                }
+
+                delay(MODBUS_MONITOR_INTERVAL_MS)
+            }
+            modbusMonitorStarted = false
+        }
+    }
+
+    private fun rememberRecoverableOnlineStatus(onlineStatus: Int) {
+        if (onlineStatus in 0..2) {
+            lastRecoverableOnlineStatus = onlineStatus
+        }
+    }
+
+    private fun resolveRecoveredOnlineStatus(config: AppConfigBean): Int {
+        if (config.status != 1) {
+            return 0
+        }
+        if (lastRecoverableOnlineStatus == 0 || lastRecoverableOnlineStatus == 2) {
+            return lastRecoverableOnlineStatus
+        }
+        return if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
+    }
+
+    private fun uploadDeviceStatus(logMessage: String) {
+        LogUtils.w(logMessage)
+        SendServerHelper.publishServiceUpdateStatus()
+        NetApi.updateDeviceInfo()
     }
     /**
      * 判断当前时间是否在营业时间内
