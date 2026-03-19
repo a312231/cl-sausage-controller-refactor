@@ -37,8 +37,10 @@ object KaoChangOperate {
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
     private const val SELL_PLATFORM_RETRY_DELAY_MS = 300L
     private const val SELL_PLATFORM_CAPTURE_TIMEOUT_MS = 2500L
-    private const val SELL_PLATFORM_FIRST_DETECT_DELAY_MS = 800L
-    private val SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS = listOf(300L, 500L, 800L)
+    private val SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS = listOf(300L, 500L, 700L)
+    private const val SELL_PLATFORM_MONITOR_INTERVAL_MS = 1000L
+    private const val SELL_PLATFORM_WAIT_TIMEOUT_MS = 15_000L
+    private const val SELL_PLATFORM_CAPTURE_FAILURE_TOLERANCE = 2
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -155,6 +157,70 @@ object KaoChangOperate {
             }
         }
         return results
+    }
+
+    private suspend fun closeSellPlatformAfterUserTake(): TakeSausageResult {
+        val closeResult = executeActionWithRetry(
+            actionName = "售卖台关门"
+        ) {
+            writeSingleRegister2(action_address_shoumaitai, 1)
+        }
+        return if (closeResult != ActionExecutionResult.SUCCESS) {
+            markActionFailure("售卖台关门", closeResult)
+            TakeSausageResult.ERROR
+        } else {
+            armPostSellSupplementGuard("售卖台关门成功")
+            LogUtils.d("售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+            TakeSausageResult.TAKEN_BY_USER
+        }
+    }
+
+    private suspend fun discardSellPlatformAfterTimeout(): TakeSausageResult {
+        val closeResult = executeActionWithRetry(
+            actionName = "售卖台丢弃并关门"
+        ) {
+            writeSingleRegister2(action_address_shoumaitai, 2)
+        }
+        return if (closeResult != ActionExecutionResult.SUCCESS) {
+            markActionFailure("售卖台丢弃并关门", closeResult)
+            TakeSausageResult.ERROR
+        } else {
+            armPostSellSupplementGuard("售卖台丢弃并关门成功")
+            LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
+            TakeSausageResult.DISCARDED
+        }
+    }
+
+    private suspend fun monitorSellPlatformUntilTakenOrDiscarded(
+        detectDeadlineMs: Long
+    ): TakeSausageResult {
+        var consecutiveCaptureFailures = 0
+        while (System.currentTimeMillis() < detectDeadlineMs) {
+            delay(SELL_PLATFORM_MONITOR_INTERVAL_MS)
+            val detectResult = captureSellPlatform()
+            when {
+                detectResult == null -> {
+                    consecutiveCaptureFailures++
+                    if (consecutiveCaptureFailures >= SELL_PLATFORM_CAPTURE_FAILURE_TOLERANCE) {
+                        tryCloseSellPlatformOnError("售卖台轮询阶段连续拍照失败")
+                        markDeviceErrorAndUpload("售卖台轮询阶段连续拍照失败，无法确认顾客是否已取走烤肠，设备进入维护中")
+                        return TakeSausageResult.ERROR
+                    }
+                    LogUtils.w("售卖台轮询阶段拍照失败，继续每秒重试确认顾客是否已取走烤肠")
+                }
+
+                detectResult.code == 2 -> {
+                    consecutiveCaptureFailures = 0
+                    LogUtils.d("售卖台轮询检测到烤肠仍在，继续等待顾客取走")
+                }
+
+                else -> {
+                    return closeSellPlatformAfterUserTake()
+                }
+            }
+        }
+
+        return discardSellPlatformAfterTimeout()
     }
 
     private suspend fun tryCloseSellPlatformOnError(reason: String) {
@@ -708,11 +774,10 @@ object KaoChangOperate {
             return TakeSausageResult.ERROR
         }
 
-        delay(SELL_PLATFORM_FIRST_DETECT_DELAY_MS)
         val presenceResults = captureSellPlatformPresenceSequence()
-        val firstDetect = presenceResults.firstOrNull()
         val detectedSausageInQuickRetries = presenceResults.any { it?.code == 2 }
         val allPresenceCapturesFailed = presenceResults.all { it == null }
+        val detectDeadlineMs = System.currentTimeMillis() + SELL_PLATFORM_WAIT_TIMEOUT_MS
         val takeResult = when {
             allPresenceCapturesFailed -> {
                 tryCloseSellPlatformOnError("售卖台首次确认阶段连续拍照失败")
@@ -721,109 +786,13 @@ object KaoChangOperate {
             }
 
             !detectedSausageInQuickRetries -> {
-                LogUtils.w("售卖台首次确认阶段未检测到烤肠，已完成短频补拍确认是否为空夹或中途掉落")
-                val retryDetect = presenceResults.lastOrNull()
-                when {
-                    retryDetect == null -> {
-                        tryCloseSellPlatformOnError("售卖台首次确认阶段识别为空且补拍失败")
-                        markDeviceErrorAndUpload("售卖台首次确认阶段识别为空且补拍失败，无法确认是否空夹，设备进入维护中")
-                        TakeSausageResult.ERROR
-                    }
-
-                    retryDetect.code != 2 -> {
-                        tryCloseSellPlatformOnError("售卖台首次确认阶段短频补拍仍未检测到烤肠")
-                        LogUtils.e("售卖台首次确认阶段短频补拍仍未检测到烤肠，判定本次出餐未真正送达售卖口，按故障处理")
-                        TakeSausageResult.ERROR
-                    }
-
-                    else -> {
-                        delay(3000)
-                        val secondDetect = captureSellPlatform()
-                        when {
-                            secondDetect == null -> {
-                                tryCloseSellPlatformOnError("售卖台第二次拍照失败，首次重试已识别到烤肠")
-                                markDeviceErrorAndUpload("售卖台第二次拍照失败，首次重试已识别到烤肠，但复核失败，设备进入维护中")
-                                TakeSausageResult.ERROR
-                            }
-
-                            secondDetect.code == 2 -> {
-                                val closeResult = executeActionWithRetry(
-                                    actionName = "售卖台丢弃并关门"
-                                ) {
-                                    writeSingleRegister2(action_address_shoumaitai, 2)
-                                }
-                                if (closeResult != ActionExecutionResult.SUCCESS) {
-                                    markActionFailure("售卖台丢弃并关门", closeResult)
-                                    TakeSausageResult.ERROR
-                                } else {
-                                    armPostSellSupplementGuard("售卖台丢弃并关门成功")
-                                    LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
-                                    TakeSausageResult.DISCARDED
-                                }
-                            }
-
-                            else -> {
-                                val closeResult = executeActionWithRetry(
-                                    actionName = "售卖台关门"
-                                ) {
-                                    writeSingleRegister2(action_address_shoumaitai, 1)
-                                }
-                                if (closeResult != ActionExecutionResult.SUCCESS) {
-                                    markActionFailure("售卖台关门", closeResult)
-                                    TakeSausageResult.ERROR
-                                } else {
-                                    armPostSellSupplementGuard("售卖台关门成功")
-                                    LogUtils.d("售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
-                                    TakeSausageResult.TAKEN_BY_USER
-                                }
-                            }
-                        }
-                    }
-                }
+                LogUtils.w("售卖台首次确认阶段未检测到烤肠，已完成 1.5 秒短频补拍，继续每秒轮询确认是否到货或已被顾客快速取走")
+                monitorSellPlatformUntilTakenOrDiscarded(detectDeadlineMs)
             }
 
             else -> {
-                delay(3000)
-                val secondDetect = captureSellPlatform()
-                when {
-                    secondDetect == null -> {
-                        tryCloseSellPlatformOnError("售卖台第二次拍照失败，首次识别到烤肠仍在")
-                        markDeviceErrorAndUpload("售卖台第二次拍照失败，首次识别到烤肠仍在，但复核失败，设备进入维护中")
-                        TakeSausageResult.ERROR
-                    }
-
-                    secondDetect.code == 2 -> {
-                        val closeResult = executeActionWithRetry(
-                            actionName = "售卖台丢弃并关门"
-                        ) {
-                            writeSingleRegister2(action_address_shoumaitai, 2)
-                        }
-                        if (closeResult != ActionExecutionResult.SUCCESS) {
-                            markActionFailure("售卖台丢弃并关门", closeResult)
-                            TakeSausageResult.ERROR
-                        } else {
-                            armPostSellSupplementGuard("售卖台丢弃并关门成功")
-                            LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
-                            TakeSausageResult.DISCARDED
-                        }
-                    }
-
-                    else -> {
-                        val closeResult = executeActionWithRetry(
-                            actionName = "售卖台关门"
-                        ) {
-                            writeSingleRegister2(action_address_shoumaitai, 1)
-                        }
-                        if (closeResult != ActionExecutionResult.SUCCESS) {
-                            markActionFailure("售卖台关门", closeResult)
-                            TakeSausageResult.ERROR
-                        } else {
-                            armPostSellSupplementGuard("售卖台关门成功")
-                            LogUtils.d("售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
-                            TakeSausageResult.TAKEN_BY_USER
-                        }
-                    }
-                }
+                LogUtils.d("售卖台首次确认阶段已检测到烤肠，开始每秒轮询顾客是否已取走")
+                monitorSellPlatformUntilTakenOrDiscarded(detectDeadlineMs)
             }
         }
 
