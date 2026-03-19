@@ -139,6 +139,12 @@ object DataManagementAPI {
                       appConfigBean.discardTime=jsonData.getIntValue("discardTime")
                       appConfigBean.timeThresholdLow=jsonData.getIntValue("timeThresholdLow")
                       appConfigBean.timeBeforeClose=jsonData.getIntValue("timeBeforeClose")
+                      appConfigBean.boxToPlatformTimeoutSeconds =
+                          if (jsonData.containsKey("boxToPlatformTimeoutSeconds")) {
+                              jsonData.getIntValue("boxToPlatformTimeoutSeconds")
+                          } else {
+                              90
+                          }
                       appConfigBean.postSellSupplementGuardSeconds =
                           if (jsonData.containsKey("postSellSupplementGuardSeconds")) {
                               jsonData.getIntValue("postSellSupplementGuardSeconds")

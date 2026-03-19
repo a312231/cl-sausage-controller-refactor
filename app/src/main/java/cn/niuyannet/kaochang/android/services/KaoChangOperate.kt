@@ -257,6 +257,13 @@ object KaoChangOperate {
         return seconds * 1000L
     }
 
+    private fun getBoxToPlatformTimeoutMs(): Long {
+        val seconds = AppConfig.getAppConfig().boxToPlatformTimeoutSeconds
+            .takeIf { it > 0 }
+            ?: 90
+        return seconds * 1000L
+    }
+
     // modbus 地址
     val modbus_address=1
     //动作组地址
@@ -469,7 +476,8 @@ object KaoChangOperate {
 
         LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运开始")
         val result = executeActionWithRetry(
-            actionName = "烤肠箱${kaoPanBox.positionSn}到平台"
+            actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
+            runningTimeoutMs = getBoxToPlatformTimeoutMs()
         ) {
             writeSingleRegister2(action_address, kaoPanBox.cmdValueTake)
         }

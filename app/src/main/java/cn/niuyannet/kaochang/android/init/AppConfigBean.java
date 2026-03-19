@@ -1,52 +1,62 @@
 package cn.niuyannet.kaochang.android.init;
 
-import com.google.gson.annotations.SerializedName;
-
 import java.io.Serializable;
 
 public class AppConfigBean implements Serializable {
-//    public String mqttHost="tcp://mqtt.cheerluck.com";//mqtt连接信息
+    // MQTT 与下位机通信配置
+    public String mqttHost = "tcp://mqtt.cheerluck.com";
+    public String mqttUsername = "";
+    public String mqttPassword = "";
+    public int mqttPort = 1883;
 
-    public String mqttHost="tcp://mqtt.cheerluck.com";//mqtt连接信息
-    public String mqttUsername="";//mqtt 初始化用户名
-    public String mqttPassword="";//mqtt 初始化密码
-    public int mqttPort=1883;//mqtt初始化端口
-    //modbus
-    public String modbusAddress="/dev/ttyS2";//modbus串口地址
-    public int modbusBaudRate=115200;//modbus 波特率
-    //小程序二维码
-    public String qcodeURL="";
-    //设备deviceID
+    // Modbus 串口配置
+    public String modbusAddress = "/dev/ttyS2";
+    public int modbusBaudRate = 115200;
+
+    // 设备基础信息
+    public String qcodeURL = "";
     public String deviceCode;
-    //设备名称
     public String deviceName;
     public String deviceAddress;
-    //营业时间
     public BusinessTime businessTime;
 
-    public int status;//状态（0离线 1在线）
-    public int onlineStatus; // 在线状态（0未启用 1运营中 2休息中 3维护中 4工作中（正在出烤肠））
-    //运动状态
-    public int moveStatus=0; // （0 待机状态 1 补肠状态 2 夹取状态 3 搬运状态 4 丢弃烤肠）
-    //可售状态（烤盘上是否有烤肠）
-    public long available=0; // （0 可售， 其他 剩余等待时间（分钟））
-    public int modeType; // 模式类型：1低并发，2高并发
-    public int transitionMode;//过渡模式0是默认，1是从低并发过渡到高并发，2是高并发过渡到低并发
-    public int errorStatus;//0是正常的，其他是错误的
-    public int isEnable=0;// 烤肠算法是否开启
+    // 设备启用状态：0=未启用，1=启用
+    public int status;
 
-    public int keepWarmTemperature;//保温温度
+    // 设备在线状态：0=未启用，1=运营中，2=休息中，3=维护中，4=工作中（正在出餐）
+    public int onlineStatus;
 
-    public int heatingTemperature; //加热温度
+    // 机械动作状态：0=待机，1=补肠，2=夹取/出餐，3=搬运，4=丢弃
+    public int moveStatus = 0;
 
-    public int bakingTime;//烤制时间 单位毫秒 20分钟
-    public int discardTime; //丢弃时间(小时)
+    // 当前预计可售/预计烤制时间，0 表示可直接售卖
+    public long available = 0;
 
-    public int timeThresholdLow; //两次p=9的时间间隔阈值，超过此值考虑转为低并发
+    // 并发模式：1=低并发，2=高并发
+    public int modeType;
 
-    public int timeBeforeClose; //停止营业前的时间阈值
+    // 并发切换中的过渡状态
+    public int transitionMode;
 
-    public int postSellSupplementGuardSeconds = 5; // 售卖收尾后，补肠保护窗时长（秒）
-    public int postSellIdleStableSeconds = 2; // 售卖收尾后，要求下位机连续空闲的稳定时长（秒）
-    public int postSellIdleMaxWaitSeconds = 12; // 售卖收尾后，等待下位机进入稳定空闲的最长时长（秒）
+    // 设备错误状态：0=正常，其它值表示故障
+    public int errorStatus;
+
+    // 烤制算法开关：0=关闭，1=开启
+    public int isEnable = 0;
+
+    // 温度与时间类配置
+    public int keepWarmTemperature;
+    public int heatingTemperature;
+    public int bakingTime;
+    public int discardTime;
+    public int timeThresholdLow;
+    public int timeBeforeClose;
+
+    // “烤肠箱 -> 平台”动作超时时间（秒），单独控制自动补肠第一步
+    public int boxToPlatformTimeoutSeconds = 90;
+
+    // 售卖收尾后，补肠前保护窗和下位机稳定等待参数
+    public int postSellSupplementGuardSeconds = 5;
+    public int postSellIdleStableSeconds = 2;
+    public int postSellIdleMaxWaitSeconds = 12;
 }
