@@ -264,6 +264,13 @@ object KaoChangOperate {
         return seconds * 1000L
     }
 
+    private fun getTrayToSellPlatformTimeoutMs(): Long {
+        val seconds = AppConfig.getAppConfig().trayToSellPlatformTimeoutSeconds
+            .takeIf { it > 0 }
+            ?: 90
+        return seconds * 1000L
+    }
+
     // modbus 地址
     val modbus_address=1
     //动作组地址
@@ -681,7 +688,8 @@ object KaoChangOperate {
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
         val result = executeActionWithRetry(
-            actionName = "旧手动取肠-烤盘${kaoPan.positionSn}到售卖口"
+            actionName = "旧手动取肠-烤盘${kaoPan.positionSn}到售卖口",
+            runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
         ) {
             writeSingleRegister2(action_address,kaoPan.cmdValueTake)
         }
@@ -773,7 +781,8 @@ object KaoChangOperate {
      */
     suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
         val result = executeActionWithRetry(
-            actionName = "烤盘${kaoPan.positionSn}到售卖口"
+            actionName = "烤盘${kaoPan.positionSn}到售卖口",
+            runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
         ) {
             writeSingleRegister2(action_address, kaoPan.cmdValueTake)
         }

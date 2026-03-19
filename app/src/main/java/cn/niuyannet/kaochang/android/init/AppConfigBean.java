@@ -3,7 +3,7 @@ package cn.niuyannet.kaochang.android.init;
 import java.io.Serializable;
 
 public class AppConfigBean implements Serializable {
-    // MQTT 与下位机通信配置
+    // MQTT 与云端通信配置
     public String mqttHost = "tcp://mqtt.cheerluck.com";
     public String mqttUsername = "";
     public String mqttPassword = "";
@@ -54,6 +54,9 @@ public class AppConfigBean implements Serializable {
 
     // “烤肠箱 -> 平台”动作超时时间（秒），单独控制自动补肠第一步
     public int boxToPlatformTimeoutSeconds = 90;
+
+    // “烤盘 -> 售卖口”动作超时时间（秒），用于正式出餐和手动取肠
+    public int trayToSellPlatformTimeoutSeconds = 90;
 
     // 售卖收尾后，补肠前保护窗和下位机稳定等待参数
     public int postSellSupplementGuardSeconds = 5;

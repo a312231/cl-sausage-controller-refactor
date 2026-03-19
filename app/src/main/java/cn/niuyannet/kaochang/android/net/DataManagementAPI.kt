@@ -145,6 +145,12 @@ object DataManagementAPI {
                           } else {
                               90
                           }
+                      appConfigBean.trayToSellPlatformTimeoutSeconds =
+                          if (jsonData.containsKey("trayToSellPlatformTimeoutSeconds")) {
+                              jsonData.getIntValue("trayToSellPlatformTimeoutSeconds")
+                          } else {
+                              90
+                          }
                       appConfigBean.postSellSupplementGuardSeconds =
                           if (jsonData.containsKey("postSellSupplementGuardSeconds")) {
                               jsonData.getIntValue("postSellSupplementGuardSeconds")

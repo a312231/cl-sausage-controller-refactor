@@ -62,6 +62,8 @@ abstract class LoadNetActivity : BaseActivity() {
                     appConfigBean.timeBeforeClose = jsonData.getIntValue("timeBeforeClose")
                     appConfigBean.boxToPlatformTimeoutSeconds =
                         if (jsonData.containsKey("boxToPlatformTimeoutSeconds")) jsonData.getIntValue("boxToPlatformTimeoutSeconds") else 90
+                    appConfigBean.trayToSellPlatformTimeoutSeconds =
+                        if (jsonData.containsKey("trayToSellPlatformTimeoutSeconds")) jsonData.getIntValue("trayToSellPlatformTimeoutSeconds") else 90
 
                     appConfigBean.postSellSupplementGuardSeconds =
                         if (jsonData.containsKey("postSellSupplementGuardSeconds")) jsonData.getIntValue("postSellSupplementGuardSeconds") else 5
