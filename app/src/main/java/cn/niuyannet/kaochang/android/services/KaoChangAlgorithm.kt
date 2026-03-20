@@ -356,6 +356,7 @@ object KaoChangAlgorithm {
                             config.errorStatus = 0
                             config.onlineStatus = restoredOnlineStatus
                             AppConfig.saveAppConfig(config)
+                            KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
                             rememberRecoverableOnlineStatus(restoredOnlineStatus)
                             modbusReportedUnavailable = false
                             modbusReconnectSinceMs = null

@@ -2,15 +2,20 @@ package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import kotlin.math.log
 
 /**
@@ -119,6 +124,7 @@ object DataManagementAPI {
                   try {
                       val jsonData=json.getJSONObject("data")
                       val appConfigBean= AppConfig.getAppConfig()
+                      val previousOnlineStatus = appConfigBean.onlineStatus
                       appConfigBean.mqttHost=jsonData.getString("mqttUrl")
                       appConfigBean.mqttUsername=jsonData.getString("mqttUsername")
                       appConfigBean.mqttPassword=jsonData.getString("mqttPassword")
@@ -176,6 +182,14 @@ object DataManagementAPI {
                               "postSellIdleMaxWaitSeconds=${appConfigBean.postSellIdleMaxWaitSeconds}"
                       )
                       AppConfig.saveAppConfig(appConfigBean)
+                      if (previousOnlineStatus == 3 &&
+                          appConfigBean.onlineStatus in listOf(1, 2) &&
+                          VMModbusHelper.connectStatus()
+                      ) {
+                          GlobalScope.launch(Dispatchers.IO) {
+                              KaoChangOperate.restoreHeatingStateFromCurrentPans("设备配置切出维护中")
+                          }
+                      }
                   }catch (e:Exception){
                       e.printStackTrace()
                   }

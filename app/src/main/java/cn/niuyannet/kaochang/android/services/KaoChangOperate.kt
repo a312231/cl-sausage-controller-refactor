@@ -953,6 +953,41 @@ object KaoChangOperate {
             }
         }
     }
+
+    /**
+     * 按当前烤盘实际状态重建 1/2/3 区温度。
+     *
+     * 规则：
+     * - 该区存在 status=1 的烤肠：恢复加热
+     * - 否则该区存在 status=2 或 holdingTime>0 的烤肠：恢复保温
+     * - 否则：关闭该区加热
+     */
+    fun restoreHeatingStateFromCurrentPans(reason: String) {
+        val list = KaoPanHelper.getKaoPanList()
+        restoreAreaHeatingState(1, list.filter { it.positionSn in 1..9 }, reason)
+        restoreAreaHeatingState(2, list.filter { it.positionSn in 10..21 }, reason)
+        restoreAreaHeatingState(3, list.filter { it.positionSn in 25..33 }, reason)
+    }
+
+    private fun restoreAreaHeatingState(area: Int, pans: List<KaoPan>, reason: String) {
+        val hasHeating = pans.any { it.isHasSausage && it.status == 1 }
+        val hasKeepWarm = pans.any { it.isHasSausage && (it.status == 2 || it.holdingTime > 0L) }
+
+        when {
+            hasHeating -> {
+                LogUtils.d("按当前烤盘状态恢复${area}区加热：reason=$reason")
+                heating(area)
+            }
+            hasKeepWarm -> {
+                LogUtils.d("按当前烤盘状态恢复${area}区保温：reason=$reason")
+                keepWarm(area)
+            }
+            else -> {
+                LogUtils.d("按当前烤盘状态关闭${area}区加热：reason=$reason")
+                stopHeating(area)
+            }
+        }
+    }
     /**
      * 暂停营业时间
      * 停止加热和保温
@@ -981,6 +1016,7 @@ object KaoChangOperate {
             onlineStatus = 1
         }
         AppConfig.saveAppConfig(config)
+        restoreHeatingStateFromCurrentPans("切换到运营中")
         //同步更新云端状态
         NetApi.updateDeviceInfo()
     }
