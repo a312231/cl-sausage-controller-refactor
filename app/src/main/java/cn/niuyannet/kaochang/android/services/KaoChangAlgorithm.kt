@@ -38,6 +38,8 @@ object KaoChangAlgorithm {
     private var lastReconnectAttemptMs: Long = 0L
     private var modbusReportedUnavailable = false
     private var lastRecoverableOnlineStatus = 1
+    private var loggedManualRecoveryRequiredOnDisconnect = false
+    private var loggedManualRecoveryRequiredAfterReconnect = false
     var isEnabled = false //是否开启算法
 
     fun restoreRoastAlgorithmState() {
@@ -345,6 +347,7 @@ object KaoChangAlgorithm {
                 if (connected) {
                     modbusDisconnectSinceMs = null
                     lastReconnectAttemptMs = 0L
+                    loggedManualRecoveryRequiredOnDisconnect = false
                     rememberRecoverableOnlineStatus(config.onlineStatus)
 
                     if (modbusReportedUnavailable) {
@@ -360,15 +363,27 @@ object KaoChangAlgorithm {
                             rememberRecoverableOnlineStatus(restoredOnlineStatus)
                             modbusReportedUnavailable = false
                             modbusReconnectSinceMs = null
+                            loggedManualRecoveryRequiredAfterReconnect = false
                             uploadDeviceStatus(
-                                "modbus串口恢复稳定，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
+                                "modbus串口恢复稳定，自动恢复原因=断连类错误，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
                             )
                         }
                     } else {
                         modbusReconnectSinceMs = null
+                        if (config.onlineStatus == 3 && config.errorStatus != 0 && !loggedManualRecoveryRequiredAfterReconnect) {
+                            loggedManualRecoveryRequiredAfterReconnect = true
+                            LogUtils.w(
+                                TAG,
+                                "检测到modbus已恢复，但当前仍处于维护中(errorStatus=${config.errorStatus})；" +
+                                    "不可自动恢复原因=当前错误并非本次断连监控触发，需人工恢复"
+                            )
+                        } else if (!(config.onlineStatus == 3 && config.errorStatus != 0)) {
+                            loggedManualRecoveryRequiredAfterReconnect = false
+                        }
                     }
                 } else {
                     modbusReconnectSinceMs = null
+                    loggedManualRecoveryRequiredAfterReconnect = false
                     if (modbusDisconnectSinceMs == null) {
                         modbusDisconnectSinceMs = now
                         LogUtils.w("检测到modbus串口断开，开始不可用状态观察")
@@ -381,12 +396,22 @@ object KaoChangAlgorithm {
                     }
 
                     if (!modbusReportedUnavailable && now - modbusDisconnectSinceMs!! >= MODBUS_DISCONNECT_REPORT_DELAY_MS) {
-                        rememberRecoverableOnlineStatus(config.onlineStatus)
-                        config.errorStatus = 2
-                        config.onlineStatus = 3
-                        AppConfig.saveAppConfig(config)
-                        modbusReportedUnavailable = true
-                        uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，已上报维护中")
+                        if (config.onlineStatus in 0..2) {
+                            rememberRecoverableOnlineStatus(config.onlineStatus)
+                            config.errorStatus = 2
+                            config.onlineStatus = 3
+                            AppConfig.saveAppConfig(config)
+                            modbusReportedUnavailable = true
+                            loggedManualRecoveryRequiredOnDisconnect = false
+                            uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，自动恢复原因=断连类错误，已上报维护中")
+                        } else if (!loggedManualRecoveryRequiredOnDisconnect) {
+                            loggedManualRecoveryRequiredOnDisconnect = true
+                            LogUtils.w(
+                                TAG,
+                                "modbus串口断开，但设备当前已处于维护中(errorStatus=${config.errorStatus})；" +
+                                    "不可自动恢复原因=当前错误并非从运营/休息状态切入的断连故障，保留人工恢复"
+                            )
+                        }
                     }
                 }
 
