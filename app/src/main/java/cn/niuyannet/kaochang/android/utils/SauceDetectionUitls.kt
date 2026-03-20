@@ -38,23 +38,29 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 object SauceDetectionUitls {
+    private fun logPhoto(tag: String, message: String) = LogUtils.d(tag, "[售卖口拍照] $message")
+    private fun logPhotoError(tag: String, message: String) = LogUtils.e(tag, "[售卖口拍照] $message")
+    private fun logDetect(message: String) = LogUtils.d("[售卖口识别] $message")
+    private fun logDetectWarn(message: String) = LogUtils.w("[售卖口识别] $message")
+    private fun logDetectError(message: String) = LogUtils.e("[售卖口识别] $message")
+
     // 烤肠检测处理器
     var processor: SauceDetectionProcessor? = null
-    // 相机相关（保留用于向后兼容，但不再使用）
+    // 历史 CameraX 路径保留，当前主链路已切后台服务拍照
     var cameraProvider: ProcessCameraProvider? = null
     var imageCapture: ImageCapture? = null
     var camera: Camera? = null
     val executor: Executor = Executors.newSingleThreadExecutor()
     var lifecycleOwner: LifecycleOwner? = null
 
-
-    // 互斥锁，防止并发问题
     private val captureMutex = Mutex()
-    // 用于存储回调的映射表
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<SauceDetectionProcessor.SausageInfo?>>()
 
     /**
-     * 协程风格的拍照检测（挂起函数）
+     * 协程风格拍照检测。
+     * roiFlag:
+     * 0 -> 运输台
+     * 1 -> 售卖口
      */
     suspend fun captureAndDetect(
         roiFlag: Int,
@@ -64,162 +70,64 @@ object SauceDetectionUitls {
         captureTimeoutMs: Long = 5000L,
         tag: String = "KaoChangAlgorithm"
     ): SauceDetectionProcessor.SausageInfo? = withContext(Dispatchers.IO) {
-
-        LogUtils.d(tag, "开始拍照检测，roiFlag: $roiFlag, retry: $retry")
+        logPhoto(tag, "开始拍照检测，roiFlag: $roiFlag, retry: $retry")
         val requestId = "${tag}_${System.currentTimeMillis()}_${(0..1000).random()}"
         return@withContext try {
-            // 使用协程的超时机制
             withTimeoutOrNull(timeoutMs) {
-                // 创建Deferred来等待结果
                 val deferred = CompletableDeferred<SauceDetectionProcessor.SausageInfo?>()
                 pendingRequests[requestId] = deferred
                 try {
-                    // 使用互斥锁确保同一时间只有一个拍照操作
                     captureMutex.withLock {
-                        LogUtils.d(tag, "获取拍照锁，开始拍照")
-                        // 将回调转换为协程挂起
+                        logPhoto(tag, "获取拍照锁，开始拍照")
                         suspendCancellableCoroutine { continuation ->
-                            CameraMonitor.instance.takePhotoQueue(roiFlag, retryDelayMs, captureTimeoutMs, retry, tag != "lunXun") { sausageInfo ->
-                                // 回调执行
-                                LogUtils.d(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
-                                // 通知等待的Deferred
+                            CameraMonitor.instance.takePhotoQueue(
+                                roiFlag,
+                                retryDelayMs,
+                                captureTimeoutMs,
+                                retry,
+                                tag != "lunXun"
+                            ) { sausageInfo ->
+                                logPhoto(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
                                 pendingRequests.remove(requestId)?.let { deferredRef ->
                                     if (deferredRef.isActive) {
                                         deferredRef.complete(sausageInfo)
                                     }
                                 }
-                                // 如果continuation还在活动状态，恢复协程
                                 if (continuation.isActive) {
                                     continuation.resume(Unit)
                                 }
                             }
-                            // 设置协程取消监听
                             continuation.invokeOnCancellation {
-                                LogUtils.d(tag, "拍照被取消，清理资源")
+                                logPhoto(tag, "拍照被取消，清理资源")
                                 pendingRequests.remove(requestId)
                             }
                         }
                     }
-                    // 等待结果
                     val result = deferred.await()
-                    LogUtils.d(tag, "收到拍照结果: ${result != null}")
+                    logPhoto(tag, "收到拍照结果: ${result != null}")
                     result
                 } finally {
-                    // 清理资源
                     pendingRequests.remove(requestId)
                 }
             }
         } catch (e: TimeoutCancellationException) {
-            LogUtils.e(tag, "拍照超时，耗时超过${timeoutMs}ms")
+            logPhotoError(tag, "拍照超时，耗时超过${timeoutMs}ms")
             null
         } catch (e: Exception) {
-            LogUtils.e(tag,"拍照异常: ${e.message}")
+            logPhotoError(tag, "拍照异常: ${e.message}")
             null
         }
     }
 
     /**
-     * 拍照并检测返回结果，为空即没有结果
-     * roiFlag 0: 运输台; 1: 售卖台
-     * 对于售卖台：0拍照失败；1为未识别到，需要关门；2为识别到烤肠，需要丢弃
-     * 
-     * 使用后台服务进行拍照和检测
-     */
-//    fun captureAndDetect(roiFlag: Int,
-//                         retry: Int = 3,
-//                         tag: String = "KaoChangAlgorithm"
-//    ): SauceDetectionProcessor.SausageInfo? {
-//
-//        LogUtils.d(tag,"使用后台服务进行拍照检测，roiFlag: $roiFlag")
-//
-//        val latch = CountDownLatch(1)
-//        val lock = Any()
-//        var result: SauceDetectionProcessor.SausageInfo? = null
-////        var callbackInvoked = false
-//
-//        // 拍照
-//        CameraMonitor.instance.takePhotoQueue(roiFlag, 3000L, retry, tag != "lunXun") { sausageInfo ->
-////            synchronized(lock) {
-////                if (!callbackInvoked) {
-////                    callbackInvoked = true
-//                    result = sausageInfo
-//                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
-//                    latch.countDown()
-////                }
-////            }
-//        }
-////        PhotoCaptureService.captureAndDetect(instance(), roiFlag, retry) { sausageInfo ->
-////            synchronized(lock) {
-////                if (!callbackInvoked) {
-////                    callbackInvoked = true
-////                    result = sausageInfo
-////                    LogUtils.d(tag,"拍照检测回调完成，结果: ${if (sausageInfo != null) "成功" else "失败"}")
-////                    latch.countDown()
-////                }
-////            }
-////        }
-//
-//        // 等待检测完成，最多等待15秒
-//        try {
-//            val completed = latch.await(20, TimeUnit.SECONDS)
-//            //var completed = latch.await(20, TimeUnit.SECONDS)
-//            //completed = !retry
-//            if (completed) {
-//                LogUtils.d(tag,"拍照检测完成，返回结果")
-//                //PhotoCaptureService.getInstance()?.restartCamera()
-//                return result
-//            } else {
-//                LogUtils.d(tag,"拍照检测超时（20秒），返回null")
-//                //PhotoCaptureService.getInstance()?.restartCamera()
-//                // 确保回调被调用（防止服务端未调用回调）
-//                synchronized(lock) {
-////                    if (!callbackInvoked) {
-////                        callbackInvoked = true
-//                        latch.countDown()
-////                    }
-//                }
-////                if (retry) {
-////                    LogUtils.d(tag,"超时，尝试重启相机并重试一次")
-////                    // 重启 CameraX
-////                    //PhotoCaptureService.getInstance()?.restartCamera()
-////                    PhotoCaptureService.getInstance()?.stopServicePublic(){success ->
-////                        PhotoCaptureService.startService(instance())
-////                    }
-//                    //PhotoCaptureService.stopService(instance())
-//                    //PhotoCaptureService.stopService(instance())
-//                    //LogUtils.d("开启服务")
-//                    //PhotoCaptureService.startService(instance())
-//                    // 重试一次，不再递归调用避免无限循环
-////                    return captureAndDetect(roiFlag, retry = 0, tag = tag)
-////                }
-//                return null
-//            }
-//        } catch (e: InterruptedException) {
-//            LogUtils.e(tag,"拍照检测被中断",e)
-//            //PhotoCaptureService.getInstance()?.restartCamera()
-//            // 确保回调被调用
-//            synchronized(lock) {
-////                if (!callbackInvoked) {
-////                    callbackInvoked = true
-//                    latch.countDown()
-////                }
-//            }
-//            return null
-//        }
-//    }
-    
-    /**
-     * 旧的拍照检测方法（已废弃，保留用于向后兼容）
-     * @deprecated 使用后台服务版本
+     * 旧版 CameraX 拍照路径，保留兼容。
      */
     @Deprecated("使用后台服务版本", ReplaceWith("captureAndDetect(roiFlag)"))
     private fun captureAndDetectOld(roiFlag: Int): SauceDetectionProcessor.SausageInfo? {
-        processor!!.roiFlag = roiFlag
+        processor?.roiFlag = roiFlag
 
-        // 检查相机是否未初始化完成，如果没有完成，等待初始化完成
         if (cameraProvider == null || imageCapture == null) {
-            LogUtils.d("相机未初始化，等待初始化完成...")
-            // 最多等待10秒
+            logPhoto("KaoChangAlgorithm", "相机未初始化，等待初始化完成")
             val initLatch = CountDownLatch(1)
             GlobalScope.launch(Dispatchers.IO) {
                 var waited = 0
@@ -231,61 +139,57 @@ object SauceDetectionUitls {
             }
             try {
                 initLatch.await(10, TimeUnit.SECONDS)
-            } catch (e: InterruptedException) {
-                LogUtils.d("等待相机初始化被中断")
+            } catch (_: InterruptedException) {
+                logPhoto("KaoChangAlgorithm", "等待相机初始化被中断")
             }
             if (cameraProvider == null || imageCapture == null) {
-                LogUtils.d("相机初始化超时，返回空")
+                logPhoto("KaoChangAlgorithm", "相机初始化超时，返回空结果")
                 return null
             }
-            LogUtils.d("相机初始化完成，继续拍照流程")
+            logPhoto("KaoChangAlgorithm", "相机初始化完成，继续拍照流程")
         }
 
         if (imageCapture == null) {
-            LogUtils.d("相机未初始化")
+            logPhoto("KaoChangAlgorithm", "相机未初始化")
             return null
         }
-        LogUtils.d("正在拍照...")
-        
-        // 创建一个 CountDownLatch，初始计数为 1，用于阻塞主线程直到拍照及检测完成
+        logPhoto("KaoChangAlgorithm", "正在拍照")
+
         val latch = CountDownLatch(1)
         var result: SauceDetectionProcessor.SausageInfo? = null
-        
-        // 拍照前先检查 camera 与 imageCapture 是否已绑定到生命周期
+
         if (camera == null || imageCapture == null) {
             val rebound = rebindCamera()
             if (!rebound) {
-                LogUtils.d("Camera 或 ImageCapture 未绑定，无法拍照")
+                logPhotoError("KaoChangAlgorithm", "Camera 或 ImageCapture 未绑定，无法拍照")
                 result = null
                 latch.countDown()
             }
         }
+
         if (camera != null && imageCapture != null) {
             var didRetry = false
             imageCapture?.takePicture(executor, object : OnImageCapturedCallback() {
                 override fun onCaptureSuccess(imageProxy: ImageProxy) {
                     try {
-                        // 将ImageProxy转换为Mat
                         val img = imageProxyToMat(imageProxy)
-                        if (img == null) {
-                            LogUtils.d("图像处理失败")
-                            result = null
+                        result = if (img == null) {
+                            logPhotoError("KaoChangAlgorithm", "图像处理失败")
+                            null
                         } else {
-                            // 执行检测
-                            result = detectSausageSync(img)
+                            detectSausageSync(img)
                         }
                     } catch (e: Exception) {
-                        LogUtils.d("处理图像时出错: " + e.message)
+                        logPhotoError("KaoChangAlgorithm", "处理图像时出错: ${e.message}")
                         result = null
                     } finally {
-                        // 关闭ImageProxy
                         imageProxy.close()
                         latch.countDown()
                     }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    LogUtils.d("拍照失败，再次进行拍照: " + exception.message)
+                    logPhotoError("KaoChangAlgorithm", "拍照失败，尝试重新拍照: ${exception.message}")
                     if (!didRetry) {
                         didRetry = true
                         val rebound = rebindCamera()
@@ -299,26 +203,21 @@ object SauceDetectionUitls {
                 }
             })
         }
-        
-        // 等待拍照和检测完成，最多等待10秒
-        try {
+
+        return try {
             if (latch.await(10, TimeUnit.SECONDS)) {
-                return result
+                result
             } else {
-                LogUtils.d("拍照检测超时")
-                return null
+                logPhotoError("KaoChangAlgorithm", "拍照检测超时")
+                null
             }
-        } catch (e: InterruptedException) {
-            LogUtils.d("拍照检测被中断")
-            return null
+        } catch (_: InterruptedException) {
+            logPhotoError("KaoChangAlgorithm", "拍照检测被中断")
+            null
         }
     }
-    
-    /**
-     * 旧的相机初始化方法（已废弃，保留用于向后兼容）
-     * @deprecated 使用后台服务，不再需要手动初始化相机
-     */
-    @Deprecated("使用后台服务，不再需要手动初始化相机")
+
+    @Deprecated("使用后台服务版本，不再需要手动初始化相机")
     private fun rebindCamera(): Boolean {
         return try {
             val provider = cameraProvider ?: return false
@@ -333,115 +232,113 @@ object SauceDetectionUitls {
             camera = provider.bindToLifecycle(owner, selector, imageCapture!!)
             true
         } catch (e: Exception) {
-            LogUtils.d("相机重新绑定失败: " + e.message)
+            logPhotoError("KaoChangAlgorithm", "相机重新绑定失败: ${e.message}")
             false
         }
     }
-    /**
-     * 将ImageProxy转换为Mat
-     */
+
     private fun imageProxyToMat(imageProxy: ImageProxy): Mat? {
-        try {
+        return try {
             val buffer = imageProxy.planes[0].buffer
             val bytes = ByteArray(buffer.remaining())
             buffer[bytes]
 
             var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            // 根据图像旋转角度旋转位图
             val rotation = imageProxy.imageInfo.rotationDegrees
             if (rotation != 0) {
                 val matrix = Matrix()
                 matrix.postRotate(rotation.toFloat())
-                bitmap =
-                    Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
             }
-            // 转换为Mat
+
             var mat = Mat()
             Utils.bitmapToMat(bitmap, mat)
 
-
-            // 确保图像是BGR格式
-            if (mat.channels() == 4) { // RGBA格式
+            if (mat.channels() == 4) {
                 val bgrMat = Mat()
                 Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_RGBA2BGR)
                 mat.release()
                 mat = bgrMat
-            } else if (mat.channels() == 1) { // 灰度图
+            } else if (mat.channels() == 1) {
                 val bgrMat = Mat()
                 Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_GRAY2BGR)
                 mat.release()
                 mat = bgrMat
             }
-            // 保存原始图像用于调试
-            if (SauceDetector.SAVE_DEBUG_IMAGES) {
-                SauceDetector.saveDebugImage(mat, "camera_captured_image")
-            }
-            return mat
+            mat
         } catch (e: Exception) {
-            LogUtils.d("图像转换失败: " + e.message)
-            return null
+            logPhotoError("KaoChangAlgorithm", "图像转换失败: ${e.message}")
+            null
         }
     }
+
     /**
-     * 执行烤肠检测（同步版本）
-     * 对于售卖台：0拍照失败；1为未识别到，需要关门；2为识别到烤肠，需要丢弃
+     * 同步识别逻辑。
+     * 对售卖口:
+     * - code=1 未检测到烤肠
+     * - code=2 检测到烤肠
      */
     private fun detectSausageSync(img: Mat?): SauceDetectionProcessor.SausageInfo? {
         try {
             if (img == null) {
-                LogUtils.d("执行烤肠检测-图像为空")
+                logDetect("执行烤肠检测失败：图像为空")
                 return null
             }
-            // 显示调试信息
-            val platformType = if (processor!!.roiFlag == 0) "运输台" else "售卖台"
-            LogUtils.d("开始检测" + platformType + "上的烤肠，图像尺寸: " + img.width() + "x" + img.height() + ", 通道数: " + img.channels())
-            // 使用SauceDetectionProcessor处理图像，传递roiFlag参数
-            val result = processor!!.processImage(img)
-            // 显示检测结果
 
-            if (processor!!.roiFlag == 1) {
-                val sausage = result.sausages[0]
-                val resultText = String.format(
-                    "售卖台检测结果:\n结果: (%d) \n像素坐标: (%d, %d) \n世界坐标: (%.2f, %.2f, %.2f)",
-                    sausage.code, sausage.pixelX, sausage.pixelY, sausage.worldX, sausage.worldY, sausage.worldZ
-                )
-                LogUtils.d(resultText)
-                return sausage
+            val currentProcessor = processor ?: return null
+            val platformType = if (currentProcessor.roiFlag == 0) "运输台" else "售卖台"
+            logDetect("开始检测${platformType}上的烤肠，图像尺寸: ${img.width()}x${img.height()}, 通道数: ${img.channels()}")
+
+            val result = currentProcessor.processImage(img)
+            if (currentProcessor.roiFlag == 1) {
+                if (result.sausages.isNotEmpty()) {
+                    val sausage = result.sausages[0]
+                    val resultText = String.format(
+                        "售卖台检测结果:\n结果: (%d) \n像素坐标: (%d, %d) \n世界坐标: (%.2f, %.2f, %.2f)",
+                        sausage.code,
+                        sausage.pixelX,
+                        sausage.pixelY,
+                        sausage.worldX,
+                        sausage.worldY,
+                        sausage.worldZ
+                    )
+                    logDetect(resultText)
+                    return sausage
+                }
+                logDetectWarn("售卖台检测结果为空")
+                return null
             }
 
-            return if (result.sausages.isEmpty()) {
-                LogUtils.d(platformType + "未检测到烤肠")
-                null
-            } else {
-                // 显示第一个检测到的烤肠信息
-                val sausage = result.sausages[0]
-                val resultText = String.format(
-                    "检测到烤肠:\n像素坐标: (%d, %d)\n世界坐标: (%.2f, %.2f, %.2f)",
-                    sausage.pixelX, sausage.pixelY, sausage.worldX, sausage.worldY, sausage.worldZ
-                )
-                LogUtils.d(resultText)
-                sausage
+            if (result.sausages.isEmpty()) {
+                logDetect("${platformType}未检测到烤肠")
+                return null
             }
+
+            val sausage = result.sausages[0]
+            val resultText = String.format(
+                "检测到烤肠:\n像素坐标: (%d, %d)\n世界坐标: (%.2f, %.2f, %.2f)",
+                sausage.pixelX,
+                sausage.pixelY,
+                sausage.worldX,
+                sausage.worldY,
+                sausage.worldZ
+            )
+            logDetect(resultText)
+            return sausage
         } catch (e: Exception) {
-            LogUtils.d("检测烤肠时出错: " + e.message)
+            logDetectError("检测烤肠时出错: ${e.message}")
             return null
         } finally {
-            // 释放资源
             img?.release()
-            // 显示调试图像保存位置
             if (SauceDetector.SAVE_DEBUG_IMAGES) {
                 val cacheDir = instance().cacheDir.absolutePath
-                LogUtils.d("调试图像已保存到: $cacheDir")
+                logDetect("调试图像已保存到: $cacheDir")
             }
         }
     }
-    
-    /**
-     * 执行烤肠检测（异步版本，保留向后兼容）
-     */
-    private fun detectSausage(img: Mat?, callBack:((saInfo: SauceDetectionProcessor.SausageInfo?)->Unit)) {
+
+    private fun detectSausage(img: Mat?, callBack: ((saInfo: SauceDetectionProcessor.SausageInfo?) -> Unit)) {
         val result = detectSausageSync(img)
         callBack.invoke(result)
     }
-
 }

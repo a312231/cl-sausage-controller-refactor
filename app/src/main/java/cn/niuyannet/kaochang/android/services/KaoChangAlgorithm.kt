@@ -26,6 +26,9 @@ import java.util.Locale
  */
 object KaoChangAlgorithm {
     private val TAG = "KaoChangAlgorithm"
+    private const val LOG_ALGORITHM = "算法轮询"
+    private const val LOG_DEVICE = "设备状态"
+    private const val LOG_COMM = "通信状态"
     private const val MODBUS_MONITOR_INTERVAL_MS = 1_000L
     private const val MODBUS_DISCONNECT_REPORT_DELAY_MS = 5_000L
     private const val MODBUS_RECONNECT_STABLE_DELAY_MS = 5_000L
@@ -41,6 +44,9 @@ object KaoChangAlgorithm {
     private var loggedManualRecoveryRequiredOnDisconnect = false
     private var loggedManualRecoveryRequiredAfterReconnect = false
     var isEnabled = false //是否开启算法
+
+    private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
+    private fun logW(category: String, message: String) = LogUtils.w(TAG, "[$category] $message")
 
     fun restoreRoastAlgorithmState() {
         isEnabled = AppConfig.getAppConfig().isEnable == 1
@@ -60,19 +66,19 @@ object KaoChangAlgorithm {
             modbusReportedUnavailable = true
         }
         Log.d(TAG, "智能烤肠算法服务启动开始工作")
-        LogUtils.d(TAG, "算法准备0 运动状态：${config.moveStatus}")
+        logD(LOG_ALGORITHM, "算法准备0：moveStatus=${config.moveStatus}")
         config.moveStatus = 0
         AppConfig.saveAppConfig(config)
-        LogUtils.d(TAG, "算法准备1 运动状态：${config.moveStatus}")
+        logD(LOG_ALGORITHM, "算法准备1：moveStatus=${config.moveStatus}")
         serviceStartTime = System.currentTimeMillis() // 记录服务启动时间
-        LogUtils.d(TAG, "智能烤肠算法服务启动开始工作")
+        logD(LOG_ALGORITHM, "智能烤肠算法服务启动开始工作")
         startModbusStateMonitor()
         GlobalScope.launch(Dispatchers.IO) {
             while (isRunning) {
                 //if (AppConfig.getAppConfig().moveStatus == 0) {
                 pollKaoPanStatus()
                 if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
-                LogUtils.d(TAG, "轮询完成 运动状态：${AppConfig.getAppConfig().moveStatus}")
+                logD(LOG_ALGORITHM, "轮询完成：moveStatus=${AppConfig.getAppConfig().moveStatus}")
                 //}
                 delay(10 * 1000)// 1秒空拍一次
             }
@@ -205,7 +211,7 @@ object KaoChangAlgorithm {
             NetApi.updateDeviceInfo()
         }
         else if (config.available > 0){
-            LogUtils.d("KaoChangAlgorithm", "检查烤盘是否有烤肠：${config.available}")
+            logD(LOG_ALGORITHM, "检查烤盘可售状态：available=${config.available}")
             config.apply {
                 available = 0
             }
@@ -220,7 +226,7 @@ object KaoChangAlgorithm {
      */
     private suspend fun pollKaoPanStatus() {
         Log.d(TAG, "轮询烤盘状态")
-        LogUtils.d("KaoChangAlgorithm", "轮询烤盘状态")
+        logD(LOG_ALGORITHM, "轮询烤盘状态")
         // 获取烤盘配置
         val config = AppConfig.getAppConfig()
         //获取烤盘信息
@@ -248,11 +254,11 @@ object KaoChangAlgorithm {
         }
         if (!(onlineStatus==1||onlineStatus==4)){
             //Log.d(TAG, "设备状态=$onlineStatus，不工作")
-            LogUtils.d(TAG, "设备状态=$onlineStatus，不工作")
+            logD(LOG_DEVICE, "设备状态=$onlineStatus，不工作")
             return
         }
         if (!VMModbusHelper.connectStatus()){
-            LogUtils.d("KaoChangAlgorithm", "modbus串口没有连接上")
+            logD(LOG_COMM, "modbus串口没有连接上")
             return
         }
         if (!isEnabled){
@@ -260,8 +266,8 @@ object KaoChangAlgorithm {
             //LogUtils.d(TAG, "算法未开启，不工作")
             return
         }
-        LogUtils.d("KaoChangAlgorithm", "算法开始运行了-模式：${config.modeType}")
-        LogUtils.d("KaoChangAlgorithm", "运动状态：${config.moveStatus}")
+        logD(LOG_ALGORITHM, "算法开始运行：mode=${config.modeType}")
+        logD(LOG_ALGORITHM, "当前运动状态：moveStatus=${config.moveStatus}")
 
         checkAvailable(config, kaoPanList) // 检查烤盘是否有烤肠
 
@@ -306,7 +312,7 @@ object KaoChangAlgorithm {
             // 取出烤肠
             return KaoChangOperate.takeSausageResult(targetKaoPan)
         } else {
-            LogUtils.w(TAG, "没有找到可供售卖的烤肠")
+            logW(LOG_DEVICE, "没有找到可供售卖的烤肠")
         }
         return KaoChangOperate.TakeSausageResult.ERROR
     }
@@ -353,7 +359,7 @@ object KaoChangAlgorithm {
                     if (modbusReportedUnavailable) {
                         if (modbusReconnectSinceMs == null) {
                             modbusReconnectSinceMs = now
-                            LogUtils.d(TAG, "检测到modbus恢复，开始稳定性观察")
+                            logD(LOG_COMM, "检测到modbus恢复，开始稳定性观察")
                         } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
                             val restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
                             config.errorStatus = 0
@@ -372,8 +378,8 @@ object KaoChangAlgorithm {
                         modbusReconnectSinceMs = null
                         if (config.onlineStatus == 3 && config.errorStatus != 0 && !loggedManualRecoveryRequiredAfterReconnect) {
                             loggedManualRecoveryRequiredAfterReconnect = true
-                            LogUtils.w(
-                                TAG,
+                            logW(
+                                LOG_COMM,
                                 "检测到modbus已恢复，但当前仍处于维护中(errorStatus=${config.errorStatus})；" +
                                     "不可自动恢复原因=当前错误并非本次断连监控触发，需人工恢复"
                             )
@@ -386,12 +392,12 @@ object KaoChangAlgorithm {
                     loggedManualRecoveryRequiredAfterReconnect = false
                     if (modbusDisconnectSinceMs == null) {
                         modbusDisconnectSinceMs = now
-                        LogUtils.w("检测到modbus串口断开，开始不可用状态观察")
+                        logW(LOG_COMM, "检测到modbus串口断开，开始不可用状态观察")
                     }
                     if (lastReconnectAttemptMs == 0L || now - lastReconnectAttemptMs >= MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS) {
                         lastReconnectAttemptMs = now
                         VMModbusHelper.connectModbus { status ->
-                            LogUtils.d("modbus后台重连尝试完成：status=$status")
+                            logD(LOG_COMM, "modbus后台重连尝试完成：status=$status")
                         }
                     }
 
@@ -406,8 +412,8 @@ object KaoChangAlgorithm {
                             uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，自动恢复原因=断连类错误，已上报维护中")
                         } else if (!loggedManualRecoveryRequiredOnDisconnect) {
                             loggedManualRecoveryRequiredOnDisconnect = true
-                            LogUtils.w(
-                                TAG,
+                            logW(
+                                LOG_COMM,
                                 "modbus串口断开，但设备当前已处于维护中(errorStatus=${config.errorStatus})；" +
                                     "不可自动恢复原因=当前错误并非从运营/休息状态切入的断连故障，保留人工恢复"
                             )
@@ -438,7 +444,7 @@ object KaoChangAlgorithm {
     }
 
     private fun uploadDeviceStatus(logMessage: String) {
-        LogUtils.w(logMessage)
+        logW(LOG_DEVICE, logMessage)
         SendServerHelper.publishServiceUpdateStatus()
         NetApi.updateDeviceInfo()
     }

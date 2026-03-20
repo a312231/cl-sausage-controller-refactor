@@ -22,6 +22,9 @@ import kotlin.math.log
  * 数据请求接口管理api
  */
 object DataManagementAPI {
+    private const val LOG_SYNC = "云端同步"
+    private fun logD(message: String) = LogUtils.d("[$LOG_SYNC] $message")
+    private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
 
     /**
      * 从网络拉取数据
@@ -67,9 +70,9 @@ object DataManagementAPI {
         //上传烤盘的状态数据
         NetApi.updateKaoPanList(JSON.toJSONString(KaoPanHelper.getKaoPanList())) { code, content ->
             if (code == 0) {
-                LogUtils.d("烤盘状态同步成功")
+                logD("烤盘状态同步成功")
             } else {
-                LogUtils.e("烤盘状态同步失败：code=$code, content=$content")
+                logE("烤盘状态同步失败：code=$code, content=$content")
             }
         }
         //上传烤肠箱数据
@@ -81,9 +84,9 @@ object DataManagementAPI {
         }
         NetApi.updateStock(stockPayload) { code, content ->
             if (code == 0) {
-                LogUtils.d("库存同步成功：明细数=$stockItemCount, 总库存=$stockTotalCount")
+                logD("库存同步成功：明细数=$stockItemCount, 总库存=$stockTotalCount")
             } else {
-                LogUtils.e("库存同步失败：明细数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content")
+                logE("库存同步失败：明细数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content")
             }
         }
     }
@@ -175,7 +178,7 @@ object DataManagementAPI {
                           } else {
                               12
                           }
-                      LogUtils.d(
+                      logD(
                           "设备配置拉取成功：bakingTime=${appConfigBean.bakingTime}, discardTime=${appConfigBean.discardTime}, " +
                               "postSellSupplementGuardSeconds=${appConfigBean.postSellSupplementGuardSeconds}, " +
                               "postSellIdleStableSeconds=${appConfigBean.postSellIdleStableSeconds}, " +

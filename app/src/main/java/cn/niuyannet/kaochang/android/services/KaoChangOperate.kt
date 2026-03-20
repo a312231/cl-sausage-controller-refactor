@@ -32,6 +32,13 @@ import kotlinx.coroutines.launch
  * - “201=2”只表示设备忙，不等价于通信断开。
  */
 object KaoChangOperate {
+    private const val LOG_ORDER = "订单履约"
+    private const val LOG_ACTION = "动作执行"
+    private const val LOG_SELL_MONITOR = "售卖口监控"
+    private const val LOG_WINDOW = "窗口收尾"
+    private const val LOG_SUPPLEMENT = "补肠流程"
+    private const val LOG_HEAT = "加热控制"
+    private const val LOG_DEVICE = "设备状态"
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
     private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
@@ -44,6 +51,10 @@ object KaoChangOperate {
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
+
+    private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
+    private fun logW(category: String, message: String) = LogUtils.w("[$category] $message")
+    private fun logE(category: String, message: String) = LogUtils.e("[$category] $message")
 
     enum class TakeSausageResult {
         TAKEN_BY_USER,
@@ -73,7 +84,7 @@ object KaoChangOperate {
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             DataManagementAPI.uploadDeviceInfo()
         }
-        LogUtils.e(logMessage)
+        logE(LOG_DEVICE, logMessage)
     }
 
     private fun armPostSellSupplementGuard(
@@ -84,7 +95,7 @@ object KaoChangOperate {
         if (blockUntil > supplementBlockedUntilMs) {
             supplementBlockedUntilMs = blockUntil
         }
-        LogUtils.d("KaoChangAlgorithm", "$reason，进入售卖收尾保护窗：${durationMs}ms")
+        logD(LOG_WINDOW, "$reason，进入售卖收尾保护窗：${durationMs}ms")
     }
 
     private suspend fun waitForPostSellSupplementGuardIfNeeded() {
@@ -95,14 +106,14 @@ object KaoChangOperate {
 
         val remaining = blockUntil - System.currentTimeMillis()
         if (remaining > 0L) {
-            LogUtils.d("KaoChangAlgorithm", "售卖收尾后延迟补肠：remaining=${remaining}ms")
+            logD(LOG_SUPPLEMENT, "售卖收尾后延迟补肠：remaining=${remaining}ms")
             delay(remaining)
         }
 
         supplementBlockedUntilMs = 0L
 
         if (!VMModbusHelper.connectStatus()) {
-            LogUtils.w("售卖收尾保护结束时检测到下位机未连接，跳过空闲稳定检查")
+            logW(LOG_SUPPLEMENT, "售卖收尾保护结束时检测到下位机未连接，跳过空闲稳定检查")
             return
         }
 
@@ -117,7 +128,7 @@ object KaoChangOperate {
                         idleSince = now
                     }
                     if (now - idleSince >= idleStableMs) {
-                        LogUtils.d("KaoChangAlgorithm", "售卖收尾后下位机已连续空闲 ${now - idleSince}ms，允许补肠")
+                        logD(LOG_SUPPLEMENT, "售卖收尾后下位机已连续空闲 ${now - idleSince}ms，允许补肠")
                         return
                     }
                 }
@@ -125,14 +136,14 @@ object KaoChangOperate {
                     idleSince = -1L
                 }
                 ActionStatus201.DISCONNECTED -> {
-                    LogUtils.w("售卖收尾后读取 201 失败，跳过空闲稳定检查")
+                    logW(LOG_SUPPLEMENT, "售卖收尾后读取 201 失败，跳过空闲稳定检查")
                     return
                 }
             }
             delay(500L)
         }
 
-        LogUtils.w("售卖收尾后等待下位机稳定空闲超时，继续按常规补肠流程处理")
+        logW(LOG_SUPPLEMENT, "售卖收尾后等待下位机稳定空闲超时，继续按常规补肠流程处理")
     }
 
     private suspend fun captureSellPlatform(tag: String = "KaoChangAlgorithm") =
@@ -159,7 +170,7 @@ object KaoChangOperate {
         return results
     }
 
-    private suspend fun closeSellPlatformAfterUserTake(): TakeSausageResult {
+    private suspend fun closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty: Boolean): TakeSausageResult {
         val closeResult = executeActionWithRetry(
             actionName = "售卖台关门"
         ) {
@@ -170,7 +181,11 @@ object KaoChangOperate {
             TakeSausageResult.ERROR
         } else {
             armPostSellSupplementGuard("售卖台关门成功")
-            LogUtils.d("售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+            if (detectedSausageBeforeEmpty) {
+                logD(LOG_SELL_MONITOR, "售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+            } else {
+                logW(LOG_SELL_MONITOR, "售卖台监控阶段未检测到烤肠，但窗口已为空，按兼容策略判定客户已经把肠取走")
+            }
             TakeSausageResult.TAKEN_BY_USER
         }
     }
@@ -186,15 +201,17 @@ object KaoChangOperate {
             TakeSausageResult.ERROR
         } else {
             armPostSellSupplementGuard("售卖台丢弃并关门成功")
-            LogUtils.w("顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
+            logW(LOG_WINDOW, "顾客在等待时间内未取走烤肠，已执行丢弃流程并结束本次出餐")
             TakeSausageResult.DISCARDED
         }
     }
 
     private suspend fun monitorSellPlatformUntilTakenOrDiscarded(
-        detectDeadlineMs: Long
+        detectDeadlineMs: Long,
+        detectedSausageBeforeMonitor: Boolean
     ): TakeSausageResult {
         var consecutiveCaptureFailures = 0
+        var detectedSausage = detectedSausageBeforeMonitor
         while (System.currentTimeMillis() < detectDeadlineMs) {
             delay(SELL_PLATFORM_MONITOR_INTERVAL_MS)
             val detectResult = captureSellPlatform()
@@ -206,16 +223,17 @@ object KaoChangOperate {
                         markDeviceErrorAndUpload("售卖台轮询阶段连续拍照失败，无法确认顾客是否已取走烤肠，设备进入维护中")
                         return TakeSausageResult.ERROR
                     }
-                    LogUtils.w("售卖台轮询阶段拍照失败，继续每秒重试确认顾客是否已取走烤肠")
+                    logW(LOG_SELL_MONITOR, "售卖台轮询阶段拍照失败，继续每秒重试确认顾客是否已取走烤肠")
                 }
 
                 detectResult.code == 2 -> {
                     consecutiveCaptureFailures = 0
-                    LogUtils.d("售卖台轮询检测到烤肠仍在，继续等待顾客取走")
+                    detectedSausage = true
+                    logD(LOG_SELL_MONITOR, "售卖台轮询检测到烤肠仍在，继续等待顾客取走")
                 }
 
                 else -> {
-                    return closeSellPlatformAfterUserTake()
+                    return closeSellPlatformAfterUserTake(detectedSausage)
                 }
             }
         }
@@ -230,9 +248,9 @@ object KaoChangOperate {
             writeSingleRegister2(action_address_shoumaitai, 1)
         }
         if (closeResult == ActionExecutionResult.SUCCESS) {
-            LogUtils.w("售卖台进入故障分支前已执行兜底关门：$reason")
+            logW(LOG_WINDOW, "售卖台进入故障分支前已执行兜底关门：$reason")
         } else {
-            LogUtils.e("售卖台故障兜底关门失败：$reason, result=$closeResult")
+            logE(LOG_WINDOW, "售卖台故障兜底关门失败：$reason, result=$closeResult")
         }
     }
 
@@ -323,19 +341,19 @@ object KaoChangOperate {
         if (VMModbusHelper.connectStatus()) {
             return true
         }
-        LogUtils.w("$actionName 前检测到下位机通信断开，开始短时重连")
+        logW(LOG_ACTION, "$actionName 前检测到下位机通信断开，开始短时重连")
         repeat(3) { index ->
             val attempt = index + 1
             VMModbusHelper.connectModbus { status ->
-                LogUtils.d("$actionName 前重连下位机结果：attempt=$attempt/3, status=$status")
+                logD(LOG_ACTION, "$actionName 前重连下位机结果：attempt=$attempt/3, status=$status")
             }
             delay(1500L)
             if (VMModbusHelper.connectStatus()) {
-                LogUtils.d("$actionName 前下位机重连成功：attempt=$attempt/3")
+                logD(LOG_ACTION, "$actionName 前下位机重连成功：attempt=$attempt/3")
                 return true
             }
         }
-        LogUtils.e("$actionName 前下位机持续断开，放弃执行动作")
+        logE(LOG_ACTION, "$actionName 前下位机持续断开，放弃执行动作")
         return false
     }
 
@@ -368,15 +386,15 @@ object KaoChangOperate {
                 ActionStatus201.RUNNING, ActionStatus201.BUSY -> {
                     busyRetryCount++
                     if (busyRetryCount > maxBusyRetry) {
-                        LogUtils.e("$actionName 前连续检测到设备忙，超过重试阈值：retry=$busyRetryCount")
+                        logE(LOG_ACTION, "$actionName 前连续检测到设备忙，超过重试阈值：retry=$busyRetryCount")
                         return ActionExecutionResult.BUSY_TIMEOUT
                     }
-                    LogUtils.w("$actionName 前检测到设备忙(201!=0)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                    logW(LOG_ACTION, "$actionName 前检测到设备忙(201!=0)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
                     delay(busyRetryDelayMs)
                     continue@retryLoop
                 }
                 ActionStatus201.DISCONNECTED -> {
-                    LogUtils.e("$actionName 前读取动作状态失败")
+                    logE(LOG_ACTION, "$actionName 前读取动作状态失败")
                     return ActionExecutionResult.DISCONNECTED
                 }
             }
@@ -387,22 +405,22 @@ object KaoChangOperate {
                 VMModbusHelper.ModbusOperationStatus.BUSY -> {
                     busyRetryCount++
                     if (busyRetryCount > maxBusyRetry) {
-                        LogUtils.e("$actionName 下发指令时下位机持续返回忙，超过重试阈值")
+                        logE(LOG_ACTION, "$actionName 下发指令时下位机持续返回忙，超过重试阈值")
                         return ActionExecutionResult.BUSY_TIMEOUT
                     }
-                    LogUtils.w("$actionName 下发指令时下位机返回忙，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                    logW(LOG_ACTION, "$actionName 下发指令时下位机返回忙，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
                     delay(busyRetryDelayMs)
                     continue@retryLoop
                 }
                 VMModbusHelper.ModbusOperationStatus.DISCONNECTED -> {
-                    LogUtils.e("$actionName 下发指令失败：下位机通信断开")
+                    logE(LOG_ACTION, "$actionName 下发指令失败：下位机通信断开")
                     return ActionExecutionResult.DISCONNECTED
                 }
                 VMModbusHelper.ModbusOperationStatus.PARAM_ERROR,
                 VMModbusHelper.ModbusOperationStatus.DEVICE_FAILURE,
                 VMModbusHelper.ModbusOperationStatus.PROTOCOL_ERROR,
                 VMModbusHelper.ModbusOperationStatus.UNKNOWN_ERROR -> {
-                    LogUtils.e("$actionName 下发指令失败：${issueResult.status} ${issueResult.message ?: ""}".trim())
+                    logE(LOG_ACTION, "$actionName 下发指令失败：${issueResult.status} ${issueResult.message ?: ""}".trim())
                     return ActionExecutionResult.COMMAND_REJECTED
                 }
             }
@@ -416,7 +434,7 @@ object KaoChangOperate {
                 when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
                     ActionStatus201.RUNNING -> {
                         if (System.currentTimeMillis() - start > runningTimeoutMs) {
-                            LogUtils.e("$actionName 长时间处于执行中(201=1)，已超时")
+                            logE(LOG_ACTION, "$actionName 长时间处于执行中(201=1)，已超时")
                             return ActionExecutionResult.RUNNING_TIMEOUT
                         }
                     }
@@ -424,15 +442,15 @@ object KaoChangOperate {
                     ActionStatus201.BUSY -> {
                         busyRetryCount++
                         if (busyRetryCount > maxBusyRetry) {
-                            LogUtils.e("$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
+                            logE(LOG_ACTION, "$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
                             return ActionExecutionResult.BUSY_TIMEOUT
                         }
-                        LogUtils.w("$actionName 下发后收到设备忙(201=2)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                        logW(LOG_ACTION, "$actionName 下发后收到设备忙(201=2)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
                         delay(busyRetryDelayMs)
                         continue@retryLoop
                     }
                     ActionStatus201.DISCONNECTED -> {
-                        LogUtils.e("$actionName 执行过程中读取动作状态失败")
+                        logE(LOG_ACTION, "$actionName 执行过程中读取动作状态失败")
                         return ActionExecutionResult.DISCONNECTED
                     }
                 }
@@ -461,11 +479,11 @@ object KaoChangOperate {
      */
     suspend fun moveSausageToKaoPan(kaoPan: KaoPan, kaoPanBox: KaoPanBox):Boolean {
         if (AppConfig.getAppConfig().errorStatus>0){
-            LogUtils.d("KaoChangAlgorithm", "程序处于报错状态，不进行补肠操作")
+            logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠操作")
             return false
         }
         if (kaoPanBox.num <= 0) {
-            LogUtils.e("补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
+            logE(LOG_SUPPLEMENT, "补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
             return false
         }
 
@@ -474,14 +492,14 @@ object KaoChangOperate {
         while (appState!=0) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
-            LogUtils.d("KaoChangAlgorithm", "补充烤肠 等待售卖完成 ${appState}")
+            logD(LOG_SUPPLEMENT, "补充烤肠，等待售卖完成：state=$appState")
         }
         waitForPostSellSupplementGuardIfNeeded()
         // 机械臂状态改为补肠
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
-        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运开始")
+        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：开始")
         val result = executeActionWithRetry(
             actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
             runningTimeoutMs = getBoxToPlatformTimeoutMs()
@@ -494,7 +512,7 @@ object KaoChangOperate {
             markActionFailure("烤肠箱${kaoPanBox.positionSn}到平台", result)
             return false
         }
-        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从烤肠箱搬运到平台完成")
+        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：箱到平台完成")
         kaoPanBox.cmdStatusTake = 0
 
         //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
@@ -538,7 +556,7 @@ object KaoChangOperate {
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             markActionFailure("平台到烤盘${kaoPan.positionSn}", result2)
         }
-        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运从平台搬运到烤盘完成：$result2")
+        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：平台到烤盘完成 result=$result2")
 
         kaoPan.cmdStatusMove = if (result2 == ActionExecutionResult.SUCCESS) 0 else 2
         val moveSuccess = result == ActionExecutionResult.SUCCESS && result2 == ActionExecutionResult.SUCCESS
@@ -556,7 +574,7 @@ object KaoChangOperate {
             // 记录开始时间
             kaoPan.startTime = System.currentTimeMillis()
         } else {
-            LogUtils.e("补肠失败，未更新烤盘状态和库存：panId=${kaoPan.id}, boxPosition=${kaoPanBox.positionSn}, result=$result, result2=$result2")
+            logE(LOG_SUPPLEMENT, "补肠失败，未更新烤盘状态和库存：panId=${kaoPan.id}, boxPosition=${kaoPanBox.positionSn}, result=$result, result2=$result2")
         }
 
         // 修改运动状态为待机
@@ -567,13 +585,13 @@ object KaoChangOperate {
         GlobalScope.launch(Dispatchers.Main) {
             KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-            LogUtils.d("KaoChangAlgorithm", "补肠后烤盘状态更新完成")
+        logD(LOG_SUPPLEMENT, "补肠后烤盘状态更新完成")
         }
-        LogUtils.d("KaoChangAlgorithm", "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}搬运结束")
+        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：结束")
 
         while (AppConfig.getAppConfig().onlineStatus == 4) {
             delay(5000L)
-            LogUtils.d("KaoChangAlgorithm", "等待烤肠售卖结束，补下一根烤肠")
+            logD(LOG_SUPPLEMENT, "等待当前售卖结束后再补下一根烤肠")
         }
         return moveSuccess
     }
@@ -707,7 +725,7 @@ object KaoChangOperate {
             GlobalScope.launch(Dispatchers.Main) {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
-            LogUtils.d("旧手动取肠：烤盘${kaoPan.positionSn}已到售卖口，先清空烤盘状态，再执行售卖口收尾")
+        logD(LOG_ORDER, "旧手动取肠：烤盘${kaoPan.positionSn}已到售卖口，先清空烤盘状态，再执行售卖口收尾")
             // 搬移完成后 等待一定时间再进行视觉检测
             delay(3000)
         val sausageInfo = captureSellPlatform()
@@ -728,7 +746,7 @@ object KaoChangOperate {
                         markActionFailure("旧手动取肠收尾-丢弃并关门", closeResult)
                         return false
                     }
-                    LogUtils.d("客户未及时取肠，执行丢弃并关门完成")
+                    logD(LOG_WINDOW, "客户未及时取肠，执行丢弃并关门完成")
                 }
                 else{
                     val closeResult = executeActionWithRetry(
@@ -740,7 +758,7 @@ object KaoChangOperate {
                         markActionFailure("旧手动取肠收尾-关门", closeResult)
                         return false
                     }
-                    LogUtils.d("客户已经把肠取走，关门完成")
+                    logD(LOG_WINDOW, "客户已经把肠取走，关门完成")
                 }
             } else { // 未识别到 顾客取走了
                 val closeResult = executeActionWithRetry(
@@ -752,7 +770,7 @@ object KaoChangOperate {
                     markActionFailure("旧手动取肠收尾-关门", closeResult)
                     return false
                 }
-                LogUtils.d("客户已经把肠取走，关门完成")
+                logD(LOG_WINDOW, "客户已经把肠取走，关门完成")
             }
         }
 
@@ -803,13 +821,19 @@ object KaoChangOperate {
             }
 
             !detectedSausageInQuickRetries -> {
-                LogUtils.w("售卖台首次确认阶段未检测到烤肠，已完成 1.5 秒短频补拍，继续每秒轮询确认是否到货或已被顾客快速取走")
-                monitorSellPlatformUntilTakenOrDiscarded(detectDeadlineMs)
+                logW(LOG_SELL_MONITOR, "售卖台首次确认阶段未检测到烤肠，已完成 1.5 秒短频补拍，继续每秒轮询确认是否到货或已被顾客快速取走")
+                monitorSellPlatformUntilTakenOrDiscarded(
+                    detectDeadlineMs = detectDeadlineMs,
+                    detectedSausageBeforeMonitor = false
+                )
             }
 
             else -> {
-                LogUtils.d("售卖台首次确认阶段已检测到烤肠，开始每秒轮询顾客是否已取走")
-                monitorSellPlatformUntilTakenOrDiscarded(detectDeadlineMs)
+                logD(LOG_SELL_MONITOR, "售卖台首次确认阶段已检测到烤肠，开始每秒轮询顾客是否已取走")
+                monitorSellPlatformUntilTakenOrDiscarded(
+                    detectDeadlineMs = detectDeadlineMs,
+                    detectedSausageBeforeMonitor = true
+                )
             }
         }
 
@@ -839,7 +863,7 @@ object KaoChangOperate {
         while (appState!=0) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
-            LogUtils.d("KaoChangAlgorithm", "丢弃烤肠 等待售卖完成 ${appState}")
+            logD(LOG_ACTION, "丢弃烤肠等待售卖完成：state=$appState")
         }
         // 机械臂状态改为搬运
         AppConfig.getAppConfig().moveStatus = 4
@@ -869,7 +893,7 @@ object KaoChangOperate {
         }
         while (AppConfig.getAppConfig().onlineStatus == 4) {
             delay(5000L)
-            LogUtils.d("KaoChangAlgorithm", "等待烤肠售卖结束，丢弃下一根烤肠")
+            logD(LOG_ACTION, "等待当前售卖结束后再丢弃下一根烤肠")
         }
         return result==ActionExecutionResult.SUCCESS
     }
@@ -898,7 +922,7 @@ object KaoChangOperate {
      * 加热温度 160
      */
     fun heating(area: Int) {
-        LogUtils.d("开始加热温度数-----："+AppConfig.getAppConfig().heatingTemperature)
+        logD(LOG_HEAT, "开始加热：temperature=${AppConfig.getAppConfig().heatingTemperature}")
         //加热管开始工作
         when (area) {
             1 -> {
@@ -918,8 +942,8 @@ object KaoChangOperate {
      * 保温 60
      */
     fun keepWarm(area: Int) {
-        LogUtils.d("开始保温温度数-----："+AppConfig.getAppConfig().keepWarmTemperature)
-        LogUtils.d("开始加热温度数-----："+AppConfig.getAppConfig().heatingTemperature)
+        logD(LOG_HEAT, "开始保温：temperature=${AppConfig.getAppConfig().keepWarmTemperature}")
+        logD(LOG_HEAT, "当前加热温度配置：temperature=${AppConfig.getAppConfig().heatingTemperature}")
         //开始保温工作
         when (area) {
             1 -> {
@@ -975,15 +999,15 @@ object KaoChangOperate {
 
         when {
             hasHeating -> {
-                LogUtils.d("按当前烤盘状态恢复${area}区加热：reason=$reason")
+                logD(LOG_HEAT, "按当前烤盘状态恢复${area}区加热：reason=$reason")
                 heating(area)
             }
             hasKeepWarm -> {
-                LogUtils.d("按当前烤盘状态恢复${area}区保温：reason=$reason")
+                logD(LOG_HEAT, "按当前烤盘状态恢复${area}区保温：reason=$reason")
                 keepWarm(area)
             }
             else -> {
-                LogUtils.d("按当前烤盘状态关闭${area}区加热：reason=$reason")
+                logD(LOG_HEAT, "按当前烤盘状态关闭${area}区加热：reason=$reason")
                 stopHeating(area)
             }
         }
@@ -1007,7 +1031,7 @@ object KaoChangOperate {
         if (config.errorStatus != 0) {
             config.onlineStatus = 3
             AppConfig.saveAppConfig(config)
-            LogUtils.w("设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到运营中")
+            logW(LOG_DEVICE, "设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到运营中")
             NetApi.updateDeviceInfo()
             return
         }
@@ -1028,7 +1052,7 @@ object KaoChangOperate {
         if (config.errorStatus != 0) {
             config.onlineStatus = 3
             AppConfig.saveAppConfig(config)
-            LogUtils.w("设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到休息中")
+            logW(LOG_DEVICE, "设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到休息中")
             NetApi.updateDeviceInfo()
             return
         }
@@ -1060,7 +1084,7 @@ object KaoChangOperate {
      * 写入寄存器的值
      */
     fun writeSingleRegister(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
-        LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
+        logD(LOG_DEVICE, "写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
         return VMModbusHelper.writeSingleRegister(modbus_address,address,value)
 
     }
@@ -1070,7 +1094,7 @@ object KaoChangOperate {
      */
     suspend fun writeSingleRegister2(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
         delay(150)
-        LogUtils.d("烤肠状态程序："+AppConfig.getAppConfig().errorStatus)
+        logD(LOG_DEVICE, "延迟写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
         return VMModbusHelper.writeSingleRegister(modbus_address,address,value)
 
     }
