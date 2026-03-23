@@ -177,7 +177,7 @@ object LowCurrentTrafficMode {
 //            }
             //var tag = 0
             // 找到对应口味的烤肠箱
-            val matchingBox = listBox.find { it.tasteCode == kaoPan.taste?.tasteCode && it.num > 0 }
+            val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, kaoPan.taste?.tasteCode)
             matchingBox?.let { box ->
                 if (box.num > 0) {
                     //tag+=1
@@ -348,7 +348,7 @@ object LowCurrentTrafficMode {
             // 将烤肠从烤肠箱移动到13-15工位
             neededTastes.forEachIndexed { index, tasteCode ->
                 // 找到对应口味的烤肠箱
-                val matchingBox = listBox.find { it.tasteCode == tasteCode && it.num > 0 }
+                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->
                     if (box.num > 0) {
                         val targetPosition = emptyPositions13_15[index]
@@ -399,7 +399,7 @@ object LowCurrentTrafficMode {
             // 将烤肠从烤肠箱移动到13-15工位
             neededTastes.forEachIndexed { index, tasteCode ->
                 // 找到对应口味的烤肠箱
-                val matchingBox = listBox.find { it.tasteCode == tasteCode && it.num > 0 }
+                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->
                     if (box.num > 0) {
                         val targetPosition = emptyPositions13_15[index]

@@ -27,4 +27,15 @@ object TrafficModeHelper {
         return flavorList
     }
 
+    /**
+     * 自动补肠时优先选择同口味中编号最大的烤肠箱，缩短机械臂整体取肠路径。
+     */
+    fun findSupplyBoxByTaste(listBox: List<KaoPanBox>, tasteCode: String?): KaoPanBox? {
+        if (tasteCode.isNullOrBlank()) {
+            return null
+        }
+        return listBox
+            .filter { it.tasteCode == tasteCode && it.num > 0 }
+            .maxByOrNull { it.positionSn }
+    }
 }

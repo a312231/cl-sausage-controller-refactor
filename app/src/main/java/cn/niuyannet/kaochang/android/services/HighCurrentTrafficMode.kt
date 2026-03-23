@@ -202,7 +202,7 @@ object HighCurrentTrafficMode {
             // 将烤肠从烤肠箱移动到25-33工位
             neededTastes.forEachIndexed { index, tasteCode ->
                 // 找到对应口味的烤肠箱
-                val matchingBox = listBox.find { it.tasteCode == tasteCode && it.num > 0 }
+                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->
                     if (box.num > 0 && index < emptyPositions25_33.size) {
                         val targetPosition = emptyPositions25_33[index]
@@ -398,7 +398,7 @@ object HighCurrentTrafficMode {
         // 开始从烤肠箱搬运烤肠到烤盘上进行烤制,并且烤肠箱num数量-1
         list1_21.forEach { kaoPan ->
             // 找到对应口味的烤肠箱
-            val matchingBox = listBox.find { it.tasteCode == kaoPan.taste?.tasteCode && it.num > 0 }
+            val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, kaoPan.taste?.tasteCode)
             matchingBox?.let { box ->
                 if (box.num > 0) {
                     // 控制设备进行搬运
@@ -439,7 +439,7 @@ object HighCurrentTrafficMode {
             // 将烤肠从烤肠箱移动到25-33工位
             neededTastes.forEachIndexed { index, tasteCode ->
                 // 找到对应口味的烤肠箱
-                val matchingBox = listBox.find { it.tasteCode == tasteCode && it.num > 0 }
+                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->
                     if (box.num > 0 && index < emptyPositions25_33.size) {
                         val targetPosition = emptyPositions25_33[index]
