@@ -16,6 +16,7 @@ import androidx.lifecycle.LifecycleOwner
 import cn.niuyannet.kaochang.android.MyApp.Companion.instance
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.detecition.SauceDetector
+import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +56,30 @@ object SauceDetectionUitls {
 
     private val captureMutex = Mutex()
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<SauceDetectionProcessor.SausageInfo?>>()
+    private var forcedSellDetectCount = 0
+    private var forcedSellDetectWindowStartMs = 0L
+
+    private fun buildForcedSuccessResult(roiFlag: Int): SauceDetectionProcessor.SausageInfo {
+        return SauceDetectionProcessor.SausageInfo().apply {
+            pixelX = 0
+            pixelY = 0
+            worldX = 0.0
+            worldY = if (roiFlag == 0) 80.0 else 0.0
+            worldZ = 0.0
+            code = 2
+        }
+    }
+
+    private fun buildForcedSellEmptyResult(): SauceDetectionProcessor.SausageInfo {
+        return SauceDetectionProcessor.SausageInfo().apply {
+            pixelX = 0
+            pixelY = 0
+            worldX = 0.0
+            worldY = 0.0
+            worldZ = 0.0
+            code = 1
+        }
+    }
 
     /**
      * 协程风格拍照检测。
@@ -70,6 +95,27 @@ object SauceDetectionUitls {
         captureTimeoutMs: Long = 5000L,
         tag: String = "KaoChangAlgorithm"
     ): SauceDetectionProcessor.SausageInfo? = withContext(Dispatchers.IO) {
+        if (AppConfig.getAppConfig().forceVisionSuccess == 1) {
+            if (roiFlag == 0) {
+                logDetectWarn("联调模式已开启，运输台视觉识别固定返回成功")
+                return@withContext buildForcedSuccessResult(roiFlag)
+            }
+
+            val now = System.currentTimeMillis()
+            if (now - forcedSellDetectWindowStartMs > 3_000L) {
+                forcedSellDetectWindowStartMs = now
+                forcedSellDetectCount = 0
+            }
+            forcedSellDetectCount++
+
+            if (forcedSellDetectCount <= 2) {
+                logDetectWarn("联调模式已开启，售卖台视觉识别模拟为“检测到烤肠”")
+                return@withContext buildForcedSuccessResult(roiFlag)
+            }
+
+            logDetectWarn("联调模式已开启，售卖台视觉识别模拟为“顾客已取走，窗口为空”")
+            return@withContext buildForcedSellEmptyResult()
+        }
         logPhoto(tag, "开始拍照检测，roiFlag: $roiFlag, retry: $retry")
         val requestId = "${tag}_${System.currentTimeMillis()}_${(0..1000).random()}"
         return@withContext try {

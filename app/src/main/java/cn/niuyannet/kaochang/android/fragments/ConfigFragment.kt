@@ -77,6 +77,11 @@ class ConfigFragment : Fragment() {
             }
             ToastUtils.showShort("保存成功")
         }
+        binding.swForceVisionSuccess.setOnCheckedChangeListener { _, isChecked ->
+            configBean.forceVisionSuccess = if (isChecked) 1 else 0
+            AppConfig.saveAppConfig(configBean)
+            ToastUtils.showShort(if (isChecked) "已开启联调模式" else "已关闭联调模式")
+        }
         binding.btndisModbusConfig.setOnClickListener {
             GlobalScope.launch(Dispatchers.IO) {
         VMModbusHelper.disconnectModbusMaster()
@@ -97,6 +102,7 @@ class ConfigFragment : Fragment() {
         binding.etMqttUsername.setText(configBean.mqttUsername)
         binding.etMqttPassword.setText(configBean.mqttPassword)
         binding.etModbusBaudRate.setText(configBean.modbusBaudRate.toString())
+        binding.swForceVisionSuccess.isChecked = configBean.forceVisionSuccess == 1
         initSpinner()
     }
     fun statusInit(){
