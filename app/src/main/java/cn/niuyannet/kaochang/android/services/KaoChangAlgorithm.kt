@@ -94,6 +94,21 @@ object KaoChangAlgorithm {
         val list_13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
         val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
 
+        val sellableCount = if (config.modeType == 1) {
+            list_1_9.count { it.isHasSausage && it.holdingTime > 0 }
+        } else {
+            list_1_21.count { it.isHasSausage && it.holdingTime > 0 }
+        }
+
+        if (sellableCount > 0) {
+            if (config.available > 0) {
+                logD(LOG_ALGORITHM, "检查烤盘可售状态：当前已有可售烤肠，清空预计时间 available=${config.available}")
+                config.available = 0L
+                AppConfig.saveAppConfig(config)
+                NetApi.updateDeviceInfo()
+            }
+            return
+        }
 
         val h_1_9 = list_1_9.filter { it.isHasSausage }.size // 烤肠数
         val k_1_9 = list_1_9.filter { it.isHasSausage && it.startTime > 0 }.size // 1-9在烤制数
@@ -116,7 +131,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .maxOrNull()                // ✅ 关键：可空
+                .minOrNull()
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -142,7 +157,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .maxOrNull()                // ✅ 关键：可空
+                .minOrNull()
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -169,7 +184,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .maxOrNull()                // ✅ 关键：可空
+                .minOrNull()
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
@@ -196,7 +211,7 @@ object KaoChangAlgorithm {
                     kaoPan.bakingTime - heatTime
                 }
                 .filter { it > 0 }          // 只保留还没烤好的
-                .maxOrNull()                // ✅ 关键：可空
+                .minOrNull()
 
             if (minRemainHeatTime != null) {
                 // 有正在补肠
