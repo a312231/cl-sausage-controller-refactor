@@ -236,6 +236,11 @@ object HighCurrentTrafficMode {
                 }
             }
         }
+        val hasActiveHeatingIn13_15 = list13_15.any { it.isHasSausage && it.startTime > 0 }
+        val hasStartedHighHeatSupply = list25_33.any { it.isHasSausage }
+        if (hasActiveHeatingIn13_15 || !hasStartedHighHeatSupply) {
+            return
+        }
         // 切换到正常高并发模式
         config.apply {
             transitionMode = 0 // 取消过渡态
