@@ -49,8 +49,9 @@ object LowCurrentTrafficMode {
         var supP1_9 = lowConcurrencyIntestinalSupplementation(p1_9,p_13_15,p_16_18)
         LogUtils.d("KaoChangAlgorithm", "supP1_9-补肠返回 supP1_9= ${supP1_9}")
         //营业时间前半小时停止补肠
+        val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
         val businessHours =
-            KaoPanHelper.isBeforeBusinessHours(config.businessTime,30)
+            KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
         //一区9 加 二区6
         if (p == (list1_6.size + list_13_18.size)) {
             if (config.errorStatus==0 && !businessHours){ //todo 如果没有错误才进行初始化

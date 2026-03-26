@@ -61,8 +61,9 @@ object HighCurrentTrafficMode {
 //                LogUtils.d("KaoChangAlgorithm", "1 2区空位 ${p1_21} 检测加热状态")
 //                LogUtils.d("KaoChangAlgorithm", "3区空位 ${p_25_33} 检测加热状态")
 
+                val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
                 val businessHours =
-                    KaoPanHelper.isBeforeBusinessHours(config.businessTime,30)
+                    KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
                 if (p == 30) {
                     // 初始化高并发
                     if (config.errorStatus==0 && !businessHours) {//todo 如果状态是正常的才开始初始化
@@ -108,6 +109,7 @@ object HighCurrentTrafficMode {
 
                 // 检查高并发是否超过保鲜时间，超过保鲜时间需要丢弃掉
                 checkHighHeatDiscard(list1_21)
+                checkSwitchToLow()
 
                 // 检查是否需要切换到低并发模式
 //                checkSwitchToLow()

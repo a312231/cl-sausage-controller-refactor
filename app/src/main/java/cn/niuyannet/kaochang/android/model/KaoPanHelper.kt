@@ -470,18 +470,18 @@ object KaoPanHelper {
         }
     }
 
-    private fun isTimeInRange(current: Date, end: Date,minute : Int): Boolean {
+    private fun isTimeInRange(current: Date, end: Date, minute: Int): Boolean {
 
         if (current.after(end)) {
             // 当前时间已经超过结束时间，直接返回true
             return true
         }
-        // 计算时间差（毫秒）
+        // 计算距离营业结束的时间差（毫秒）
         val diffInMillis = end.time - current.time
-        val thirtyMinutesInMillis = 30 * 60 * 1000L
+        val beforeCloseMinutesInMillis = minute.coerceAtLeast(0) * 60 * 1000L
 
-        // 判断时间差是否在0到30分钟之间
-        return diffInMillis <= thirtyMinutesInMillis
+        // 判断当前时间是否已经进入“距离营业结束 minute 分钟内”的区间
+        return diffInMillis <= beforeCloseMinutesInMillis
     }
 
     /**
