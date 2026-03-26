@@ -602,6 +602,18 @@ object HighCurrentTrafficMode {
      * 如果两次填坑时间间隔超过阈值，或者距离营业结束时间不足阈值，切换到低并发模式
      */
     private fun checkSwitchToLow() {
+        // 接近营业结束应独立生效，不应依赖是否已经记录过 lastFillPitTime。
+        val businessTime = AppConfig.getAppConfig().businessTime
+        if (businessTime != null) {
+            val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
+            val beforeCloseThreshold =
+                (AppConfig.getAppConfig().timeBeforeClose.takeIf { it > 0 } ?: 30) * 60 * 1000L
+            if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < beforeCloseThreshold) {
+                switchHighToLow()
+                return
+            }
+        }
+
         if (lastFillPitTime > 0) {
             val currentTime = System.currentTimeMillis()
             val timeSinceLastFill = currentTime - lastFillPitTime
@@ -611,15 +623,6 @@ object HighCurrentTrafficMode {
             if (timeSinceLastFill > timeThresholdLow) {
                 switchHighToLow()
                 return
-            }
-
-            // 如果距离营业结束时间不足阈值，切换到低并发模式
-            val businessTime = AppConfig.getAppConfig().businessTime
-            if (businessTime != null) {
-                val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
-                if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < TIME_BEFORE_CLOSE) {
-                    switchHighToLow()
-                }
             }
         }
     }
