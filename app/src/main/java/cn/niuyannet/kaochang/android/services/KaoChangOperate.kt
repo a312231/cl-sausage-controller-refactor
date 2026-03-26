@@ -275,6 +275,13 @@ object KaoChangOperate {
         return seconds * 1000L
     }
 
+    private fun getCameraPrewarmHoldMs(): Long {
+        val seconds = AppConfig.getAppConfig().cameraPrewarmHoldSeconds
+            .takeIf { it > 0 }
+            ?: 8
+        return seconds * 1000L
+    }
+
     private fun getBoxToPlatformTimeoutMs(): Long {
         val seconds = AppConfig.getAppConfig().boxToPlatformTimeoutSeconds
             .takeIf { it > 0 }
@@ -500,6 +507,7 @@ object KaoChangOperate {
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
         logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：开始")
+        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
         val result = executeActionWithRetry(
             actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
             runningTimeoutMs = getBoxToPlatformTimeoutMs()
@@ -705,6 +713,7 @@ object KaoChangOperate {
      * 这条路径不参与订单履约状态机，但故障时也会进入维护中并补齐 errorStatus。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
+        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
         val result = executeActionWithRetry(
             actionName = "旧手动取肠-烤盘${kaoPan.positionSn}到售卖口",
             runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
@@ -798,6 +807,7 @@ object KaoChangOperate {
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
     suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
+        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
         val result = executeActionWithRetry(
             actionName = "烤盘${kaoPan.positionSn}到售卖口",
             runningTimeoutMs = getTrayToSellPlatformTimeoutMs()

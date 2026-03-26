@@ -11,7 +11,6 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -22,23 +21,23 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraService : LifecycleService() {
 
-    // binder this
-    private val mBinder = ClientBinder()
+    private val binder = ClientBinder()
 
-    private var preview: Preview? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
 
-    private val runStatus = AtomicBoolean(true)
     private val isCameraInitialized = AtomicBoolean(false)
+    private val isCameraInitializing = AtomicBoolean(false)
     private val isCameraReady = AtomicBoolean(false)
     private val cameraLock = Any()
+    private val autoReleaseRunnable = Runnable {
+        LogUtils.d("相机预热超时未使用，自动释放相机资源")
+        releaseCamera()
+    }
 
-    // 使用线程池而
-    private val cameraExecutor: ExecutorService = Executors.newFixedThreadPool(1)
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val handler by lazy { Handler(Looper.getMainLooper()) }
 
-    // 用于Activity和service通讯
     inner class ClientBinder : Binder() {
         val service: CameraService
             get() = this@CameraService
@@ -47,12 +46,11 @@ class CameraService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         LogUtils.d("摄像头后台服务创建")
-        handler.postDelayed(runnable, 500)
     }
 
     override fun onBind(intent: Intent): IBinder {
         super.onBind(intent)
-        return mBinder
+        return binder
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,85 +59,100 @@ class CameraService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        runStatus.set(false)
-        handler.removeCallbacks(runnable)
+        handler.removeCallbacksAndMessages(null)
         releaseCamera()
         cameraExecutor.shutdown()
         LogUtils.d("摄像头后台服务销毁")
         super.onDestroy()
     }
 
-    private val runnable = Runnable {
-        if(runStatus.get()) {
-            initCamera()
-        }
-    }
-
     /**
-     * 初始化相机
+     * 仅在需要拍照前初始化 CameraX，用完立即释放，避免长期占用系统相机。
      */
-    private fun initCamera() {
+    private fun initCamera(onComplete: (Boolean) -> Unit) {
         synchronized(cameraLock) {
-            if (isCameraInitialized.get()) {
+            if (isCameraReady.get() && cameraProvider != null && imageCapture != null) {
+                onComplete(true)
                 return
-            } else isCameraInitialized.set(true)
-            try {
-                LogUtils.d("开始初始化相机")
-                //
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-                cameraProviderFuture.addListener({
-                    try {
-                        val provider = cameraProviderFuture.get()
+            }
+            if (isCameraInitializing.get()) {
+                handler.postDelayed({ initCamera(onComplete) }, 200)
+                return
+            }
+            isCameraInitialized.set(true)
+            isCameraInitializing.set(true)
+        }
 
-                        // 配置Preview
-                        preview = Preview.Builder()
-                            .setTargetResolution(Size(832, 448))
-                            .setTargetRotation(Surface.ROTATION_0)
-                            .build()
-                        // 配置ImageCapture
+        try {
+            LogUtils.d("开始初始化相机")
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+            cameraProviderFuture.addListener({
+                try {
+                    val provider = cameraProviderFuture.get()
+                    val cameraSelector = selectAnyAvailableCamera(provider)
+                    if (cameraSelector == null) {
+                        synchronized(cameraLock) {
+                            cameraProvider = null
+                            imageCapture = null
+                            isCameraInitialized.set(false)
+                            isCameraInitializing.set(false)
+                            isCameraReady.set(false)
+                        }
+                        LogUtils.e("相机初始化失败: 未找到可用摄像头")
+                        onComplete(false)
+                        return@addListener
+                    }
+
+                    synchronized(cameraLock) {
+                        provider.unbindAll()
                         imageCapture = ImageCapture.Builder()
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                             .setTargetRotation(Surface.ROTATION_0)
                             .setTargetResolution(Size(832, 448))
                             .build()
-                        // 摄像头
-                        val cameraSelector = selectAnyAvailableCamera(provider)!!
-                        // 绑定用例到生命周期
                         provider.bindToLifecycle(
                             this,
                             cameraSelector,
-                            preview,
                             imageCapture
                         )
-                        //
                         cameraProvider = provider
+                        isCameraInitializing.set(false)
                         isCameraReady.set(true)
-                        //
-                        LogUtils.d("相机初始化成功并绑定到生命周期")
-                    } catch (e: Exception) {
-                        LogUtils.e("相机初始化失败: ${e.message}")
-                        isCameraInitialized.set(false)
                     }
-                }, ContextCompat.getMainExecutor(this))
-            } catch (e: Exception) {
-                LogUtils.e("获取CameraProvider失败: ${e.message}")
+                    LogUtils.d("相机初始化成功并绑定到生命周期")
+                    onComplete(true)
+                } catch (e: Exception) {
+                    synchronized(cameraLock) {
+                        cameraProvider = null
+                        imageCapture = null
+                        isCameraInitialized.set(false)
+                        isCameraInitializing.set(false)
+                        isCameraReady.set(false)
+                    }
+                    LogUtils.e("相机初始化失败: ${e.message}")
+                    onComplete(false)
+                }
+            }, ContextCompat.getMainExecutor(this))
+        } catch (e: Exception) {
+            synchronized(cameraLock) {
                 isCameraInitialized.set(false)
+                isCameraInitializing.set(false)
+                isCameraReady.set(false)
             }
+            LogUtils.e("获取CameraProvider失败: ${e.message}")
+            onComplete(false)
         }
     }
 
-    /**
-     * 释放
-     *
-     */
     private fun releaseCamera() {
         synchronized(cameraLock) {
             try {
+                handler.removeCallbacks(autoReleaseRunnable)
                 cameraProvider?.unbindAll()
                 cameraProvider = null
                 imageCapture = null
-                //
                 isCameraInitialized.set(false)
+                isCameraInitializing.set(false)
                 isCameraReady.set(false)
                 LogUtils.d("释放相机资源")
             } catch (e: Exception) {
@@ -148,61 +161,97 @@ class CameraService : LifecycleService() {
         }
     }
 
-    /**
-     * 拍照
-     */
-    fun takePhoto(callback: ImageCapture.OnImageCapturedCallback) {
-        synchronized(cameraLock) {
-            if (!isCameraReady.get() || imageCapture == null) {
-                callback.onError(ImageCaptureException(ImageCapture.ERROR_CAMERA_CLOSED, "相机未就绪", Exception("相机未就绪")))
-                return
+    fun prewarm(holdMs: Long = 8_000L, callback: ((Boolean) -> Unit)? = null) {
+        handler.removeCallbacks(autoReleaseRunnable)
+        initCamera { success ->
+            if (success) {
+                LogUtils.d("相机预热完成，预计保持 ${holdMs}ms")
+                handler.removeCallbacks(autoReleaseRunnable)
+                handler.postDelayed(autoReleaseRunnable, holdMs)
             }
+            callback?.invoke(success)
+        }
+    }
+
+    fun takePhoto(callback: ImageCapture.OnImageCapturedCallback) {
+        initCamera { success ->
+            if (!success) {
+                callback.onError(
+                    ImageCaptureException(
+                        ImageCapture.ERROR_CAMERA_CLOSED,
+                        "相机初始化失败",
+                        Exception("相机初始化失败")
+                    )
+                )
+                return@initCamera
+            }
+
+            val captureUseCase = synchronized(cameraLock) {
+                if (!isCameraReady.get() || imageCapture == null) {
+                    null
+                } else {
+                    LogUtils.d("开始拍照...")
+                    isCameraReady.set(false)
+                    imageCapture
+                }
+            }
+
+            if (captureUseCase == null) {
+                callback.onError(
+                    ImageCaptureException(
+                        ImageCapture.ERROR_CAMERA_CLOSED,
+                        "相机未就绪",
+                        Exception("相机未就绪")
+                    )
+                )
+                return@initCamera
+            }
+
             try {
-                LogUtils.d("开始拍照...")
-                isCameraReady.set(false) // 拍照中 标记为忙
-                //
-                imageCapture!!.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+                handler.removeCallbacks(autoReleaseRunnable)
+                captureUseCase.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
                         try {
                             callback.onCaptureSuccess(image)
                         } finally {
-                            isCameraReady.set(true)
+                            releaseCamera()
                         }
                     }
+
                     override fun onError(exception: ImageCaptureException) {
-                        callback.onError(exception)
+                        try {
+                            callback.onError(exception)
+                        } finally {
+                            releaseCamera()
+                        }
                     }
                 })
             } catch (e: Exception) {
+                releaseCamera()
                 LogUtils.e("拍照异常: ${e.message}")
+                callback.onError(ImageCaptureException(ImageCapture.ERROR_UNKNOWN, "拍照异常", e))
             }
         }
-//        try {
-//            LogUtils.d("正在拍照... ${initializer.get()}")
-//            initCamera()
-//            imageCapture!!.takePicture(cameraExecutor, callback)
-//        } catch (e: Exception) {
-//            callback.onError(ImageCaptureException(ImageCapture.ERROR_UNKNOWN, "imageCapture == null", e))
-//        }
     }
 
     private fun selectAnyAvailableCamera(cameraProvider: ProcessCameraProvider): CameraSelector? {
         return try {
             if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
-                LogUtils.d("找到并选择‘后置’摄像头")
-                return CameraSelector.DEFAULT_BACK_CAMERA
+                LogUtils.d("找到并选择后置摄像头")
+                CameraSelector.DEFAULT_BACK_CAMERA
+            } else if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                LogUtils.d("找到并选择前置摄像头")
+                CameraSelector.DEFAULT_FRONT_CAMERA
+            } else {
+                val availableCameraInfos = cameraProvider.availableCameraInfos
+                if (availableCameraInfos.isNotEmpty()) {
+                    LogUtils.d("使用第一个可用摄像头")
+                    availableCameraInfos.first().cameraSelector
+                } else {
+                    LogUtils.e("未找到任何可用摄像头")
+                    null
+                }
             }
-            if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                LogUtils.d("找到并选择‘前置’摄像头")
-                return CameraSelector.DEFAULT_FRONT_CAMERA
-            }
-            val availableCameraInfos = cameraProvider.availableCameraInfos
-            if (availableCameraInfos.isNotEmpty()) {
-                LogUtils.d("使用第一个摄像头")
-                return availableCameraInfos.first().cameraSelector
-            }
-            LogUtils.e("未找到任何可用的摄像头！")
-            null
         } catch (e: Exception) {
             LogUtils.e("选择摄像头时发生异常: ${e.message}")
             null

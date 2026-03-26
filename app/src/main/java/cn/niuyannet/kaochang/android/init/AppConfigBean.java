@@ -62,4 +62,5 @@ public class AppConfigBean implements Serializable {
     public int postSellSupplementGuardSeconds = 5;
     public int postSellIdleStableSeconds = 2;
     public int postSellIdleMaxWaitSeconds = 12;
+    public int cameraPrewarmHoldSeconds = 8;
 }

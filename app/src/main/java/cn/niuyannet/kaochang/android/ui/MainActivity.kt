@@ -44,7 +44,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         initView()
-        CameraMonitor.instance.startService(this)
     }
 
     override fun initData() {
@@ -95,9 +94,13 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onResume() {
         super.onResume()
-        if (mCameraClient == null) {
-            initCameraData()
-        }
+        CameraMonitor.instance.startService(applicationContext)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        CameraMonitor.instance.close()
+        clearCamera()
     }
 
     /**
@@ -219,6 +222,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onDestroy() {
         super.onDestroy()
+        CameraMonitor.instance.close()
+        clearCamera()
         ConnectManageHelper.disConnect()
         KaoChangAlgorithm.stopServer()
         exitProcess(0)
@@ -279,7 +284,14 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         mCameraClient?.register()
     }
 
+    private fun ensureUvcCameraClient() {
+        if (mCameraClient == null) {
+            initCameraData()
+        }
+    }
+
     private fun findFirstCamera(callback: ICameraStateCallBack?): Pair<Boolean, MultiCameraClient.ICamera?> {
+        ensureUvcCameraClient()
         try {
             mCameraMap.values.first().let { camera ->
                 return if (!camera.isCameraOpened()) {

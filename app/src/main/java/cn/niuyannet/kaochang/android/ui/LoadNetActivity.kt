@@ -71,6 +71,8 @@ abstract class LoadNetActivity : BaseActivity() {
                         if (jsonData.containsKey("postSellIdleStableSeconds")) jsonData.getIntValue("postSellIdleStableSeconds") else 2
                     appConfigBean.postSellIdleMaxWaitSeconds =
                         if (jsonData.containsKey("postSellIdleMaxWaitSeconds")) jsonData.getIntValue("postSellIdleMaxWaitSeconds") else 12
+                    appConfigBean.cameraPrewarmHoldSeconds =
+                        if (jsonData.containsKey("cameraPrewarmHoldSeconds")) jsonData.getIntValue("cameraPrewarmHoldSeconds") else 8
 
                     AppConfig.saveAppConfig(appConfigBean)
                     onLoaded?.invoke(true)

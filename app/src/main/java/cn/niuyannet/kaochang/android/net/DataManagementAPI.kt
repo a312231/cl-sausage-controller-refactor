@@ -178,11 +178,18 @@ object DataManagementAPI {
                           } else {
                               12
                           }
+                      appConfigBean.cameraPrewarmHoldSeconds =
+                          if (jsonData.containsKey("cameraPrewarmHoldSeconds")) {
+                              jsonData.getIntValue("cameraPrewarmHoldSeconds")
+                          } else {
+                              8
+                          }
                       logD(
                           "设备配置拉取成功：bakingTime=${appConfigBean.bakingTime}, discardTime=${appConfigBean.discardTime}, " +
                               "postSellSupplementGuardSeconds=${appConfigBean.postSellSupplementGuardSeconds}, " +
                               "postSellIdleStableSeconds=${appConfigBean.postSellIdleStableSeconds}, " +
-                              "postSellIdleMaxWaitSeconds=${appConfigBean.postSellIdleMaxWaitSeconds}"
+                              "postSellIdleMaxWaitSeconds=${appConfigBean.postSellIdleMaxWaitSeconds}, " +
+                              "cameraPrewarmHoldSeconds=${appConfigBean.cameraPrewarmHoldSeconds}"
                       )
                       AppConfig.saveAppConfig(appConfigBean)
                       if (previousOnlineStatus == 3 &&

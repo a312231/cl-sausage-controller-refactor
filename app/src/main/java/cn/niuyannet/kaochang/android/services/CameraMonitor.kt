@@ -25,13 +25,6 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * 后台相机服务统一入口。
- * 负责：
- * 1. 维护拍照任务队列
- * 2. 处理拍照超时与重试
- * 3. 将图片转为 OpenCV Mat 并完成烤肠识别
- */
 class CameraMonitor {
 
     companion object {
@@ -48,9 +41,8 @@ class CameraMonitor {
 
     private val handler by lazy { Handler(Looper.getMainLooper()) }
     private var weakReference: WeakReference<Context>? = null
-    private var cameraService: AtomicReference<CameraService?> = AtomicReference(null)
+    private val cameraService = AtomicReference<CameraService?>(null)
 
-    // 拍照互斥，防止并发拍照。
     private val takeStatus = AtomicBoolean(true)
     private var detectionProcessor: SauceDetectionProcessor? = null
     private val pendingCallbacks = mutableMapOf<String, (SauceDetectionProcessor.SausageInfo?) -> Unit>()
@@ -64,15 +56,16 @@ class CameraMonitor {
 
     fun startService(context: Context, restart: Boolean = false) {
         close()
+        val appContext = context.applicationContext
         if (!restart) {
-            weakReference = WeakReference(context)
+            weakReference = WeakReference(appContext)
         }
         if (cameraService.get() == null) {
-            val serviceIntent = Intent(context, CameraService::class.java)
-            context.bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+            val serviceIntent = Intent(appContext, CameraService::class.java)
+            appContext.bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         }
         if (detectionProcessor == null) {
-            detectionProcessor = SauceDetectionProcessor(context.applicationContext)
+            detectionProcessor = SauceDetectionProcessor(appContext)
         }
 
         handler.removeCallbacks(runnable)
@@ -106,6 +99,31 @@ class CameraMonitor {
     }
 
     fun clearQueue() = deque.clear()
+
+    fun prewarm(holdMs: Long = 8_000L) {
+        val appContext = weakReference?.get()
+        if (appContext == null) {
+            sellPhotoW("预热相机失败：上下文不可用")
+            return
+        }
+        if (cameraService.get() == null) {
+            startService(appContext)
+        }
+        handler.postDelayed({
+            val boundCameraService = cameraService.get()
+            if (boundCameraService == null) {
+                sellPhotoW("预热相机失败：相机服务尚未绑定")
+                return@postDelayed
+            }
+            boundCameraService.prewarm(holdMs) { success ->
+                if (success) {
+                    sellPhotoD("相机预热成功，保持 ${holdMs}ms")
+                } else {
+                    sellPhotoW("相机预热失败")
+                }
+            }
+        }, 300L)
+    }
 
     fun takePhotoQueue(
         roiFlag: Int,
@@ -158,8 +176,8 @@ class CameraMonitor {
         timeoutMs: Long,
         callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
-        val cameraService = cameraService.get()
-        if (cameraService == null) {
+        val boundCameraService = cameraService.get()
+        if (boundCameraService == null) {
             sellPhotoE("相机服务未启动")
             handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
             return
@@ -176,7 +194,7 @@ class CameraMonitor {
 
         try {
             handler.postDelayed(timeoutRunnable, timeoutMs)
-            cameraService.takePhoto(object : ImageCapture.OnImageCapturedCallback() {
+            boundCameraService.takePhoto(object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
                     if (completed.getAndSet(true)) {
                         sellPhotoW("拍照成功回调被忽略（已超时）")
@@ -220,7 +238,7 @@ class CameraMonitor {
         callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
         if (retry > 0) {
-            sellPhotoD("异常重试：remainingRetry=${retry - 1}")
+            sellPhotoD("异常重试，remainingRetry=${retry - 1}")
             handler.postDelayed({
                 takePhoto(delay, retry - 1, timeoutMs, callback)
             }, delay)
@@ -229,11 +247,15 @@ class CameraMonitor {
         }
     }
 
-    private fun close(callback: (() -> Unit)? = null) {
+    fun close(callback: (() -> Unit)? = null) {
         handler.removeCallbacks(runnable)
+        takeStatus.set(true)
         if (cameraService.get() != null) {
             weakReference?.get()?.let {
-                it.unbindService(serviceConnection)
+                try {
+                    it.unbindService(serviceConnection)
+                } catch (_: IllegalArgumentException) {
+                }
                 cameraService.set(null)
                 callback?.invoke()
                 return
@@ -311,15 +333,14 @@ class CameraMonitor {
                 if (result.sausages.isNotEmpty()) {
                     val sausage = result.sausages[0]
                     val resultText = String.format(
-                        "售卖台检测结果:\n结果: (%d) \n像素坐标: (%d, %d) \n世界坐标: (%.2f, %.2f, %.2f)",
+                        "售卖台检测结果\n结果: (%d) \n像素坐标: (%d, %d) \n世界坐标: (%.2f, %.2f, %.2f)",
                         sausage.code, sausage.pixelX, sausage.pixelY, sausage.worldX, sausage.worldY, sausage.worldZ
                     )
                     sellDetectD(resultText)
                     return sausage
-                } else {
-                    sellDetectW("售卖台检测结果为空")
-                    return null
                 }
+                sellDetectW("售卖台检测结果为空")
+                return null
             }
 
             if (result.sausages.isEmpty()) {
