@@ -62,6 +62,9 @@ public class AppConfigBean implements Serializable {
     public int postSellSupplementGuardSeconds = 5;
     public int postSellIdleStableSeconds = 2;
     public int postSellIdleMaxWaitSeconds = 12;
+    // 预热相机的保护时间（秒）
     public int cameraPrewarmHoldSeconds = 8;
+
+    // 强制跳过视觉识别并固定返回成功（仅用于下位机模拟器本地联调），0=关闭，1=开启
     public int forceVisionSuccess = 0;
 }

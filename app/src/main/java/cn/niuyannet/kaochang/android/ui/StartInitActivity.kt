@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.detecition.SauceDetectionLauncher
 import cn.niuyannet.kaochang.android.utils.dismissLoadingExt
 import cn.niuyannet.kaochang.android.utils.showLoadingExt
 import com.alibaba.fastjson.JSON
+import com.blankj.utilcode.util.LogUtils
 import com.blankj.utilcode.util.ToastUtils
 
 /**
@@ -34,6 +35,18 @@ class StartInitActivity : BaseActivity() {
         binding.etDeviceId.setText(AppConfig.getDeviceId())
 
         binding.btnConfirm.setOnClickListener {
+            // 优化：仅在“联调模式（forceVisionSuccess=1）”下跳过 ARUCO 校准判定
+            if (AppConfig.getAppConfig().forceVisionSuccess == 0) {
+                val sharedPreferences = getSharedPreferences("aruco_helper_prefs", MODE_PRIVATE)
+                val cornersJson = sharedPreferences.getString("corners_data", null)
+                if (cornersJson == null) {
+                    ToastUtils.showShort("未检测到前置 ARUCO 标识，禁止初始化设备")
+                    return@setOnClickListener
+                }
+            } else {
+                LogUtils.w("设备初始化：当前已开启联调模式，跳过 ARUCO 硬件校准检测，直接尝试登录！")
+            }
+            
             showLoadingExt("初始化中...")
             NetApi.initDevice(binding.etDeviceId.text.toString()) { code, content ->
                 dismissLoadingExt()

@@ -16,12 +16,14 @@ import android.widget.EditText
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
 import com.bumptech.glide.Glide
 import com.jiangdg.ausbc.MultiCameraClient
@@ -111,6 +113,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             when (data.action) {
                 1 -> {
                     val orderMessage = data.content
+                    logIncomingOrder(orderMessage)
                     var appState = AppConfig.getAppConfig().moveStatus
                     if (appState == 2 || AppConfig.getAppConfig().onlineStatus == 4) {
                         LogUtils.d("上位机正在运行，无法下单，用户退款")
@@ -125,6 +128,24 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     }
                 }
             }
+        }
+    }
+
+    private fun logIncomingOrder(orderMessage: String) {
+        try {
+            val json = JSON.parseObject(orderMessage)
+            val orderNo = json.getString("order_no")
+            val goodsList = JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
+            val totalQuantity = goodsList.sumOf { it.quantity }
+            val itemSummary = goodsList.joinToString(" | ") {
+                "itemId=${it.id}, productId=${it.productId}, tasteCode=${it.tasteCode}, quantity=${it.quantity}"
+            }
+            LogUtils.d(
+                "【订单防漏跟踪】接单成功：orderNo=$orderNo, deviceId=${AppConfig.getDeviceId()}, " +
+                    "itemCount=${goodsList.size}, totalQuantity=$totalQuantity, items=[$itemSummary]"
+            )
+        } catch (e: Exception) {
+            LogUtils.w("【订单防漏跟踪】接单日志解析失败：raw=$orderMessage, error=${e.message}")
         }
     }
 

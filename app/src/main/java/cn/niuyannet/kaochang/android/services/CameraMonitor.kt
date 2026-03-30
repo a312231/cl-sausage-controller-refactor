@@ -206,7 +206,8 @@ class CameraMonitor {
                         val img = image.use { imageProxyToMat(it) }
                         sellPhotoD("图像信息是否为空: ${img == null}")
                         callback(detectSausageSync(img))
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        sellPhotoE("拍照成功后处理图像失败：${e.message}")
                         callback(null)
                     }
                 }
@@ -250,14 +251,17 @@ class CameraMonitor {
     fun close(callback: (() -> Unit)? = null) {
         handler.removeCallbacks(runnable)
         takeStatus.set(true)
-        if (cameraService.get() != null) {
+        val boundService = cameraService.get()
+        if (boundService != null) {
             weakReference?.get()?.let {
-                try {
-                    it.unbindService(serviceConnection)
-                } catch (_: IllegalArgumentException) {
-                }
-                cameraService.set(null)
-                callback?.invoke()
+                boundService.releaseNow(Runnable {
+                    try {
+                        it.unbindService(serviceConnection)
+                    } catch (_: IllegalArgumentException) {
+                    }
+                    cameraService.set(null)
+                    callback?.invoke()
+                })
                 return
             }
             callback?.invoke()

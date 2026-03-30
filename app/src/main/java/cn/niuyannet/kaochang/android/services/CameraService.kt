@@ -20,9 +20,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraService : LifecycleService() {
+    companion object {
+        private const val CAMERA_OWNER = "camera_service"
+    }
 
     private val binder = ClientBinder()
-
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
 
@@ -30,13 +32,13 @@ class CameraService : LifecycleService() {
     private val isCameraInitializing = AtomicBoolean(false)
     private val isCameraReady = AtomicBoolean(false)
     private val cameraLock = Any()
-    private val autoReleaseRunnable = Runnable {
-        LogUtils.d("相机预热超时未使用，自动释放相机资源")
-        releaseCamera()
-    }
-
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val handler by lazy { Handler(Looper.getMainLooper()) }
+
+    private val autoReleaseRunnable = Runnable {
+        LogUtils.d("【相机服务】相机预热超时未使用，自动释放相机资源")
+        releaseCamera()
+    }
 
     inner class ClientBinder : Binder() {
         val service: CameraService
@@ -45,7 +47,7 @@ class CameraService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        LogUtils.d("摄像头后台服务创建")
+        LogUtils.d("【相机服务】后台相机服务已创建")
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -62,13 +64,10 @@ class CameraService : LifecycleService() {
         handler.removeCallbacksAndMessages(null)
         releaseCamera()
         cameraExecutor.shutdown()
-        LogUtils.d("摄像头后台服务销毁")
+        LogUtils.d("【相机服务】后台相机服务已销毁")
         super.onDestroy()
     }
 
-    /**
-     * 仅在需要拍照前初始化 CameraX，用完立即释放，避免长期占用系统相机。
-     */
     private fun initCamera(onComplete: (Boolean) -> Unit) {
         synchronized(cameraLock) {
             if (isCameraReady.get() && cameraProvider != null && imageCapture != null) {
@@ -79,26 +78,27 @@ class CameraService : LifecycleService() {
                 handler.postDelayed({ initCamera(onComplete) }, 200)
                 return
             }
+            if (!CameraAccessCoordinator.tryAcquire(CAMERA_OWNER)) {
+                LogUtils.w(
+                    "【相机服务】初始化被拒绝，当前相机占用者=${CameraAccessCoordinator.currentOwner()}"
+                )
+                onComplete(false)
+                return
+            }
             isCameraInitialized.set(true)
             isCameraInitializing.set(true)
         }
 
         try {
-            LogUtils.d("开始初始化相机")
+            LogUtils.d("【相机服务】开始初始化 CameraX")
             val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
             cameraProviderFuture.addListener({
                 try {
                     val provider = cameraProviderFuture.get()
                     val cameraSelector = selectAnyAvailableCamera(provider)
                     if (cameraSelector == null) {
-                        synchronized(cameraLock) {
-                            cameraProvider = null
-                            imageCapture = null
-                            isCameraInitialized.set(false)
-                            isCameraInitializing.set(false)
-                            isCameraReady.set(false)
-                        }
-                        LogUtils.e("相机初始化失败: 未找到可用摄像头")
+                        resetStateAndReleaseOwner()
+                        LogUtils.e("【相机服务】初始化失败：未找到可用摄像头")
                         onComplete(false)
                         return@addListener
                     }
@@ -110,53 +110,69 @@ class CameraService : LifecycleService() {
                             .setTargetRotation(Surface.ROTATION_0)
                             .setTargetResolution(Size(832, 448))
                             .build()
-                        provider.bindToLifecycle(
-                            this,
-                            cameraSelector,
-                            imageCapture
-                        )
+                        provider.bindToLifecycle(this, cameraSelector, imageCapture)
                         cameraProvider = provider
                         isCameraInitializing.set(false)
                         isCameraReady.set(true)
                     }
-                    LogUtils.d("相机初始化成功并绑定到生命周期")
+                    LogUtils.d("【相机服务】初始化成功并绑定到生命周期")
                     onComplete(true)
                 } catch (e: Exception) {
-                    synchronized(cameraLock) {
-                        cameraProvider = null
-                        imageCapture = null
-                        isCameraInitialized.set(false)
-                        isCameraInitializing.set(false)
-                        isCameraReady.set(false)
-                    }
-                    LogUtils.e("相机初始化失败: ${e.message}")
+                    resetStateAndReleaseOwner()
+                    LogUtils.e("【相机服务】初始化失败：${e.message}")
                     onComplete(false)
                 }
             }, ContextCompat.getMainExecutor(this))
         } catch (e: Exception) {
-            synchronized(cameraLock) {
-                isCameraInitialized.set(false)
-                isCameraInitializing.set(false)
-                isCameraReady.set(false)
-            }
-            LogUtils.e("获取CameraProvider失败: ${e.message}")
+            resetStateAndReleaseOwner()
+            LogUtils.e("【相机服务】获取 CameraProvider 失败：${e.message}")
             onComplete(false)
         }
     }
 
+    private fun resetStateAndReleaseOwner() {
+        synchronized(cameraLock) {
+            cameraProvider = null
+            imageCapture = null
+            isCameraInitialized.set(false)
+            isCameraInitializing.set(false)
+            isCameraReady.set(false)
+        }
+        CameraAccessCoordinator.release(CAMERA_OWNER)
+    }
+
     private fun releaseCamera() {
         synchronized(cameraLock) {
+            handler.removeCallbacks(autoReleaseRunnable)
+            val providerToUnbind = cameraProvider
+            cameraProvider = null
+            imageCapture = null
+            isCameraInitialized.set(false)
+            isCameraInitializing.set(false)
+            isCameraReady.set(false)
+
             try {
-                handler.removeCallbacks(autoReleaseRunnable)
-                cameraProvider?.unbindAll()
-                cameraProvider = null
-                imageCapture = null
-                isCameraInitialized.set(false)
-                isCameraInitializing.set(false)
-                isCameraReady.set(false)
-                LogUtils.d("释放相机资源")
+                if (providerToUnbind != null) {
+                    providerToUnbind.unbindAll()
+                    LogUtils.d("【相机服务】相机资源已释放")
+                }
             } catch (e: Exception) {
-                LogUtils.e("释放相机资源失败: ${e.message}")
+                LogUtils.e("【相机服务】释放相机资源失败：${e.message}")
+            } finally {
+                CameraAccessCoordinator.release(CAMERA_OWNER)
+            }
+        }
+    }
+
+    fun releaseNow(callback: Runnable? = null) {
+        handler.removeCallbacks(autoReleaseRunnable)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            releaseCamera()
+            callback?.run()
+        } else {
+            handler.post {
+                releaseCamera()
+                callback?.run()
             }
         }
     }
@@ -165,7 +181,7 @@ class CameraService : LifecycleService() {
         handler.removeCallbacks(autoReleaseRunnable)
         initCamera { success ->
             if (success) {
-                LogUtils.d("相机预热完成，预计保持 ${holdMs}ms")
+                LogUtils.d("【相机服务】预热完成，预计保持 ${holdMs}ms")
                 handler.removeCallbacks(autoReleaseRunnable)
                 handler.postDelayed(autoReleaseRunnable, holdMs)
             }
@@ -190,7 +206,7 @@ class CameraService : LifecycleService() {
                 if (!isCameraReady.get() || imageCapture == null) {
                     null
                 } else {
-                    LogUtils.d("开始拍照...")
+                    LogUtils.d("【相机服务】开始拍照")
                     isCameraReady.set(false)
                     imageCapture
                 }
@@ -228,7 +244,7 @@ class CameraService : LifecycleService() {
                 })
             } catch (e: Exception) {
                 releaseCamera()
-                LogUtils.e("拍照异常: ${e.message}")
+                LogUtils.e("【相机服务】拍照异常：${e.message}")
                 callback.onError(ImageCaptureException(ImageCapture.ERROR_UNKNOWN, "拍照异常", e))
             }
         }
@@ -236,24 +252,26 @@ class CameraService : LifecycleService() {
 
     private fun selectAnyAvailableCamera(cameraProvider: ProcessCameraProvider): CameraSelector? {
         return try {
-            if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
-                LogUtils.d("找到并选择后置摄像头")
-                CameraSelector.DEFAULT_BACK_CAMERA
-            } else if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                LogUtils.d("找到并选择前置摄像头")
-                CameraSelector.DEFAULT_FRONT_CAMERA
-            } else {
-                val availableCameraInfos = cameraProvider.availableCameraInfos
-                if (availableCameraInfos.isNotEmpty()) {
-                    LogUtils.d("使用第一个可用摄像头")
-                    availableCameraInfos.first().cameraSelector
-                } else {
-                    LogUtils.e("未找到任何可用摄像头")
+            when {
+                cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> {
+                    LogUtils.d("【相机服务】选择后置摄像头")
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+                cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> {
+                    LogUtils.d("【相机服务】选择前置摄像头")
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                }
+                cameraProvider.availableCameraInfos.isNotEmpty() -> {
+                    LogUtils.d("【相机服务】使用第一个可用摄像头")
+                    cameraProvider.availableCameraInfos.first().cameraSelector
+                }
+                else -> {
+                    LogUtils.e("【相机服务】未找到任何可用摄像头")
                     null
                 }
             }
         } catch (e: Exception) {
-            LogUtils.e("选择摄像头时发生异常: ${e.message}")
+            LogUtils.e("【相机服务】选择摄像头失败：${e.message}")
             null
         }
     }

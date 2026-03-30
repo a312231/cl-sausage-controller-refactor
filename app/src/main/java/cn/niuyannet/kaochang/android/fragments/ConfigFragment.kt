@@ -80,7 +80,9 @@ class ConfigFragment : Fragment() {
         binding.swForceVisionSuccess.setOnCheckedChangeListener { _, isChecked ->
             configBean.forceVisionSuccess = if (isChecked) 1 else 0
             AppConfig.saveAppConfig(configBean)
-            ToastUtils.showShort(if (isChecked) "已开启联调模式" else "已关闭联调模式")
+            val msg = if (isChecked) "已开启联调模式：视觉识别固定返回成功" else "已关闭联调模式"
+            ToastUtils.showShort(msg)
+            LogUtils.w("本地联调状态变更: $msg")
         }
         binding.btndisModbusConfig.setOnClickListener {
             GlobalScope.launch(Dispatchers.IO) {
