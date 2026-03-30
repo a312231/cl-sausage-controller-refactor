@@ -42,10 +42,10 @@ import cn.niuyannet.kaochang.android.services.CameraService;
 import cn.niuyannet.kaochang.android.utils.LogUtils;
 
 /**
- * 调试识别页。
+ * 调试识别页面。
  *
- * 这里不再维护第二套 CameraX 生命周期，统一复用 CameraService 做按次拍照。
- * 代价是页面不再提供实时预览，只保留“按需拍照 -> 显示结果图”的交互。
+ * 这里不再维护第二套 CameraX 生命周期，统一复用 CameraService 进行按需拍照。
+ * 当前页面不再提供实时预览，只保留“点击拍照 -> 显示结果图”的交互。
  */
 public class SauceDetectionActivity extends AppCompatActivity {
     private static final int REQUEST_CODE_PERMISSIONS = 10;
@@ -426,11 +426,6 @@ public class SauceDetectionActivity extends AppCompatActivity {
 
     private void detectSausage(Bitmap capturedBitmap, Mat img) {
         try {
-            if (img == null) {
-                Toast.makeText(this, "图像为空", Toast.LENGTH_SHORT).show();
-                return;
-            }
-
             String platformType = processor.getRoiFlag() == 0 ? "运输台" : "售卖台";
             LogUtils.INSTANCE.d("【ArUco检测】开始检测" + platformType + "上的烤肠");
 
@@ -469,9 +464,7 @@ public class SauceDetectionActivity extends AppCompatActivity {
         } catch (Exception e) {
             LogUtils.INSTANCE.e("【ArUco检测】检测烤肠失败：" + e.getMessage(), e);
             Toast.makeText(this, "检测失败：" + e.getMessage(), Toast.LENGTH_SHORT).show();
-            if (img != null) {
-                img.release();
-            }
+            img.release();
         }
     }
 
@@ -487,6 +480,7 @@ public class SauceDetectionActivity extends AppCompatActivity {
 
     private interface BitmapCaptureCallback {
         void onSuccess(Bitmap bitmap);
+
         void onError(String message);
     }
 }

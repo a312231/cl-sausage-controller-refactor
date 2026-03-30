@@ -37,7 +37,7 @@ class CameraService : LifecycleService() {
 
     private val autoReleaseRunnable = Runnable {
         LogUtils.d("【相机服务】相机预热超时未使用，自动释放相机资源")
-        releaseCamera()
+        releaseNow()
     }
 
     inner class ClientBinder : Binder() {
@@ -62,7 +62,7 @@ class CameraService : LifecycleService() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        releaseCamera()
+        releaseNow()
         cameraExecutor.shutdown()
         LogUtils.d("【相机服务】后台相机服务已销毁")
         super.onDestroy()
@@ -80,7 +80,8 @@ class CameraService : LifecycleService() {
             }
             if (!CameraAccessCoordinator.tryAcquire(CAMERA_OWNER)) {
                 LogUtils.w(
-                    "【相机服务】初始化被拒绝，当前相机占用者=${CameraAccessCoordinator.currentOwner()}"
+                    "【相机服务】初始化被拒绝，当前相机占用者=${CameraAccessCoordinator.currentOwner()}",
+                    null
                 )
                 onComplete(false)
                 return
@@ -230,7 +231,7 @@ class CameraService : LifecycleService() {
                         try {
                             callback.onCaptureSuccess(image)
                         } finally {
-                            releaseCamera()
+                            releaseNow()
                         }
                     }
 
@@ -238,12 +239,12 @@ class CameraService : LifecycleService() {
                         try {
                             callback.onError(exception)
                         } finally {
-                            releaseCamera()
+                            releaseNow()
                         }
                     }
                 })
             } catch (e: Exception) {
-                releaseCamera()
+                releaseNow()
                 LogUtils.e("【相机服务】拍照异常：${e.message}")
                 callback.onError(ImageCaptureException(ImageCapture.ERROR_UNKNOWN, "拍照异常", e))
             }
