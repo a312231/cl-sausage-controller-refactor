@@ -168,9 +168,8 @@ object NetApi {
         json["content"] = content
         OkGo.post<String>(updateKaoPanList_url)
             .upJson(json.toJSONString())
-            .execute(object : StringCallback() {
+                .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
-                    LogUtils.d("烤盘状态上传成功")
                     callback?.invoke(0, response?.body())
                 }
                 override fun onError(response: Response<String>?) {

@@ -7,7 +7,10 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.parser.ParserConfig
 import com.lzy.okgo.OkGo
+import com.lzy.okgo.interceptor.HttpLoggingInterceptor
 import com.tencent.bugly.crashreport.CrashReport
+import okhttp3.OkHttpClient
+import java.util.logging.Level
 import kotlin.properties.Delegates
 
 class MyApp: Application() {
@@ -18,7 +21,15 @@ class MyApp: Application() {
         LogUtils.init(this)
         // 记录应用启动日志
         LogUtils.i("Application started")
-        OkGo.getInstance().init(this)
+        
+        // 配置 OkGo 取消毫无意义的 HTTP 明文长日志（极大地缓解死循环刷屏）
+        val builder = OkHttpClient.Builder()
+        val loggingInterceptor = HttpLoggingInterceptor("OkGo")
+        loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE)
+        loggingInterceptor.setColorLevel(Level.INFO)
+        builder.addInterceptor(loggingInterceptor)
+        
+        OkGo.getInstance().init(this).setOkHttpClient(builder.build())
         //烤盘初始化 （改到MainActivity中再次初始化）
         //KaoPanHelper.init()
         //网络数据初始化更新

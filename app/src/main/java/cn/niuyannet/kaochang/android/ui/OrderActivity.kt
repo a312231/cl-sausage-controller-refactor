@@ -1,4 +1,4 @@
-﻿package cn.niuyannet.kaochang.android.ui
+package cn.niuyannet.kaochang.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -211,6 +211,12 @@ abstract class OrderActivity: BaseSauceDetection() {
                     JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
                 // 遍历商品列表
                 val totalCount = goodsList.sumOf { it.quantity }
+                val orderSummary = goodsList.joinToString(" | ") {
+                    "itemId=${it.id}, productId=${it.productId}, tasteCode=${it.tasteCode}, quantity=${it.quantity}"
+                }
+                LogUtils.d(
+                    "【订单流转】开始执行整单履约：orderNo=$orderNo, itemCount=${goodsList.size}, totalQuantity=$totalCount, items=[$orderSummary]"
+                )
                 var deliveredTotal = 0
                 var orderCompleted = true
                 for (item in goodsList) {
@@ -277,6 +283,11 @@ abstract class OrderActivity: BaseSauceDetection() {
                 showProcessingDialog()
                 updateProcessingDialog(deliveredBase + deliveredCount + 1, totalCount)
             }
+            val currentIndex = deliveredBase + deliveredCount + 1
+            LogUtils.d(
+                "【订单流转】开始执行子订单：orderNo=$orderNo, itemId=${item.id}, productId=${item.productId}, " +
+                    "tasteCode=${item.tasteCode}, current=$currentIndex/$totalCount, itemProgress=${deliveredCount + 1}/${item.quantity}, attempt=$attemptCount/$maxAttempts"
+            )
             val currentMoveStatus = AppConfig.getAppConfig().moveStatus
             if (currentMoveStatus != 2) {
                 LogUtils.d("璁惧宸插湪澶瑰彇涓紝灞忚斀褰撳墠璁㈠崟璇锋眰")
@@ -298,6 +309,10 @@ abstract class OrderActivity: BaseSauceDetection() {
                 when (KaoChangAlgorithm.purchase(item.tasteCode, item.productId)) {
                     KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> {
                         deliveredCount++
+                        LogUtils.d(
+                            "【履约完结】视觉判定顾客已取走，开始上报 Java 后台订单状态变更(status=2)：orderNo=$orderNo, " +
+                                "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
+                        )
                         SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
                             put("order_no", orderNo)
                             put("item_id", item.id)
@@ -309,6 +324,10 @@ abstract class OrderActivity: BaseSauceDetection() {
 
                     KaoChangOperate.TakeSausageResult.DISCARDED -> {
                         deliveredCount++
+                        LogUtils.w(
+                            "【履约完结】售卖口超时未取走，系统已丢弃并按本次履约完成处理，开始上报 Java 后台订单状态变更(status=2)：orderNo=$orderNo, " +
+                                "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
+                        )
                         SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
                             put("order_no", orderNo)
                             put("item_id", item.id)

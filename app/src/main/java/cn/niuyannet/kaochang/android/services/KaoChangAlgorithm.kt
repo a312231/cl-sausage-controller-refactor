@@ -1,6 +1,5 @@
 ﻿package cn.niuyannet.kaochang.android.services
 
-import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
@@ -43,17 +42,54 @@ object KaoChangAlgorithm {
     private var lastRecoverableOnlineStatus = 1
     private var loggedManualRecoveryRequiredOnDisconnect = false
     private var loggedManualRecoveryRequiredAfterReconnect = false
-    var isEnabled = false //是否开启算法
+    private var lastPollStateSnapshot: String? = null
+    var isEnabled = false
 
     private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
     private fun logW(category: String, message: String) = LogUtils.w(TAG, "[$category] $message")
 
+    private fun modeText(value: Int): String = when (value) {
+        1 -> "1(低并发)"
+        2 -> "2(高并发)"
+        else -> "$value(未知)"
+    }
+
+    private fun transitionText(value: Int): String = when (value) {
+        0 -> "0(无过渡态)"
+        1 -> "1(低转高过渡)"
+        2 -> "2(高转低过渡)"
+        else -> "$value(未知)"
+    }
+
+    private fun onlineStatusText(value: Int): String = when (value) {
+        0 -> "0(未启用/离线)"
+        1 -> "1(运营中)"
+        2 -> "2(休息中)"
+        3 -> "3(维护中)"
+        4 -> "4(工作中/正在出餐)"
+        else -> "$value(未知)"
+    }
+
+    private fun moveStatusText(value: Int): String = when (value) {
+        0 -> "0(机械臂空闲)"
+        1 -> "1(机械臂运动中)"
+        else -> "$value(未知)"
+    }
+
+    private fun errorStatusText(value: Int): String = when (value) {
+        0 -> "0(正常)"
+        1 -> "1(识别/流程错误)"
+        2 -> "2(Modbus断连错误)"
+        else -> "$value(未知)"
+    }
+
     fun restoreRoastAlgorithmState() {
         isEnabled = AppConfig.getAppConfig().isEnable == 1
     }
+
     /**
-     * 运行这个智能烤肠算法服务
-     * 低并发和中并发，可相互切换
+     * 启动烤肠算法主循环。
+     * 当前只保留状态变化日志，避免每轮轮询刷屏。
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun runServer() {
@@ -65,29 +101,29 @@ object KaoChangAlgorithm {
         if (config.onlineStatus == 3 && config.errorStatus == 2 && !VMModbusHelper.connectStatus()) {
             modbusReportedUnavailable = true
         }
-        Log.d(TAG, "智能烤肠算法服务启动开始工作")
         logD(LOG_ALGORITHM, "算法准备0：moveStatus=${config.moveStatus}")
         config.moveStatus = 0
         AppConfig.saveAppConfig(config)
         logD(LOG_ALGORITHM, "算法准备1：moveStatus=${config.moveStatus}")
-        serviceStartTime = System.currentTimeMillis() // 记录服务启动时间
-        logD(LOG_ALGORITHM, "智能烤肠算法服务启动开始工作")
+        serviceStartTime = System.currentTimeMillis()
+        logD(LOG_ALGORITHM, "智能烤肠算法服务启动")
         startModbusStateMonitor()
         GlobalScope.launch(Dispatchers.IO) {
             while (isRunning) {
-                //if (AppConfig.getAppConfig().moveStatus == 0) {
                 pollKaoPanStatus()
-                if (!isRunning) break // 延迟前再检测一次(是否点击清空烤盘),防止延迟结束状态就重置完毕
-                logD(LOG_ALGORITHM, "轮询完成：moveStatus=${AppConfig.getAppConfig().moveStatus}")
-                //}
-                delay(10 * 1000)// 1秒空拍一次
+                if (!isRunning) break
+                delay(10 * 1000)
             }
         }
     }
+
     /**
-     * 检查烤盘是否有烤肠可售
+     * 计算二维码页显示的“预计烤制时间”。
+     * 规则：
+     * 1. 当前模式下只要已有可售烤肠，available 直接清零；
+     * 2. 没有可售烤肠时，取下一根最早可售烤肠的剩余加热时间。
      */
-    private fun checkAvailable(config: AppConfigBean,kaoPanList: List<KaoPan>) {
+    private fun checkAvailable(config: AppConfigBean, kaoPanList: List<KaoPan>) {
         val list_1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
         val list_1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
 
@@ -110,45 +146,39 @@ object KaoChangAlgorithm {
             return
         }
 
-        val h_1_9 = list_1_9.filter { it.isHasSausage }.size // 烤肠数
-        val k_1_9 = list_1_9.filter { it.isHasSausage && it.startTime > 0 }.size // 1-9在烤制数
+        val h_1_9 = list_1_9.count { it.isHasSausage }
+        val k_1_9 = list_1_9.count { it.isHasSausage && it.startTime > 0 }
         val h_13_18 = list_13_18.filter { it.isHasSausage }.size
 
-        val h_1_21 = list_1_21.filter { it.isHasSausage }.size
-        val k_1_21 = list_1_21.filter { it.isHasSausage && it.startTime > 0 }.size // 1-21在烤制数
+        val h_1_21 = list_1_21.count { it.isHasSausage }
+        val k_1_21 = list_1_21.count { it.isHasSausage && it.startTime > 0 }
         val h_25_33 = list_25_33.filter { it.isHasSausage }.size
-        // 没有已烤好的烤肠，但已经在烤制中
+
         if (h_1_9 == 0 && h_13_18 > 0) {
 
             val now = System.currentTimeMillis()
 
-            // 找到还在加热中的烤肠，计算剩余时间
             val minRemainHeatTime: Long? = list_13_18
-                .asSequence() // 小优化
+                .asSequence()
                 .filter { it.isHasSausage && it.startTime > 0 }
                 .map { kaoPan ->
                     val heatTime = now - kaoPan.startTime
                     kaoPan.bakingTime - heatTime
                 }
-                .filter { it > 0 }          // 只保留还没烤好的
+                .filter { it > 0 }
                 .minOrNull()
 
             if (minRemainHeatTime != null) {
-                // 有正在补肠
                 config.available = minRemainHeatTime
             } else {
-                // 没有在烤的烤肠
                 config.available = 0L
             }
 
             AppConfig.saveAppConfig(config)
-            // 同步更新云端状态
             NetApi.updateDeviceInfo()
-        }
-        else if (h_1_21 == 0 && h_25_33 > 0) {
+        } else if (h_1_21 == 0 && h_25_33 > 0) {
             val now = System.currentTimeMillis()
 
-            // 找到还在加热中的烤肠，计算剩余时间
             val minRemainHeatTime: Long? = list_25_33
                 .asSequence()
                 .filter { it.isHasSausage && it.startTime > 0 }
@@ -156,26 +186,20 @@ object KaoChangAlgorithm {
                     val heatTime = now - kaoPan.startTime
                     kaoPan.bakingTime - heatTime
                 }
-                .filter { it > 0 }          // 只保留还没烤好的
+                .filter { it > 0 }
                 .minOrNull()
 
             if (minRemainHeatTime != null) {
-                // 有正在补肠
                 config.available = minRemainHeatTime
             } else {
-                // 没有在烤的烤肠
                 config.available = 0L
             }
 
             AppConfig.saveAppConfig(config)
-            // 同步更新云端状态
             NetApi.updateDeviceInfo()
-        }
-        // 并发初始化烤制中
-        else if (k_1_21 == list_1_21.size) {
+        } else if (k_1_21 == list_1_21.size) {
             val now = System.currentTimeMillis()
 
-            // 找到还在加热中的烤肠，计算剩余时间
             val minRemainHeatTime: Long? = list_1_21
                 .asSequence()
                 .filter { it.isHasSausage && it.startTime > 0 }
@@ -183,167 +207,157 @@ object KaoChangAlgorithm {
                     val heatTime = now - kaoPan.startTime
                     kaoPan.bakingTime - heatTime
                 }
-                .filter { it > 0 }          // 只保留还没烤好的
+                .filter { it > 0 }
                 .minOrNull()
 
             if (minRemainHeatTime != null) {
-                // 有正在补肠
                 config.available = minRemainHeatTime
             } else {
-                // 没有在烤的烤肠
                 config.available = 0L
             }
 
             AppConfig.saveAppConfig(config)
-            // 同步更新云端状态
             NetApi.updateDeviceInfo()
-        }
-        else if (k_1_9 == list_1_9.size) {
+        } else if (k_1_9 == list_1_9.size) {
 
             val now = System.currentTimeMillis()
 
-            // 找到还在加热中的烤肠，计算剩余时间
             val minRemainHeatTime: Long? = list_1_9
-                .asSequence() // 小优化
+                .asSequence()
                 .filter { it.isHasSausage && it.startTime > 0 }
                 .map { kaoPan ->
                     val heatTime = now - kaoPan.startTime
                     kaoPan.bakingTime - heatTime
                 }
-                .filter { it > 0 }          // 只保留还没烤好的
+                .filter { it > 0 }
                 .minOrNull()
 
             if (minRemainHeatTime != null) {
-                // 有正在补肠
                 config.available = minRemainHeatTime
             } else {
-                // 没有在烤的烤肠
                 config.available = 0L
             }
 
             AppConfig.saveAppConfig(config)
-            // 同步更新云端状态
             NetApi.updateDeviceInfo()
-        }
-        else if (config.available > 0){
+        } else if (config.available > 0) {
             logD(LOG_ALGORITHM, "检查烤盘可售状态：available=${config.available}")
-            config.apply {
-                available = 0
-            }
+            config.available = 0
             AppConfig.saveAppConfig(config)
-            //同步更新云端状态
             NetApi.updateDeviceInfo()
-
         }
     }
+
     /**
-     * 轮询烤盘的状态，判断当前处于那个模式，低，高发模式
+     * 轮询烤盘和设备状态，决定当前调度模式。
      */
     private suspend fun pollKaoPanStatus() {
-        Log.d(TAG, "轮询烤盘状态")
-        logD(LOG_ALGORITHM, "轮询烤盘状态")
-        // 获取烤盘配置
         val config = AppConfig.getAppConfig()
-        //获取烤盘信息
-        val kaoPanList=KaoPanHelper.getKaoPanList()
-        //获取烤肠箱信息
-        val kaoPanBoxList=KaoPanHelper.getKaoPanBoxList()
-        var onlineStatus=config.onlineStatus //在线状态（0未启用 1运营中 2休息中 3维护中 4工作中（正在出烤肠））
-        val isWithinBusinessHours=isWithinBusinessHours(getCurrentTime(), config.businessTime)// 检查是否在营业时间内
-        if (!isWithinBusinessHours){
+        val kaoPanList = KaoPanHelper.getKaoPanList()
+        val kaoPanBoxList = KaoPanHelper.getKaoPanBoxList()
+        var onlineStatus = config.onlineStatus
+        val isWithinBusinessHours = isWithinBusinessHours(getCurrentTime(), config.businessTime)
+        if (!isWithinBusinessHours) {
             if (onlineStatus != 2) {
-                Log.d(TAG, "非营业时间，暂停烤制，不工作")
-                //需要移除烤盘的所有数据，并且停止加热
+                logD(LOG_ALGORITHM, "当前不在营业时间内，暂停算法调度并执行停业收尾")
                 KaoChangOperate.pauseBusiness()
-                //营业时间结束清除烤肠
-                Log.d(TAG, "营业时间结束清除烤肠！")
                 KaoChangOperate.endBusinessHours(config)
             }
             return
-        }
-        else{
+        } else {
             if (onlineStatus == 2) {
                 KaoChangOperate.startBusinessHours(config)
                 onlineStatus = AppConfig.getAppConfig().onlineStatus
             }
         }
-        if (!(onlineStatus==1||onlineStatus==4)){
-            //Log.d(TAG, "设备状态=$onlineStatus，不工作")
-            logD(LOG_DEVICE, "设备状态=$onlineStatus，不工作")
-            return
-        }
-        if (!VMModbusHelper.connectStatus()){
-            logD(LOG_COMM, "modbus串口没有连接上")
-            return
-        }
-        if (!isEnabled){
-            Log.d(TAG, "算法未开启，不工作")
-            //LogUtils.d(TAG, "算法未开启，不工作")
-            return
-        }
-        logD(LOG_ALGORITHM, "算法开始运行：mode=${config.modeType}")
-        logD(LOG_ALGORITHM, "当前运动状态：moveStatus=${config.moveStatus}")
 
-        checkAvailable(config, kaoPanList) // 检查烤盘是否有烤肠
+        if (!(onlineStatus == 1 || onlineStatus == 4)) {
+            logD(LOG_DEVICE, "设备当前处于${onlineStatusText(onlineStatus)}，跳过算法调度")
+            return
+        }
+        if (!VMModbusHelper.connectStatus()) {
+            logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
+            return
+        }
+        if (!isEnabled) {
+            return
+        }
 
-        if (config.modeType==1){
-            LowCurrentTrafficMode.lowTrafficMode(config,kaoPanList,kaoPanBoxList) // 低并发模式
-        }else if (config.modeType==2){
-            HighCurrentTrafficMode.highTrafficMode(config,list=kaoPanList, listBox = kaoPanBoxList) // 高并发模式
+        val pollStateSnapshot =
+            "mode=${config.modeType},transition=${config.transitionMode},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus}"
+        if (pollStateSnapshot != lastPollStateSnapshot) {
+            logD(
+                LOG_ALGORITHM,
+                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，onlineStatus=${onlineStatusText(onlineStatus)}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}"
+            )
+            lastPollStateSnapshot = pollStateSnapshot
+        }
+
+        checkAvailable(config, kaoPanList)
+
+        if (config.modeType == 1 || config.transitionMode == 1) {
+            LowCurrentTrafficMode.lowTrafficMode(config, kaoPanList, kaoPanBoxList)
+        } else if (config.modeType == 2) {
+            HighCurrentTrafficMode.highTrafficMode(config, list = kaoPanList, listBox = kaoPanBoxList)
         }
     }
+
     /**
-     * 用户下单取出烤肠到售卖台
-     * 根据下单的口味和id信息
-     * 1.查询保温直接最长的口味
-     * 2.然后取出来
+     * 用户下单后，从可售烤盘中选择一根烤肠出餐。
+     * 当前策略：
+     * 1. 低并发及低转高过渡态仅从 1~9 号前区选取；
+     * 2. 高并发从 1~21 号可售区选取；
+     * 3. 按 holdingTime 最大值优先，即“最早进入保温的先卖”。
      */
     suspend fun purchase(tasteCode: String, productId: Int): KaoChangOperate.TakeSausageResult {
-        // 获取烤盘信息
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
-        // 查找保温时间最长的烤肠
-//        val targetKaoPan = kaoPanList.filter {
-//            // 如果指定了口味ID，则只查找对应口味的烤肠
-//            it.isHasSausage&&it.taste.tasteCode==tasteCode&&it.taste.productId==productId
-//        }.maxByOrNull { it.holdingTime }
-        //新增控制条件，低并发在1-6区间找，高并发在1-21中找
-        var targetKaoPan: KaoPan?=null
-        if (config.modeType==1){
-             //targetKaoPan =  TrafficModeHelper.getTrafficModePositions(1, 6, kaoPanList).filter {
-            targetKaoPan =  TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList).filter {
-                // 如果指定了口味ID，则只查找对应口味的烤肠
-                it.isHasSausage&&it.taste.tasteCode==tasteCode&&it.taste.productId==productId&&it.holdingTime > 0
-            }.minByOrNull { it.holdingTime }
-        }else{
-             targetKaoPan =  TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter {
-                // 如果指定了口味ID，则只查找对应口味的烤肠
-                it.isHasSausage&&it.taste.tasteCode==tasteCode&&it.taste.productId==productId&&it.holdingTime > 0
-            }.minByOrNull { it.holdingTime }
+        val targetKaoPan: KaoPan? = if (config.modeType == 1 || config.transitionMode == 1) {
+            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList).filter {
+                it.isHasSausage &&
+                    it.taste.tasteCode == tasteCode &&
+                    it.taste.productId == productId &&
+                    it.holdingTime > 0
+            }.maxByOrNull { it.holdingTime }
+        } else {
+            TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter {
+                it.isHasSausage &&
+                    it.taste.tasteCode == tasteCode &&
+                    it.taste.productId == productId &&
+                    it.holdingTime > 0
+            }.maxByOrNull { it.holdingTime }
         }
 
-        
         if (targetKaoPan != null) {
-            // 取出烤肠
+            logD(
+                LOG_ALGORITHM,
+                "收到出货订单：口味=$tasteCode，商品=$productId，已调度托盘 ID=${targetKaoPan.id}，烤盘位=${targetKaoPan.positionSn}，holdingTime=${targetKaoPan.holdingTime}"
+            )
             return KaoChangOperate.takeSausageResult(targetKaoPan)
         } else {
-            logW(LOG_DEVICE, "没有找到可供售卖的烤肠")
+            logW(LOG_DEVICE, "收到出货订单失败：当前没有找到可售烤肠 [口味=$tasteCode, 商品=$productId]")
         }
         return KaoChangOperate.TakeSausageResult.ERROR
     }
+
     /**
-     * 重置烤盘
+     * 维护页批量重置烤盘。
+     * 所有有肠烤盘都会按“管理员指定丢弃”处理。
      */
     suspend fun resetKaoPan() {
-       val kaoPanList = KaoPanHelper.getKaoPanList()
-       //如果有烤肠就把烤肠废弃掉
-       for (kaoPan in kaoPanList){
-           if (kaoPan.isHasSausage){
-               KaoChangOperate.discardSausage(kaoPan)
-           }
-       }
+        val kaoPanList = KaoPanHelper.getKaoPanList()
+        val targetPositions = kaoPanList.filter { it.isHasSausage }.map { it.positionSn }
+        LogUtils.i("【维护操作】管理员触发批量丢弃重置烤盘，待处理烤盘=$targetPositions")
+        for (kaoPan in kaoPanList) {
+            if (kaoPan.isHasSausage) {
+                KaoChangOperate.discardSausage(
+                    kaoPan,
+                    source = "管理员指定",
+                    detail = "维护页批量重置烤盘"
+                )
+            }
+        }
     }
-
 
     /**
      * 停止服务
@@ -351,7 +365,7 @@ object KaoChangAlgorithm {
     fun stopServer() {
         isRunning = false
         modbusMonitorStarted = false
-        Log.d(TAG, "智能烤肠算法服务停止")
+        logD(LOG_ALGORITHM, "智能烤肠算法服务停止")
     }
 
     private fun startModbusStateMonitor() {
@@ -505,7 +519,7 @@ object KaoChangAlgorithm {
             return false
             
         } catch (e: Exception) {
-            Log.e(TAG, "时间格式解析错误: $e")
+            logW(LOG_ALGORITHM, "营业时间解析失败：$e")
             return false
         }
     }
@@ -540,6 +554,7 @@ object KaoChangAlgorithm {
         isEnabled = true
         AppConfig.getAppConfig().isEnable = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        logD(LOG_ALGORITHM, "维护操作：已开启烤制算法，modeType=${modeText(AppConfig.getAppConfig().modeType)}")
         //同步更新云端状态
         NetApi.updateDeviceInfo()
     }
@@ -548,6 +563,7 @@ object KaoChangAlgorithm {
         isEnabled = false
         AppConfig.getAppConfig().isEnable = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        logD(LOG_ALGORITHM, "维护操作：已关闭烤制算法")
         //同步更新云端状态
         NetApi.updateDeviceInfo()
     }

@@ -282,6 +282,16 @@ object KaoChangOperate {
         return seconds * 1000L
     }
 
+    private fun getBoxTasteLabel(kaoPanBox: KaoPanBox): String {
+        return kaoPanBox.tasteName?.takeIf { it.isNotBlank() } ?: "未知口味"
+    }
+
+    private fun getPanTasteLabel(kaoPan: KaoPan): String {
+        return kaoPan.taste.productName?.takeIf { it.isNotBlank() }
+            ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
+            ?: "未知口味"
+    }
+
     private fun getBoxToPlatformTimeoutMs(): Long {
         val seconds = AppConfig.getAppConfig().boxToPlatformTimeoutSeconds
             .takeIf { it > 0 }
@@ -296,36 +306,25 @@ object KaoChangOperate {
         return seconds * 1000L
     }
 
-    // modbus 地址
-    val modbus_address=1
-    //动作组地址
-    val action_address=200//动作组地址
-    val action_address_status=201//动作状态地址
-    val action_address_move=202//烤盘搬移
-    val action_address_move_result=203//烤盘搬移执行结果
+    // Modbus 设备地址与关键寄存器地址。
+    val modbus_address = 1
+    val action_address = 200
+    val action_address_status = 201
+    val action_address_move = 202
+    val action_address_move_result = 203
+    val action_address_shenjiatai = 206
+    val action_address_shoumaitai = 207
+    val action_address_1_temperature = 500
+    val action_address_2_temperature = 501
+    val action_address_3_temperature = 502
+    val action_address_1_temperature_write = 503
+    val action_address_2_temperature_write = 504
+    val action_address_3_temperature_write = 505
 
-    val action_address_shenjiatai=206//烤肠在升降台位置 H（无符号8位整型，0为视觉未识别到烤肠，1为视觉识别到烤肠）L（无符号8位整型，0-255表示夹爪中心应当运动到的位置的mm数）
-    val action_address_shoumaitai=207//用户是否取走烤肠（无符号16位整型，0为视觉未识别到烤肠，1为视觉识别到烤肠）
-    //1区温度读取
-    val action_address_1_temperature=500
-    //2区温度读取
-    val action_address_2_temperature=501
-    //3区温度读取
-    val action_address_3_temperature=502
-    //1区温度写入
-    val action_address_1_temperature_write=503
-    //2区温度写入
-    val action_address_2_temperature_write=504
-    //3区温度写入
-    val action_address_3_temperature_write=505
+    val keepWarmTemperature = 90
+    val heatingTemperature = 150
 
-    //保温温度
-    val keepWarmTemperature=90 //150 // 60
-    //加热温度
-    val heatingTemperature=150 //250 //160
-
-    //debug
-    val action_debug=255
+    val action_debug = 255
 
     /**
      * 仅按当前和嵌入式确认的 201 协议语义解析动作状态。
@@ -495,18 +494,18 @@ object KaoChangOperate {
         }
 
         var appState = AppConfig.getAppConfig().moveStatus
-        // 运动状态 为0是说明机械臂闲置
         while (appState!=0) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
             logD(LOG_SUPPLEMENT, "补充烤肠，等待售卖完成：state=$appState")
         }
         waitForPostSellSupplementGuardIfNeeded()
-        // 机械臂状态改为补肠
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
-        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：开始")
+        val sausageName = getBoxTasteLabel(kaoPanBox)
+        logD(LOG_SUPPLEMENT, "开始补肠：目标烤盘=${kaoPan.positionSn}，来源烤肠箱=${kaoPanBox.positionSn}，口味=$sausageName，当前箱库存=${kaoPanBox.num}")
+        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
         CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
         val result = executeActionWithRetry(
             actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
@@ -520,14 +519,14 @@ object KaoChangOperate {
             markActionFailure("烤肠箱${kaoPanBox.positionSn}到平台", result)
             return false
         }
-        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：箱到平台完成")
+        logD(LOG_SUPPLEMENT, "补肠中间态：烤肠($sausageName)已从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
         kaoPanBox.cmdStatusTake = 0
 
-        //todo 调用视觉算法，写入到寄存器，检测平台是否有烤肠，并且标识烤肠位置。
         val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
         if (sausageInfo==null){
             writeSingleRegister2(action_address_shenjiatai,0)
             //未检测到烤肠，报错
+            logE(LOG_SUPPLEMENT, "补肠失败：机械臂已将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台，但视觉未识别到烤肠，已置 errorStatus=1")
             AppConfig.getAppConfig().errorStatus=1//未识别到烤肠报错
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -538,22 +537,20 @@ object KaoChangOperate {
             return false
         }else{
             var value_y=sausageInfo.worldY.toInt()
-            LogUtils.d("KaoChangAlgorithm", "-------坐标--前value-----${value_y}")
+            logD(LOG_SUPPLEMENT, "升降台识别原始坐标：worldY=$value_y")
             if(value_y < 60){
                 value_y=60
             }
-            LogUtils.d("KaoChangAlgorithm", "-------坐标--后value-------${value_y}")
+            logD(LOG_SUPPLEMENT, "升降台识别坐标修正后：worldY=$value_y")
             var value = (1 shl 8) or value_y
-            LogUtils.d("KaoChangAlgorithm", "-------实际value-------${value}")
+            logD(LOG_SUPPLEMENT, "升降台识别寄存器写入值：206=$value")
 
             writeSingleRegister2(action_address_shenjiatai,value)
+            logD(LOG_SUPPLEMENT, "补肠识别成功：升降台检测到烤肠($sausageName)，世界坐标Y=${sausageInfo.worldY}，寄存器206写入=$value")
         }
-//        val value_y = 60
-//        var value = (1 shl 8) or value_y
-//        writeSingleRegister2(action_address_shenjiatai,value)
 
-        //从平台把烤肠搬运到烤盘
         delay(200)
+        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从升降台搬运到烤盘${kaoPan.positionSn}")
         val result2 = executeActionWithRetry(
             actionName = "平台到烤盘${kaoPan.positionSn}"
         ) {
@@ -564,7 +561,7 @@ object KaoChangOperate {
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             markActionFailure("平台到烤盘${kaoPan.positionSn}", result2)
         }
-        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：平台到烤盘完成 result=$result2")
+        logD(LOG_SUPPLEMENT, "补肠完成态：烤肠($sausageName)已从升降台搬运到烤盘${kaoPan.positionSn}，result=$result2")
 
         kaoPan.cmdStatusMove = if (result2 == ActionExecutionResult.SUCCESS) 0 else 2
         val moveSuccess = result == ActionExecutionResult.SUCCESS && result2 == ActionExecutionResult.SUCCESS
@@ -585,7 +582,6 @@ object KaoChangOperate {
             logE(LOG_SUPPLEMENT, "补肠失败，未更新烤盘状态和库存：panId=${kaoPan.id}, boxPosition=${kaoPanBox.positionSn}, result=$result, result2=$result2")
         }
 
-        // 修改运动状态为待机
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
@@ -616,23 +612,23 @@ object KaoChangOperate {
      * - 203 读失败
      * - 203 返回非 0/1 的明确错误
      */
-    suspend fun moveKaoPanToKaoPan(kaoPan: KaoPan, newKaoPan: KaoPan):Boolean  {
-        // 计算16位值：前8位为起始位置，后8位为目标位置
+    suspend fun moveKaoPanToKaoPan(
+        kaoPan: KaoPan,
+        newKaoPan: KaoPan,
+        targetHoldingTime: Long = kaoPan.holdingTime
+    ):Boolean  {
         val sourcePosition = kaoPan.positionSn
         val targetPosition = newKaoPan.positionSn
-        //相同位置不需要移动
         if (sourcePosition==targetPosition){
             return true
         }
 
         var appState = AppConfig.getAppConfig().moveStatus
-        // 运动状态 为0是说明机械臂闲置
         while (appState!=0) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
-            LogUtils.d("KaoChangAlgorithm", "搬移烤肠 等待售卖完成 ${appState}")
+            logD(LOG_ACTION, "烤盘搬移前等待售卖收尾：moveStatus=$appState")
         }
-        // 机械臂状态改为搬运
         AppConfig.getAppConfig().moveStatus = 3
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
@@ -643,7 +639,6 @@ object KaoChangOperate {
             return false
         }
 
-        // 将起始位置左移8位，然后与目标位置进行或运算
         val value = (sourcePosition shl 8) or targetPosition
         val writeMoveResult = writeSingleRegister2(action_address_move,value)
         if (!writeMoveResult.isSuccess) {
@@ -679,7 +674,6 @@ object KaoChangOperate {
         }
         kaoPan.cmdStatusMove=result
         if (result==0){
-            //移动新的位置
             newKaoPan.isHasSausage=true
             newKaoPan.isHasGrilling=false
             newKaoPan.taste.apply {
@@ -687,9 +681,8 @@ object KaoChangOperate {
                 productName=kaoPan.taste.tasteName
                 tasteName=kaoPan.taste.tasteName
             }
-            newKaoPan.holdingTime= kaoPan.holdingTime //System.currentTimeMillis() //kaoPan.holdingTime
+            newKaoPan.holdingTime= targetHoldingTime
             newKaoPan.status= 2 //kaoPan.status
-            //清空旧位置信息
             kaoPan.isHasSausage=false
             kaoPan.startTime = 0
             kaoPan.status=0
@@ -703,7 +696,7 @@ object KaoChangOperate {
 
         while (AppConfig.getAppConfig().onlineStatus == 4) {
             delay(5000L)
-            LogUtils.d("KaoChangAlgorithm", "等待烤肠售卖结束，搬移下一根烤肠")
+            logD(LOG_ACTION, "等待当前出餐结束后再继续烤盘搬移")
         }
         return result==0
     }   
@@ -713,7 +706,9 @@ object KaoChangOperate {
      * 这条路径不参与订单履约状态机，但故障时也会进入维护中并补齐 errorStatus。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
+        val sausageName = getPanTasteLabel(kaoPan)
         CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
+        logD(LOG_ACTION, "维护操作：机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
         val result = executeActionWithRetry(
             actionName = "旧手动取肠-烤盘${kaoPan.positionSn}到售卖口",
             runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
@@ -807,7 +802,9 @@ object KaoChangOperate {
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
     suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
+        val sausageName = getPanTasteLabel(kaoPan)
         CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
+        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
         val result = executeActionWithRetry(
             actionName = "烤盘${kaoPan.positionSn}到售卖口",
             runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
@@ -866,7 +863,11 @@ object KaoChangOperate {
      * 过保丢弃：把烤盘中超过保温时长的烤肠丢弃。
      * 这条链路也按 201=忙时重试、通信失败/超时才判故障。
      */
-    suspend fun discardSausage(kaoPan: KaoPan) :Boolean {
+    suspend fun discardSausage(
+        kaoPan: KaoPan,
+        source: String = "过保到期",
+        detail: String? = null
+    ) :Boolean {
 
         var appState = AppConfig.getAppConfig().moveStatus
         // 运动状态 为0是说明机械臂闲置
@@ -879,15 +880,24 @@ object KaoChangOperate {
         AppConfig.getAppConfig().moveStatus = 4
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
+        val tasteLabel = getPanTasteLabel(kaoPan)
+        val sourceDetail = detail?.takeIf { it.isNotBlank() } ?: "未补充详细原因"
+        LogUtils.i(
+            "【丢弃流程】开始丢弃：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail"
+        )
+
         val result = executeActionWithRetry(
-            actionName = "烤盘${kaoPan.positionSn}过保丢弃",
+            actionName = "烤盘${kaoPan.positionSn}${source}丢弃",
             runningPollDelayMs = 2000L,
             runningTimeoutMs = 120_000L
         ) {
             writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
         }
         if(result != ActionExecutionResult.SUCCESS){
-            markActionFailure("烤盘${kaoPan.positionSn}过保丢弃", result)
+            LogUtils.e(
+                "【丢弃流程】丢弃失败：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，结果=$result，详情=$sourceDetail"
+            )
+            markActionFailure("烤盘${kaoPan.positionSn}${source}丢弃", result)
         }
         kaoPan.cmdStatusDiscard=if (result == ActionExecutionResult.SUCCESS) 0 else 2
         if (result==ActionExecutionResult.SUCCESS){
@@ -895,6 +905,9 @@ object KaoChangOperate {
             kaoPan.holdingTime=0
             kaoPan.startTime=0
             kaoPan.status=0
+            LogUtils.i(
+                "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail"
+            )
         }
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())

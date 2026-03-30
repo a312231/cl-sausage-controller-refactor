@@ -77,9 +77,11 @@ class MaintenanceBoxFragment : Fragment() {
      */
     private fun setupButtons() {
         binding.btnMoveToKaopan.setOnClickListener {
+            LogUtils.d("[维护操作] 点击烤肠箱搬运到烤盘")
             moveOvenToKaoPan()
         }
         binding.btnClearAll.setOnClickListener {
+            LogUtils.d("[维护操作] 点击清空选中烤肠箱")
             clearOven()
         }
     }
@@ -111,6 +113,7 @@ class MaintenanceBoxFragment : Fragment() {
                 val numberPicker = dialog.getCustomView().findViewById<android.widget.NumberPicker>(R.id.number_picker)
                 val targetPosition: KaoPan = KaoPanHelper.getKaoPanList().first { it.positionSn == numberPicker.value }
                 val boxPosition:KaoPanBox = selectedBoxes[0]
+                LogUtils.d("[维护操作] 确认烤肠箱搬运：箱位=${boxPosition.positionSn}，口味=${boxPosition.tasteName ?: "未知口味"}，目标烤盘=${targetPosition.positionSn}")
                 showLoadingExt("移动中...")
                 GlobalScope.launch(Dispatchers.IO) {
                     // 将选中的烤肠箱移动到目标烤盘位置
@@ -123,8 +126,10 @@ class MaintenanceBoxFragment : Fragment() {
                         dismissLoadingExt()
                         //关闭摄像头
                         if (result) {
+                            LogUtils.d("[维护操作] 烤肠箱搬运完成：箱位=${boxPosition.positionSn} -> 烤盘${targetPosition.positionSn}")
                             ToastUtils.showShort("移动成功")
                         } else {
+                            LogUtils.e("[维护操作] 烤肠箱搬运失败：箱位=${boxPosition.positionSn} -> 烤盘${targetPosition.positionSn}")
                             ToastUtils.showShort("移动失败")
                         }
                     }
@@ -152,6 +157,7 @@ class MaintenanceBoxFragment : Fragment() {
             if (selectedBoxes.isEmpty()) {
                 ToastUtils.showShort("请先选择需要清空的烤肠箱")
             } else {
+                LogUtils.d("[维护操作] 确认清空烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
                 showClearConfirmDialog(selectedBoxes)
             }
 
@@ -183,6 +189,7 @@ class MaintenanceBoxFragment : Fragment() {
                         if (json.getIntValue("code")==200){
                             KaoPanHelper.saveKaoPanBoxList( KaoPanHelper.getKaoPanBoxList())
                             kaoPanBoxAdapter.notifyDataSetChanged()
+                            LogUtils.d("[维护操作] 已清空烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
                             ToastUtils.showShort("已清空烤肠箱")
                             dialog.dismiss()
                         }else{
@@ -239,6 +246,7 @@ class MaintenanceBoxFragment : Fragment() {
                 ToastUtils.showShort("请先选择需要加满的烤盘箱")
                 return@setOnClickListener
             } else {
+                LogUtils.d("[维护操作] 点击加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
                 showTasteSelectDialog(selectedBoxes)
             }
         }
@@ -295,6 +303,7 @@ class MaintenanceBoxFragment : Fragment() {
             val selectedView = radioGroup.findViewById<RadioButton>(selectedId)
             val selectedIndex = radioGroup.indexOfChild(selectedView)
             val selectedTaste = tastes[selectedIndex]
+            LogUtils.d("[维护操作] 准备加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，目标库存=10")
             
             // 更新选中的烤盘箱
             for (box in selectedBoxes) {
@@ -313,6 +322,7 @@ class MaintenanceBoxFragment : Fragment() {
                     if (json.getIntValue("code")==200){
                         KaoPanHelper.saveKaoPanBoxList( KaoPanHelper.getKaoPanBoxList())
                         kaoPanBoxAdapter.notifyDataSetChanged()
+                        LogUtils.d("[维护操作] 已加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，库存=10")
                         ToastUtils.showShort("已成功加满选中的烤盘箱")
                         dialog.dismiss()
                     }else{

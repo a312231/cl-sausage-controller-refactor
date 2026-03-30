@@ -14,6 +14,20 @@ import java.util.concurrent.Executors
 
 object LogUtils {
     private const val TAG = "KaoChang"
+    private val FILE_LOG_KEYWORDS = listOf(
+        "【订单防漏跟踪】",
+        "【订单流转】",
+        "【履约完结】",
+        "【维护操作】",
+        "【云端下控更新】",
+        "【丢弃流程】",
+        "【并发切换】",
+        "【动作执行】",
+        "【售卖口监控】",
+        "【窗口收尾】",
+        "【补肠流程】",
+        "【设备状态】"
+    )
 
     const val LEVEL_VERBOSE = 1
     const val LEVEL_DEBUG = 2
@@ -99,6 +113,7 @@ object LogUtils {
 
     private fun writeLogToFile(context: Context, level: String, tag: String, msg: String, tr: Throwable? = null) {
         if (!writeToFile) return
+        if (!shouldWriteToFile(level, msg, tr)) return
 
         logExecutor.execute {
             try {
@@ -124,6 +139,16 @@ object LogUtils {
                 Log.e(TAG, "Failed to write log to file", e)
             }
         }
+    }
+
+    private fun shouldWriteToFile(level: String, msg: String, tr: Throwable?): Boolean {
+        if (tr != null) {
+            return true
+        }
+        if (level == "W" || level == "E") {
+            return true
+        }
+        return FILE_LOG_KEYWORDS.any { keyword -> msg.contains(keyword) }
     }
 
     fun getLogDirectory(context: Context): File = getLogDir(context)
