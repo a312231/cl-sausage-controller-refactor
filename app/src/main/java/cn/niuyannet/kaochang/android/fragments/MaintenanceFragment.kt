@@ -67,9 +67,10 @@ class MaintenanceFragment : Fragment() {
 
     private fun clearAvailableAfterManualPanReset(reason: String) {
         val config = AppConfig.getAppConfig()
-        if (config.available != 0L) {
+        if (config.available != 0L || config.availableCountdownLatched != 0) {
             LogUtils.i("【维护操作】$reason，同步清零二维码页预计烤制时间：available=${config.available}->0")
             config.available = 0L
+            config.availableCountdownLatched = 0
             AppConfig.saveAppConfig(config)
             DataManagementAPI.uploadDeviceInfo()
         }

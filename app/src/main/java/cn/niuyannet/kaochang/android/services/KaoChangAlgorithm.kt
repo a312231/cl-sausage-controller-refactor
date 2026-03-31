@@ -117,32 +117,61 @@ object KaoChangAlgorithm {
         }
     }
 
+    private fun updateAvailableState(
+        config: AppConfigBean,
+        newAvailable: Long,
+        newLatched: Int,
+        reason: String
+    ) {
+        if (config.available == newAvailable && config.availableCountdownLatched == newLatched) {
+            return
+        }
+        logD(
+            LOG_ALGORITHM,
+            "更新二维码预计时间：reason=$reason, available=${config.available}->$newAvailable, " +
+                "availableCountdownLatched=${config.availableCountdownLatched}->$newLatched"
+        )
+        config.available = newAvailable
+        config.availableCountdownLatched = newLatched
+        AppConfig.saveAppConfig(config)
+        NetApi.updateDeviceInfo()
+    }
+
+    private fun calcMinRemainHeatTime(list: List<KaoPan>): Long? {
+        val now = System.currentTimeMillis()
+        return list
+            .asSequence()
+            .filter { it.isHasSausage && it.startTime > 0 }
+            .map { kaoPan ->
+                val heatTime = now - kaoPan.startTime
+                kaoPan.bakingTime - heatTime
+            }
+            .filter { it > 0 }
+            .minOrNull()
+    }
+
     /**
      * 计算二维码页显示的“预计烤制时间”。
-     * 规则：
-     * 1. 当前模式下只要已有可售烤肠，available 直接清零；
-     * 2. 没有可售烤肠时，取下一根最早可售烤肠的剩余加热时间。
+     * 展示规则：
+     * 1. 只显示当前这一批“第一根烤好还要多久”；
+     * 2. 第一根一旦变为可售，倒计时立即清零，并锁定为“不继续滚动显示第二根/第三根”；
+     * 3. 只有当前这一批相关烤盘全部清空后，才允许下一批重新显示倒计时。
      */
     private fun checkAvailable(config: AppConfigBean, kaoPanList: List<KaoPan>) {
         val list_1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
         val list_1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
-
         val list_13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
         val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
 
-        val sellableCount = if (config.modeType == 1) {
-            list_1_9.count { it.isHasSausage && it.holdingTime > 0 }
-        } else {
-            list_1_21.count { it.isHasSausage && it.holdingTime > 0 }
-        }
+        val isLowOrTransition = config.modeType == 1 || config.transitionMode == 1
+        val sellArea = if (isLowOrTransition) list_1_9 else list_1_21
+        val heatArea = if (isLowOrTransition) list_13_18 else list_25_33
 
-        if (sellableCount > 0) {
-            if (config.available > 0) {
-                logD(LOG_ALGORITHM, "检查烤盘可售状态：当前已有可售烤肠，清空预计时间 available=${config.available}")
-                config.available = 0L
-                AppConfig.saveAppConfig(config)
-                NetApi.updateDeviceInfo()
-            }
+        val sellableCount = sellArea.count { it.isHasSausage && it.holdingTime > 0 }
+        val totalTrackedCount = sellArea.count { it.isHasSausage } + heatArea.count { it.isHasSausage }
+
+        if (totalTrackedCount == 0) {
+            updateAvailableState(config, 0L, 0, "当前批次相关烤盘已全部清空")
             return
         }
 
@@ -154,97 +183,46 @@ object KaoChangAlgorithm {
         val k_1_21 = list_1_21.count { it.isHasSausage && it.startTime > 0 }
         val h_25_33 = list_25_33.filter { it.isHasSausage }.size
 
+        if (sellableCount > 0) {
+            updateAvailableState(config, 0L, 1, "当前批次第一根已可售")
+            return
+        }
+
+        if (config.availableCountdownLatched == 1) {
+            updateAvailableState(config, 0L, 1, "当前批次第一根已展示完成，不继续滚动到下一根")
+            return
+        }
+
         if (h_1_9 == 0 && h_13_18 > 0) {
-
-            val now = System.currentTimeMillis()
-
-            val minRemainHeatTime: Long? = list_13_18
-                .asSequence()
-                .filter { it.isHasSausage && it.startTime > 0 }
-                .map { kaoPan ->
-                    val heatTime = now - kaoPan.startTime
-                    kaoPan.bakingTime - heatTime
-                }
-                .filter { it > 0 }
-                .minOrNull()
-
-            if (minRemainHeatTime != null) {
-                config.available = minRemainHeatTime
-            } else {
-                config.available = 0L
-            }
-
-            AppConfig.saveAppConfig(config)
-            NetApi.updateDeviceInfo()
+            updateAvailableState(
+                config,
+                calcMinRemainHeatTime(list_13_18) ?: 0L,
+                0,
+                "前区无肠，显示补热区当前批次第一根预计完成时间"
+            )
         } else if (h_1_21 == 0 && h_25_33 > 0) {
-            val now = System.currentTimeMillis()
-
-            val minRemainHeatTime: Long? = list_25_33
-                .asSequence()
-                .filter { it.isHasSausage && it.startTime > 0 }
-                .map { kaoPan ->
-                    val heatTime = now - kaoPan.startTime
-                    kaoPan.bakingTime - heatTime
-                }
-                .filter { it > 0 }
-                .minOrNull()
-
-            if (minRemainHeatTime != null) {
-                config.available = minRemainHeatTime
-            } else {
-                config.available = 0L
-            }
-
-            AppConfig.saveAppConfig(config)
-            NetApi.updateDeviceInfo()
+            updateAvailableState(
+                config,
+                calcMinRemainHeatTime(list_25_33) ?: 0L,
+                0,
+                "前区无肠，显示高并发补热区当前批次第一根预计完成时间"
+            )
         } else if (k_1_21 == list_1_21.size) {
-            val now = System.currentTimeMillis()
-
-            val minRemainHeatTime: Long? = list_1_21
-                .asSequence()
-                .filter { it.isHasSausage && it.startTime > 0 }
-                .map { kaoPan ->
-                    val heatTime = now - kaoPan.startTime
-                    kaoPan.bakingTime - heatTime
-                }
-                .filter { it > 0 }
-                .minOrNull()
-
-            if (minRemainHeatTime != null) {
-                config.available = minRemainHeatTime
-            } else {
-                config.available = 0L
-            }
-
-            AppConfig.saveAppConfig(config)
-            NetApi.updateDeviceInfo()
+            updateAvailableState(
+                config,
+                calcMinRemainHeatTime(list_1_21) ?: 0L,
+                0,
+                "前区整批都在烤制，显示当前批次第一根预计完成时间"
+            )
         } else if (k_1_9 == list_1_9.size) {
-
-            val now = System.currentTimeMillis()
-
-            val minRemainHeatTime: Long? = list_1_9
-                .asSequence()
-                .filter { it.isHasSausage && it.startTime > 0 }
-                .map { kaoPan ->
-                    val heatTime = now - kaoPan.startTime
-                    kaoPan.bakingTime - heatTime
-                }
-                .filter { it > 0 }
-                .minOrNull()
-
-            if (minRemainHeatTime != null) {
-                config.available = minRemainHeatTime
-            } else {
-                config.available = 0L
-            }
-
-            AppConfig.saveAppConfig(config)
-            NetApi.updateDeviceInfo()
-        } else if (config.available > 0) {
-            logD(LOG_ALGORITHM, "检查烤盘可售状态：available=${config.available}")
-            config.available = 0
-            AppConfig.saveAppConfig(config)
-            NetApi.updateDeviceInfo()
+            updateAvailableState(
+                config,
+                calcMinRemainHeatTime(list_1_9) ?: 0L,
+                0,
+                "前区整批都在烤制，显示当前批次第一根预计完成时间"
+            )
+        } else {
+            updateAvailableState(config, 0L, 0, "当前没有需要展示的第一根预计时间")
         }
     }
 
