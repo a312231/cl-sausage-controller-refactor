@@ -42,9 +42,14 @@ class MaintenanceFragment : Fragment() {
     private val status = AtomicBoolean(true)
 
     private var isAlgorithmCoolingDown = false
+    private var ignoreAlgorithmSwitchChange = false
     private var algorithmCooldownJob: Job? = null
     private var clearPanCooldownJob: Job? = null
     private var resetPanCooldownJob: Job? = null
+
+    companion object {
+        private const val MAINTENANCE_ACTION_COOLDOWN_SECONDS = 15
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -82,6 +87,48 @@ class MaintenanceFragment : Fragment() {
         binding.swKzAlgorithm.isEnabled = enabled
     }
 
+    private fun setMaintenanceButtonsEnabled(enabled: Boolean) {
+        binding.btnCz.isEnabled = enabled
+        binding.btnClearAll.isEnabled = enabled
+    }
+
+    private fun setAlgorithmSwitchCheckedSilently(checked: Boolean) {
+        ignoreAlgorithmSwitchChange = true
+        binding.swKzAlgorithm.isChecked = checked
+        ignoreAlgorithmSwitchChange = false
+    }
+
+    private fun disableAlgorithmForMaintenance(reason: String) {
+        if (KaoChangAlgorithm.isEnabled || AppConfig.getAppConfig().isEnable == 1) {
+            LogUtils.i("【维护操作】$reason，立即关闭烤制算法并保持关闭，防止继续自动补肠")
+            KaoChangAlgorithm.disableRoastAlgorithm()
+        } else {
+            LogUtils.i("【维护操作】$reason，烤制算法当前已关闭")
+        }
+        setAlgorithmSwitchCheckedSilently(false)
+    }
+
+    private fun finishMaintenanceAction() {
+        setAlgorithmSwitchCheckedSilently(false)
+        binding.tvCooldownHint.text = ""
+    }
+
+    private fun startMaintenanceCooldown(
+        target: String,
+        onFinish: () -> Unit
+    ): Job {
+        return startCountdown(
+            seconds = MAINTENANCE_ACTION_COOLDOWN_SECONDS,
+            onTick = { remaining ->
+                when (target) {
+                    "clear" -> binding.btnClearAll.text = "冷却${String.format("%2d", remaining)}秒"
+                    "reset" -> binding.btnCz.text = "冷却${String.format("%2d", remaining)}秒"
+                }
+            },
+            onFinish = onFinish
+        )
+    }
+
     private suspend fun waitUntilMachineIdle(waitingText: String, update: (String) -> Unit) {
         while (AppConfig.getAppConfig().moveStatus != 0) {
             update(waitingText)
@@ -106,38 +153,38 @@ class MaintenanceFragment : Fragment() {
     }
 
     private fun setupButtons() {
-        binding.swKzAlgorithm.isChecked = KaoChangAlgorithm.isEnabled
+        setAlgorithmSwitchCheckedSilently(KaoChangAlgorithm.isEnabled)
 
         binding.btnClearAll.setOnClickListener {
             if (clearPanCooldownJob?.isActive == true) return@setOnClickListener
-            LogUtils.d("【维护操作】点击清空烤盘，准备停止烤制算法并清空全部烤盘")
 
-            val width = binding.btnClearAll.width
-            binding.btnClearAll.minWidth = width
-            binding.btnClearAll.maxWidth = width
+            LogUtils.d("【维护操作】点击清空烤盘，准备立即关闭烤制算法并清空全部烤盘")
             setMaintenanceActionButtonsEnabled(false)
+            binding.tvCooldownHint.text = "正在清空烤盘"
+            disableAlgorithmForMaintenance("点击清空烤盘")
 
-            KaoChangAlgorithm.stopServer()
-            lifecycleScope.launch {
-                waitUntilMachineIdle("等待完成") { binding.btnClearAll.text = it }
-                delay(10_000L)
+            clearPanCooldownJob = lifecycleScope.launch {
+                waitUntilMachineIdle("等待机械动作完成后清空烤盘") {
+                    binding.tvCooldownHint.text = it
+                }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
                 clearAvailableAfterManualPanReset("点击清空烤盘")
-                KaoChangAlgorithm.runServer()
-            }
-
-            clearPanCooldownJob = startCountdown(
-                seconds = 15,
-                onTick = { binding.btnClearAll.text = "冷却${String.format("%2d", it)}秒" },
-                onFinish = {
+                LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
+                finishMaintenanceAction()
+                clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
                     setMaintenanceActionButtonsEnabled(true)
                     binding.btnClearAll.text = "清空烤盘"
+                    binding.tvCooldownHint.text = ""
+                    clearPanCooldownJob = null
                 }
-            )
+            }
         }
 
         binding.swKzAlgorithm.setOnCheckedChangeListener { buttonView, isChecked ->
+            if (ignoreAlgorithmSwitchChange) {
+                return@setOnCheckedChangeListener
+            }
             if (isAlgorithmCoolingDown) {
                 buttonView.isChecked = !isChecked
                 return@setOnCheckedChangeListener
@@ -151,20 +198,25 @@ class MaintenanceFragment : Fragment() {
 
             isAlgorithmCoolingDown = true
             buttonView.isEnabled = false
+            setMaintenanceButtonsEnabled(false)
             algorithmCooldownJob?.cancel()
             algorithmCooldownJob = lifecycleScope.launch {
-                waitUntilMachineIdle("等待完成") { binding.tvCooldownHint.text = it }
+                waitUntilMachineIdle("等待机械动作完成") { binding.tvCooldownHint.text = it }
                 var remaining = 10
                 while (remaining > 0) {
                     binding.tvCooldownHint.text = "冷却 ${String.format("%2d", remaining)} 秒"
                     delay(1_000L)
                     remaining--
                 }
-                binding.tvCooldownHint.text = "冷却完成"
+                binding.tvCooldownHint.text = ""
                 buttonView.isEnabled = true
                 isAlgorithmCoolingDown = false
-                binding.btnCz.isEnabled = !isChecked
-                binding.btnClearAll.isEnabled = !isChecked
+                if (clearPanCooldownJob?.isActive != true) {
+                    binding.btnClearAll.isEnabled = true
+                }
+                if (resetPanCooldownJob?.isActive != true) {
+                    binding.btnCz.isEnabled = true
+                }
             }
         }
     }
@@ -181,32 +233,31 @@ class MaintenanceFragment : Fragment() {
 
         binding.btnCz.setOnClickListener {
             if (resetPanCooldownJob?.isActive == true) return@setOnClickListener
-            LogUtils.d("【维护操作】点击丢弃所有烤肠并重置烤盘，准备停止烤制算法并重置烤盘状态")
 
-            val width = binding.btnCz.width
-            binding.btnCz.minWidth = width
-            binding.btnCz.maxWidth = width
+            LogUtils.d("【维护操作】点击丢弃所有烤肠并重置烤盘，准备立即关闭烤制算法并重置烤盘状态")
             setMaintenanceActionButtonsEnabled(false)
+            binding.tvCooldownHint.text = "正在丢弃并重置烤盘"
+            disableAlgorithmForMaintenance("点击丢弃所有烤肠并重置烤盘")
 
-            KaoChangAlgorithm.stopServer()
-            lifecycleScope.launch {
-                waitUntilMachineIdle("请等待上位机动作完成") { binding.btnCz.text = it }
-                KaoChangAlgorithm.resetKaoPan()
-                delay(10_000L)
+            resetPanCooldownJob = lifecycleScope.launch {
+                waitUntilMachineIdle("等待机械动作完成后重置烤盘") {
+                    binding.tvCooldownHint.text = it
+                }
+                KaoChangAlgorithm.resetKaoPan { current, total, _ ->
+                    binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
+                }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
                 clearAvailableAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
-                KaoChangAlgorithm.runServer()
-            }
-
-            resetPanCooldownJob = startCountdown(
-                seconds = 15,
-                onTick = { binding.btnCz.text = "冷却${String.format("%2d", it)}秒" },
-                onFinish = {
+                LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
+                finishMaintenanceAction()
+                resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {
                     setMaintenanceActionButtonsEnabled(true)
                     binding.btnCz.text = "丢弃所有烤肠重置烤盘"
+                    binding.tvCooldownHint.text = ""
+                    resetPanCooldownJob = null
                 }
-            )
+            }
         }
 
         binding.btnUpdate.setOnClickListener {

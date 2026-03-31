@@ -294,18 +294,18 @@ object KaoChangAlgorithm {
      * 维护页批量重置烤盘。
      * 所有有肠烤盘都会按“管理员指定丢弃”处理。
      */
-    suspend fun resetKaoPan() {
+    suspend fun resetKaoPan(progressCallback: ((current: Int, total: Int, kaoPan: KaoPan) -> Unit)? = null) {
         val kaoPanList = KaoPanHelper.getKaoPanList()
-        val targetPositions = kaoPanList.filter { it.isHasSausage }.map { it.positionSn }
+        val targetPans = kaoPanList.filter { it.isHasSausage }
+        val targetPositions = targetPans.map { it.positionSn }
         LogUtils.i("【维护操作】管理员触发批量丢弃重置烤盘，待处理烤盘=$targetPositions")
-        for (kaoPan in kaoPanList) {
-            if (kaoPan.isHasSausage) {
-                KaoChangOperate.discardSausage(
-                    kaoPan,
-                    source = "管理员指定",
-                    detail = "维护页批量重置烤盘"
-                )
-            }
+        targetPans.forEachIndexed { index, kaoPan ->
+            progressCallback?.invoke(index + 1, targetPans.size, kaoPan)
+            KaoChangOperate.discardSausage(
+                kaoPan,
+                source = "管理员指定",
+                detail = "维护页批量重置烤盘"
+            )
         }
     }
 
