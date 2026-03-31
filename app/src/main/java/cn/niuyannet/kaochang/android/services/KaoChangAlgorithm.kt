@@ -169,19 +169,12 @@ object KaoChangAlgorithm {
 
         val sellableCount = sellArea.count { it.isHasSausage && it.holdingTime > 0 }
         val totalTrackedCount = sellArea.count { it.isHasSausage } + heatArea.count { it.isHasSausage }
+        val trackedHeatingArea = (sellArea + heatArea).filter { it.isHasSausage && it.startTime > 0 }
 
         if (totalTrackedCount == 0) {
             updateAvailableState(config, 0L, 0, "当前批次相关烤盘已全部清空")
             return
         }
-
-        val h_1_9 = list_1_9.count { it.isHasSausage }
-        val k_1_9 = list_1_9.count { it.isHasSausage && it.startTime > 0 }
-        val h_13_18 = list_13_18.filter { it.isHasSausage }.size
-
-        val h_1_21 = list_1_21.count { it.isHasSausage }
-        val k_1_21 = list_1_21.count { it.isHasSausage && it.startTime > 0 }
-        val h_25_33 = list_25_33.filter { it.isHasSausage }.size
 
         if (sellableCount > 0) {
             updateAvailableState(config, 0L, 1, "当前批次第一根已可售")
@@ -193,33 +186,12 @@ object KaoChangAlgorithm {
             return
         }
 
-        if (h_1_9 == 0 && h_13_18 > 0) {
+        if (trackedHeatingArea.isNotEmpty()) {
             updateAvailableState(
                 config,
-                calcMinRemainHeatTime(list_13_18) ?: 0L,
+                calcMinRemainHeatTime(trackedHeatingArea) ?: 0L,
                 0,
-                "前区无肠，显示补热区当前批次第一根预计完成时间"
-            )
-        } else if (h_1_21 == 0 && h_25_33 > 0) {
-            updateAvailableState(
-                config,
-                calcMinRemainHeatTime(list_25_33) ?: 0L,
-                0,
-                "前区无肠，显示高并发补热区当前批次第一根预计完成时间"
-            )
-        } else if (k_1_21 == list_1_21.size) {
-            updateAvailableState(
-                config,
-                calcMinRemainHeatTime(list_1_21) ?: 0L,
-                0,
-                "前区整批都在烤制，显示当前批次第一根预计完成时间"
-            )
-        } else if (k_1_9 == list_1_9.size) {
-            updateAvailableState(
-                config,
-                calcMinRemainHeatTime(list_1_9) ?: 0L,
-                0,
-                "前区整批都在烤制，显示当前批次第一根预计完成时间"
+                "当前无可售烤肠，显示相关区域最近一根预计完成时间"
             )
         } else {
             updateAvailableState(config, 0L, 0, "当前没有需要展示的第一根预计时间")
