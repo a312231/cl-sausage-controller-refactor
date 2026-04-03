@@ -9,9 +9,6 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -19,11 +16,8 @@ import java.util.Locale
 /**
  * 高并发模式控制器。
  *
- * 主要职责：
- * 1. 维护高并发前区 1~21 的初始化、保温和过保丢弃；
- * 2. 维护补热区 25~33 的批量补肠与回补；
- * 3. 维护高转低过渡逻辑；
- * 4. 根据营业结束时间或补肠间隔判断是否进入高转低。
+ * 负责高并发前区 1~21 与补热区 25~33 的初始化、补肠、回补、过保丢弃，
+ * 同时根据营业结束时间和补肠节奏判断是否进入高转低过渡态。
  */
 object HighCurrentTrafficMode {
     private const val TAG = "KaoChangAlgorithm"
@@ -117,9 +111,8 @@ object HighCurrentTrafficMode {
                 checkHighHeatDiscard(list1_21)
                 checkSwitchToLow()
 
-                GlobalScope.launch(Dispatchers.Main) {
-                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-                }
+                // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
 
             1 -> {
@@ -247,6 +240,14 @@ object HighCurrentTrafficMode {
         list: List<KaoPan>,
         listBox: List<KaoPanBox>
     ) {
+        if (AppConfig.getAppConfig().onlineStatus == 4 || AppConfig.getAppConfig().moveStatus != 0) {
+            LogUtils.i(
+                TAG,
+                "【并发切换】高转低过渡等待设备空闲：onlineStatus=${AppConfig.getAppConfig().onlineStatus}，moveStatus=${AppConfig.getAppConfig().moveStatus}"
+            )
+            return
+        }
+
         checkHighHeatEnd(list, 3)
         checkHighHeatSausage(list)
 
@@ -260,10 +261,16 @@ object HighCurrentTrafficMode {
             val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
             val alreadySausages1_9 = list1_9.filter { it.isHasSausage }
             if (alreadySausages1_9.size < sausageCount) {
-                val remainingSausages = list10_21.filter { it.isHasSausage }
+                val remainingSausages = TrafficModeHelper.sortByHoldingAgeThenPosition(
+                    list10_21.filter { it.isHasSausage }
+                )
                 val remainingPositions1_9 = list1_9.filter { !it.isHasSausage }
                 remainingSausages.forEachIndexed { index, kaoPan ->
                     if (index < remainingPositions1_9.size) {
+                        LogUtils.i(
+                            TAG,
+                            "【并发切换】高转低收拢：烤盘${kaoPan.positionSn} -> 烤盘${remainingPositions1_9[index].positionSn}，holdingTime=${kaoPan.holdingTime}"
+                        )
                         KaoChangOperate.moveKaoPanToKaoPan(kaoPan, remainingPositions1_9[index])
                     }
                 }
@@ -404,9 +411,7 @@ object HighCurrentTrafficMode {
                 if (kaoPan.isHasSausage && kaoPan.taste != null) {
                     val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
                     val tasteCode = kaoPan.taste.tasteCode
-                    val targetPan = list1_21.find {
-                        !it.isHasSausage && it.taste?.tasteCode == tasteCode
-                    }
+                    val targetPan = TrafficModeHelper.selectFrontTargetPan(list1_21, tasteCode)
                     targetPan?.let {
                         KaoChangOperate.moveKaoPanToKaoPan(kaoPan, it)
                     }

@@ -27,10 +27,12 @@ object SendServerHelper {
      * 注意：这不是订单事件状态，订单事件状态由 publishServiceUpdateOrder(action=1) 负责。
      */
     fun publishServiceUpdateStatus(): Boolean {
+        val payload = JSON.parseObject(JSON.toJSONString(AppConfig.getAppConfig()))
+        payload["isEnable"] = AppConfig.getAlgorithmEnableFlag()
         return VMMqttHelper.publishService(
             TopicMessage().apply {
                 action = 2
-                content = JSON.toJSONString(AppConfig.getAppConfig())
+                content = JSON.toJSONString(payload)
             }
         )
     }

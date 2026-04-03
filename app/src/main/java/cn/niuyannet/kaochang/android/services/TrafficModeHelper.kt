@@ -9,6 +9,11 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
  */
 object TrafficModeHelper {
 
+    private val oldestHoldingFirstComparator = compareBy<KaoPan>(
+        { if (it.holdingTime > 0L) it.holdingTime else Long.MAX_VALUE },
+        { it.positionSn }
+    )
+
     /**
      * 按 positionSn 升序返回指定范围内的烤盘。
      * 例如：
@@ -19,6 +24,39 @@ object TrafficModeHelper {
      */
     fun getTrafficModePositions(start: Int, end: Int, list: List<KaoPan>): List<KaoPan> {
         return list.filter { it.positionSn in start..end }.sortedBy { it.positionSn }
+    }
+
+    fun selectSellCandidate(list: List<KaoPan>, tasteCode: String, productId: Int): KaoPan? {
+        return list
+            .filter {
+                it.isHasSausage &&
+                    it.taste.tasteCode == tasteCode &&
+                    it.taste.productId == productId &&
+                    it.holdingTime > 0L
+            }
+            .sortedWith(oldestHoldingFirstComparator)
+            .firstOrNull()
+    }
+
+    fun selectFrontTargetPan(
+        list: List<KaoPan>,
+        tasteCode: String?,
+        requireReserved: Boolean = false
+    ): KaoPan? {
+        if (tasteCode.isNullOrBlank()) {
+            return null
+        }
+        return list
+            .filter {
+                !it.isHasSausage &&
+                    it.taste?.tasteCode == tasteCode &&
+                    (!requireReserved || it.isHasGrilling)
+            }
+            .minByOrNull { it.positionSn }
+    }
+
+    fun sortByHoldingAgeThenPosition(list: List<KaoPan>): List<KaoPan> {
+        return list.sortedWith(oldestHoldingFirstComparator)
     }
 
     /**

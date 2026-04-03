@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.ui
 
+import android.R as AndroidR
 import android.os.Bundle
 import android.view.MenuItem
 import androidx.appcompat.app.AppCompatActivity
@@ -59,7 +60,7 @@ class LogDetailActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (item.itemId == android.R.id.home) {
+        if (item.itemId == AndroidR.id.home) {
             finish()
             return true
         }

@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.fragments
 
 import android.annotation.SuppressLint
+import android.R as AndroidR
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
@@ -416,7 +417,7 @@ class MaintenanceFragment : Fragment() {
                     text = if (isNormal) "状态：正常" else "状态：错误"
                     setTextColor(
                         resources.getColor(
-                            if (isNormal) android.R.color.holo_green_dark else android.R.color.holo_red_dark
+                            if (isNormal) AndroidR.color.holo_green_dark else AndroidR.color.holo_red_dark
                         )
                     )
                 }

@@ -1,25 +1,13 @@
 package cn.niuyannet.kaochang.android.ui
 
 import android.Manifest
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.CountDownTimer
-import android.util.Size
 import android.view.LayoutInflater
-import android.view.Surface
 import android.widget.TextView
 import android.widget.Toast
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.R
-import cn.niuyannet.kaochang.android.detecition.SauceDetectionLauncher
-import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
@@ -28,7 +16,6 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.customview.customView
 import com.alibaba.fastjson.JSON
@@ -37,7 +24,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ExecutionException
 
 /**
  * 订单履约流程。
@@ -140,7 +126,7 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
     override fun onResume() {
         super.onResume()
-        LogUtils.d("购买程序重新启动")
+        LogUtils.d("【订单流转】订单页重新进入前台")
         // 如果已经有权限，重新启动相机
 //        if (allPermissionsGranted() &&SauceDetectionUitls.cameraProvider == null) {
 //            LogUtils.d("order 重启相机")
@@ -189,13 +175,13 @@ abstract class OrderActivity: BaseSauceDetection() {
                 var appState = AppConfig.getAppConfig().moveStatus
                 while (appState != 0 && waited < maxWaitTime) {
                     delay(checkInterval)
-                    LogUtils.d("等待运动状态改变 ${appState}")
+                    LogUtils.d("【订单流转】等待机械臂空闲：currentMoveStatus=$appState, waitedMs=$waited")
                     appState = AppConfig.getAppConfig().moveStatus
                     waited += checkInterval
                 }
 
                 if (appState != 0) {
-                    LogUtils.d("等待机械臂空闲超时，放弃取肠")
+                    LogUtils.w("【订单流转】等待机械臂空闲超时，放弃本次取肠")
                 }
                 else {
                     // 机械臂状态改为取肠
@@ -290,7 +276,7 @@ abstract class OrderActivity: BaseSauceDetection() {
             )
             val currentMoveStatus = AppConfig.getAppConfig().moveStatus
             if (currentMoveStatus != 2) {
-                LogUtils.d("璁惧宸插湪澶瑰彇涓紝灞忚斀褰撳墠璁㈠崟璇锋眰")
+                LogUtils.w("【订单流转】设备当前正处于夹取中，拦截本次订单执行请求：orderNo=$orderNo, itemId=${item.id}")
                 return DeliveryResult(false, deliveredCount)
             }
 
@@ -347,13 +333,13 @@ abstract class OrderActivity: BaseSauceDetection() {
                             put("taste_code", item.tasteCode)
                             put("status", 5)
                         })
-                        LogUtils.e("出餐流程进入故障分支，已上报 status=5：orderNo=$orderNo, itemId=${item.id}")
+                        LogUtils.e("【订单流转】出餐流程进入故障分支，已上报 status=5：orderNo=$orderNo, itemId=${item.id}")
                         throw IllegalStateException("取肠失败，无法继续履约：orderNo=$orderNo, itemId=${item.id}")
                     }
                 }
             } catch (e: Exception) {
-                LogUtils.e("出餐失败，设备切换为维护中：${e.message}")
-                LogUtils.e("设备已上报故障状态，请现场检查下位机连接、售卖口识别和机械执行状态：${e.message}")
+                LogUtils.e("【订单流转】出餐失败，设备切换为维护中：${e.message}")
+                LogUtils.e("【订单流转】设备已上报故障状态，请现场检查下位机连接、售卖口识别和机械执行状态：${e.message}")
                 withContext(Dispatchers.Main) {
                     AppConfig.getAppConfig().errorStatus = 2
                     AppConfig.getAppConfig().onlineStatus = 3
@@ -365,8 +351,8 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
 
         if (deliveredCount < item.quantity) {
-            LogUtils.e("出餐数量不足，按故障处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            LogUtils.e("当前已停止继续履约，请现场检查售卖口与机械链路后再恢复：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("【订单流转】出餐数量不足，按故障处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("【订单流转】当前已停止继续履约，请现场检查售卖口与机械链路后再恢复：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
             SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
                 put("order_no", orderNo)
                 put("item_id", item.id)
@@ -394,20 +380,20 @@ abstract class OrderActivity: BaseSauceDetection() {
             return true
         }
 
-        LogUtils.w("出餐前检测到下位机连接断开，开始短时重连：orderNo=$orderNo, itemId=$itemId")
+        LogUtils.w("【订单流转】出餐前检测到下位机连接断开，开始短时重连：orderNo=$orderNo, itemId=$itemId")
         repeat(maxRetryCount) { index ->
             val attempt = index + 1
             VMModbusHelper.connectModbus { status ->
-                LogUtils.d("出餐前重连下位机结果：attempt=$attempt/$maxRetryCount, status=$status, orderNo=$orderNo, itemId=$itemId")
+                LogUtils.d("【订单流转】出餐前重连下位机结果：attempt=$attempt/$maxRetryCount, status=$status, orderNo=$orderNo, itemId=$itemId")
             }
             delay(retryDelayMs)
             if (VMModbusHelper.connectStatus()) {
-                LogUtils.d("出餐前下位机重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
+                LogUtils.d("【订单流转】出餐前下位机重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
                 return true
             }
         }
 
-        LogUtils.e("出餐前下位机持续断开，已放弃本次出餐：orderNo=$orderNo, itemId=$itemId")
+        LogUtils.e("【订单流转】出餐前下位机持续断开，已放弃本次出餐：orderNo=$orderNo, itemId=$itemId")
         return false
     }
 
@@ -417,15 +403,15 @@ abstract class OrderActivity: BaseSauceDetection() {
      */
     protected fun syncDeviceStatusToServer(retryDelaysMs: List<Long> = emptyList()) {
         val expectedStatus = AppConfig.getAppConfig().onlineStatus
-        LogUtils.d("设备状态同步开始：expectedOnlineStatus=$expectedStatus, retryCount=${retryDelaysMs.size}")
-        LogUtils.d("设备状态同步触发 MQTT 上报：attempt=0, onlineStatus=$expectedStatus")
+        LogUtils.d("【设备状态】开始同步设备营业状态：expectedOnlineStatus=$expectedStatus, retryCount=${retryDelaysMs.size}")
+        LogUtils.d("【设备状态】触发 MQTT 上报：attempt=0, onlineStatus=$expectedStatus")
         SendServerHelper.publishServiceUpdateStatus()
-        LogUtils.d("设备状态同步触发 HTTP 上报：attempt=0, onlineStatus=$expectedStatus")
+        LogUtils.d("【设备状态】触发 HTTP 上报：attempt=0, onlineStatus=$expectedStatus")
         DataManagementAPI.uploadDeviceInfo { code, content ->
             if (code == 0) {
-                LogUtils.d("设备状态 HTTP 上报成功：attempt=0, onlineStatus=$expectedStatus")
+                LogUtils.d("【设备状态】HTTP 上报成功：attempt=0, onlineStatus=$expectedStatus")
             } else {
-                LogUtils.e("设备状态 HTTP 上报失败：attempt=0, onlineStatus=$expectedStatus, code=$code, content=$content")
+                LogUtils.e("【设备状态】HTTP 上报失败：attempt=0, onlineStatus=$expectedStatus, code=$code, content=$content")
             }
         }
 
@@ -435,19 +421,19 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val currentStatus = AppConfig.getAppConfig().onlineStatus
                 if (currentStatus == expectedStatus) {
                     val attempt = index + 1
-                    LogUtils.d("设备状态同步触发补发：attempt=$attempt, delayMs=$delayMs, onlineStatus=$currentStatus")
-                    LogUtils.d("设备状态同步触发 MQTT 上报：attempt=$attempt, onlineStatus=$currentStatus")
+                    LogUtils.d("【设备状态】触发补发：attempt=$attempt, delayMs=$delayMs, onlineStatus=$currentStatus")
+                    LogUtils.d("【设备状态】触发 MQTT 上报：attempt=$attempt, onlineStatus=$currentStatus")
                     SendServerHelper.publishServiceUpdateStatus()
-                    LogUtils.d("设备状态同步触发 HTTP 上报：attempt=$attempt, onlineStatus=$currentStatus")
+                    LogUtils.d("【设备状态】触发 HTTP 上报：attempt=$attempt, onlineStatus=$currentStatus")
                     DataManagementAPI.uploadDeviceInfo { code, content ->
                         if (code == 0) {
-                            LogUtils.d("设备状态 HTTP 上报成功：attempt=$attempt, onlineStatus=$currentStatus")
+                            LogUtils.d("【设备状态】HTTP 上报成功：attempt=$attempt, onlineStatus=$currentStatus")
                         } else {
-                            LogUtils.e("设备状态 HTTP 上报失败：attempt=$attempt, onlineStatus=$currentStatus, code=$code, content=$content")
+                            LogUtils.e("【设备状态】HTTP 上报失败：attempt=$attempt, onlineStatus=$currentStatus, code=$code, content=$content")
                         }
                     }
                 } else {
-                    LogUtils.d("设备状态同步取消补发：attempt=${index + 1}, expectedOnlineStatus=$expectedStatus, currentOnlineStatus=$currentStatus")
+                    LogUtils.d("【设备状态】取消补发：attempt=${index + 1}, expectedOnlineStatus=$expectedStatus, currentOnlineStatus=$currentStatus")
                 }
             }
         }
@@ -459,11 +445,13 @@ abstract class OrderActivity: BaseSauceDetection() {
     private fun writeRegister(register: Int, value: Int, description: String) {
         lifecycleScope.launch {
             try {
+                LogUtils.d("【寄存器写入】开始写入：description=$description, register=$register, value=$value")
                 withContext(Dispatchers.IO) {
-                    KaoChangOperate.writeSingleRegister(register,value)
+                    KaoChangOperate.writeSingleRegister(register, value)
                 }
+                LogUtils.d("【寄存器写入】写入成功：description=$description, register=$register, value=$value")
             } catch (e: Exception) {
-                e.printStackTrace()
+                LogUtils.e("【寄存器写入】写入失败：description=$description, register=$register, value=$value, error=${e.message}", e)
             }
         }
     }

@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.adapter
 import android.annotation.SuppressLint
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Typeface
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
@@ -11,6 +12,7 @@ import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.databinding.ItemKaopanBoxBinding
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import com.blankj.utilcode.util.ToastUtils
+import java.util.Random
 
 class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) : 
     RecyclerView.Adapter<KaoPanBoxAdapter.ViewHolder>() {
@@ -50,7 +52,7 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                 // 根据口味名称生成随机但固定的颜色
                 val bgColor = kaoPanBox.tasteName?.let {
                     // 使用口味名称的hashCode作为随机种子,保证同样的口味名称生成相同的颜色
-                    val random = java.util.Random(it.hashCode().toLong())
+                    val random = Random(it.hashCode().toLong())
                     val hue = random.nextFloat() * 360
                     val saturation = 0.7f + random.nextFloat() * 0.3f // 70-100% 饱和度
                     val brightness = 0.6f + random.nextFloat() * 0.4f // 60-100% 亮度
@@ -79,17 +81,17 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                     // 已加满状态
                     tvNum.setTextColor(ContextCompat.getColor(root.context, R.color.primary))
                     tvNum.textSize = 26f
-                    tvNum.setTypeface(null, android.graphics.Typeface.BOLD)
+                    tvNum.setTypeface(null, Typeface.BOLD)
                 } else if (kaoPanBox.num > 0) {
                     // 部分加满状态
                     tvNum.setTextColor(ContextCompat.getColor(root.context, R.color.black))
                     tvNum.textSize = 24f
-                    tvNum.setTypeface(null, android.graphics.Typeface.NORMAL)
+                    tvNum.setTypeface(null, Typeface.NORMAL)
                 } else {
                     // 空状态
                     tvNum.setTextColor(ContextCompat.getColor(root.context, R.color.red))
                     tvNum.textSize = 24f
-                    tvNum.setTypeface(null, android.graphics.Typeface.NORMAL)
+                    tvNum.setTypeface(null, Typeface.NORMAL)
                 }
                 
                 // 处理选中状态

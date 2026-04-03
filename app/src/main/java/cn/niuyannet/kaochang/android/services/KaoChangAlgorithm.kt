@@ -9,9 +9,9 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -24,6 +24,11 @@ import java.util.Locale
  * 检测烤盘状态、库存并自动管理烤肠烤制流程
  */
 object KaoChangAlgorithm {
+    private data class HeatBatch(
+        val name: String,
+        val pans: List<KaoPan>
+    )
+
     private val TAG = "KaoChangAlgorithm"
     private const val LOG_ALGORITHM = "算法轮询"
     private const val LOG_DEVICE = "设备状态"
@@ -32,6 +37,13 @@ object KaoChangAlgorithm {
     private const val MODBUS_DISCONNECT_REPORT_DELAY_MS = 5_000L
     private const val MODBUS_RECONNECT_STABLE_DELAY_MS = 5_000L
     private const val MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS = 5_000L
+    /**
+     * 算法对象内部的后台作用域。
+     *
+     * 只用于承接算法轮询和 Modbus 状态监控这类应用级后台任务，
+     * 避免继续使用 GlobalScope 造成难以控制的悬挂协程。
+     */
+    private val algorithmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var isRunning = false
     private var modbusMonitorStarted = false
     private var serviceStartTime: Long = 0
@@ -91,7 +103,6 @@ object KaoChangAlgorithm {
      * 启动烤肠算法主循环。
      * 当前只保留状态变化日志，避免每轮轮询刷屏。
      */
-    @OptIn(DelicateCoroutinesApi::class)
     fun runServer() {
         if (isRunning) return
         restoreRoastAlgorithmState()
@@ -108,7 +119,7 @@ object KaoChangAlgorithm {
         serviceStartTime = System.currentTimeMillis()
         logD(LOG_ALGORITHM, "智能烤肠算法服务启动")
         startModbusStateMonitor()
-        GlobalScope.launch(Dispatchers.IO) {
+        algorithmScope.launch {
             while (isRunning) {
                 pollKaoPanStatus()
                 if (!isRunning) break
@@ -137,25 +148,53 @@ object KaoChangAlgorithm {
         NetApi.updateDeviceInfo()
     }
 
-    private fun calcMinRemainHeatTime(list: List<KaoPan>): Long? {
-        val now = System.currentTimeMillis()
+    private fun isHeatingPan(kaoPan: KaoPan): Boolean {
+        return kaoPan.isHasSausage && kaoPan.startTime > 0L && kaoPan.holdingTime <= 0L
+    }
+
+    private fun isHoldingPan(kaoPan: KaoPan): Boolean {
+        return kaoPan.isHasSausage && kaoPan.holdingTime > 0L
+    }
+
+    private fun calcPanRemainHeatTime(kaoPan: KaoPan, now: Long): Long? {
+        if (!isHeatingPan(kaoPan)) {
+            return null
+        }
+        val heatTime = now - kaoPan.startTime
+        val remain = kaoPan.bakingTime - heatTime
+        return remain.takeIf { it > 0L }
+    }
+
+    private fun calcBatchRemainHeatTime(list: List<KaoPan>, now: Long): Long? {
         return list
             .asSequence()
-            .filter { it.isHasSausage && it.startTime > 0 }
-            .map { kaoPan ->
-                val heatTime = now - kaoPan.startTime
-                kaoPan.bakingTime - heatTime
-            }
-            .filter { it > 0 }
-            .minOrNull()
+            .mapNotNull { calcPanRemainHeatTime(it, now) }
+            .maxOrNull()
+    }
+
+    private fun buildSupplementHeatBatches(
+        isLowOrTransition: Boolean,
+        heatArea: List<KaoPan>
+    ): List<HeatBatch> {
+        return if (isLowOrTransition) {
+            listOf(
+                HeatBatch("13~15补肠批次", heatArea.filter { it.positionSn in 13..15 }),
+                HeatBatch("16~18补肠批次", heatArea.filter { it.positionSn in 16..18 })
+            )
+        } else {
+            listOf(HeatBatch("25~33补肠批次", heatArea))
+        }
     }
 
     /**
      * 计算二维码页显示的“预计烤制时间”。
      * 展示规则：
-     * 1. 只显示当前这一批“第一根烤好还要多久”；
-     * 2. 第一根一旦变为可售，倒计时立即清零，并锁定为“不继续滚动显示第二根/第三根”；
-     * 3. 只有当前这一批相关烤盘全部清空后，才允许下一批重新显示倒计时。
+     * 1. 前区还有保温烤肠时，不展示预计烤制时间；
+     * 2. 前区没有可售烤肠时：
+     *    - 若当前开盘批次仍在前区加热，则显示这一批最后一根烤好的剩余时间；
+     *    - 若只剩补肠批次在补热区加热，则显示“最早能恢复可售”的那一批剩余时间；
+     * 3. 当前批次全部进入保温后才一次性开放；
+     * 4. 小程序可售开关仍通过 availableCountdownLatched 控制。
      */
     private fun checkAvailable(config: AppConfigBean, kaoPanList: List<KaoPan>) {
         val list_1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
@@ -166,36 +205,51 @@ object KaoChangAlgorithm {
         val isLowOrTransition = config.modeType == 1 || config.transitionMode == 1
         val sellArea = if (isLowOrTransition) list_1_9 else list_1_21
         val heatArea = if (isLowOrTransition) list_13_18 else list_25_33
+        val trackedArea = sellArea + heatArea
+        val trackedPans = trackedArea.filter { it.isHasSausage }
+        val sellableHoldingPans = sellArea.filter { isHoldingPan(it) }
+        val now = System.currentTimeMillis()
 
-        val sellableCount = sellArea.count { it.isHasSausage && it.holdingTime > 0 }
-        val totalTrackedCount = sellArea.count { it.isHasSausage } + heatArea.count { it.isHasSausage }
-        val trackedHeatingArea = (sellArea + heatArea).filter { it.isHasSausage && it.startTime > 0 }
-
-        if (totalTrackedCount == 0) {
+        if (trackedPans.isEmpty()) {
             updateAvailableState(config, 0L, 0, "当前批次相关烤盘已全部清空")
             return
         }
 
-        if (sellableCount > 0) {
-            updateAvailableState(config, 0L, 1, "当前批次第一根已可售")
+        if (sellableHoldingPans.isNotEmpty()) {
+            updateAvailableState(config, 0L, 1, "前区仍有保温烤肠，不展示预计时间")
             return
         }
 
-        if (config.availableCountdownLatched == 1) {
-            updateAvailableState(config, 0L, 1, "当前批次第一根已展示完成，不继续滚动到下一根")
-            return
-        }
-
-        if (trackedHeatingArea.isNotEmpty()) {
+        val openingBatchRemainHeatTime = calcBatchRemainHeatTime(sellArea, now)
+        if (openingBatchRemainHeatTime != null) {
             updateAvailableState(
                 config,
-                calcMinRemainHeatTime(trackedHeatingArea) ?: 0L,
+                openingBatchRemainHeatTime,
                 0,
-                "当前无可售烤肠，显示相关区域最近一根预计完成时间"
+                "前区暂无可售烤肠，显示当前开盘批次最后一根预计完成时间"
             )
-        } else {
-            updateAvailableState(config, 0L, 0, "当前没有需要展示的第一根预计时间")
+            return
         }
+
+        val nextSupplementBatch = buildSupplementHeatBatches(isLowOrTransition, heatArea)
+            .mapNotNull { batch ->
+                calcBatchRemainHeatTime(batch.pans, now)?.let { remain ->
+                    batch.name to remain
+                }
+            }
+            .minByOrNull { it.second }
+
+        if (nextSupplementBatch != null) {
+            updateAvailableState(
+                config,
+                nextSupplementBatch.second,
+                0,
+                "前区已售空，显示${nextSupplementBatch.first}恢复可售前的预计时间"
+            )
+            return
+        }
+
+        updateAvailableState(config, 0L, 0, "前区无保温烤肠，当前也没有正在加热的待开放批次")
     }
 
     /**
@@ -245,10 +299,18 @@ object KaoChangAlgorithm {
 
         checkAvailable(config, kaoPanList)
 
-        if (config.modeType == 1 || config.transitionMode == 1) {
-            LowCurrentTrafficMode.lowTrafficMode(config, kaoPanList, kaoPanBoxList)
-        } else if (config.modeType == 2) {
-            HighCurrentTrafficMode.highTrafficMode(config, list = kaoPanList, listBox = kaoPanBoxList)
+        when {
+            config.transitionMode != 0 -> {
+                HighCurrentTrafficMode.highTrafficMode(config, list = kaoPanList, listBox = kaoPanBoxList)
+            }
+
+            config.modeType == 1 -> {
+                LowCurrentTrafficMode.lowTrafficMode(config, kaoPanList, kaoPanBoxList)
+            }
+
+            config.modeType == 2 -> {
+                HighCurrentTrafficMode.highTrafficMode(config, list = kaoPanList, listBox = kaoPanBoxList)
+            }
         }
     }
 
@@ -257,25 +319,23 @@ object KaoChangAlgorithm {
      * 当前策略：
      * 1. 低并发及低转高过渡态仅从 1~9 号前区选取；
      * 2. 高并发从 1~21 号可售区选取；
-     * 3. 按 holdingTime 最大值优先，即“最早进入保温的先卖”。
+     * 3. 按 holdingTime 最小值优先，即“最早进入保温的先卖”。
      */
     suspend fun purchase(tasteCode: String, productId: Int): KaoChangOperate.TakeSausageResult {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
         val targetKaoPan: KaoPan? = if (config.modeType == 1 || config.transitionMode == 1) {
-            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList).filter {
-                it.isHasSausage &&
-                    it.taste.tasteCode == tasteCode &&
-                    it.taste.productId == productId &&
-                    it.holdingTime > 0
-            }.maxByOrNull { it.holdingTime }
+            TrafficModeHelper.selectSellCandidate(
+                TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList),
+                tasteCode,
+                productId
+            )
         } else {
-            TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter {
-                it.isHasSausage &&
-                    it.taste.tasteCode == tasteCode &&
-                    it.taste.productId == productId &&
-                    it.holdingTime > 0
-            }.maxByOrNull { it.holdingTime }
+            TrafficModeHelper.selectSellCandidate(
+                TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList),
+                tasteCode,
+                productId
+            )
         }
 
         if (targetKaoPan != null) {
@@ -323,7 +383,7 @@ object KaoChangAlgorithm {
             return
         }
         modbusMonitorStarted = true
-        GlobalScope.launch(Dispatchers.IO) {
+        algorithmScope.launch {
             while (isRunning) {
                 val now = System.currentTimeMillis()
                 val connected = VMModbusHelper.connectStatus()

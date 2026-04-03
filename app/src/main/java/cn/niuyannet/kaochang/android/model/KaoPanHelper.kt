@@ -9,9 +9,9 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
-import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -20,78 +20,81 @@ import java.util.Locale
 
 
 /**
- * 烤盘数据类
+ * 烤盘与烤肠箱本地缓存辅助类。
+ *
+ * 负责烤盘、烤肠箱、口味列表的本地缓存与异步持久化。
  */
 object KaoPanHelper {
+    /**
+     * 对象内部统一后台作用域。
+     *
+     * 烤盘和烤肠箱列表的保存不需要绑定页面生命周期，但也不应继续使用 GlobalScope。
+     * 因此统一走对象级后台作用域，避免失控的全局协程。
+     */
+    private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val FILE_SP_URL = "file_kaopan_helper"
     private const val KEY_KAO_PAN_LIST = "key_kao_pan_list"
     private const val KEY_KAO_PAN_BOX_LIST = "key_kao_pan_box_list"
     private const val KEY_KAO_PAN_CONFIG = "key_kao_pan_config"
     private const val KEY_TASTE_LIST = "key_taste_list" // 添加口味列表的键
-    //烤制时间 烤制时间40分钟
-    val bakingTime= 40*60*1000L //10*60*1000L
-    //保温时间
-    val holdingTime=0L
-    //丢弃时间 6h丢弃
-    val discardTime=6*60*60*1000L //10*60*1000L
-    //口味列表
-    private var tasteList= mutableListOf<Taste>()
-    //烤盘
+    /** 默认烤制时长，40 分钟。 */
+    val bakingTime = 40 * 60 * 1000L
+
+    /** 默认保温起始时间，实际进入保温时会重新赋值。 */
+    val holdingTime = 0L
+
+    /** 默认丢弃时长，6 小时后必须自动丢弃。 */
+    val discardTime = 6 * 60 * 60 * 1000L
+
+    /** 当前口味目录缓存。 */
+    private var tasteList = mutableListOf<Taste>()
+
+    /** 当前烤盘状态缓存。 */
     private var kaoPanList = mutableListOf<KaoPan>()
-    //烤肠箱
+
+    /** 当前烤肠箱状态缓存。 */
     private var kaoPanBoxList = mutableListOf<KaoPanBox>()
 
-    //初始化烤盘配置
+    /**
+     * 初始化烤盘配置。
+     *
+     * 优先读取本地缓存；若本地还没有保存过，则按默认工位顺序生成 33 个烤盘并立即落盘。
+     */
     fun init() {
-        //先检测本地是否已经有了，如果本地有了就用本地保存最新的，否则就用默认值
         val savedKaoPanList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java)
         if (!savedKaoPanList.isNullOrEmpty()) {
             kaoPanList = savedKaoPanList.toMutableList()
         } else {
-            // 如果没有保存过，则保存默认值
-            //烤盘数据初始化
             kaoPanList = mutableListOf<KaoPan>().apply {
-                //1,4,7,10,13...31,2,5..32,3.6...33 且1~9为1区.10~12为过渡区.13~21为2区，22-24为过渡区，25~33为三区
-                // 按照特定顺序初始化烤盘：1,4,7,10,13...31,2,5..32,3.6...33
                 val positions = mutableListOf<Int>()
-                // 生成位置顺序：先添加所有1,4,7...位置
                 for (i in 1..31 step 3) {
                     positions.add(i)
                 }
 
-                // 再添加所有2,5,8...位置
                 for (i in 2..32 step 3) {
                     positions.add(i)
                 }
 
-                // 最后添加所有3,6,9...位置
                 for (i in 3..33 step 3) {
                     positions.add(i)
                 }
 
-                // 根据生成的顺序创建烤盘对象
                 for (i in 0 until 33) {
                     val positionSn = positions[i]
-                    // 计算区域: 1-9为1区, 10-12为过渡区, 13-21为2区, 22-24为过渡区, 25-33为3区
                     val region = when (positionSn) {
                         in 1..9 -> 1
-                        in 10..12 -> 4 // 过渡区
+                        in 10..12 -> 4
                         in 13..21 -> 2
-                        in 22..24 -> 4 // 过渡区
+                        in 22..24 -> 4
                         else -> 3
                     }
-                    // 计算命令值
-                    val cmdValueMove = positionSn // 从平台把烤肠搬运到烤盘1-33
-                    val cmdValueTake = positionSn + 100 // 把烤好的烤肠取出来 101-133
-                    val cmdValueDiscard = positionSn + 300 // 丢弃烤肠 301-333
-                    // 获取配置实例，避免重复调用
+                    val cmdValueMove = positionSn
+                    val cmdValueTake = positionSn + 100
+                    val cmdValueDiscard = positionSn + 300
                     val config = getAppConfig()
-                    // 设置烘烤时间（默认40分钟）
-                    val bakingTimeMinutes = if (config.bakingTime != null) config.bakingTime else 40
-                    // 设置关闭/丢弃时间（默认6小时）
-                    val discardTimeHours = if (config.discardTime != null) config.discardTime else 6
+                    val bakingTimeMinutes = config.bakingTime
+                    val discardTimeHours = config.discardTime
 
-                    // 创建烤盘对象并设置属性
                     val kaoPan = KaoPan()
                     kaoPan.id = i
                     kaoPan.positionSn = positionSn
@@ -114,20 +117,16 @@ object KaoPanHelper {
                     add(kaoPan)
                 }
             }
-            saveKaoPanList( kaoPanList)
+            saveKaoPanList(kaoPanList)
         }
     }
     /**
      * 重置烤盘
      */
     fun resetKaoPan() {
-        // 获取配置实例，避免重复调用
         val config = getAppConfig()
-        // 设置烘烤时间（默认40分钟）
-        val bakingTimeMinutes = if (config.bakingTime != null) config.bakingTime else 40
-        // 设置关闭/丢弃时间（默认6小时）
-        val discardTimeHours = if (config.discardTime != null) config.discardTime else 6
-        // 重置所有烤盘的状态
+        val bakingTimeMinutes = config.bakingTime
+        val discardTimeHours = config.discardTime
         for (kaoPan in kaoPanList) {
             kaoPan.startTime = 0L
             kaoPan.bakingTime = bakingTimeMinutes * 60L * 1000L
@@ -180,9 +179,8 @@ object KaoPanHelper {
     /**
      * 保存烤盘列表
      */
-    @OptIn(DelicateCoroutinesApi::class)
     fun saveKaoPanList(list: List<KaoPan>) {
-        GlobalScope.launch(Dispatchers.Main) {
+        helperScope.launch {
             kaoPanList = list.toMutableList()
             PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
         }
@@ -192,9 +190,8 @@ object KaoPanHelper {
     /**
      * 保存烤箱列表
      */
-    @OptIn(DelicateCoroutinesApi::class)
     fun saveKaoPanBoxList(list: List<KaoPanBox>) {
-        GlobalScope.launch(Dispatchers.Main) {
+        helperScope.launch {
             kaoPanBoxList = list.toMutableList()
             PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
         }
@@ -207,6 +204,162 @@ object KaoPanHelper {
     fun saveTasteList(list: List<Taste>) {
         tasteList = list.toMutableList()
         PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_TASTE_LIST, tasteList)
+    }
+
+    fun normalizeKaoPanTasteMetadata(): Boolean {
+        val currentPans = getKaoPanList()
+        var changed = false
+        currentPans.forEach { kaoPan ->
+            if (!kaoPan.isHasSausage || kaoPan.taste == null) {
+                return@forEach
+            }
+            val normalizedTaste = normalizeTasteMetadata(kaoPan.taste)
+            if (normalizedTaste == null) {
+                return@forEach
+            }
+            if (!isSameTasteMetadata(kaoPan.taste, normalizedTaste)) {
+                kaoPan.taste = normalizedTaste
+                changed = true
+            }
+        }
+        if (changed) {
+            saveKaoPanList(currentPans)
+        }
+        return changed
+    }
+
+    fun buildTasteFromBox(kaoPanBox: KaoPanBox, fallbackTaste: Taste? = null): Taste {
+        val normalizedByCatalog = findTasteFromCatalog(
+            productId = kaoPanBox.productId?.toIntOrNull(),
+            tasteCode = kaoPanBox.tasteCode,
+            tasteName = kaoPanBox.tasteName,
+            productName = fallbackTaste?.productName
+        )
+        return mergeTasteMetadata(
+            baseTaste = fallbackTaste,
+            resolvedTaste = normalizedByCatalog,
+            fallbackProductId = kaoPanBox.productId?.toIntOrNull(),
+            fallbackTasteCode = kaoPanBox.tasteCode,
+            fallbackTasteName = kaoPanBox.tasteName,
+            fallbackProductName = fallbackTaste?.productName
+        )
+    }
+
+    fun copyResolvedTaste(sourceTaste: Taste?): Taste? {
+        return normalizeTasteMetadata(sourceTaste)
+    }
+
+    private fun normalizeTasteMetadata(sourceTaste: Taste?): Taste? {
+        if (sourceTaste == null) {
+            return null
+        }
+        val resolvedTaste = findTasteFromCatalog(
+            productId = sourceTaste.productId.takeIf { it > 0 },
+            tasteId = sourceTaste.tasteId.takeIf { it > 0 },
+            tasteCode = sourceTaste.tasteCode,
+            tasteName = sourceTaste.tasteName,
+            productName = sourceTaste.productName
+        )
+        return mergeTasteMetadata(
+            baseTaste = sourceTaste,
+            resolvedTaste = resolvedTaste,
+            fallbackProductId = sourceTaste.productId.takeIf { it > 0 },
+            fallbackTasteId = sourceTaste.tasteId.takeIf { it > 0 },
+            fallbackTasteCode = sourceTaste.tasteCode,
+            fallbackTasteName = sourceTaste.tasteName,
+            fallbackProductName = sourceTaste.productName
+        )
+    }
+
+    private fun mergeTasteMetadata(
+        baseTaste: Taste?,
+        resolvedTaste: Taste?,
+        fallbackProductId: Int? = null,
+        fallbackTasteId: Int? = null,
+        fallbackTasteCode: String? = null,
+        fallbackTasteName: String? = null,
+        fallbackProductName: String? = null
+    ): Taste {
+        return Taste().apply {
+            tasteId = resolvedTaste?.tasteId
+                ?: fallbackTasteId
+                ?: baseTaste?.tasteId
+                ?: 0
+            tasteCode = resolvedTaste?.tasteCode
+                ?: fallbackTasteCode
+                ?: baseTaste?.tasteCode
+                ?: ""
+            tasteName = resolvedTaste?.tasteName
+                ?: fallbackTasteName
+                ?: baseTaste?.tasteName
+                ?: ""
+            productId = resolvedTaste?.productId
+                ?: fallbackProductId
+                ?: baseTaste?.productId
+                ?: 0
+            productName = resolvedTaste?.productName
+                ?: fallbackProductName
+                ?: baseTaste?.productName
+                ?: ""
+        }
+    }
+
+    private fun findTasteFromCatalog(
+        productId: Int? = null,
+        tasteId: Int? = null,
+        tasteCode: String? = null,
+        tasteName: String? = null,
+        productName: String? = null
+    ): Taste? {
+        val currentTasteList = getTasteList()
+        if (currentTasteList.isEmpty()) {
+            return null
+        }
+
+        val normalizedTasteCode = normalizeTasteCode(tasteCode)
+        val normalizedTasteName = normalizeLabel(tasteName)
+        val normalizedProductName = normalizeLabel(productName)
+
+        return currentTasteList.firstOrNull {
+            productId != null && productId > 0 && it.productId == productId &&
+                tasteId != null && tasteId > 0 && it.tasteId == tasteId
+        } ?: currentTasteList.firstOrNull {
+            productId != null && productId > 0 && it.productId == productId &&
+                normalizedTasteCode.isNotBlank() && normalizeTasteCode(it.tasteCode) == normalizedTasteCode
+        } ?: currentTasteList.firstOrNull {
+            tasteId != null && tasteId > 0 && it.tasteId == tasteId
+        } ?: currentTasteList.firstOrNull {
+            normalizedTasteCode.isNotBlank() && normalizeTasteCode(it.tasteCode) == normalizedTasteCode
+        } ?: currentTasteList.firstOrNull {
+            normalizedTasteName.isNotBlank() && normalizeLabel(it.tasteName) == normalizedTasteName &&
+                (productId == null || productId <= 0 || it.productId == productId)
+        } ?: currentTasteList.firstOrNull {
+            normalizedProductName.isNotBlank() && normalizeLabel(it.productName) == normalizedProductName &&
+                normalizedTasteName.isNotBlank() && normalizeLabel(it.tasteName) == normalizedTasteName
+        }
+    }
+
+    private fun isSameTasteMetadata(left: Taste?, right: Taste?): Boolean {
+        if (left == null || right == null) {
+            return left == right
+        }
+        return left.tasteId == right.tasteId &&
+            normalizeTasteCode(left.tasteCode) == normalizeTasteCode(right.tasteCode) &&
+            normalizeLabel(left.tasteName) == normalizeLabel(right.tasteName) &&
+            left.productId == right.productId &&
+            normalizeLabel(left.productName) == normalizeLabel(right.productName)
+    }
+
+    private fun normalizeTasteCode(code: String?): String {
+        return code?.trim()?.uppercase(Locale.getDefault()) ?: ""
+    }
+
+    private fun normalizeLabel(label: String?): String {
+        return label
+            ?.trim()
+            ?.replace(Regex("\\s+"), "")
+            ?.uppercase(Locale.getDefault())
+            ?: ""
     }
 
     /**
@@ -434,11 +587,10 @@ object KaoPanHelper {
 
      fun isBeforeBusinessHours( businessTime: BusinessTime,minute : Int): Boolean {
         try {
-            var currentTimeStr = getCurrentTime()
-            if (businessTime == null) return false
+            val currentTimeStr = getCurrentTime()
 
             val format = SimpleDateFormat("HH:mm", Locale.getDefault())
-            val current = format.parse(currentTimeStr)
+            val current = format.parse(currentTimeStr) ?: return false
 
             // 获取当前是星期几（1-7，对应周一到周日）
             val calendar = Calendar.getInstance()
@@ -448,16 +600,16 @@ object KaoPanHelper {
             // 根据营业时间模式判断
             if ("everyday".equals(businessTime.mode, ignoreCase = true) && businessTime.defaultTime != null && businessTime.defaultTime.size >= 2) {
                 // 默认模式：所有天使用相同的时间范围
-                val end = format.parse(businessTime.defaultTime[1])
+                val end = format.parse(businessTime.defaultTime[1]) ?: return false
 
-                return isTimeInRange(current, end,minute)
+                return isTimeInRange(current, end, minute)
             } else if ("custom".equals(businessTime.mode, ignoreCase = true) && businessTime.customTimes != null) {
                 // 自定义模式：每天可以有不同的时间范围
                 for (timeItem in businessTime.customTimes) {
                     // 检查是否是当前日期且已启用
                     if (timeItem.day == dayOfWeek && timeItem.enabled && timeItem.timeRange != null && timeItem.timeRange.size >= 2) {
-                        val end = format.parse(timeItem.timeRange[1])
-                        return isTimeInRange(current, end, minute )
+                        val end = format.parse(timeItem.timeRange[1]) ?: return false
+                        return isTimeInRange(current, end, minute)
                     }
                 }
             }

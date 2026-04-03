@@ -35,13 +35,13 @@ import com.jiangdg.ausbc.render.env.RotateType
 import com.jiangdg.usb.USBMonitor
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
-import kotlin.system.exitProcess
 
 /**
  * 主界面
  */
 class MainActivity : OrderActivity(), ICameraStateCallBack {
     private var runtimeStarted = false
+    private val recentIncomingOrderLogAtMs = ConcurrentHashMap<String, Long>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,7 +55,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         val hasValidCachedConfig = AppConfig.hasValidDeviceConfig()
         if (hasValidCachedConfig) {
             setDataToView()
-            startRuntimeAfterConfigLoaded("cached")
+            startRuntimeAfterConfigLoaded("cached", syncStatus = false)
         }
 
         loadDeviceInfo { success ->
@@ -63,28 +63,33 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 if (!isFinishing && !isDestroyed) {
                     setDataToView()
                 }
-                startRuntimeAfterConfigLoaded("remote")
+                startRuntimeAfterConfigLoaded("remote", syncStatus = true)
             } else if (!hasValidCachedConfig) {
-                LogUtils.w("设备配置拉取失败且本地无有效配置，跳过算法启动与状态同步，避免默认配置误上报")
+                LogUtils.w("【启动流程】设备配置拉取失败且本地无有效配置，跳过算法启动与状态同步，避免默认配置误上报")
             }
         }
     }
 
-    private fun startRuntimeAfterConfigLoaded(source: String) {
-        if (runtimeStarted) {
-            LogUtils.d("运行链路已启动，忽略重复启动请求：source=$source")
+    private fun startRuntimeAfterConfigLoaded(source: String, syncStatus: Boolean) {
+        if (runtimeStarted && !syncStatus) {
+            LogUtils.d("【启动流程】运行链路已启动，忽略重复启动请求：source=$source")
             return
         }
         if (!AppConfig.hasValidDeviceConfig()) {
-            LogUtils.w("设备配置仍无效，拒绝启动算法和状态同步：source=$source")
+            LogUtils.w("【启动流程】设备配置仍无效，拒绝启动算法和状态同步：source=$source")
             return
         }
-        runtimeStarted = true
-        LogUtils.d("设备配置有效，开始启动算法与状态同步：source=$source")
-        KaoChangAlgorithm.restoreRoastAlgorithmState()
-        KaoChangAlgorithm.runServer()
-        syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
-        ConnectManageHelper.lunStatus {
+        val shouldStartRuntime = !runtimeStarted
+        if (shouldStartRuntime) {
+            runtimeStarted = true
+            LogUtils.d("【启动流程】设备配置有效，开始启动算法与状态同步：source=$source")
+            KaoChangAlgorithm.restoreRoastAlgorithmState()
+            KaoChangAlgorithm.runServer()
+        }
+        if (syncStatus) {
+            syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
+        }
+        if (shouldStartRuntime) ConnectManageHelper.lunStatus {
             if (!isFinishing && !isDestroyed) {
                 setDataToView()
                 mqttMessage()
@@ -114,11 +119,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 1 -> {
                     val orderMessage = data.content
                     logIncomingOrder(orderMessage)
-                    var appState = AppConfig.getAppConfig().moveStatus
+                    val appState = AppConfig.getAppConfig().moveStatus
                     if (appState == 2 || AppConfig.getAppConfig().onlineStatus == 4) {
-                        LogUtils.d("上位机正在运行，无法下单，用户退款")
+                        LogUtils.w("【订单流转】设备当前正忙，拒绝接入新的下单请求，后续应走退款或重试")
                     } else {
-                        LogUtils.d("order 客户下单购买")
+                        LogUtils.d("【订单流转】收到新的顾客下单请求，准备进入出餐流程")
                         AppConfig.getAppConfig().onlineStatus = 4
                         AppConfig.saveAppConfig(AppConfig.getAppConfig())
                         syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
@@ -134,7 +139,16 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     private fun logIncomingOrder(orderMessage: String) {
         try {
             val json = JSON.parseObject(orderMessage)
-            val orderNo = json.getString("order_no")
+            val orderNo = json.getString("order_no").orEmpty()
+            if (orderNo.isNotBlank()) {
+                val now = System.currentTimeMillis()
+                recentIncomingOrderLogAtMs.entries.removeIf { now - it.value >= 5 * 60_000L }
+                val lastLogAt = recentIncomingOrderLogAtMs[orderNo]
+                if (lastLogAt != null && now - lastLogAt < 30_000L) {
+                    return
+                }
+                recentIncomingOrderLogAtMs[orderNo] = now
+            }
             val goodsList = JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
             val totalQuantity = goodsList.sumOf { it.quantity }
             val itemSummary = goodsList.joinToString(" | ") {
@@ -247,7 +261,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         clearCamera()
         ConnectManageHelper.disConnect()
         KaoChangAlgorithm.stopServer()
-        exitProcess(0)
     }
 
     companion object {
@@ -333,16 +346,16 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     }
 
     private fun onCameraAttached(camera: MultiCameraClient.ICamera) {
-        LogUtils.d("摄像头附加 -> ${camera.device.deviceName}")
+        LogUtils.d("【UVC相机】检测到摄像头接入：deviceName=${camera.device.deviceName}")
     }
 
     private fun onCameraConnected(camera: MultiCameraClient.ICamera) {
-        LogUtils.d("摄像头连接 -> ${camera.device.deviceName}")
+        LogUtils.d("【UVC相机】摄像头连接成功：deviceName=${camera.device.deviceName}")
     }
 
     private fun onCameraDetached(camera: MultiCameraClient.ICamera) {
         camera.closeCamera()
-        LogUtils.d("摄像头断开 -> ${camera.device.deviceName}")
+        LogUtils.d("【UVC相机】摄像头已断开：deviceName=${camera.device.deviceName}")
     }
 
     private fun onCameraDisConnected(camera: MultiCameraClient.ICamera) {
@@ -360,14 +373,14 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     private fun clearCamera() {
         mCameraMap.values.forEach {
-            Log.d("Main", "close camera: ${it.device.deviceId}")
+            LogUtils.d("【UVC相机】关闭摄像头实例：deviceId=${it.device.deviceId}")
             it.closeCamera()
         }
         mCameraMap.clear()
         mCameraClient?.unRegister()
         mCameraClient?.destroy()
         mCameraClient = null
-        Log.d("Main", "clearCamera === ")
+        LogUtils.d("【UVC相机】已清空本地摄像头缓存并销毁客户端")
     }
 
     override fun onCameraState(
@@ -375,6 +388,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         code: ICameraStateCallBack.State,
         msg: String?
     ) {
-        LogUtils.d("摄像头状态 ${code.name} - msg: $msg")
+        LogUtils.d("【UVC相机】摄像头状态变更：state=${code.name}, message=$msg")
     }
 }

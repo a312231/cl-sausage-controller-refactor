@@ -40,7 +40,7 @@ public class KaoPan implements Serializable {
     @SerializedName("has_sausage")
     private boolean hasSausage; // 是否有烤肠
 
-    @SerializedName("has_sausage")
+    @SerializedName("has_grilling")
     private boolean hasGrilling; // 烤制区是否有对应口味的烤肠在烤制
     
     @SerializedName("cmd_value_move")

@@ -8,17 +8,12 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
 
 /**
  * 低并发模式控制器。
  *
- * 主要职责：
- * 1. 维护前区 1~9 的初始化、补肠、保温和过保丢弃；
- * 2. 管理补热区 13~18 的加热与回补；
- * 3. 在满足条件时触发低并发 -> 高并发切换。
+ * 负责前区 1~9 的初始化、补肠、保温与过保丢弃，
+ * 管理补热区 13~18 的加热与回补，并在满足条件时触发低并发转高并发。
  */
 object LowCurrentTrafficMode {
     private const val TAG = "KaoChangAlgorithm"
@@ -127,7 +122,7 @@ object LowCurrentTrafficMode {
         checkLowHeatEnd(list1_9)
         checkLowHeatDiscard(list1_9)
 
-        if (p1_9 >= 7 && p13_18 == 0) {
+        if (config.modeType == 1 && config.transitionMode == 0 && p1_9 >= 7 && p13_18 == 0) {
             LogUtils.w(
                 TAG,
                 "【并发切换】触发低转高：1~9 空位=$p1_9，13~18 全满，modeType=${modeText(config.modeType)}->2(高并发)，transitionMode=${transitionText(config.transitionMode)}->1(低转高过渡)"
@@ -135,9 +130,8 @@ object LowCurrentTrafficMode {
             switchLowToHigh()
         }
 
-        GlobalScope.launch(Dispatchers.Main) {
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-        }
+        // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         return totalEmpty
     }
 
@@ -235,11 +229,11 @@ object LowCurrentTrafficMode {
             list13_15.forEach { kaoPan ->
                 if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                     val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-                    val targetPan = list1_9.find {
-                        !it.isHasSausage &&
-                            it.taste.tasteCode == kaoPan.taste.tasteCode &&
-                            it.isHasGrilling
-                    }
+                    val targetPan = TrafficModeHelper.selectFrontTargetPan(
+                        list1_9,
+                        kaoPan.taste.tasteCode,
+                        requireReserved = true
+                    )
                     targetPan?.let {
                         KaoChangOperate.moveKaoPanToKaoPan(
                             kaoPan,
@@ -287,11 +281,11 @@ object LowCurrentTrafficMode {
             list16_18.forEach { kaoPan ->
                 if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                     val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-                    val targetPan = list1_9.find {
-                        !it.isHasSausage &&
-                            it.taste.tasteCode == kaoPan.taste.tasteCode &&
-                            it.isHasGrilling
-                    }
+                    val targetPan = TrafficModeHelper.selectFrontTargetPan(
+                        list1_9,
+                        kaoPan.taste.tasteCode,
+                        requireReserved = true
+                    )
                     targetPan?.let {
                         KaoChangOperate.moveKaoPanToKaoPan(
                             kaoPan,
