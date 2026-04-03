@@ -1,30 +1,28 @@
 package cn.niuyannet.kaochang.android.init
 
 import android.provider.Settings
-import com.alibaba.fastjson.JSON
 import cn.niuyannet.kaochang.android.MyApp
+import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
+import com.alibaba.fastjson.JSON
+import com.alibaba.fastjson.JSONObject
 
-/**
- * 初始化配置信息
- */
 object AppConfig {
     const val Sp_File_URL = "KAOCHANG_APP_CONFIG"
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
     private var appConfigBean: AppConfigBean? = null
 
-    /**
-     * 获取设备订阅地址
-     */
+    data class RemoteConfigMergeResult(
+        val applied: Boolean,
+        val usedLocalFallback: Boolean,
+        val message: String
+    )
+
     fun getTopicDeviceIdUrl(url: String): String {
         return url.replace("{device_id}", getDeviceId())
     }
 
-    /**
-     * 获取 app 初始化参数。
-     * 优先读取 JSON 配置，兼容迁移历史的 Java 序列化对象配置。
-     */
     fun getAppConfig(): AppConfigBean {
         if (appConfigBean != null) {
             return appConfigBean!!
@@ -53,18 +51,11 @@ object AppConfig {
         return appConfigBean!!
     }
 
-    /**
-     * 保存配置。
-     * 使用 JSON 持久化，避免类字段变更导致升级后反序列化失败。
-     */
     fun saveAppConfig(appConfigBean: AppConfigBean) {
         this.appConfigBean = appConfigBean
         PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(appConfigBean))
     }
 
-    /**
-     * 判断是否已经拿到可用于启动算法的有效设备配置。
-     */
     fun hasValidDeviceConfig(): Boolean {
         val config = getAppConfig()
         return !config.deviceCode.isNullOrBlank() &&
@@ -73,9 +64,169 @@ object AppConfig {
             config.onlineStatus in 0..4
     }
 
-    /**
-     * 获取设备唯一标识
-     */
+    fun getAlgorithmEnableFlag(): Int {
+        val config = getAppConfig()
+        return if (config.isEnable == 1) 1 else 0
+    }
+
+    fun mergeRemoteConfig(
+        jsonData: JSONObject?,
+        rawContent: String?,
+        logPrefix: String
+    ): RemoteConfigMergeResult {
+        val config = getAppConfig()
+        if (jsonData == null) {
+            val hasFallback = hasValidDeviceConfig()
+            val message = "远端配置数据为空，原始响应=$rawContent"
+            if (hasFallback) {
+                LogUtils.w("[$logPrefix] $message，继续使用本地有效配置")
+            } else {
+                LogUtils.e("[$logPrefix] $message，且本地也没有有效配置")
+            }
+            return RemoteConfigMergeResult(hasFallback, hasFallback, message)
+        }
+
+        val preservedFields = mutableListOf<String>()
+        val parseIssues = mutableListOf<String>()
+
+        fun mergeString(
+            key: String,
+            fieldLabel: String,
+            allowBlank: Boolean = true,
+            setter: (String) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            val value = jsonData.getString(key)
+            if (!allowBlank && value.isNullOrBlank()) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            setter(value ?: "")
+        }
+
+        fun mergeInt(
+            key: String,
+            fieldLabel: String,
+            setter: (Int) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            setter(jsonData.getIntValue(key))
+        }
+
+        mergeString("mqttUrl", "mqttUrl") { config.mqttHost = it }
+        mergeString("mqttUsername", "mqttUsername") { config.mqttUsername = it }
+        mergeString("mqttPassword", "mqttPassword") { config.mqttPassword = it }
+        mergeString("modbusAddress", "modbusAddress") { config.modbusAddress = it }
+        mergeString("deviceCode", "deviceCode", allowBlank = false) { config.deviceCode = it }
+        mergeString("name", "name", allowBlank = false) { config.deviceName = it }
+        mergeString("address", "address") { config.deviceAddress = it }
+        mergeString("qrcodeUrl", "qrcodeUrl") { config.qcodeURL = it }
+
+        val businessHoursRaw = jsonData.getString("businessHours")
+        if (businessHoursRaw.isNullOrBlank()) {
+            preservedFields.add("businessHours")
+        } else {
+            try {
+                val businessTime = JSON.parseObject(businessHoursRaw, BusinessTime::class.java)
+                if (businessTime != null) {
+                    config.businessTime = businessTime
+                } else {
+                    parseIssues.add("businessHours")
+                }
+            } catch (e: Exception) {
+                parseIssues.add("businessHours")
+                LogUtils.w("[$logPrefix] 解析营业时间失败：businessHours=$businessHoursRaw", e)
+            }
+        }
+
+        mergeInt("status", "status") { config.status = it }
+        mergeInt("onlineStatus", "onlineStatus") { config.onlineStatus = it }
+        mergeInt("concurrencyMode", "concurrencyMode") { config.modeType = it }
+        mergeInt("transitionMode", "transitionMode") { config.transitionMode = it }
+        mergeInt("errorStatus", "errorStatus") { config.errorStatus = it }
+        mergeInt("keepWarmTemperature", "keepWarmTemperature") { config.keepWarmTemperature = it }
+        mergeInt("heatingTemperature", "heatingTemperature") { config.heatingTemperature = it }
+        mergeInt("bakingTime", "bakingTime") { config.bakingTime = it }
+        mergeInt("discardTime", "discardTime") { config.discardTime = it }
+        mergeInt("timeThresholdLow", "timeThresholdLow") { config.timeThresholdLow = it }
+        mergeInt("timeBeforeClose", "timeBeforeClose") { config.timeBeforeClose = it }
+
+        if (jsonData.containsKey("boxToPlatformTimeoutSeconds")) {
+            config.boxToPlatformTimeoutSeconds = jsonData.getIntValue("boxToPlatformTimeoutSeconds")
+        }
+        if (jsonData.containsKey("trayToSellPlatformTimeoutSeconds")) {
+            config.trayToSellPlatformTimeoutSeconds = jsonData.getIntValue("trayToSellPlatformTimeoutSeconds")
+        }
+        if (jsonData.containsKey("postSellSupplementGuardSeconds")) {
+            config.postSellSupplementGuardSeconds = jsonData.getIntValue("postSellSupplementGuardSeconds")
+        }
+        if (jsonData.containsKey("postSellIdleStableSeconds")) {
+            config.postSellIdleStableSeconds = jsonData.getIntValue("postSellIdleStableSeconds")
+        }
+        if (jsonData.containsKey("postSellIdleMaxWaitSeconds")) {
+            config.postSellIdleMaxWaitSeconds = jsonData.getIntValue("postSellIdleMaxWaitSeconds")
+        }
+        if (jsonData.containsKey("cameraPrewarmHoldSeconds")) {
+            config.cameraPrewarmHoldSeconds = jsonData.getIntValue("cameraPrewarmHoldSeconds")
+        }
+
+        if (config.onlineStatus in 1..4 && config.status != 1) {
+            preservedFields.add("status(normalized_from_onlineStatus)")
+            config.status = 1
+        }
+
+        saveAppConfig(config)
+
+        val hasValidConfig = hasValidDeviceConfig()
+        val details = mutableListOf<String>()
+        if (preservedFields.isNotEmpty()) {
+            details.add("preserved=${preservedFields.distinct().joinToString(",")}")
+        }
+        if (parseIssues.isNotEmpty()) {
+            details.add("parseFailed=${parseIssues.distinct().joinToString(",")}")
+        }
+
+        val message = buildString {
+            append("远端配置合并完成")
+            if (details.isNotEmpty()) {
+                append("：")
+                append(details.joinToString("; "))
+            }
+            append("，原始响应=")
+            append(rawContent)
+        }
+
+        if (details.isNotEmpty()) {
+            if (hasValidConfig) {
+                LogUtils.w("[$logPrefix] $message")
+            } else {
+                LogUtils.e("[$logPrefix] $message，合并后配置仍然无效")
+            }
+        }
+
+        val userVisibleFallback = parseIssues.isNotEmpty() ||
+            preservedFields.any {
+                it == "deviceCode" ||
+                    it == "name" ||
+                    it == "businessHours" ||
+                    it == "qrcodeUrl" ||
+                    it == "status" ||
+                    it == "onlineStatus"
+            }
+
+        return RemoteConfigMergeResult(
+            applied = hasValidConfig,
+            usedLocalFallback = userVisibleFallback,
+            message = message
+        )
+    }
+
     fun getDeviceId(): String {
         var androidId = PreferenceUtils.getStringPreference(Sp_File_URL, "sp_android_id", null)
         if (androidId == null) {
@@ -85,9 +236,6 @@ object AppConfig {
         return androidId
     }
 
-    /**
-     * 保存设备 id
-     */
     fun saveDeviceId(androidId: String) {
         PreferenceUtils.saveStringPreference(Sp_File_URL, "sp_android_id", androidId)
     }

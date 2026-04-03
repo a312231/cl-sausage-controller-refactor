@@ -1,14 +1,14 @@
 package cn.niuyannet.kaochang.android.fragments
 
+import android.R as AndroidR
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
-import android.widget.Spinner
 import androidx.fragment.app.Fragment
-import cn.niuyannet.kaochang.android.R
+import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.databinding.FragmentConfigBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
@@ -19,13 +19,15 @@ import com.blankj.utilcode.util.ToastUtils
 import com.kongqw.serialportlibrary.Device
 import com.kongqw.serialportlibrary.SerialPortFinder
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class ConfigFragment : Fragment() {
     private var _binding: FragmentConfigBinding? = null
     private val binding get() = _binding!!
-    lateinit var configBean: AppConfigBean
+
+    private lateinit var configBean: AppConfigBean
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -39,111 +41,153 @@ class ConfigFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         initViews()
         statusInit()
+
         binding.btnSaveMqttConfig.setOnClickListener {
-            configBean.mqttHost=binding.etMqttIp.text.toString()
-            configBean.mqttPort=binding.etMqttPort.text.toString().toInt()
-            configBean. mqttUsername=binding.etMqttUsername.text.toString()
-            configBean.mqttPassword=binding.etMqttPassword.text.toString()
+            val uiScope = viewLifecycleOwner.lifecycleScope
+            configBean.mqttHost = binding.etMqttIp.text.toString()
+            configBean.mqttPort = binding.etMqttPort.text.toString().toInt()
+            configBean.mqttUsername = binding.etMqttUsername.text.toString()
+            configBean.mqttPassword = binding.etMqttPassword.text.toString()
             AppConfig.saveAppConfig(configBean)
-            GlobalScope.launch(Dispatchers.IO) {
-                VMMqttHelper.connect {
-                    GlobalScope.launch(Dispatchers.Main) {
-                        if (it) {
-                            binding.tvMqttStatus.text = "已连接"
-                        }else{
-                            binding.tvMqttStatus.text = "未连接"
+
+            ToastUtils.showShort("MQTT 配置已保存，正在连接")
+            uiScope.launch(Dispatchers.IO) {
+                VMMqttHelper.connect { connected ->
+                    uiScope.launch mqttUi@{
+                        if (_binding == null) {
+                            return@mqttUi
+                        }
+                        updateMqttStatus(connected)
+                        if (connected) {
+                            ToastUtils.showShort("MQTT 连接成功")
+                        } else {
+                            ToastUtils.showShort("MQTT 连接失败，请检查网络或配置")
                         }
                     }
-                    LogUtils.d("MQTT连接成功！")
+                    if (connected) {
+                        LogUtils.d("【配置页】MQTT 连接成功")
+                    } else {
+                        LogUtils.w("【配置页】MQTT 连接失败")
+                    }
                 }
             }
-            ToastUtils.showShort("保存成功")
         }
+
         binding.btnSaveModbusConfig.setOnClickListener {
-            configBean.modbusBaudRate=binding.etModbusBaudRate.text.toString().toInt()
-//            configBean.modbusDevices=binding.spinner.selectedItem.toString()
+            val uiScope = viewLifecycleOwner.lifecycleScope
+            configBean.modbusBaudRate = binding.etModbusBaudRate.text.toString().toInt()
             AppConfig.saveAppConfig(configBean)
-            GlobalScope.launch(Dispatchers.IO) {
-                VMModbusHelper.connectModbus {
-                    GlobalScope.launch(Dispatchers.Main) {
-                        if (it) {
-                            binding.tvModbusStatus.text = "已连接"
-                        }else{
-                            binding.tvModbusStatus.text = "未连接"
+
+            ToastUtils.showShort("MODBUS 配置已保存，正在连接")
+            uiScope.launch(Dispatchers.IO) {
+                VMModbusHelper.connectModbus { connected ->
+                    uiScope.launch modbusUi@{
+                        if (_binding == null) {
+                            return@modbusUi
+                        }
+                        updateModbusStatus(connected)
+                        if (connected) {
+                            ToastUtils.showShort("MODBUS 连接成功")
+                        } else {
+                            ToastUtils.showShort("MODBUS 未连通，请检查下位机、模拟器或接线")
                         }
                     }
-                    LogUtils.d("Modbus连接成功！")
+                    if (connected) {
+                        LogUtils.d("【配置页】MODBUS 连接成功")
+                    } else {
+                        LogUtils.w("【配置页】MODBUS 连接失败：未收到有效从站响应")
+                    }
                 }
             }
-            ToastUtils.showShort("保存成功")
         }
+
         binding.swForceVisionSuccess.setOnCheckedChangeListener { _, isChecked ->
             configBean.forceVisionSuccess = if (isChecked) 1 else 0
             AppConfig.saveAppConfig(configBean)
-            val msg = if (isChecked) "已开启联调模式：视觉识别固定返回成功" else "已关闭联调模式"
+            val msg = if (isChecked) {
+                "已开启联调模式：视觉识别固定返回成功"
+            } else {
+                "已关闭联调模式"
+            }
             ToastUtils.showShort(msg)
-            LogUtils.w("本地联调状态变更: $msg")
+            LogUtils.w("【配置页】联调模式状态变更：$msg")
         }
+
         binding.btndisModbusConfig.setOnClickListener {
-            GlobalScope.launch(Dispatchers.IO) {
-        VMModbusHelper.disconnectModbusMaster()
-                GlobalScope.launch(Dispatchers.Main) {
-                    ToastUtils.showShort("断开连接成功")
+            viewLifecycleOwner.lifecycleScope.launch {
+                withContext(Dispatchers.IO) {
+                    VMModbusHelper.disconnectModbusMaster()
                 }
+                if (_binding == null) {
+                    return@launch
+                }
+                updateModbusStatus(false)
+                ToastUtils.showShort("MODBUS 已断开")
+                LogUtils.d("【配置页】MODBUS 已手动断开")
             }
         }
     }
 
+    private fun updateModbusStatus(connected: Boolean) {
+        binding.tvModbusStatus.text = if (connected) "已连接" else "未连接"
+    }
+
+    private fun updateMqttStatus(connected: Boolean) {
+        binding.tvMqttStatus.text = if (connected) "已连接" else "未连接"
+    }
+
     /**
-     * 初始化views参数
+     * 初始化界面参数。
      */
-    private fun initViews(){
-        configBean=AppConfig.getAppConfig()
+    private fun initViews() {
+        configBean = AppConfig.getAppConfig()
         binding.etMqttIp.setText(configBean.mqttHost)
-         binding.etMqttPort.setText(configBean.mqttPort.toString())
+        binding.etMqttPort.setText(configBean.mqttPort.toString())
         binding.etMqttUsername.setText(configBean.mqttUsername)
         binding.etMqttPassword.setText(configBean.mqttPassword)
         binding.etModbusBaudRate.setText(configBean.modbusBaudRate.toString())
         binding.swForceVisionSuccess.isChecked = configBean.forceVisionSuccess == 1
         initSpinner()
     }
-    fun statusInit(){
-        GlobalScope.launch(Dispatchers.IO) {
-            var status=VMModbusHelper.connectStatus()
-            GlobalScope.launch(Dispatchers.Main) {
-                if (status) {
-                    binding.tvModbusStatus.text = "已连接"
-                }else{
-                    binding.tvModbusStatus.text = "未连接"
-                }
+
+    private fun statusInit() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val modbusStatus = withContext(Dispatchers.IO) {
+                VMModbusHelper.connectStatus()
             }
+            if (_binding == null) {
+                return@launch
+            }
+            updateModbusStatus(modbusStatus)
         }
-        GlobalScope.launch(Dispatchers.IO) {
-            var status=     VMMqttHelper.connectStatus()
-            GlobalScope.launch(Dispatchers.Main) {
-                if (status) {
-                    binding.tvMqttStatus.text = "已连接"
-                }else{
-                    binding.tvMqttStatus.text = "未连接"
-                }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            val mqttStatus = withContext(Dispatchers.IO) {
+                VMMqttHelper.connectStatus()
             }
+            if (_binding == null) {
+                return@launch
+            }
+            updateMqttStatus(mqttStatus)
         }
     }
-    private fun initSpinner(){
+
+    private fun initSpinner() {
         val serialPortFinder = SerialPortFinder()
         val devices: ArrayList<Device> = serialPortFinder.devices
         val items = devices.map { it.file.absolutePath }
-        val adapter = ArrayAdapter(requireActivity(), android.R.layout.simple_spinner_item, items)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        val adapter = ArrayAdapter(requireActivity(), AndroidR.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(AndroidR.layout.simple_spinner_dropdown_item)
         binding.spinner.adapter = adapter
-        // 设置默认选中ttyCH343USB2
+
         val defaultPosition = items.indexOf(configBean.modbusAddress)
         if (defaultPosition >= 0) {
             binding.spinner.setSelection(defaultPosition)
-            devices.first { it.file.absolutePath == configBean.modbusAddress }?.apply {
-                configBean.modbusAddress= file.absolutePath.toString()
+            devices.first { it.file.absolutePath == configBean.modbusAddress }.apply {
+                configBean.modbusAddress = file.absolutePath
             }
         }
+
         binding.spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(
                 parent: AdapterView<*>,
@@ -152,15 +196,18 @@ class ConfigFragment : Fragment() {
                 id: Long
             ) {
                 val selectedItem = parent.getItemAtPosition(position).toString()
-                devices.first { it.file.absolutePath==selectedItem }.apply {
-                    configBean.modbusAddress=file.absolutePath.toString()
+                devices.first { it.file.absolutePath == selectedItem }.apply {
+                    configBean.modbusAddress = file.absolutePath
                 }
+                LogUtils.d("【配置页】已选择串口：$selectedItem")
             }
+
             override fun onNothingSelected(parent: AdapterView<*>?) {
-                // 当没有选中项时调用
+                // 未选择串口时无需额外处理。
             }
         }
     }
+
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null

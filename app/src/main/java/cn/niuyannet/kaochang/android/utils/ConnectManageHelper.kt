@@ -8,46 +8,42 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/**
- * 连接管理器
- */
 object ConnectManageHelper {
-    //轮询状态
-    private var connectLun=true
-    /**
-     * 状态监听
-     * 建立10秒重连机制
-     */
+    private var connectLun = true
+
     @OptIn(DelicateCoroutinesApi::class)
-    fun lunStatus(callback:(()->Unit)){
+    fun lunStatus(callback: () -> Unit) {
+        connectLun = true
         GlobalScope.launch(Dispatchers.IO) {
-            while (connectLun){
-                delay(10*1000)
-                //判断mqtt服务状态
-                VMMqttHelper.connect{ }
-                //判断modbus状态
-                VMModbusHelper.connectModbus {md->}
-                //执行其他需要更新的参数
+            fun runSingleCheck(includeModbus: Boolean) {
+                VMMqttHelper.connect { }
+                if (includeModbus) {
+                    VMModbusHelper.connectModbus { _ -> }
+                }
                 GlobalScope.launch(Dispatchers.Main) {
                     callback.invoke()
                 }
+            }
 
+            // 先立即连接 MQTT，让后台尽快感知设备上线。
+            // Modbus 仍放在定时轮询里处理，避免应用刚启动时过于激进地反复探测串口。
+            runSingleCheck(includeModbus = false)
+
+            while (connectLun) {
+                delay(10 * 1000L)
+                if (!connectLun) {
+                    break
+                }
+                runSingleCheck(includeModbus = true)
             }
         }
-     }
-    /**
-     * 释放所有的连接配置
-     */
-    fun disConnect(){
-        connectLun =false
-        //取消订阅
-        VMMqttHelper.unAllSubscribe()
-        //取消modbus状态轮询
-        VMModbusHelper.isLunXun=false
-        //关闭mqtt连接
-        VMMqttHelper.disconnect()
-        //关闭modbus连接
-        VMModbusHelper.disconnectModbusMaster()
     }
 
+    fun disConnect() {
+        connectLun = false
+        VMMqttHelper.unAllSubscribe()
+        VMModbusHelper.isLunXun = false
+        VMMqttHelper.disconnect()
+        VMModbusHelper.disconnectModbusMaster()
+    }
 }
