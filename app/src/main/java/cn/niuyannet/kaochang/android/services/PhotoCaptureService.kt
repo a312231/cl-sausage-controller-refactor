@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -33,7 +34,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import cn.niuyannet.kaochang.android.MyApp.Companion.instance
-import kotlinx.coroutines.time.delay
 
 class PhotoCaptureService : LifecycleService() {
     
@@ -44,7 +44,6 @@ class PhotoCaptureService : LifecycleService() {
     
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-
     companion object {
         private const val TAG = "PhotoCaptureService"
         private const val NOTIFICATION_ID = 1001
@@ -53,14 +52,14 @@ class PhotoCaptureService : LifecycleService() {
         private const val ACTION_CAPTURE_AND_DETECT = "capture_and_detect"
         private const val ACTION_STOP_SERVICE = "stop_service"
         
-        // 用于存储回调的 Map
+        // 保存待回调任务，避免服务异步返回时找不到调用方。
         private val pendingCallbacks = mutableMapOf<String, (SauceDetectionProcessor.SausageInfo?) -> Unit>()
         private var callbackCounter = 0
         
-        // 服务实例引用
+        // 服务实例引用，便于页面直接复用已启动的后台服务。
         @Volatile
         private var serviceInstance: PhotoCaptureService? = null
-        // 防止并发炸相机（比如按钮抖动 / 后台任务）
+        // 防止并发拍照把相机状态打乱，例如按钮连点或后台重复任务。
         @Volatile
         private var isCapturing = false
 
@@ -68,10 +67,11 @@ class PhotoCaptureService : LifecycleService() {
         private var isRestarted = false
         
         /**
-         * 启动并初始化服务（在应用启动时调用）
+         * 启动并初始化服务。
+         * 只负责拉起前台服务，不在这里强制初始化相机，真正拍照时再按需准备相机。
          */
         fun startService(context: Context) {
-            LogUtils.d("启动服务")
+            LogUtils.d("【拍照服务】请求启动前台服务")
             val intent = Intent(context, PhotoCaptureService::class.java).apply {
                 action = ACTION_INIT_SERVICE
             }
@@ -80,7 +80,7 @@ class PhotoCaptureService : LifecycleService() {
         }
         
         /**
-         * 停止服务
+         * 停止服务。
          */
         fun stopService(context: Context) {
             val intent = Intent(context, PhotoCaptureService::class.java).apply {
@@ -89,7 +89,7 @@ class PhotoCaptureService : LifecycleService() {
             context.stopService(intent)
         }
 
-        // 提供公开方法获取实例
+        // 供页面直接获取当前服务实例。
         fun getInstance(): PhotoCaptureService? {
             return serviceInstance
         }
@@ -110,33 +110,33 @@ class PhotoCaptureService : LifecycleService() {
             pendingCallbacks[callbackId] = callback
 
 
-            // 如果服务实例存在且已初始化，直接调用
+            // 服务已存在时尽量直接复用，减少重复拉起和重复绑定。
             serviceInstance?.let { service ->
                 if (service.isInitializedService && !isRestarted && isRetry) {
-                    LogUtils.d("直接调用")
+                    LogUtils.d("【拍照服务】复用已启动服务直接执行拍照：roiFlag=$roiFlag, callbackId=$callbackId")
                     service.captureAndDetectInternal(roiFlag, callbackId)
                 } else {
-                    // 服务未初始化，等待初始化完成后再调用
-                    LogUtils.d("等待服务初始化")
+                    // 服务已存在但尚未就绪，短暂等待初始化完成后再执行，避免误判为拍照失败。
+                    LogUtils.d("【拍照服务】服务未就绪，等待初始化完成：roiFlag=$roiFlag, callbackId=$callbackId")
                     service.serviceScope.launch {
-                        // 等待初始化完成，最多等待5秒
+                        // 最多等待 5 秒，避免调用方一直挂起。
                         var waited = 0
                         while (!(service.isInitializedService && !isRestarted) && waited < 5000) {
-                            kotlinx.coroutines.delay(100)
+                            delay(100)
                             waited += 100
                         }
                         if (service.isInitializedService && !isRestarted) {
                             service.captureAndDetectInternal(roiFlag, callbackId)
                         } else {
-                            Log.e(TAG, "服务初始化超时")
-                            LogUtils.d("服务初始化超时")
+                            Log.e(TAG, "拍照服务初始化超时")
+                            LogUtils.w("【拍照服务】等待服务初始化超时，放弃本次拍照：roiFlag=$roiFlag, callbackId=$callbackId")
                             invokeCallback(callbackId, null)
                         }
                     }
                 }
             } ?: run {
-                // 服务未启动，先启动服务
-                LogUtils.d("服务重启")
+                // 服务尚未启动，先拉起前台服务并把这次拍照请求一起带上。
+                LogUtils.d("【拍照服务】服务未启动，准备拉起前台服务后执行拍照：roiFlag=$roiFlag, callbackId=$callbackId")
                 val intent = Intent(context, PhotoCaptureService::class.java).apply {
                     action = ACTION_CAPTURE_AND_DETECT
                     putExtra("roiFlag", roiFlag)
@@ -151,15 +151,15 @@ class PhotoCaptureService : LifecycleService() {
             if (callback != null) {
                 try {
                     callback(result)
-                    LogUtils.d("回调已调用，callbackId: $callbackId")
-                    Log.d(TAG, "回调已调用，callbackId: $callbackId")
+                    LogUtils.d("【拍照服务】拍照结果回调完成：callbackId=$callbackId, hasResult=${result != null}")
+                    Log.d(TAG, "拍照结果回调完成，callbackId=$callbackId")
                 } catch (e: Exception) {
-                    LogUtils.d("调用回调时出错")
-                    Log.e(TAG, "调用回调时出错", e)
+                    LogUtils.e("【拍照服务】调用拍照结果回调失败：callbackId=$callbackId", e)
+                    Log.e(TAG, "调用拍照结果回调失败", e)
                 }
             } else {
-                LogUtils.d("未找到回调，callbackId: $callbackId")
-                Log.w(TAG, "未找到回调，callbackId: $callbackId")
+                LogUtils.w("【拍照服务】未找到回调对象，可能已超时或已被释放：callbackId=$callbackId")
+                Log.w(TAG, "未找到回调对象，callbackId=$callbackId")
             }
         }
         
@@ -168,19 +168,19 @@ class PhotoCaptureService : LifecycleService() {
         }
     }
 
-    // 相机初始化
+    // 相机初始化状态。
     @Volatile
     var isInitialized = false
         private set
-    // 服务初始化
+    // 服务初始化状态。
     var isInitializedService = false
     private val initializationLock = Any()
-    // 专门为“拍照事务”准备的锁对象
+    // 专门为拍照事务准备的锁，避免同一时刻多次拍照并发进入。
     private val captureLock = Any()
     
     override fun onCreate() {
         super.onCreate()
-        LogUtils.d("相机服务启动")
+        LogUtils.d("【拍照服务】前台服务已创建")
         createNotificationChannel()
         Companion.setServiceInstance(this)
     }
@@ -190,26 +190,21 @@ class PhotoCaptureService : LifecycleService() {
         
         when (intent?.action) {
             ACTION_INIT_SERVICE -> {
-                // 初始化服务并保持运行
+                // 仅启动前台服务，真正拍照时再准备相机。
                 startForegroundService()
-                isInitializedService=true
-//                serviceScope.launch {
-//                    initializeCameraOnce()
-//                }
+                isInitializedService = true
             }
             ACTION_CAPTURE_AND_DETECT -> {
                 val roiFlag = intent.getIntExtra("roiFlag", 0)
                 val callbackId = intent.getStringExtra("callbackId") ?: ""
-                // 如果服务未初始化，先初始化
+                // 服务未初始化时先拉起前台服务，再继续本次拍照。
                 if (!isInitializedService) {
                     startForegroundService()
-                    isInitializedService=true
+                    isInitializedService = true
                     serviceScope.launch {
-                        //initializeCameraOnce()
                         captureAndDetectInternal(roiFlag, callbackId)
                     }
                 } else {
-                    // 直接拍照
                     captureAndDetectInternal(roiFlag, callbackId)
                 }
             }
@@ -248,7 +243,7 @@ class PhotoCaptureService : LifecycleService() {
             startForeground(
                 NOTIFICATION_ID, 
                 notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -256,13 +251,14 @@ class PhotoCaptureService : LifecycleService() {
     }
 
     /**
-     * “初始化相机”改成按需函数
-     * **/
+     * 按需准备相机。
+     * 只有真正需要拍照时才初始化，避免长期占用相机导致别的页面无法使用。
+     */
     private suspend fun ensureCameraReady() {
         synchronized(initializationLock) {
             if (isInitialized) return
 
-            LogUtils.d("captureAndDetect：初始化相机")
+            LogUtils.d("【拍照服务】开始按需初始化相机")
 
             val cameraProviderFuture =
                 ProcessCameraProvider.getInstance(this@PhotoCaptureService)
@@ -286,16 +282,17 @@ class PhotoCaptureService : LifecycleService() {
             }
 
             isInitialized = true
-            LogUtils.d("相机 bind 完成")
+            LogUtils.d("【拍照服务】相机绑定完成，已可执行拍照")
         }
     }
 
     /**
-     * 新增“释放相机”的统一出口
-     * **/
+     * 统一释放相机资源。
+     * 当服务停止、重启或需要主动让出相机时都走这里，避免相机状态残留。
+     */
     private fun releaseCamera() {
         synchronized(initializationLock) {
-            LogUtils.d("captureAndDetect：释放相机")
+            LogUtils.d("【拍照服务】释放相机资源")
             cameraProvider?.unbindAll()
             cameraProvider = null
             imageCapture = null
@@ -305,17 +302,17 @@ class PhotoCaptureService : LifecycleService() {
     }
 
     /**
-     * 初始化相机（只初始化一次）
+     * 旧版初始化入口，当前仍保留给少数历史流程复用。
      */
     private suspend fun initializeCameraOnce() {
         synchronized(initializationLock) {
             if (isInitialized) {
-                LogUtils.d("相机已初始化，跳过")
+                LogUtils.d("【拍照服务】相机已初始化，跳过重复初始化")
                 return
             }
             
             try {
-                LogUtils.d("开始初始化相机...")
+                LogUtils.d("【拍照服务】开始初始化相机")
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
                 cameraProvider = cameraProviderFuture.get()
                 
@@ -334,17 +331,18 @@ class PhotoCaptureService : LifecycleService() {
                     imageCapture
                 )
                 
-                // 初始化检测处理器
+                // 初始化检测处理器。
                 if (detectionProcessor == null) {
                     detectionProcessor = SauceDetectionProcessor(this@PhotoCaptureService)
                 }
                 
                 isInitialized = true
-                LogUtils.d("相机初始化成功")
+                LogUtils.d("【拍照服务】相机初始化成功")
                 updateNotification("拍照服务就绪")
             } catch (e: Exception) {
                 Log.e(TAG, "初始化相机失败", e)
-                updateNotification("相机初始化失败: ${e.message}")
+                LogUtils.e("【拍照服务】初始化相机失败：${e.message}", e)
+                updateNotification("相机初始化失败：${e.message}")
             }
         }
     }
@@ -372,65 +370,50 @@ class PhotoCaptureService : LifecycleService() {
     }
     
     /**
-     * 停止服务（内部方法）
+     * 内部停止入口：释放资源但不主动 stopSelf，供重启场景复用。
      */
     private fun stopServiceSafe() {
         isInitializedService = false
-        // 如果正在拍照，直接强制结束
+        // 若当前仍在拍照，直接结束本次事务，防止服务退出时挂住。
         synchronized(captureLock) {
             isCapturing = false
         }
-        releaseCamera()          // ✅ 统一释放相机
-//        synchronized(initializationLock) {
-//            isInitialized = false
-//            cameraProvider?.unbindAll()
-//            cameraProvider = null
-//            imageCapture = null
-//            detectionProcessor = null
-//        }
+        releaseCamera()
         stopForeground(true)
-        //stopSelf()
     }
+
     private fun stopService() {
-        // 如果正在拍照，直接强制结束
+        // 若当前仍在拍照，直接结束本次事务，防止销毁时状态残留。
         synchronized(captureLock) {
             isCapturing = false
         }
         isInitializedService = false
-        //releaseCamera()          // ✅ 统一释放相机
-//        synchronized(initializationLock) {
-//            isInitialized = false
-//            cameraProvider?.unbindAll()
-//            cameraProvider = null
-//            imageCapture = null
-//            detectionProcessor = null
-//        }
         stopForeground(true)
         stopSelf()
     }
-    // 重启服务
-//    fun stopServicePublic() {
-//        serviceScope.launch {
-//                LogUtils.d("关闭服务")
-//                stopServiceSafe()
-//                delay(500)
-//                isRestarted = true
-//        }
-//    }
+
+    /**
+     * 页面侧主动停止前台服务。
+     */
     fun stopServicePublic(callback: (success: Boolean) -> Unit) {
         serviceScope.launch {
             try {
-                LogUtils.d("关闭服务")
+                LogUtils.d("【拍照服务】收到页面侧关闭服务请求")
                 isRestarted = true
                 stopServiceSafe()
                 delay(500)
                 callback(true)
             } catch (e: Exception) {
-                LogUtils.e("停止服务失败", e)
+                LogUtils.e("【拍照服务】停止服务失败", e)
                 callback(false)
             }
         }
     }
+
+    /**
+     * 主动重启相机。
+     * 主要用于相机状态异常时强制重新绑定。
+     */
     fun restartCamera() {
         serviceScope.launch {
             while (isCapturing) delay(500)
@@ -442,7 +425,7 @@ class PhotoCaptureService : LifecycleService() {
                 cameraProvider?.unbindAll()
                 imageCapture = null
 
-                // 重新初始化 ImageCapture 并绑定
+                // 重新初始化 ImageCapture 并绑定。
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(this@PhotoCaptureService)
                 cameraProvider = cameraProviderFuture.get()
 
@@ -460,16 +443,19 @@ class PhotoCaptureService : LifecycleService() {
 
                 isInitialized = true
                 updateNotification("相机已重启")
-                LogUtils.d("相机已重启")
+                LogUtils.d("【拍照服务】相机已重启并重新绑定")
             }
         }
     }
+
     /**
-     * 拍照并检测（内部方法，直接使用已初始化的相机）
+     * 执行一次完整的拍照与检测。
+     * 这里会串行化拍照流程，防止并发拍照导致相机状态混乱。
      */
     fun captureAndDetectInternal(roiFlag: Int, callbackId: String) {
         synchronized(captureLock) {
             if (isCapturing) {
+                LogUtils.w("【拍照服务】当前已有拍照任务在执行，直接返回空结果：roiFlag=$roiFlag, callbackId=$callbackId")
                 invokeCallback(callbackId, null)
                 return
             }
@@ -478,12 +464,12 @@ class PhotoCaptureService : LifecycleService() {
 
         serviceScope.launch {
             try {
-                // ① 用之前再初始化相机
+                // 每次使用前确认相机已准备好。
                 ensureCameraReady()
 
                 detectionProcessor?.roiFlag = roiFlag
                 updateNotification("正在拍照检测...")
-                LogUtils.d("正在拍照...")
+                LogUtils.d("【拍照服务】开始拍照并检测：roiFlag=$roiFlag, callbackId=$callbackId")
 
                 imageCapture!!.takePicture(
                     cameraExecutor,
@@ -495,13 +481,11 @@ class PhotoCaptureService : LifecycleService() {
                                 val result = detectSausageSync(img)
                                 invokeCallback(callbackId, result)
                             } catch (e: Exception) {
-                                LogUtils.d(TAG,"处理图像时出错: " + e.message)
+                                LogUtils.e("【拍照服务】拍照成功后处理图像失败：callbackId=$callbackId, error=${e.message}", e)
                                 invokeCallback(callbackId, null)
                             } finally {
                                 imageProxy.close()
-                                //releaseCamera()   // ✅ 用完立刻解绑
                                 updateNotification("拍照服务就绪")
-                                // 释放
                                 synchronized(captureLock) {
                                     isCapturing = false
                                 }
@@ -510,6 +494,7 @@ class PhotoCaptureService : LifecycleService() {
 
                         override fun onError(exception: ImageCaptureException) {
                             Log.e(TAG, "拍照失败", exception)
+                            LogUtils.e("【拍照服务】拍照失败：callbackId=$callbackId, error=${exception.message}", exception)
                             invokeCallback(callbackId, null)
                             //releaseCamera()       // ✅ 出错也解绑
                             updateNotification("拍照失败")
@@ -521,29 +506,23 @@ class PhotoCaptureService : LifecycleService() {
                     }
                 )
             } catch (e: Exception) {
-                //Log.e(TAG, "captureAndDetectInternal 异常", e)
-                LogUtils.e(TAG, "captureAndDetectInternal 异常", e)
+                LogUtils.e("【拍照服务】拍照流程异常：roiFlag=$roiFlag, callbackId=$callbackId", e)
                 invokeCallback(callbackId, null)
-                //releaseCamera()
-                // 释放
                 synchronized(captureLock) {
                     isCapturing = false
                 }
             }
-//            finally {
-//                releaseCamera()       // ✅ 出错也解绑
-//            }
         }
     }
 
     /**
-     * 拍照并检测（旧的内部方法，暂时弃用，直接使用已初始化的相机）
+     * 旧版拍照入口，已废弃，仅保留做兼容兜底。
      */
     @Deprecated("使用每次拍照再开启相机的版本", ReplaceWith("captureAndDetectInternal(roiFlag, callbackId)"))
     fun captureAndDetectInternalOld(roiFlag: Int, callbackId: String) {
-        // 确保相机已初始化
+        // 旧逻辑要求相机已提前初始化，否则直接失败。
         if (!isInitialized || imageCapture == null || detectionProcessor == null) {
-            LogUtils.d("相机未初始化，无法拍照")
+            LogUtils.w("【拍照服务】旧版拍照入口发现相机未初始化，无法继续拍照")
             Log.e(TAG, "相机未初始化，无法拍照")
             invokeCallback(callbackId, null)
             return
@@ -551,31 +530,31 @@ class PhotoCaptureService : LifecycleService() {
         
         detectionProcessor?.roiFlag = roiFlag
         updateNotification("正在拍照检测...")
-        LogUtils.d("正在拍照...")
+        LogUtils.d("【拍照服务】开始执行旧版拍照入口：roiFlag=$roiFlag, callbackId=$callbackId")
 
-        LogUtils.d("executorAlive=${cameraExecutor.isShutdown}, terminated=${cameraExecutor.isTerminated}")
-        LogUtils.d("imageCapture hash=${imageCapture}")
+        LogUtils.d("【拍照服务】执行器状态：isShutdown=${cameraExecutor.isShutdown}, isTerminated=${cameraExecutor.isTerminated}")
+        LogUtils.d("【拍照服务】当前 ImageCapture 实例：$imageCapture")
         imageCapture!!.takePicture(
             cameraExecutor,
             object : OnImageCapturedCallback() {
                 override fun onCaptureSuccess(imageProxy: ImageProxy) {
                     try {
-                        LogUtils.d("成功进入回调 onCaptureSuccess")
+                        LogUtils.d("【拍照服务】拍照成功，进入图像处理回调")
                         val img = imageProxyToMat(imageProxy)
                         if (img == null) {
-                            LogUtils.d("图像处理失败")
+                            LogUtils.w("【拍照服务】图像转换失败，无法继续识别")
                             invokeCallback(callbackId, null)
                         } else {
-                            LogUtils.d("正在检测...")
+                            LogUtils.d("【拍照服务】图像转换完成，开始执行识别")
                             val result = detectSausageSync(img)
                             invokeCallback(callbackId, result)
                         }
                     } catch (e: Exception) {
-                        LogUtils.d("处理图像时出错: " + e.message)
+                        LogUtils.e("【拍照服务】旧版拍照入口处理图像失败：${e.message}", e)
                         invokeCallback(callbackId, null)
                     } finally {
                         imageProxy.close()
-                        LogUtils.d("拍照服务就绪")
+                        LogUtils.d("【拍照服务】旧版拍照入口执行结束，服务恢复就绪")
                         updateNotification("拍照服务就绪")
                     }
                 }
@@ -621,7 +600,7 @@ class PhotoCaptureService : LifecycleService() {
             
             mat
         } catch (e: Exception) {
-            LogUtils.d("图像转换失败: " + e.message)
+            LogUtils.e("【拍照服务】ImageProxy 转 Mat 失败：${e.message}", e)
             null
         }
     }
@@ -629,12 +608,12 @@ class PhotoCaptureService : LifecycleService() {
     private fun detectSausageSync(img: Mat?): SauceDetectionProcessor.SausageInfo? {
         return try {
             if (img == null || detectionProcessor == null) {
-                LogUtils.d("执行烤肠检测-图像或处理器为空")
+                LogUtils.w("【拍照服务】执行烤肠识别时图像或处理器为空")
                 return null
             }
             
             val platformType = if (detectionProcessor!!.roiFlag == 0) "运输台" else "售卖台"
-            LogUtils.d("开始检测${platformType}上的烤肠，图像尺寸: ${img.width()}x${img.height()}, 通道数: ${img.channels()}")
+            LogUtils.d("【拍照服务】开始识别${platformType}烤肠：size=${img.width()}x${img.height()}, channels=${img.channels()}")
             
             val result = detectionProcessor!!.processImage(img)
             
@@ -650,14 +629,14 @@ class PhotoCaptureService : LifecycleService() {
                     LogUtils.d(resultText)
                     return sausage
                 } else {
-                    LogUtils.d("售卖台检测结果为空")
+                    LogUtils.d("【拍照服务】售卖台识别结果为空")
                     return null
                 }
             }
 
-            // 运输台检测逻辑
+            // 运输台识别逻辑。
             if (result.sausages.isEmpty()) {
-                LogUtils.d("${platformType}未检测到烤肠")
+                LogUtils.d("【拍照服务】${platformType}未检测到烤肠")
                 return null
             } else {
                 val sausage = result.sausages[0]
@@ -669,7 +648,7 @@ class PhotoCaptureService : LifecycleService() {
                 return sausage
             }
         } catch (e: Exception) {
-            LogUtils.d("检测烤肠时出错: " + e.message)
+            LogUtils.e("【拍照服务】识别烤肠失败：${e.message}", e)
             null
         } finally {
             img?.release()
@@ -678,23 +657,15 @@ class PhotoCaptureService : LifecycleService() {
     
     override fun onDestroy() {
         super.onDestroy()
-        LogUtils.d("服务销毁")
-        // 如果正在拍照，直接强制结束
+        LogUtils.d("【拍照服务】服务销毁，开始释放资源")
+        // 销毁时若还有拍照任务，直接结束，避免退出过程卡住。
         synchronized(captureLock) {
             isCapturing = false
         }
         releaseCamera()
         isInitializedService = false
-//        synchronized(initializationLock) {
-//            isInitialized = false
-//            cameraProvider?.unbindAll()
-//            cameraProvider = null
-//            imageCapture = null
-//            detectionProcessor = null
-//        }
         cameraExecutor.shutdown()
         serviceScope.cancel()
         Companion.setServiceInstance(null)
     }
 }
-

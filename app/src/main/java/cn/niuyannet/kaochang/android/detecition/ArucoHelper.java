@@ -13,7 +13,7 @@ import org.opencv.android.Utils;
 import org.opencv.aruco.Aruco;
 import org.opencv.aruco.DetectorParameters;
 import org.opencv.aruco.Dictionary;
-import org.opencv.calib3d.Calib3d;
+import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.Size;
@@ -34,8 +34,9 @@ import java.util.zip.ZipInputStream;
 import cn.niuyannet.kaochang.android.R;
 
 /**
- * ArUco 标记检测和相机标定辅助类
- * 实现 Python cv_init.py 的功能
+ * ArUco 标记检测与相机标定辅助类。
+ * 对外保留原有接口，内部增加镜像兜底检测，
+ * 兼容 Android 12 外接相机画面可能被水平镜像输出的情况。
  */
 public class ArucoHelper {
     private static final String TAG = "ArucoHelper";
@@ -43,83 +44,56 @@ public class ArucoHelper {
     private static final int DEFAULT_HEIGHT = 448;
     private static final String PREF_NAME = "aruco_helper_prefs";
     private static final String KEY_CORNERS = "corners_data";
-    private static final int TARGET_MARKER_ID = 1; // 目标标记ID，与Python代码保持一致
-    
-    private Context context;
+    private static final int TARGET_MARKER_ID = 1;
+
+    private final Context context;
+    private final SharedPreferences sharedPreferences;
     private Mat cameraMatrix;
     private Mat distCoeffs;
-    private SharedPreferences sharedPreferences;
-    
-    /**
-     * 构造函数
-     * @param context 应用上下文
-     */
+
     public ArucoHelper(Context context) {
         this.context = context;
         this.sharedPreferences = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         loadCalibrationData();
     }
-    
-    /**
-     * 从 raw 资源目录中加载相机标定数据
-     */
+
     private void loadCalibrationData() {
         try {
-            // 从 raw 资源目录中获取 calibration_data.npz 文件
             InputStream inputStream = context.getResources().openRawResource(R.raw.calibration_data);
-            
-            // 解析 NPZ 文件（实际上是 ZIP 格式）
             Map<String, byte[]> npzData = readNpzFile(inputStream);
-            
+
             if (npzData.containsKey("camera_matrix.npy") && npzData.containsKey("dist_coeffs.npy")) {
-                // 解析相机矩阵
-                byte[] cameraMatrixBytes = npzData.get("camera_matrix.npy");
-                cameraMatrix = parseNumpyArray(cameraMatrixBytes, 3, 3);
-                
-                // 解析畸变系数
-                byte[] distCoeffsBytes = npzData.get("dist_coeffs.npy");
-                distCoeffs = parseNumpyArray(distCoeffsBytes, 1, 5);
-                
-                Log.d(TAG, "Camera calibration data loaded successfully from raw resource");
+                cameraMatrix = parseNumpyArray(npzData.get("camera_matrix.npy"), 3, 3);
+                distCoeffs = parseNumpyArray(npzData.get("dist_coeffs.npy"), 1, 5);
+                Log.d(TAG, "已从 raw 资源成功加载相机标定数据");
             } else {
-                Log.e(TAG, "Required data not found in calibration_data.npz");
+                Log.e(TAG, "calibration_data.npz 中缺少必需的标定数据");
             }
         } catch (Resources.NotFoundException e) {
-            Log.e(TAG, "Calibration data file not found in raw resources: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "raw 资源中未找到相机标定文件：" + e.getMessage(), e);
         } catch (IOException e) {
-            Log.e(TAG, "Error loading calibration data: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "加载相机标定数据失败：" + e.getMessage(), e);
         } catch (Exception e) {
-            Log.e(TAG, "Unexpected error: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "加载相机标定数据时发生异常：" + e.getMessage(), e);
         }
     }
-    
-    /**
-     * 读取 NPZ 文件（实际上是 ZIP 格式）
-     * @param inputStream NPZ 文件输入流
-     * @return 包含 NPZ 文件内容的 Map
-     */
+
     private Map<String, byte[]> readNpzFile(InputStream inputStream) throws IOException {
         Map<String, byte[]> result = new HashMap<>();
         ZipInputStream zipInputStream = new ZipInputStream(inputStream);
-        
+
         ZipEntry entry;
         while ((entry = zipInputStream.getNextEntry()) != null) {
             String name = entry.getName();
-            
-            // 读取文件内容
             int size = (int) entry.getSize();
+
             if (size == -1) {
-                // 如果大小未知，使用缓冲区读取
                 ByteBuffer buffer = ByteBuffer.allocate(1024);
-                int bytesRead;
                 byte[] tempBuffer = new byte[1024];
-                
+                int bytesRead;
+
                 while ((bytesRead = zipInputStream.read(tempBuffer)) != -1) {
                     if (buffer.position() + bytesRead > buffer.capacity()) {
-                        // 扩展缓冲区
                         ByteBuffer newBuffer = ByteBuffer.allocate(buffer.capacity() * 2);
                         buffer.flip();
                         newBuffer.put(buffer);
@@ -127,74 +101,57 @@ public class ArucoHelper {
                     }
                     buffer.put(tempBuffer, 0, bytesRead);
                 }
-                
+
                 buffer.flip();
                 byte[] data = new byte[buffer.limit()];
                 buffer.get(data);
                 result.put(name, data);
             } else {
-                // 如果大小已知，直接分配足够的空间
                 byte[] data = new byte[size];
-                int bytesRead = 0;
                 int offset = 0;
+                int bytesRead;
                 while (offset < size && (bytesRead = zipInputStream.read(data, offset, size - offset)) != -1) {
                     offset += bytesRead;
                 }
                 result.put(name, data);
             }
-            
+
             zipInputStream.closeEntry();
         }
-        
+
         zipInputStream.close();
         return result;
     }
-    
-    /**
-     * 解析 NumPy 数组数据
-     * @param data NumPy 数组数据
-     * @param rows 行数
-     * @param cols 列数
-     * @return OpenCV Mat 对象
-     */
+
     private Mat parseNumpyArray(byte[] data, int rows, int cols) {
-        // NumPy 文件头部分包含元数据，我们需要跳过它
-        // 简单起见，我们假设数据从第 128 个字节开始
-        // 实际情况可能需要更精确的解析
         int headerSize = 128;
-        if (data.length <= headerSize) {
-            Log.e(TAG, "Invalid NumPy array data");
+        if (data == null || data.length <= headerSize) {
+            Log.e(TAG, "NumPy 数组数据无效");
             return null;
         }
-        
-        // 创建 Mat 对象
+
         Mat mat = new Mat(rows, cols, CvType.CV_64F);
-        
-        // 解析数据部分
         ByteBuffer buffer = ByteBuffer.wrap(data, headerSize, data.length - headerSize);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
-        
+
         double[] matData = new double[rows * cols];
         for (int i = 0; i < rows * cols; i++) {
             if (buffer.remaining() >= 8) {
                 matData[i] = buffer.getDouble();
             }
         }
-        
+
         mat.put(0, 0, matData);
         return mat;
     }
-    
-    /**
-     * 检测结果类，包含处理后的图像和检测信息
-     */
+
     public static class DetectionResult {
         public Bitmap resultImage;
         public int markersCount;
         public List<Integer> markerIds;
         public boolean targetFound;
         public List<List<Double>> targetCorners;
-        
+
         public DetectionResult(Bitmap resultImage) {
             this.resultImage = resultImage;
             this.markersCount = 0;
@@ -203,211 +160,217 @@ public class ArucoHelper {
             this.targetCorners = new ArrayList<>();
         }
     }
-    
-    /**
-     * 检测图像中的 ArUco 标记并保存角点坐标
-     * @param bitmap 输入图像
-     * @param targetId 目标 ArUco 标记 ID
-     * @return 处理后的图像和检测结果信息
-     */
+
     public DetectionResult detectArucoMarkers(Bitmap bitmap, int targetId) {
         if (cameraMatrix == null || distCoeffs == null) {
-            Log.e(TAG, "Camera calibration data not loaded");
+            Log.e(TAG, "相机标定数据未加载，无法执行 ArUco 检测");
             return new DetectionResult(bitmap);
         }
-        
-        // 转换 Bitmap 为 OpenCV Mat
+
         Mat imageMat = new Mat();
         Utils.bitmapToMat(bitmap, imageMat);
-        
-        // 确保图像格式正确（转换为 BGR 格式）
-        Mat bgrMat = new Mat();
-        if (imageMat.channels() == 4) { // RGBA 格式
-            Imgproc.cvtColor(imageMat, bgrMat, Imgproc.COLOR_RGBA2BGR);
-        } else if (imageMat.channels() == 1) { // 灰度图
-            Imgproc.cvtColor(imageMat, bgrMat, Imgproc.COLOR_GRAY2BGR);
-        } else if (imageMat.channels() == 3) { // 可能是BGR格式
-            // 确保是BGR格式而不是RGB格式
-            bgrMat = imageMat.clone();
-        } else {
-            // 处理其他可能的格式，转换为BGR
-            Log.w(TAG, "未知图像格式，通道数: " + imageMat.channels() + "，尝试转换为BGR");
-            bgrMat = new Mat();
-            if (imageMat.channels() > 0) {
-                Imgproc.cvtColor(imageMat, bgrMat, Imgproc.COLOR_RGB2BGR);
-            } else {
-                // 如果无法确定格式，创建一个空的BGR图像
-                bgrMat = new Mat(imageMat.rows(), imageMat.cols(), CvType.CV_8UC3);
+
+        Mat bgrMat = toBgr(imageMat);
+        imageMat.release();
+        if (bgrMat == null || bgrMat.empty()) {
+            Log.e(TAG, "转换后的 BGR 图像为空");
+            if (bgrMat != null) {
+                bgrMat.release();
             }
-        }
-        
-        // 检查图像是否有效
-        if (bgrMat.empty()) {
-            Log.e(TAG, "转换后的BGR图像为空");
             return new DetectionResult(bitmap);
         }
-        
-        // 获取图像尺寸
-        int width = bgrMat.cols();
-        int height = bgrMat.rows();
-        
-        // 调整图像大小为默认尺寸，与Python代码保持一致
-        Mat resizedImage = new Mat();
-        Imgproc.resize(bgrMat, resizedImage, new Size(DEFAULT_WIDTH, DEFAULT_HEIGHT));
-        
-        // 设置 ArUco 字典和参数 - 与Python代码保持一致
+
         Dictionary dictionary = Aruco.getPredefinedDictionary(Aruco.DICT_4X4_50);
+        DetectorParameters parameters = buildDetectorParameters();
+
+        DetectionResult result = detectWithFallbackVariants(bgrMat, bitmap, dictionary, parameters, targetId);
+        bgrMat.release();
+        return result;
+    }
+
+    private Mat toBgr(Mat imageMat) {
+        if (imageMat == null || imageMat.empty()) {
+            return null;
+        }
+
+        Mat bgrMat = new Mat();
+        int channels = imageMat.channels();
+        if (channels == 4) {
+            Imgproc.cvtColor(imageMat, bgrMat, Imgproc.COLOR_RGBA2BGR);
+        } else if (channels == 1) {
+            Imgproc.cvtColor(imageMat, bgrMat, Imgproc.COLOR_GRAY2BGR);
+        } else if (channels == 3) {
+            bgrMat = imageMat.clone();
+        } else {
+            Log.w(TAG, "检测到未知图像通道数：" + channels);
+            imageMat.copyTo(bgrMat);
+        }
+        return bgrMat;
+    }
+
+    private DetectorParameters buildDetectorParameters() {
         DetectorParameters parameters = DetectorParameters.create();
-        
-        // 设置检测参数 - 与Python代码保持一致
         parameters.set_adaptiveThreshConstant(4);
         parameters.set_minMarkerPerimeterRate(0.01);
         parameters.set_maxMarkerPerimeterRate(4.0);
         parameters.set_minDistanceToBorder(3);
-        
-        // 检测标记
+        return parameters;
+    }
+
+    private DetectionResult detectWithFallbackVariants(
+        Mat bgrMat,
+        Bitmap originalBitmap,
+        Dictionary dictionary,
+        DetectorParameters parameters,
+        int targetId
+    ) {
+        Mat resizedImage = new Mat();
+        Imgproc.resize(bgrMat, resizedImage, new Size(DEFAULT_WIDTH, DEFAULT_HEIGHT));
+
+        DetectionResult directResult = runDetection(resizedImage, originalBitmap, dictionary, parameters, targetId);
+        if (directResult.markersCount > 0) {
+            Log.d(TAG, "在原始画面中检测到 ArUco 标记");
+            resizedImage.release();
+            return directResult;
+        }
+
+        Mat mirroredImage = new Mat();
+        Core.flip(resizedImage, mirroredImage, 1);
+        DetectionResult mirroredResult = runDetection(mirroredImage, originalBitmap, dictionary, parameters, targetId);
+        if (mirroredResult.markersCount > 0) {
+            Log.w(TAG, "仅在水平镜像后检测到 ArUco，外接相机画面很可能被镜像输出");
+            resizedImage.release();
+            mirroredImage.release();
+            return mirroredResult;
+        }
+
+        Log.d(TAG, "原始画面和镜像画面都未检测到 ArUco 标记");
+        resizedImage.release();
+        mirroredImage.release();
+        return directResult;
+    }
+
+    private DetectionResult runDetection(
+        Mat sourceImage,
+        Bitmap fallbackBitmap,
+        Dictionary dictionary,
+        DetectorParameters parameters,
+        int targetId
+    ) {
         List<Mat> corners = new ArrayList<>();
         Mat ids = new Mat();
         List<Mat> rejectedCandidates = new ArrayList<>();
-        Aruco.detectMarkers(resizedImage, dictionary, corners, ids, parameters, rejectedCandidates);
-        
-        // 创建检测结果对象
-        DetectionResult result = new DetectionResult(bitmap);
-        
-        // 绘制检测到的标记
-        Mat outputImage = resizedImage.clone();
-        
-        // 如果检测到标记
+        Aruco.detectMarkers(sourceImage, dictionary, corners, ids, parameters, rejectedCandidates);
+
+        DetectionResult result = new DetectionResult(fallbackBitmap);
+        Mat outputImage = sourceImage.clone();
+
         if (!ids.empty()) {
-            // 绘制检测到的标记
             Aruco.drawDetectedMarkers(outputImage, corners, ids);
-            
-            // 记录检测到的标记数量
             result.markersCount = ids.rows();
-            
-            // 记录所有检测到的标记ID
+
             for (int i = 0; i < ids.rows(); i++) {
                 int id = (int) ids.get(i, 0)[0];
                 result.markerIds.add(id);
-                
-                // 如果是目标ID - 与Python代码保持一致，特别处理ID=1的标记
+
                 if (id == targetId || id == TARGET_MARKER_ID) {
                     result.targetFound = true;
-                    
-                    // 获取角点坐标
                     Mat cornerMat = corners.get(i);
                     saveCorners(cornerMat);
-                    
-                    // 保存角点坐标到结果对象
-                    for (int row = 0; row < cornerMat.rows(); row++) {
-                        for (int col = 0; col < cornerMat.cols(); col++) {
-                            List<Double> point = new ArrayList<>();
-                            double[] values = cornerMat.get(row, col);
-                            for (double value : values) {
-                                point.add(value);
-                            }
-                            result.targetCorners.add(point);
-                        }
-                    }
+                    appendCornerPoints(cornerMat, result.targetCorners);
                 }
             }
-        } else {
-            // 没有检测到标记
-            Log.d(TAG, "No ArUco markers detected");
         }
-        
-        // 转换回 Bitmap
+
         Bitmap resultBitmap = Bitmap.createBitmap(outputImage.cols(), outputImage.rows(), Bitmap.Config.ARGB_8888);
         Utils.matToBitmap(outputImage, resultBitmap);
         result.resultImage = resultBitmap;
-        
-        // 释放资源
-        imageMat.release();
-        bgrMat.release();
-        resizedImage.release();
+
+        ids.release();
         outputImage.release();
-        
+        for (Mat corner : corners) {
+            corner.release();
+        }
+        for (Mat rejected : rejectedCandidates) {
+            rejected.release();
+        }
+
         return result;
     }
-    
-    /**
-     * 保存角点坐标到 SharedPreferences
-     * @param cornerMat 角点矩阵
-     */
-    private void saveCorners(Mat cornerMat) {
-        try {
-            // 将 Mat 转换为 List<List<Double>>
-            List<List<Double>> cornersList = new ArrayList<>();
-            
-            for (int i = 0; i < cornerMat.rows(); i++) {
-                for (int j = 0; j < cornerMat.cols(); j++) {
-                    List<Double> point = new ArrayList<>();
-                    double[] values = cornerMat.get(i, j);
+
+    private void appendCornerPoints(Mat cornerMat, List<List<Double>> targetCorners) {
+        for (int row = 0; row < cornerMat.rows(); row++) {
+            for (int col = 0; col < cornerMat.cols(); col++) {
+                List<Double> point = new ArrayList<>();
+                double[] values = cornerMat.get(row, col);
+                if (values != null) {
                     for (double value : values) {
                         point.add(value);
                     }
-                    cornersList.add(point);
                 }
+                targetCorners.add(point);
             }
-            
-            // 使用 Gson 将 List 转换为 JSON 字符串
+        }
+    }
+
+    private void saveCorners(Mat cornerMat) {
+        try {
+            List<List<Double>> cornersList = new ArrayList<>();
+            appendCornerPoints(cornerMat, cornersList);
+
             Gson gson = new Gson();
             String cornersJson = gson.toJson(cornersList);
-            
-            // 保存到 SharedPreferences
+
             SharedPreferences.Editor editor = sharedPreferences.edit();
             editor.putString(KEY_CORNERS, cornersJson);
             editor.apply();
-            
-            Log.d(TAG, "Corner coordinates saved to SharedPreferences");
+
+            Log.d(TAG, "已将角点坐标保存到 SharedPreferences");
         } catch (Exception e) {
-            Log.e(TAG, "Error saving corner coordinates: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "保存角点坐标失败：" + e.getMessage(), e);
         }
     }
-    
-    /**
-     * 从 SharedPreferences 加载保存的角点坐标
-     * @return 角点坐标矩阵
-     */
+
     public Mat loadCorners() {
         try {
-            // 从 SharedPreferences 获取 JSON 字符串
             String cornersJson = sharedPreferences.getString(KEY_CORNERS, null);
             if (cornersJson == null) {
-                Log.e(TAG, "Corners data not found in SharedPreferences");
+                Log.e(TAG, "SharedPreferences 中未找到角点坐标数据");
                 return null;
             }
-            
-            // 使用 Gson 将 JSON 字符串转换回 List<List<Double>>
+
             Gson gson = new Gson();
-            Type type = new TypeToken<List<List<Double>>>(){}.getType();
+            Type type = new TypeToken<List<List<Double>>>() {}.getType();
             List<List<Double>> cornersList = gson.fromJson(cornersJson, type);
-            
+
             if (cornersList == null || cornersList.isEmpty()) {
-                Log.e(TAG, "Invalid corners data format");
+                Log.e(TAG, "角点坐标数据格式无效");
                 return null;
             }
-            
-            // 创建 Mat 并填充数据
-            // 假设角点是 4x2 矩阵 (4个点，每个点有x,y坐标)
+
             Mat corners = new Mat(4, 2, CvType.CV_32F);
             float[] cornersData = new float[8];
-            
+
             int index = 0;
             for (List<Double> point : cornersList) {
-                if (index >= 8) break; // 防止越界
+                if (point == null) {
+                    continue;
+                }
                 for (Double value : point) {
-                    if (index >= 8) break; // 防止越界
+                    if (index >= cornersData.length) {
+                        break;
+                    }
                     cornersData[index++] = value.floatValue();
                 }
+                if (index >= cornersData.length) {
+                    break;
+                }
             }
-            
+
             corners.put(0, 0, cornersData);
             return corners;
         } catch (Exception e) {
-            Log.e(TAG, "Error loading corner coordinates: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "加载角点坐标失败：" + e.getMessage(), e);
             return null;
         }
     }

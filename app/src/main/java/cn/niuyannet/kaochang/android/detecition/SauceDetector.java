@@ -17,6 +17,8 @@ import org.opencv.imgproc.CLAHE;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.imgproc.Moments;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -69,10 +71,10 @@ public class SauceDetector {
             
             // 保存到文件
             String filePath =  MyApp.Companion.instance().getCacheDir()+ fileName + ".jpg";
-            java.io.File file = new java.io.File(filePath);
+            File file = new File(filePath);
             file.getParentFile().mkdirs();
             
-            java.io.FileOutputStream out = new java.io.FileOutputStream(file);
+            FileOutputStream out = new FileOutputStream(file);
             bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
             out.flush();
             out.close();

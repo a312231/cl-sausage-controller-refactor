@@ -1,13 +1,20 @@
 package cn.niuyannet.kaochang.android.services
 
 import android.content.Intent
+import android.hardware.camera2.CameraCharacteristics
 import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Size
 import android.view.Surface
+import androidx.annotation.OptIn as AndroidxOptIn
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -24,9 +31,17 @@ class CameraService : LifecycleService() {
         private const val CAMERA_OWNER = "camera_service"
     }
 
+    private data class SelectedCamera(
+        val selector: CameraSelector,
+        val isExternal: Boolean
+    )
+
     private val binder = ClientBinder()
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
+    private var imageAnalysis: ImageAnalysis? = null
+    private var useAnalysisSnapshot = false
+    private var pendingAnalysisCaptureCallback: ImageCapture.OnImageCapturedCallback? = null
 
     private val isCameraInitialized = AtomicBoolean(false)
     private val isCameraInitializing = AtomicBoolean(false)
@@ -68,9 +83,63 @@ class CameraService : LifecycleService() {
         super.onDestroy()
     }
 
+    private fun buildImageCaptureUseCase(): ImageCapture {
+        return ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .setTargetRotation(Surface.ROTATION_0)
+            .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+            .build()
+    }
+
+    private fun buildAnalysisUseCase(): ImageAnalysis {
+        return ImageAnalysis.Builder()
+            .setTargetRotation(Surface.ROTATION_0)
+            .setTargetResolution(Size(1280, 720))
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build().apply {
+                setAnalyzer(cameraExecutor) { image ->
+                    val captureCallback = synchronized(cameraLock) {
+                        if (!useAnalysisSnapshot) {
+                            null
+                        } else {
+                            pendingAnalysisCaptureCallback.also {
+                                if (it != null) {
+                                    pendingAnalysisCaptureCallback = null
+                                }
+                            }
+                        }
+                    }
+
+                    if (captureCallback == null) {
+                        image.close()
+                        return@setAnalyzer
+                    }
+
+                    try {
+                        LogUtils.d("【相机服务】外置相机使用分析帧完成拍照")
+                        captureCallback.onCaptureSuccess(image)
+                    } catch (e: Exception) {
+                        try {
+                            image.close()
+                        } catch (_: Exception) {
+                        }
+                        captureCallback.onError(
+                            ImageCaptureException(
+                                ImageCapture.ERROR_UNKNOWN,
+                                "分析帧处理异常",
+                                e
+                            )
+                        )
+                    } finally {
+                        releaseNow()
+                    }
+                }
+            }
+    }
+
     private fun initCamera(onComplete: (Boolean) -> Unit) {
         synchronized(cameraLock) {
-            if (isCameraReady.get() && cameraProvider != null && imageCapture != null) {
+            if (isCameraReady.get() && cameraProvider != null && (imageCapture != null || useAnalysisSnapshot)) {
                 onComplete(true)
                 return
             }
@@ -96,8 +165,8 @@ class CameraService : LifecycleService() {
             cameraProviderFuture.addListener({
                 try {
                     val provider = cameraProviderFuture.get()
-                    val cameraSelector = selectAnyAvailableCamera(provider)
-                    if (cameraSelector == null) {
+                    val selectedCamera = selectAnyAvailableCamera(provider)
+                    if (selectedCamera == null) {
                         resetStateAndReleaseOwner()
                         LogUtils.e("【相机服务】初始化失败：未找到可用摄像头")
                         onComplete(false)
@@ -106,12 +175,16 @@ class CameraService : LifecycleService() {
 
                     synchronized(cameraLock) {
                         provider.unbindAll()
-                        imageCapture = ImageCapture.Builder()
-                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                            .setTargetRotation(Surface.ROTATION_0)
-                            .setTargetResolution(Size(832, 448))
-                            .build()
-                        provider.bindToLifecycle(this, cameraSelector, imageCapture)
+                        useAnalysisSnapshot = selectedCamera.isExternal
+                        imageAnalysis = buildAnalysisUseCase()
+                        if (useAnalysisSnapshot) {
+                            imageCapture = null
+                            provider.bindToLifecycle(this, selectedCamera.selector, imageAnalysis)
+                            LogUtils.w("【相机服务】检测到外置相机，切换为分析帧拍照模式")
+                        } else {
+                            imageCapture = buildImageCaptureUseCase()
+                            provider.bindToLifecycle(this, selectedCamera.selector, imageCapture, imageAnalysis)
+                        }
                         cameraProvider = provider
                         isCameraInitializing.set(false)
                         isCameraReady.set(true)
@@ -135,6 +208,9 @@ class CameraService : LifecycleService() {
         synchronized(cameraLock) {
             cameraProvider = null
             imageCapture = null
+            imageAnalysis = null
+            useAnalysisSnapshot = false
+            pendingAnalysisCaptureCallback = null
             isCameraInitialized.set(false)
             isCameraInitializing.set(false)
             isCameraReady.set(false)
@@ -146,11 +222,28 @@ class CameraService : LifecycleService() {
         synchronized(cameraLock) {
             handler.removeCallbacks(autoReleaseRunnable)
             val providerToUnbind = cameraProvider
+            val pendingCallback = pendingAnalysisCaptureCallback
             cameraProvider = null
             imageCapture = null
+            imageAnalysis = null
+            useAnalysisSnapshot = false
+            pendingAnalysisCaptureCallback = null
             isCameraInitialized.set(false)
             isCameraInitializing.set(false)
             isCameraReady.set(false)
+
+            if (pendingCallback != null) {
+                try {
+                    pendingCallback.onError(
+                        ImageCaptureException(
+                            ImageCapture.ERROR_CAMERA_CLOSED,
+                            "相机已释放",
+                            Exception("相机已释放")
+                        )
+                    )
+                } catch (_: Exception) {
+                }
+            }
 
             try {
                 if (providerToUnbind != null) {
@@ -203,6 +296,54 @@ class CameraService : LifecycleService() {
                 return@initCamera
             }
 
+            if (useAnalysisSnapshot) {
+                val accepted = synchronized(cameraLock) {
+                    if (!isCameraReady.get() || imageAnalysis == null || pendingAnalysisCaptureCallback != null) {
+                        false
+                    } else {
+                        LogUtils.d("【相机服务】开始等待外置相机分析帧")
+                        isCameraReady.set(false)
+                        pendingAnalysisCaptureCallback = callback
+                        true
+                    }
+                }
+
+                if (!accepted) {
+                    callback.onError(
+                        ImageCaptureException(
+                            ImageCapture.ERROR_CAMERA_CLOSED,
+                            "外置相机分析流未就绪",
+                            Exception("外置相机分析流未就绪")
+                        )
+                    )
+                    return@initCamera
+                }
+
+                handler.removeCallbacks(autoReleaseRunnable)
+                handler.postDelayed({
+                    val timedOut = synchronized(cameraLock) {
+                        if (pendingAnalysisCaptureCallback === callback) {
+                            pendingAnalysisCaptureCallback = null
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (timedOut) {
+                        LogUtils.e("【相机服务】等待外置相机分析帧超时")
+                        callback.onError(
+                            ImageCaptureException(
+                                ImageCapture.ERROR_CAPTURE_FAILED,
+                                "等待外置相机帧超时",
+                                Exception("等待外置相机帧超时")
+                            )
+                        )
+                        releaseNow()
+                    }
+                }, 2500L)
+                return@initCamera
+            }
+
             val captureUseCase = synchronized(cameraLock) {
                 if (!isCameraReady.get() || imageCapture == null) {
                     null
@@ -237,6 +378,9 @@ class CameraService : LifecycleService() {
 
                     override fun onError(exception: ImageCaptureException) {
                         try {
+                            LogUtils.e(
+                                "【相机服务】拍照失败：error=${exception.imageCaptureError}, message=${exception.message}"
+                            )
                             callback.onError(exception)
                         } finally {
                             releaseNow()
@@ -251,21 +395,67 @@ class CameraService : LifecycleService() {
         }
     }
 
-    private fun selectAnyAvailableCamera(cameraProvider: ProcessCameraProvider): CameraSelector? {
+    private fun findCameraInfoForSelector(
+        cameraProvider: ProcessCameraProvider,
+        selector: CameraSelector
+    ): CameraInfo? {
+        return try {
+            cameraProvider.availableCameraInfos.firstOrNull { info ->
+                selector.filter(listOf(info)).isNotEmpty()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @AndroidxOptIn(markerClass = [ExperimentalCamera2Interop::class])
+    private fun isExternalCamera(cameraInfo: CameraInfo?): Boolean {
+        if (cameraInfo == null) {
+            return false
+        }
+        return try {
+            val camera2Info = Camera2CameraInfo.from(cameraInfo)
+            val lensFacing = camera2Info.getCameraCharacteristic(CameraCharacteristics.LENS_FACING)
+            val hardwareLevel =
+                camera2Info.getCameraCharacteristic(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+            val cameraId = camera2Info.cameraId
+            lensFacing == CameraCharacteristics.LENS_FACING_EXTERNAL ||
+                hardwareLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL ||
+                (cameraId.toIntOrNull()?.let { it >= 100 } == true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun buildSelectedCamera(
+        cameraProvider: ProcessCameraProvider,
+        selector: CameraSelector,
+        label: String
+    ): SelectedCamera {
+        val cameraInfo = findCameraInfoForSelector(cameraProvider, selector)
+        val external = isExternalCamera(cameraInfo)
+        LogUtils.d("【相机服务】选择${label}摄像头${if (external) "(external)" else ""}")
+        return SelectedCamera(selector, external)
+    }
+
+    private fun selectAnyAvailableCamera(cameraProvider: ProcessCameraProvider): SelectedCamera? {
         return try {
             when {
                 cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> {
-                    LogUtils.d("【相机服务】选择后置摄像头")
-                    CameraSelector.DEFAULT_BACK_CAMERA
+                    buildSelectedCamera(cameraProvider, CameraSelector.DEFAULT_BACK_CAMERA, "后置")
                 }
+
                 cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> {
-                    LogUtils.d("【相机服务】选择前置摄像头")
-                    CameraSelector.DEFAULT_FRONT_CAMERA
+                    buildSelectedCamera(cameraProvider, CameraSelector.DEFAULT_FRONT_CAMERA, "前置")
                 }
+
                 cameraProvider.availableCameraInfos.isNotEmpty() -> {
-                    LogUtils.d("【相机服务】使用第一个可用摄像头")
-                    cameraProvider.availableCameraInfos.first().cameraSelector
+                    val cameraInfo = cameraProvider.availableCameraInfos.first()
+                    val external = isExternalCamera(cameraInfo)
+                    LogUtils.d("【相机服务】使用第一个可用摄像头${if (external) "(external)" else ""}")
+                    SelectedCamera(cameraInfo.cameraSelector, external)
                 }
+
                 else -> {
                     LogUtils.e("【相机服务】未找到任何可用摄像头")
                     null

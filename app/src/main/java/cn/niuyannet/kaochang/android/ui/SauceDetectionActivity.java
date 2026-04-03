@@ -8,7 +8,10 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ImageFormat;
 import android.graphics.Matrix;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.view.View;
@@ -30,6 +33,7 @@ import org.opencv.android.Utils;
 import org.opencv.core.Mat;
 import org.opencv.imgproc.Imgproc;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.List;
 
@@ -40,6 +44,8 @@ import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor;
 import cn.niuyannet.kaochang.android.detecition.SauceDetector;
 import cn.niuyannet.kaochang.android.services.CameraService;
 import cn.niuyannet.kaochang.android.utils.LogUtils;
+import kotlin.Unit;
+import kotlin.jvm.functions.Function1;
 
 /**
  * 调试识别页面。
@@ -66,6 +72,7 @@ public class SauceDetectionActivity extends AppCompatActivity {
 
     private CameraService cameraService;
     private boolean isServiceBound = false;
+    private volatile boolean captureInFlight = false;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -240,7 +247,7 @@ public class SauceDetectionActivity extends AppCompatActivity {
     private void captureAndDetectAruco() {
         Toast.makeText(this, "正在检测 ArUco 标记...", Toast.LENGTH_SHORT).show();
         LogUtils.INSTANCE.d("【ArUco检测】开始拍照执行 ArUco 检测");
-        captureBitmap(new BitmapCaptureCallback() {
+        captureBitmapWithPrewarm(new BitmapCaptureCallback() {
             @Override
             public void onSuccess(Bitmap bitmap) {
                 runOnUiThread(() -> {
@@ -314,7 +321,7 @@ public class SauceDetectionActivity extends AppCompatActivity {
     private void captureAndDetect() {
         Toast.makeText(this, "正在拍照...", Toast.LENGTH_SHORT).show();
         LogUtils.INSTANCE.d("【ArUco检测】开始拍照执行" + (roiFlag == 0 ? "运输台" : "售卖台") + "检测");
-        captureBitmap(new BitmapCaptureCallback() {
+        captureBitmapWithPrewarm(new BitmapCaptureCallback() {
             @Override
             public void onSuccess(Bitmap bitmap) {
                 Mat img = bitmapToBgrMat(bitmap);
@@ -375,12 +382,89 @@ public class SauceDetectionActivity extends AppCompatActivity {
         });
     }
 
+    private void captureBitmapWithPrewarm(BitmapCaptureCallback callback) {
+        CameraService boundService = cameraService;
+        if (boundService == null || !isServiceBound) {
+            bindCameraServiceIfNeeded();
+            callback.onError("相机服务尚未就绪，请稍后重试");
+            return;
+        }
+
+        if (captureInFlight) {
+            callback.onError("相机正在处理中，请稍后再试");
+            return;
+        }
+        captureInFlight = true;
+
+        boundService.prewarm(1500L, new Function1<Boolean, Unit>() {
+            @Override
+            public Unit invoke(Boolean success) {
+                if (!success) {
+                    captureInFlight = false;
+                    callback.onError("相机预热失败，请稍后重试");
+                    return Unit.INSTANCE;
+                }
+
+                boundService.takePhoto(new ImageCapture.OnImageCapturedCallback() {
+                    @Override
+                    public void onCaptureSuccess(@NonNull ImageProxy imageProxy) {
+                        try {
+                            Bitmap bitmap = imageProxyToBitmap(imageProxy);
+                            if (bitmap == null) {
+                                callback.onError("图像转换失败");
+                            } else {
+                                callback.onSuccess(bitmap);
+                            }
+                        } catch (Exception e) {
+                            LogUtils.INSTANCE.e("【ArUco检测】拍照成功后处理图像失败：" + e.getMessage(), e);
+                            callback.onError("图像处理失败：" + e.getMessage());
+                        } finally {
+                            captureInFlight = false;
+                            imageProxy.close();
+                        }
+                    }
+
+                    @Override
+                    public void onError(@NonNull ImageCaptureException exception) {
+                        captureInFlight = false;
+                        LogUtils.INSTANCE.e("【ArUco检测】拍照失败：" + exception.getMessage(), exception);
+                        callback.onError(exception.getMessage() == null ? "未知错误" : exception.getMessage());
+                    }
+                });
+                return Unit.INSTANCE;
+            }
+        });
+    }
+
     private Bitmap imageProxyToBitmap(ImageProxy imageProxy) {
         try {
-            ByteBuffer buffer = imageProxy.getPlanes()[0].getBuffer();
-            byte[] bytes = new byte[buffer.remaining()];
-            buffer.get(bytes);
-            Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            Bitmap bitmap;
+            if (imageProxy.getFormat() == ImageFormat.JPEG) {
+                ByteBuffer buffer = imageProxy.getPlanes()[0].getBuffer();
+                byte[] bytes = new byte[buffer.remaining()];
+                buffer.get(bytes);
+                bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            } else if (imageProxy.getFormat() == ImageFormat.YUV_420_888) {
+                byte[] nv21 = yuv420888ToNv21(imageProxy);
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                YuvImage yuvImage = new YuvImage(
+                    nv21,
+                    ImageFormat.NV21,
+                    imageProxy.getWidth(),
+                    imageProxy.getHeight(),
+                    null
+                );
+                yuvImage.compressToJpeg(
+                    new Rect(0, 0, imageProxy.getWidth(), imageProxy.getHeight()),
+                    95,
+                    output
+                );
+                byte[] jpegBytes = output.toByteArray();
+                bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
+            } else {
+                LogUtils.INSTANCE.e("【ArUco检测】不支持的图像格式：" + imageProxy.getFormat(), null);
+                return null;
+            }
             if (bitmap == null) {
                 return null;
             }
@@ -395,6 +479,36 @@ public class SauceDetectionActivity extends AppCompatActivity {
             LogUtils.INSTANCE.e("【ArUco检测】ImageProxy 转 Bitmap 失败：" + e.getMessage(), e);
             return null;
         }
+    }
+
+    private byte[] yuv420888ToNv21(ImageProxy imageProxy) {
+        int width = imageProxy.getWidth();
+        int height = imageProxy.getHeight();
+        int ySize = width * height;
+        int uvSize = width * height / 4;
+        byte[] nv21 = new byte[ySize + uvSize * 2];
+
+        ImageProxy.PlaneProxy yPlane = imageProxy.getPlanes()[0];
+        ImageProxy.PlaneProxy uPlane = imageProxy.getPlanes()[1];
+        ImageProxy.PlaneProxy vPlane = imageProxy.getPlanes()[2];
+
+        int position = 0;
+        for (int row = 0; row < height; row++) {
+            int rowOffset = row * yPlane.getRowStride();
+            for (int col = 0; col < width; col++) {
+                nv21[position++] = yPlane.getBuffer().get(rowOffset + col * yPlane.getPixelStride());
+            }
+        }
+
+        for (int row = 0; row < height / 2; row++) {
+            int uRowOffset = row * uPlane.getRowStride();
+            int vRowOffset = row * vPlane.getRowStride();
+            for (int col = 0; col < width / 2; col++) {
+                nv21[position++] = vPlane.getBuffer().get(vRowOffset + col * vPlane.getPixelStride());
+                nv21[position++] = uPlane.getBuffer().get(uRowOffset + col * uPlane.getPixelStride());
+            }
+        }
+        return nv21;
     }
 
     private Mat bitmapToBgrMat(Bitmap bitmap) {

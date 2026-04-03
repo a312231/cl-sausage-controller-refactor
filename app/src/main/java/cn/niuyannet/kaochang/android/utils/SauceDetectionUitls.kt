@@ -20,9 +20,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -38,16 +36,23 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
+/**
+ * 售卖口视觉识别工具。
+ *
+ * 当前主链路使用后台拍照服务统一排队拍照与识别；
+ * 旧版 CameraX 直拍路径仅保留作兼容兜底，避免历史流程直接失效。
+ */
 object SauceDetectionUitls {
-    private fun logPhoto(tag: String, message: String) = LogUtils.d(tag, "[售卖口拍照] $message")
-    private fun logPhotoError(tag: String, message: String) = LogUtils.e(tag, "[售卖口拍照] $message")
-    private fun logDetect(message: String) = LogUtils.d("[售卖口识别] $message")
-    private fun logDetectWarn(message: String) = LogUtils.w("[售卖口识别] $message")
-    private fun logDetectError(message: String) = LogUtils.e("[售卖口识别] $message")
+    private fun logPhoto(tag: String, message: String) = LogUtils.d(tag, "【售卖口拍照】$message")
+    private fun logPhotoError(tag: String, message: String) = LogUtils.e(tag, "【售卖口拍照】$message")
+    private fun logDetect(message: String) = LogUtils.d("【售卖口识别】$message")
+    private fun logDetectWarn(message: String) = LogUtils.w("【售卖口识别】$message")
+    private fun logDetectError(message: String) = LogUtils.e("【售卖口识别】$message")
 
-    // 烤肠检测处理器
+    // 售卖口识别处理器
     var processor: SauceDetectionProcessor? = null
-    // 历史 CameraX 路径保留，当前主链路已切后台服务拍照
+
+    // 旧版 CameraX 兼容路径使用的对象，当前主链路已切到后台服务拍照
     var cameraProvider: ProcessCameraProvider? = null
     var imageCapture: ImageCapture? = null
     var camera: Camera? = null
@@ -55,7 +60,8 @@ object SauceDetectionUitls {
     var lifecycleOwner: LifecycleOwner? = null
 
     private val captureMutex = Mutex()
-    private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<SauceDetectionProcessor.SausageInfo?>>()
+    private val pendingRequests =
+        ConcurrentHashMap<String, CompletableDeferred<SauceDetectionProcessor.SausageInfo?>>()
     private var forcedSellDetectCount = 0
     private var forcedSellDetectWindowStartMs = 0L
 
@@ -82,10 +88,11 @@ object SauceDetectionUitls {
     }
 
     /**
-     * 协程风格拍照检测。
-     * roiFlag:
-     * 0 -> 运输台
-     * 1 -> 售卖口
+     * 协程风格的拍照识别入口。
+     *
+     * `roiFlag`:
+     * - 0：运输台
+     * - 1：售卖口
      */
     suspend fun captureAndDetect(
         roiFlag: Int,
@@ -109,14 +116,15 @@ object SauceDetectionUitls {
             forcedSellDetectCount++
 
             if (forcedSellDetectCount <= 2) {
-                logDetectWarn("联调模式已开启，售卖台视觉识别模拟为“检测到烤肠”")
+                logDetectWarn("联调模式已开启，售卖口视觉识别模拟为“检测到烤肠”")
                 return@withContext buildForcedSuccessResult(roiFlag)
             }
 
-            logDetectWarn("联调模式已开启，售卖台视觉识别模拟为“顾客已取走，窗口为空”")
+            logDetectWarn("联调模式已开启，售卖口视觉识别模拟为“顾客已取走，窗口为空”")
             return@withContext buildForcedSellEmptyResult()
         }
-        logPhoto(tag, "开始拍照检测，roiFlag: $roiFlag, retry: $retry")
+
+        logPhoto(tag, "开始拍照检测，roiFlag=$roiFlag，最大重试次数=$retry")
         val requestId = "${tag}_${System.currentTimeMillis()}_${(0..1000).random()}"
         return@withContext try {
             withTimeoutOrNull(timeoutMs) {
@@ -124,7 +132,7 @@ object SauceDetectionUitls {
                 pendingRequests[requestId] = deferred
                 try {
                     captureMutex.withLock {
-                        logPhoto(tag, "获取拍照锁，开始拍照")
+                        logPhoto(tag, "已获取拍照锁，准备进入拍照队列")
                         suspendCancellableCoroutine { continuation ->
                             CameraMonitor.instance.takePhotoQueue(
                                 roiFlag,
@@ -133,7 +141,7 @@ object SauceDetectionUitls {
                                 retry,
                                 tag != "lunXun"
                             ) { sausageInfo ->
-                                logPhoto(tag, "拍照检测回调完成，结果: ${sausageInfo != null}")
+                                logPhoto(tag, "拍照检测回调完成，是否识别到结果=${sausageInfo != null}")
                                 pendingRequests.remove(requestId)?.let { deferredRef ->
                                     if (deferredRef.isActive) {
                                         deferredRef.complete(sausageInfo)
@@ -144,49 +152,45 @@ object SauceDetectionUitls {
                                 }
                             }
                             continuation.invokeOnCancellation {
-                                logPhoto(tag, "拍照被取消，清理资源")
+                                logPhoto(tag, "拍照任务被取消，已清理等待回调")
                                 pendingRequests.remove(requestId)
                             }
                         }
                     }
                     val result = deferred.await()
-                    logPhoto(tag, "收到拍照结果: ${result != null}")
+                    logPhoto(tag, "收到拍照结果，是否为空=${result == null}")
                     result
                 } finally {
                     pendingRequests.remove(requestId)
                 }
             }
-        } catch (e: TimeoutCancellationException) {
-            logPhotoError(tag, "拍照超时，耗时超过${timeoutMs}ms")
+        } catch (_: TimeoutCancellationException) {
+            logPhotoError(tag, "拍照超时，耗时超过 ${timeoutMs}ms")
             null
         } catch (e: Exception) {
-            logPhotoError(tag, "拍照异常: ${e.message}")
+            logPhotoError(tag, "拍照异常：${e.message}")
             null
         }
     }
 
     /**
-     * 旧版 CameraX 拍照路径，保留兼容。
+     * 旧版 CameraX 拍照路径，仅保留作兼容兜底。
      */
     @Deprecated("使用后台服务版本", ReplaceWith("captureAndDetect(roiFlag)"))
     private fun captureAndDetectOld(roiFlag: Int): SauceDetectionProcessor.SausageInfo? {
         processor?.roiFlag = roiFlag
 
         if (cameraProvider == null || imageCapture == null) {
-            logPhoto("KaoChangAlgorithm", "相机未初始化，等待初始化完成")
-            val initLatch = CountDownLatch(1)
-            GlobalScope.launch(Dispatchers.IO) {
-                var waited = 0
-                while (waited < 10000 && (cameraProvider == null || imageCapture == null)) {
-                    kotlinx.coroutines.delay(100)
-                    waited += 100
+            logPhoto("KaoChangAlgorithm", "相机尚未初始化，等待初始化完成")
+            val deadline = System.currentTimeMillis() + 10_000L
+            while (System.currentTimeMillis() < deadline && (cameraProvider == null || imageCapture == null)) {
+                try {
+                    Thread.sleep(100)
+                } catch (_: InterruptedException) {
+                    logPhoto("KaoChangAlgorithm", "等待相机初始化时被中断")
+                    Thread.currentThread().interrupt()
+                    break
                 }
-                initLatch.countDown()
-            }
-            try {
-                initLatch.await(10, TimeUnit.SECONDS)
-            } catch (_: InterruptedException) {
-                logPhoto("KaoChangAlgorithm", "等待相机初始化被中断")
             }
             if (cameraProvider == null || imageCapture == null) {
                 logPhoto("KaoChangAlgorithm", "相机初始化超时，返回空结果")
@@ -199,7 +203,7 @@ object SauceDetectionUitls {
             logPhoto("KaoChangAlgorithm", "相机未初始化")
             return null
         }
-        logPhoto("KaoChangAlgorithm", "正在拍照")
+        logPhoto("KaoChangAlgorithm", "开始拍照")
 
         val latch = CountDownLatch(1)
         var result: SauceDetectionProcessor.SausageInfo? = null
@@ -226,7 +230,7 @@ object SauceDetectionUitls {
                             detectSausageSync(img)
                         }
                     } catch (e: Exception) {
-                        logPhotoError("KaoChangAlgorithm", "处理图像时出错: ${e.message}")
+                        logPhotoError("KaoChangAlgorithm", "处理图像时出错：${e.message}")
                         result = null
                     } finally {
                         imageProxy.close()
@@ -235,7 +239,7 @@ object SauceDetectionUitls {
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    logPhotoError("KaoChangAlgorithm", "拍照失败，尝试重新拍照: ${exception.message}")
+                    logPhotoError("KaoChangAlgorithm", "拍照失败，尝试重新拍照：${exception.message}")
                     if (!didRetry) {
                         didRetry = true
                         val rebound = rebindCamera()
@@ -278,7 +282,7 @@ object SauceDetectionUitls {
             camera = provider.bindToLifecycle(owner, selector, imageCapture!!)
             true
         } catch (e: Exception) {
-            logPhotoError("KaoChangAlgorithm", "相机重新绑定失败: ${e.message}")
+            logPhotoError("KaoChangAlgorithm", "相机重新绑定失败：${e.message}")
             false
         }
     }
@@ -311,36 +315,38 @@ object SauceDetectionUitls {
                 mat.release()
                 mat = bgrMat
             }
+
             mat
         } catch (e: Exception) {
-            logPhotoError("KaoChangAlgorithm", "图像转换失败: ${e.message}")
+            logPhotoError("KaoChangAlgorithm", "图像转换失败：${e.message}")
             null
         }
     }
 
     /**
      * 同步识别逻辑。
-     * 对售卖口:
-     * - code=1 未检测到烤肠
-     * - code=2 检测到烤肠
+     *
+     * 对售卖口：
+     * - code=1：未检测到烤肠
+     * - code=2：检测到烤肠
      */
     private fun detectSausageSync(img: Mat?): SauceDetectionProcessor.SausageInfo? {
         try {
             if (img == null) {
-                logDetect("执行烤肠检测失败：图像为空")
+                logDetectError("执行烤肠检测失败：图像为空")
                 return null
             }
 
             val currentProcessor = processor ?: return null
-            val platformType = if (currentProcessor.roiFlag == 0) "运输台" else "售卖台"
-            logDetect("开始检测${platformType}上的烤肠，图像尺寸: ${img.width()}x${img.height()}, 通道数: ${img.channels()}")
+            val platformType = if (currentProcessor.roiFlag == 0) "运输台" else "售卖口"
+            logDetect("开始检测${platformType}上的烤肠，图像尺寸=${img.width()}x${img.height()}，通道数=${img.channels()}")
 
             val result = currentProcessor.processImage(img)
             if (currentProcessor.roiFlag == 1) {
                 if (result.sausages.isNotEmpty()) {
                     val sausage = result.sausages[0]
                     val resultText = String.format(
-                        "售卖台检测结果:\n结果: (%d) \n像素坐标: (%d, %d) \n世界坐标: (%.2f, %.2f, %.2f)",
+                        "售卖口检测结果：\n结果码=%d\n像素坐标=(%d, %d)\n世界坐标=(%.2f, %.2f, %.2f)",
                         sausage.code,
                         sausage.pixelX,
                         sausage.pixelY,
@@ -351,7 +357,7 @@ object SauceDetectionUitls {
                     logDetect(resultText)
                     return sausage
                 }
-                logDetectWarn("售卖台检测结果为空")
+                logDetectWarn("售卖口检测结果为空")
                 return null
             }
 
@@ -362,7 +368,7 @@ object SauceDetectionUitls {
 
             val sausage = result.sausages[0]
             val resultText = String.format(
-                "检测到烤肠:\n像素坐标: (%d, %d)\n世界坐标: (%.2f, %.2f, %.2f)",
+                "检测到烤肠：\n像素坐标=(%d, %d)\n世界坐标=(%.2f, %.2f, %.2f)",
                 sausage.pixelX,
                 sausage.pixelY,
                 sausage.worldX,
@@ -372,18 +378,21 @@ object SauceDetectionUitls {
             logDetect(resultText)
             return sausage
         } catch (e: Exception) {
-            logDetectError("检测烤肠时出错: ${e.message}")
+            logDetectError("检测烤肠时出错：${e.message}")
             return null
         } finally {
             img?.release()
             if (SauceDetector.SAVE_DEBUG_IMAGES) {
                 val cacheDir = instance().cacheDir.absolutePath
-                logDetect("调试图像已保存到: $cacheDir")
+                logDetect("调试图片已保存到：$cacheDir")
             }
         }
     }
 
-    private fun detectSausage(img: Mat?, callBack: ((saInfo: SauceDetectionProcessor.SausageInfo?) -> Unit)) {
+    private fun detectSausage(
+        img: Mat?,
+        callBack: ((saInfo: SauceDetectionProcessor.SausageInfo?) -> Unit)
+    ) {
         val result = detectSausageSync(img)
         callBack.invoke(result)
     }

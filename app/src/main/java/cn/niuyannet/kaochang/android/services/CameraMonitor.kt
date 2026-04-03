@@ -11,7 +11,6 @@ import android.graphics.Matrix
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.util.Log
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -32,12 +31,12 @@ class CameraMonitor {
         val instance by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { CameraMonitor() }
     }
 
-    private fun sellPhotoD(message: String) = LogUtils.d("[售卖口拍照] $message")
-    private fun sellPhotoW(message: String) = LogUtils.w("[售卖口拍照] $message")
-    private fun sellPhotoE(message: String) = LogUtils.e("[售卖口拍照] $message")
-    private fun sellDetectD(message: String) = LogUtils.d("[售卖口识别] $message")
-    private fun sellDetectW(message: String) = LogUtils.w("[售卖口识别] $message")
-    private fun sellDetectE(message: String) = LogUtils.e("[售卖口识别] $message")
+    private fun sellPhotoD(message: String) = LogUtils.d("【售卖口拍照】$message")
+    private fun sellPhotoW(message: String) = LogUtils.w("【售卖口拍照】$message")
+    private fun sellPhotoE(message: String) = LogUtils.e("【售卖口拍照】$message")
+    private fun sellDetectD(message: String) = LogUtils.d("【售卖口识别】$message")
+    private fun sellDetectW(message: String) = LogUtils.w("【售卖口识别】$message")
+    private fun sellDetectE(message: String) = LogUtils.e("【售卖口识别】$message")
 
     private val handler by lazy { Handler(Looper.getMainLooper()) }
     private var weakReference: WeakReference<Context>? = null
@@ -49,11 +48,17 @@ class CameraMonitor {
     private var callbackCounter = 0
     private val deque = ConcurrentLinkedDeque<QueueData>()
 
+    /**
+     * 重启拍照服务，主要用于拍照超时或回调异常后的自恢复。
+     */
     fun restartService() {
         sellPhotoD("重新启动拍照服务")
         weakReference?.get()?.let { startService(it, true) }
     }
 
+    /**
+     * 启动拍照服务并建立绑定。
+     */
     fun startService(context: Context, restart: Boolean = false) {
         close()
         val appContext = context.applicationContext
@@ -98,8 +103,14 @@ class CameraMonitor {
         }
     }
 
-    fun clearQueue() = deque.clear()
+    fun clearQueue() {
+        sellPhotoD("清空拍照任务队列")
+        deque.clear()
+    }
 
+    /**
+     * 预热相机，避免首次拍照时首帧不稳定。
+     */
     fun prewarm(holdMs: Long = 8_000L) {
         val appContext = weakReference?.get()
         if (appContext == null) {
@@ -133,7 +144,7 @@ class CameraMonitor {
         priority: Boolean,
         callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
-        sellPhotoD("添加拍照任务到队列：currentSize=${deque.size}")
+        sellPhotoD("拍照任务入队：currentSize=${deque.size}, priority=$priority")
         if (deque.size < 20) {
             if (priority) {
                 deque.offerFirst(QueueData(roiFlag, delay, timeoutMs, retry, callback))
@@ -186,7 +197,7 @@ class CameraMonitor {
         val completed = AtomicBoolean(false)
         val timeoutRunnable = Runnable {
             if (!completed.getAndSet(true)) {
-                sellPhotoE("拍照超时，elapsed>${timeoutMs}ms")
+                sellPhotoE("拍照超时：elapsed>${timeoutMs}ms")
                 restartService()
                 handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
             }
@@ -197,14 +208,14 @@ class CameraMonitor {
             boundCameraService.takePhoto(object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
                     if (completed.getAndSet(true)) {
-                        sellPhotoW("拍照成功回调被忽略（已超时）")
+                        sellPhotoW("拍照成功回调被忽略：任务已超时")
                         image.close()
                         return
                     }
                     handler.removeCallbacks(timeoutRunnable)
                     try {
                         val img = image.use { imageProxyToMat(it) }
-                        sellPhotoD("图像信息是否为空: ${img == null}")
+                        sellPhotoD("图像信息是否为空：${img == null}")
                         callback(detectSausageSync(img))
                     } catch (e: Exception) {
                         sellPhotoE("拍照成功后处理图像失败：${e.message}")
@@ -214,19 +225,19 @@ class CameraMonitor {
 
                 override fun onError(e: ImageCaptureException) {
                     if (completed.getAndSet(true)) {
-                        sellPhotoW("拍照错误回调被忽略（已超时）")
+                        sellPhotoW("拍照错误回调被忽略：任务已超时")
                         return
                     }
                     handler.removeCallbacks(timeoutRunnable)
                     restartService()
-                    sellPhotoE("拍照失败，retry=$retry, message=${e.message}")
+                    sellPhotoE("拍照失败：retry=$retry, message=${e.message}")
                     handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
                 }
             })
         } catch (e: Exception) {
             handler.removeCallbacks(timeoutRunnable)
             if (!completed.getAndSet(true)) {
-                sellPhotoE("服务调用异常：${e.message}")
+                sellPhotoE("调用相机服务异常：${e.message}")
                 handleTimeoutAndRetry(delay, retry, timeoutMs, callback)
             }
         }
@@ -239,7 +250,7 @@ class CameraMonitor {
         callback: (SauceDetectionProcessor.SausageInfo?) -> Unit
     ) {
         if (retry > 0) {
-            sellPhotoD("异常重试，remainingRetry=${retry - 1}")
+            sellPhotoW("拍照异常后准备重试：remainingRetry=${retry - 1}")
             handler.postDelayed({
                 takePhoto(delay, retry - 1, timeoutMs, callback)
             }, delay)
@@ -248,6 +259,9 @@ class CameraMonitor {
         }
     }
 
+    /**
+     * 关闭拍照服务并解绑。
+     */
     fun close(callback: (() -> Unit)? = null) {
         handler.removeCallbacks(runnable)
         takeStatus.set(true)
@@ -275,15 +289,13 @@ class CameraMonitor {
         if (callback != null) {
             try {
                 callback(result)
-                sellPhotoD("回调已调用：callbackId=$callbackId")
-                Log.d(TAG, "回调已调用，callbackId: $callbackId")
+                sellPhotoD("回调已完成：callbackId=$callbackId")
             } catch (e: Exception) {
                 sellPhotoE("调用回调时出错：${e.message}")
-                Log.e(TAG, "调用回调时出错", e)
+                LogUtils.e(TAG, "【售卖口拍照】调用回调时出错", e)
             }
         } else {
             sellPhotoW("未找到回调：callbackId=$callbackId")
-            Log.w(TAG, "未找到回调，callbackId: $callbackId")
         }
     }
 
@@ -326,18 +338,18 @@ class CameraMonitor {
     private fun detectSausageSync(img: Mat?): SauceDetectionProcessor.SausageInfo? {
         return try {
             if (img == null || detectionProcessor == null) {
-                sellDetectD("执行烤肠检测失败：图像或处理器为空")
+                sellDetectW("执行烤肠检测失败：图像或处理器为空")
                 return null
             }
             val platformType = if (detectionProcessor!!.roiFlag == 0) "运输台" else "售卖台"
-            sellDetectD("开始检测${platformType}上的烤肠，图像尺寸: ${img.width()}x${img.height()}, 通道数: ${img.channels()}")
+            sellDetectD("开始识别${platformType}烤肠：size=${img.width()}x${img.height()}, channels=${img.channels()}")
             val result = detectionProcessor!!.processImage(img)
 
             if (detectionProcessor!!.roiFlag == 1) {
                 if (result.sausages.isNotEmpty()) {
                     val sausage = result.sausages[0]
                     val resultText = String.format(
-                        "售卖台检测结果\n结果: (%d) \n像素坐标: (%d, %d) \n世界坐标: (%.2f, %.2f, %.2f)",
+                        "售卖台检测结果：\n结果=(%d)\n像素坐标=(%d, %d)\n世界坐标=(%.2f, %.2f, %.2f)",
                         sausage.code, sausage.pixelX, sausage.pixelY, sausage.worldX, sausage.worldY, sausage.worldZ
                     )
                     sellDetectD(resultText)
@@ -353,7 +365,7 @@ class CameraMonitor {
             } else {
                 val sausage = result.sausages[0]
                 val resultText = String.format(
-                    "检测到烤肠:\n像素坐标: (%d, %d)\n世界坐标: (%.2f, %.2f, %.2f)",
+                    "检测到烤肠：\n像素坐标=(%d, %d)\n世界坐标=(%.2f, %.2f, %.2f)",
                     sausage.pixelX, sausage.pixelY, sausage.worldX, sausage.worldY, sausage.worldZ
                 )
                 sellDetectD(resultText)
