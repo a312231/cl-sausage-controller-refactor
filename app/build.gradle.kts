@@ -20,8 +20,8 @@ android {
         applicationId = "cn.niuyannet.kaochang.android"
         minSdk = 24
         targetSdk = 34
-        versionCode = 49
-        versionName = "1.2.73"
+        versionCode = 50
+        versionName = "1.2.74"
         ndk {
             moduleName = "jssc"
             abiFilters.add("armeabi-v7a")
@@ -33,10 +33,8 @@ android {
         }
     }
 
-
     buildTypes {
         debug {
-            // Keep debug installs compatible with the currently deployed app signature.
             signingConfig = signingConfigs.getByName("kaochang")
         }
         release {
@@ -48,6 +46,7 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -56,23 +55,28 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+
     buildFeatures {
         dataBinding = true
         viewBinding = true
     }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
     }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("libs")
         }
     }
+
     buildToolsVersion = "35.0.0"
 }
 
@@ -98,38 +102,25 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
-    // UVC 摄像头
     implementation(project(":libausbc"))
 
-    // 集成库
     implementation("io.github.justson:agentweb-core:v5.1.1-androidx")
-    implementation("io.github.justson:agentweb-filechooser:v5.1.1-androidx") // (可选)
-    implementation("com.github.Justson:Downloader:v5.0.4-androidx") // (可选)
+    implementation("io.github.justson:agentweb-filechooser:v5.1.1-androidx")
+    implementation("com.github.Justson:Downloader:v5.0.4-androidx")
 
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.3.3")
-    
-    // mqtt
-    /**
-     *
-     * implementation 'com.github.hannesa2:paho.mqtt.android:3.3.5'
-     * implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
-     */
-    
-    // CameraX
-    // CameraX
+
     implementation("androidx.camera:camera-core:1.3.2")
     implementation("androidx.camera:camera-camera2:1.3.2")
     implementation("androidx.camera:camera-lifecycle:1.3.2")
     implementation("androidx.camera:camera-view:1.3.2")
-    // Lifecycle Service for background photo capture
     implementation(libs.androidx.lifecycle.service)
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
-    implementation("org.eclipse.paho:org.eclipse.paho.android.service:1.1.1")
     implementation("com.alibaba:fastjson:1.2.76")
     implementation("com.lzy.net:okgo:3.0.4")
-    
+
     implementation("com.afollestad.material-dialogs:input:3.3.0")
     implementation("com.afollestad.material-dialogs:bottomsheets:3.3.0")
     implementation("com.afollestad.material-dialogs:lifecycle:3.3.0")
@@ -146,20 +137,12 @@ dependencies {
 
     implementation("androidx.viewpager2:viewpager2:1.0.0")
     implementation("com.google.android.material:material:1.9.0")
-    
-    // bugly 异常上报
+
     implementation("com.tencent.bugly:crashreport:latest.release")
-    //gson
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.jetbrains.kotlin:kotlin-reflect:1.4.32")
-    // 轮播
     implementation("com.youth.banner:banner:2.1.0")
-    //视频播放器
     implementation("com.shuyu:GSYVideoPlayer:7.1.8")
-    
-    // OpenCV for Android
-   // implementation("org.opencv:opencv:4.12.0")
-    //implementation ("com.quickbirdstudios:opencv:4.5.3.0")
-    implementation ("com.quickbirdstudios:opencv:4.1.0-contrib")
 
+    implementation("com.quickbirdstudios:opencv:4.1.0-contrib")
 }

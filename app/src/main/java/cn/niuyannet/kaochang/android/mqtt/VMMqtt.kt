@@ -1,8 +1,7 @@
 package cn.niuyannet.kaochang.android.mqtt
 
-import android.util.Log
-import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.MyApp
+import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import org.eclipse.paho.android.service.MqttAndroidClient
@@ -13,166 +12,186 @@ import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 
 /**
- * MQTT 操作类
+ * MQTT 基础操作封装。
+ *
+ * 这里只负责连接、订阅、发布和断开，不承载上层业务状态机。
  */
 open class VMMqtt {
-    var mqttClient: MqttAndroidClient?=null
-    val TAG = "AndroidMqttClient"
-    val topic_by_server: String = "/cl/devices/{device_id}/get" //服务器发送给上位机
-    val topic_by_device: String = "/cl/devices/{device_id}/service" //监听上位机发送过来的消息
+    var mqttClient: MqttAndroidClient? = null
+
+    private val topicByServer = "/cl/devices/{device_id}/get"      // 服务端发给上位机的主题
+    private val topicByDevice = "/cl/devices/{device_id}/service"  // 上位机上报给服务端的主题
+
     /**
-     * 连接状态
+     * 当前 MQTT 是否已连接。
      */
-    fun connectStatus():Boolean{
+    fun connectStatus(): Boolean {
         return mqttClient?.isConnected == true
     }
 
     /**
-     * 连接mqtt服务
+     * 连接 MQTT 服务。
      */
     fun connect(callback: (status: Boolean) -> Unit) {
         try {
-            if (connectStatus()){
-                callback.invoke(true)
+            if (connectStatus()) {
+                LogUtils.d("【MQTT连接】已连接，跳过重复连接")
+                callback(true)
                 return
             }
-            val appConfigBean= AppConfig.getAppConfig()
+
+            val appConfigBean = AppConfig.getAppConfig()
             val serverURI = "tcp://${appConfigBean.mqttHost}:${appConfigBean.mqttPort}"
             val username = appConfigBean.mqttUsername
-            val password = appConfigBean.mqttPassword
-            mqttClient = MqttAndroidClient(MyApp.instance().applicationContext, serverURI, "client_${AppConfig.getDeviceId()}")
-            // 配置连接选项
-            val options = MqttConnectOptions()
-            options.userName = username
-            options.password = password.toCharArray()
-            options.keepAliveInterval = 60 // 设置心跳为60秒
-            options.isCleanSession = true
+            val passwordText = appConfigBean.mqttPassword ?: ""
+            val clientId = "client_${AppConfig.getDeviceId()}"
+
+            LogUtils.d("【MQTT连接】开始连接：server=$serverURI, clientId=$clientId")
+            mqttClient = MqttAndroidClient(
+                MyApp.instance().applicationContext,
+                serverURI,
+                clientId
+            )
+
+            val options = MqttConnectOptions().apply {
+                userName = username
+                password = passwordText.toCharArray()
+                keepAliveInterval = 60
+                isCleanSession = true
+            }
+
             mqttClient?.connect(options, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    Log.d(TAG, "Connection success")
-                    allSubScribe()//订阅所有的主题
-                    callback.invoke(true)
-
+                    LogUtils.d("【MQTT连接】连接成功：server=$serverURI, clientId=$clientId")
+                    allSubScribe()
+                    callback(true)
                 }
+
                 override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                    Log.d(TAG, "Connection failure")
-                    callback.invoke(false)
+                    LogUtils.e("【MQTT连接】连接失败：server=$serverURI, clientId=$clientId, error=${exception?.message}")
+                    callback(false)
                 }
             })
         } catch (e: MqttException) {
-            e.printStackTrace()
+            LogUtils.e("【MQTT连接】连接异常：error=${e.message}", e)
+            callback(false)
         }
     }
 
     /**
-     * 订阅主题
+     * 订阅主题。
      */
     fun subscribe(topic: String, qos: Int = 1) {
         try {
+            LogUtils.d("【MQTT订阅】开始订阅：topic=$topic, qos=$qos")
             mqttClient?.subscribe(topic, qos, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    Log.d(TAG, "Subscribed to $topic")
+                    LogUtils.d("【MQTT订阅】订阅成功：topic=$topic, qos=$qos")
                 }
+
                 override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                    Log.d(TAG, "Failed to subscribe $topic")
+                    LogUtils.e("【MQTT订阅】订阅失败：topic=$topic, qos=$qos, error=${exception?.message}")
                 }
             })
         } catch (e: MqttException) {
-            e.printStackTrace()
+            LogUtils.e("【MQTT订阅】订阅异常：topic=$topic, qos=$qos, error=${e.message}", e)
         }
     }
 
     /**
-     * 取消订阅主题
+     * 取消订阅主题。
      */
     fun unsubscribe(topic: String) {
         try {
+            LogUtils.d("【MQTT订阅】开始取消订阅：topic=$topic")
             mqttClient?.unsubscribe(topic, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    Log.d(TAG, "Unsubscribed to $topic")
+                    LogUtils.d("【MQTT订阅】取消订阅成功：topic=$topic")
                 }
 
                 override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                    Log.d(TAG, "Failed to unsubscribe $topic")
+                    LogUtils.e("【MQTT订阅】取消订阅失败：topic=$topic, error=${exception?.message}")
                 }
             })
         } catch (e: MqttException) {
-            e.printStackTrace()
+            LogUtils.e("【MQTT订阅】取消订阅异常：topic=$topic, error=${e.message}", e)
         }
     }
 
     /**
-     * 发布消息到主题
+     * 发布消息到指定主题。
      */
     fun publish(topic: String, msg: String, qos: Int = 1, retained: Boolean = false): Boolean {
         val client = mqttClient
         if (client == null) {
-            LogUtils.w("MQTT publish skipped because client is not initialized: topic=$topic")
+            LogUtils.w("【MQTT发布】跳过发布：客户端未初始化，topic=$topic")
             return false
         }
         if (!client.isConnected) {
-            LogUtils.w("MQTT publish skipped because client is not connected: topic=$topic")
+            LogUtils.w("【MQTT发布】跳过发布：客户端未连接，topic=$topic")
             return false
         }
-        try {
-            val message = MqttMessage()
-            message.payload = msg.toByteArray()
-            message.qos = qos
-            message.isRetained = retained
+        return try {
+            LogUtils.d("【MQTT发布】开始发布：topic=$topic, qos=$qos, retained=$retained")
+            val message = MqttMessage().apply {
+                payload = msg.toByteArray()
+                this.qos = qos
+                isRetained = retained
+            }
             client.publish(topic, message, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    Log.d(TAG, "$msg published to $topic")
+                    LogUtils.d("【MQTT发布】发布成功：topic=$topic")
                 }
 
                 override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                    Log.d(TAG, "Failed to publish $msg to $topic")
+                    LogUtils.e("【MQTT发布】发布失败：topic=$topic, error=${exception?.message}")
                 }
             })
-            return true
+            true
         } catch (e: Throwable) {
-            e.printStackTrace()
-            LogUtils.e("MQTT publish failed: topic=$topic, error=${e.message}")
+            LogUtils.e("【MQTT发布】发布异常：topic=$topic, error=${e.message}", e)
+            false
         }
-        return false
     }
 
     /**
-     * 断开mqtt连接
+     * 断开 MQTT 连接。
      */
     fun disconnect() {
         try {
+            LogUtils.d("【MQTT连接】开始断开连接")
             mqttClient?.disconnect(null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    Log.d(TAG, "Disconnected")
+                    LogUtils.d("【MQTT连接】断开连接成功")
                 }
+
                 override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                    Log.d(TAG, "Failed to disconnect")
+                    LogUtils.e("【MQTT连接】断开连接失败：error=${exception?.message}")
                 }
             })
         } catch (e: MqttException) {
-            e.printStackTrace()
+            LogUtils.e("【MQTT连接】断开连接异常：error=${e.message}", e)
         }
     }
 
-
     /**
-     * 发送消息给服务端
+     * 向服务端主题发布消息。
      */
     fun publishService(it: TopicMessage): Boolean {
-        return publish(AppConfig.getTopicDeviceIdUrl(topic_by_device), JSON.toJSONString(it))
+        return publish(AppConfig.getTopicDeviceIdUrl(topicByDevice), JSON.toJSONString(it))
     }
 
     /**
-     * 连接成功，订阅所有的主题
+     * 连接成功后订阅当前设备对应的服务端主题。
      */
-    fun allSubScribe(){
-       subscribe(AppConfig.getTopicDeviceIdUrl(VMMqttHelper.topic_by_server))
+    fun allSubScribe() {
+        subscribe(AppConfig.getTopicDeviceIdUrl(topicByServer))
     }
+
     /**
-     * 取消所有的订阅
+     * 取消当前设备的全部订阅。
      */
     fun unAllSubscribe() {
-        unsubscribe(AppConfig.getTopicDeviceIdUrl(VMMqttHelper.topic_by_server))
+        unsubscribe(AppConfig.getTopicDeviceIdUrl(topicByServer))
     }
-
 }
