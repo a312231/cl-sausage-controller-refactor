@@ -33,7 +33,11 @@ class CameraService : LifecycleService() {
 
     private data class SelectedCamera(
         val selector: CameraSelector,
-        val isExternal: Boolean
+        val isExternal: Boolean,
+        val label: String,
+        val cameraId: String?,
+        val lensFacing: Int?,
+        val hardwareLevel: Int?
     )
 
     private val binder = ClientBinder()
@@ -180,7 +184,9 @@ class CameraService : LifecycleService() {
                         if (useAnalysisSnapshot) {
                             imageCapture = null
                             provider.bindToLifecycle(this, selectedCamera.selector, imageAnalysis)
-                            LogUtils.w("【相机服务】检测到外置相机，切换为分析帧拍照模式")
+                            LogUtils.w(
+                                "【相机服务】检测到外置相机，切换为分析帧拍照模式：label=${selectedCamera.label}, cameraId=${selectedCamera.cameraId ?: "unknown"}, lensFacing=${selectedCamera.lensFacing}, hardwareLevel=${selectedCamera.hardwareLevel}"
+                            )
                         } else {
                             imageCapture = buildImageCaptureUseCase()
                             provider.bindToLifecycle(this, selectedCamera.selector, imageCapture, imageAnalysis)
@@ -410,8 +416,20 @@ class CameraService : LifecycleService() {
 
     @AndroidxOptIn(markerClass = [ExperimentalCamera2Interop::class])
     private fun isExternalCamera(cameraInfo: CameraInfo?): Boolean {
+        return getCameraMeta(cameraInfo).isExternal
+    }
+
+    private data class CameraMeta(
+        val isExternal: Boolean,
+        val cameraId: String?,
+        val lensFacing: Int?,
+        val hardwareLevel: Int?
+    )
+
+    @AndroidxOptIn(markerClass = [ExperimentalCamera2Interop::class])
+    private fun getCameraMeta(cameraInfo: CameraInfo?): CameraMeta {
         if (cameraInfo == null) {
-            return false
+            return CameraMeta(false, null, null, null)
         }
         return try {
             val camera2Info = Camera2CameraInfo.from(cameraInfo)
@@ -419,11 +437,16 @@ class CameraService : LifecycleService() {
             val hardwareLevel =
                 camera2Info.getCameraCharacteristic(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
             val cameraId = camera2Info.cameraId
-            lensFacing == CameraCharacteristics.LENS_FACING_EXTERNAL ||
-                hardwareLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL ||
-                (cameraId.toIntOrNull()?.let { it >= 100 } == true)
+            CameraMeta(
+                isExternal = lensFacing == CameraCharacteristics.LENS_FACING_EXTERNAL ||
+                    hardwareLevel == CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL ||
+                    (cameraId.toIntOrNull()?.let { it >= 100 } == true),
+                cameraId = cameraId,
+                lensFacing = lensFacing,
+                hardwareLevel = hardwareLevel
+            )
         } catch (_: Exception) {
-            false
+            CameraMeta(false, null, null, null)
         }
     }
 
@@ -433,9 +456,18 @@ class CameraService : LifecycleService() {
         label: String
     ): SelectedCamera {
         val cameraInfo = findCameraInfoForSelector(cameraProvider, selector)
-        val external = isExternalCamera(cameraInfo)
-        LogUtils.d("【相机服务】选择${label}摄像头${if (external) "(external)" else ""}")
-        return SelectedCamera(selector, external)
+        val cameraMeta = getCameraMeta(cameraInfo)
+        LogUtils.d(
+            "【相机服务】选择${label}摄像头：cameraId=${cameraMeta.cameraId ?: "unknown"}, external=${cameraMeta.isExternal}, lensFacing=${cameraMeta.lensFacing}, hardwareLevel=${cameraMeta.hardwareLevel}"
+        )
+        return SelectedCamera(
+            selector = selector,
+            isExternal = cameraMeta.isExternal,
+            label = label,
+            cameraId = cameraMeta.cameraId,
+            lensFacing = cameraMeta.lensFacing,
+            hardwareLevel = cameraMeta.hardwareLevel
+        )
     }
 
     private fun selectAnyAvailableCamera(cameraProvider: ProcessCameraProvider): SelectedCamera? {
@@ -451,9 +483,18 @@ class CameraService : LifecycleService() {
 
                 cameraProvider.availableCameraInfos.isNotEmpty() -> {
                     val cameraInfo = cameraProvider.availableCameraInfos.first()
-                    val external = isExternalCamera(cameraInfo)
-                    LogUtils.d("【相机服务】使用第一个可用摄像头${if (external) "(external)" else ""}")
-                    SelectedCamera(cameraInfo.cameraSelector, external)
+                    val cameraMeta = getCameraMeta(cameraInfo)
+                    LogUtils.d(
+                        "【相机服务】使用第一个可用摄像头：cameraId=${cameraMeta.cameraId ?: "unknown"}, external=${cameraMeta.isExternal}, lensFacing=${cameraMeta.lensFacing}, hardwareLevel=${cameraMeta.hardwareLevel}"
+                    )
+                    SelectedCamera(
+                        selector = cameraInfo.cameraSelector,
+                        isExternal = cameraMeta.isExternal,
+                        label = "首个可用",
+                        cameraId = cameraMeta.cameraId,
+                        lensFacing = cameraMeta.lensFacing,
+                        hardwareLevel = cameraMeta.hardwareLevel
+                    )
                 }
 
                 else -> {
