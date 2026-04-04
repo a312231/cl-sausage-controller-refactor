@@ -214,6 +214,14 @@ object HighCurrentTrafficMode {
             return
         }
 
+        // 进入真正高并发正常态前，记录一次完成条件快照，便于排查“为什么此刻完成切换”。
+        val frontOccupiedCount = list1_21.count { it.isHasSausage }
+        val highSupplyOccupiedCount = list25_33.count { it.isHasSausage }
+        LogUtils.i(
+            TAG,
+            "【并发切换】低转高完成条件满足：13~15 已无在烤旧批次=$hasActiveHeatingIn13_15，25~33 已启动新补热=$hasStartedHighHeatSupplyNow，1~21 当前有肠数=$frontOccupiedCount，25~33 当前有肠数=$highSupplyOccupiedCount"
+        )
+
         val now = System.currentTimeMillis()
         list13_15.forEach { kaoPan ->
             if (kaoPan.isHasSausage && kaoPan.startTime == 0L && kaoPan.holdingTime <= 0L) {

@@ -42,6 +42,7 @@ import kotlin.math.ceil
 class MainActivity : OrderActivity(), ICameraStateCallBack {
     private var runtimeStarted = false
     private val recentIncomingOrderLogAtMs = ConcurrentHashMap<String, Long>()
+    private val recentBusyOrderLogAtMs = ConcurrentHashMap<String, Long>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,19 +112,26 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     }
 
     /**
-     * 接受 mqtt 消息
+     * 接收服务端下发的 MQTT 订单消息。
+     * 这里只负责接单入口控制，不在这里做重复下单补偿或退款判定。
      */
     private fun mqttMessage() {
         VMMqttHelper.setTopicMessageCallBack(AppConfig.getTopicDeviceIdUrl(VMMqttHelper.topic_by_server)) { data ->
             when (data.action) {
                 1 -> {
                     val orderMessage = data.content
+                    val orderNo = extractOrderNo(orderMessage)
                     logIncomingOrder(orderMessage)
-                    val appState = AppConfig.getAppConfig().moveStatus
-                    if (appState == 2 || AppConfig.getAppConfig().onlineStatus == 4) {
-                        LogUtils.w("【订单流转】设备当前正忙，拒绝接入新的下单请求，后续应走退款或重试")
+                    val moveStatus = AppConfig.getAppConfig().moveStatus
+                    val onlineStatus = AppConfig.getAppConfig().onlineStatus
+                    if (moveStatus == 2 || onlineStatus == 4) {
+                        logBusyOrderRejected(orderNo, moveStatus, onlineStatus)
                     } else {
-                        LogUtils.d("【订单流转】收到新的顾客下单请求，准备进入出餐流程")
+                        LogUtils.d(
+                            "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
+                                "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
+                                "onlineStatus=$onlineStatus, moveStatus=$moveStatus"
+                        )
                         AppConfig.getAppConfig().onlineStatus = 4
                         AppConfig.saveAppConfig(AppConfig.getAppConfig())
                         syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
@@ -134,6 +142,34 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 }
             }
         }
+    }
+
+    private fun extractOrderNo(orderMessage: String): String {
+        return try {
+            JSON.parseObject(orderMessage).getString("order_no").orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    /**
+     * 设备忙时可能短时间重复收到相同订单或多个订单，这里按订单号做短时间节流，
+     * 避免主日志被同类“忙拒单”提示刷满，同时保留足够的定位参数。
+     */
+    private fun logBusyOrderRejected(orderNo: String, moveStatus: Int, onlineStatus: Int) {
+        val logKey = if (orderNo.isBlank()) "unknown" else orderNo
+        val now = System.currentTimeMillis()
+        recentBusyOrderLogAtMs.entries.removeIf { now - it.value >= 5 * 60_000L }
+        val lastLogAt = recentBusyOrderLogAtMs[logKey]
+        if (lastLogAt != null && now - lastLogAt < 10_000L) {
+            return
+        }
+        recentBusyOrderLogAtMs[logKey] = now
+        LogUtils.w(
+            "【订单流转】设备当前正忙，拒绝接入新的下单请求：" +
+                "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
+                "onlineStatus=$onlineStatus, moveStatus=$moveStatus，后续应走退款或重试"
+        )
     }
 
     private fun logIncomingOrder(orderMessage: String) {
@@ -391,3 +427,5 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         LogUtils.d("【UVC相机】摄像头状态变更：state=${code.name}, message=$msg")
     }
 }
+
+

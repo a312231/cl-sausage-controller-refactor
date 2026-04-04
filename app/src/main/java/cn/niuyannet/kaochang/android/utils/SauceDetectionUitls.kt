@@ -43,6 +43,17 @@ import kotlin.coroutines.resume
  * 旧版 CameraX 直拍路径仅保留作兼容兜底，避免历史流程直接失效。
  */
 object SauceDetectionUitls {
+    private const val DETECT_LOG_WINDOW_MS = 10_000L
+    private val recentDetectWarnAtMs = ConcurrentHashMap<String, Long>()
+
+    private fun logDetectWarnThrottled(key: String, message: String) {
+        val now = System.currentTimeMillis()
+        val lastAt = recentDetectWarnAtMs[key] ?: 0L
+        if (now - lastAt >= DETECT_LOG_WINDOW_MS) {
+            recentDetectWarnAtMs[key] = now
+            logDetectWarn(message)
+        }
+    }
     private fun logPhoto(tag: String, message: String) = LogUtils.d(tag, "【售卖口拍照】$message")
     private fun logPhotoError(tag: String, message: String) = LogUtils.e(tag, "【售卖口拍照】$message")
     private fun logDetect(message: String) = LogUtils.d("【售卖口识别】$message")
@@ -104,7 +115,10 @@ object SauceDetectionUitls {
     ): SauceDetectionProcessor.SausageInfo? = withContext(Dispatchers.IO) {
         if (AppConfig.getAppConfig().forceVisionSuccess == 1) {
             if (roiFlag == 0) {
-                logDetectWarn("联调模式已开启，运输台视觉识别固定返回成功")
+                logDetectWarnThrottled(
+                    "force_transport_success",
+                    "联调模式已开启，运输台视觉识别固定返回成功：roiFlag=$roiFlag, forceVisionSuccess=1"
+                )
                 return@withContext buildForcedSuccessResult(roiFlag)
             }
 
@@ -116,11 +130,17 @@ object SauceDetectionUitls {
             forcedSellDetectCount++
 
             if (forcedSellDetectCount <= 2) {
-                logDetectWarn("联调模式已开启，售卖口视觉识别模拟为“检测到烤肠”")
+                logDetectWarnThrottled(
+                    "force_sell_detected",
+                    "联调模式已开启，售卖口视觉识别模拟为“检测到烤肠”：roiFlag=$roiFlag, countInWindow=$forcedSellDetectCount"
+                )
                 return@withContext buildForcedSuccessResult(roiFlag)
             }
 
-            logDetectWarn("联调模式已开启，售卖口视觉识别模拟为“顾客已取走，窗口为空”")
+            logDetectWarnThrottled(
+                "force_sell_empty",
+                "联调模式已开启，售卖口视觉识别模拟为“顾客已取走，窗口为空”：roiFlag=$roiFlag, countInWindow=$forcedSellDetectCount"
+            )
             return@withContext buildForcedSellEmptyResult()
         }
 
