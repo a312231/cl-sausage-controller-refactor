@@ -206,6 +206,26 @@ object KaoPanHelper {
         PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_TASTE_LIST, tasteList)
     }
 
+    /**
+     * 按最新配置统一回刷所有烤盘的保温超时阈值。
+     *
+     * 这里只更新 closeTime，不改 holdingTime，避免把“已经保温了多久”重新计时。
+     * 后台修改丢弃时间后，当前保温中的烤肠也应立即按新阈值执行自动丢弃。
+     *
+     * @param discardTimeHours 丢弃时间，单位小时
+     * @return 实际回刷的烤盘数量
+     */
+    fun refreshDiscardCloseTime(discardTimeHours: Int): Int {
+        val normalizedHours = discardTimeHours.coerceAtLeast(0).toLong()
+        val closeTimeMillis = normalizedHours * 60L * 60L * 1000L
+        val currentPans = getKaoPanList()
+        currentPans.forEach { kaoPan ->
+            kaoPan.closeTime = closeTimeMillis
+        }
+        saveKaoPanList(currentPans)
+        return currentPans.size
+    }
+
     fun normalizeKaoPanTasteMetadata(): Boolean {
         val currentPans = getKaoPanList()
         var changed = false

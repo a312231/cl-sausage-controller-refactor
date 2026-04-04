@@ -306,6 +306,15 @@ object DataManagementAPI {
                 logD("远端配置已更新：${changes.joinToString(", ")}")
             }
 
+            if (oldDiscardTime != mergedConfig.discardTime) {
+                val refreshedCount = KaoPanHelper.refreshDiscardCloseTime(mergedConfig.discardTime)
+                val newCloseTimeMillis = mergedConfig.discardTime.coerceAtLeast(0) * 60L * 60L * 1000L
+                logD(
+                    "远端配置已更新丢弃时间，并已回刷烤盘保温超时阈值：discardTime=${oldDiscardTime}小时->${mergedConfig.discardTime}小时，" +
+                        "回刷烤盘数=$refreshedCount，新的closeTime=${newCloseTimeMillis}ms"
+                )
+            }
+
             if (
                 previousOnlineStatus == 3 &&
                 mergedConfig.onlineStatus in listOf(1, 2) &&
