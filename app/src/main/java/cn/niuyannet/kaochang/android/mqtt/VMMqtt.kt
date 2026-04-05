@@ -22,6 +22,8 @@ open class VMMqtt {
     private val topicByServer = "/cl/devices/{device_id}/get"      // 服务端发给上位机的主题
     private val topicByDevice = "/cl/devices/{device_id}/service"  // 上位机上报给服务端的主题
 
+    private var isFirstConnection = true
+
     /**
      * 当前 MQTT 是否已连接。
      */
@@ -57,13 +59,21 @@ open class VMMqtt {
                 userName = username
                 password = passwordText.toCharArray()
                 keepAliveInterval = 60
-                isCleanSession = true
+                isCleanSession = false
+                isAutomaticReconnect = true
+                connectionTimeout = 30
             }
 
             mqttClient?.connect(options, null, object : IMqttActionListener {
                 override fun onSuccess(asyncActionToken: IMqttToken?) {
                     LogUtils.d("【MQTT连接】连接成功：server=$serverURI, clientId=$clientId")
-                    allSubScribe()
+                    if (isFirstConnection) {
+                        LogUtils.d("【MQTT连接】首次连接，订阅主题")
+                        allSubScribe()
+                        isFirstConnection = false
+                    } else {
+                        LogUtils.d("【MQTT连接】自动重连，Paho已恢复订阅")
+                    }
                     callback(true)
                 }
 

@@ -48,6 +48,7 @@ object VMMqttHelper : VMMqtt() {
                         "【MQTT连接】连接断开：deviceId=${AppConfig.getDeviceId()}, topic=${AppConfig.getTopicDeviceIdUrl(topic_by_server)}, cause=$causeText"
                     )
                 }
+                // Paho 自动重连已启用（isAutomaticReconnect=true），无需手动重连
             }
 
             override fun deliveryComplete(token: IMqttDeliveryToken?) {
