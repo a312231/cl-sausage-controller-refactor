@@ -23,6 +23,7 @@ import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
 import com.bumptech.glide.Glide
@@ -46,6 +47,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        OrderStateManager.performFullSpCleanup() // 执行一次全量过期 SP 清理
         initView()
     }
 
@@ -113,31 +115,43 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     /**
      * 接收服务端下发的 MQTT 订单消息。
-     * 这里只负责接单入口控制，不在这里做重复下单补偿或退款判定。
+     * 接入了基于 OrderStateManager 的强幂等防重墙判定，绝不让同一个 OrderNo 执行出餐两次。
      */
     private fun mqttMessage() {
-        VMMqttHelper.setTopicMessageCallBack(AppConfig.getTopicDeviceIdUrl(VMMqttHelper.topic_by_server)) { data ->
-            when (data.action) {
-                1 -> {
-                    val orderMessage = data.content
-                    val orderNo = extractOrderNo(orderMessage)
-                    logIncomingOrder(orderMessage)
-                    val moveStatus = AppConfig.getAppConfig().moveStatus
-                    val onlineStatus = AppConfig.getAppConfig().onlineStatus
-                    if (moveStatus == 2 || onlineStatus == 4) {
-                        logBusyOrderRejected(orderNo, moveStatus, onlineStatus)
-                    } else {
-                        LogUtils.d(
-                            "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
-                                "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
-                                "onlineStatus=$onlineStatus, moveStatus=$moveStatus"
-                        )
-                        AppConfig.getAppConfig().onlineStatus = 4
-                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                        syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
-                        showProcessingDialog()
-                        setDataToView()
-                        purchaseOrder(orderMessage)
+        VMMqttHelper.registerMessageListener(this::class.java.simpleName) { data ->
+            // MQTT 回调运行在子线程，UI 操作（Dialog、View）必须切到主线程
+            runOnUiThread {
+                when (data.action) {
+                    1 -> {
+                        val orderMessage = data.content
+                        val orderNo = extractOrderNo(orderMessage)
+                        if (orderNo.isBlank()) {
+                            LogUtils.e("【订单防重】非法订单消息，已拒绝执行 | deviceId=${AppConfig.getDeviceId()} | payload摘要=$orderMessage")
+                            return@runOnUiThread
+                        }
+                        logIncomingOrder(orderMessage)
+                        val moveStatus = AppConfig.getAppConfig().moveStatus
+                        val onlineStatus = AppConfig.getAppConfig().onlineStatus
+                        if (moveStatus == 2 || onlineStatus == 4) {
+                            logBusyOrderRejected(orderNo, moveStatus, onlineStatus)
+                            OrderStateManager.recordBusyIgnored(orderNo)
+                        } else {
+                            if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
+                                return@runOnUiThread
+                            }
+
+                            LogUtils.d(
+                                "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
+                                    "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
+                                    "onlineStatus=$onlineStatus, moveStatus=$moveStatus"
+                            )
+                            AppConfig.getAppConfig().onlineStatus = 4
+                            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                            syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
+                            showProcessingDialog()
+                            setDataToView()
+                            purchaseOrder(orderMessage)
+                        }
                     }
                 }
             }
@@ -293,6 +307,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onDestroy() {
         super.onDestroy()
+        VMMqttHelper.unregisterMessageListener(this::class.java.simpleName) // 组件解绑
         CameraMonitor.instance.close()
         clearCamera()
         ConnectManageHelper.disConnect()

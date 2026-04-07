@@ -7,6 +7,7 @@ import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
+import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
@@ -123,6 +124,8 @@ object KaoChangAlgorithm {
             while (isRunning) {
                 pollKaoPanStatus()
                 if (!isRunning) break
+                // 每轮同步一次烤盘状态和烤肠箱库存到服务端，确保小程序看到的数据实时
+                DataManagementAPI.uploadDataToServer()
                 delay(10 * 1000)
             }
         }

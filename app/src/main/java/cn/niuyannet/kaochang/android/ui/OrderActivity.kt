@@ -161,8 +161,10 @@ abstract class OrderActivity: BaseSauceDetection() {
      * 一个订单可能包含多个商品项、每个商品项又可能包含多根烤肠，这里按根串行处理。
      */
     fun purchaseOrder(orderMessage:String) {
+        val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
 
             lifecycleScope.launch(Dispatchers.IO) {
+                try {
 
                 // 最多等待机械臂空闲 240 秒
                 val maxWaitTime = 240_000L
@@ -219,6 +221,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                 }
                 orderCompleted = orderCompleted && deliveredTotal == totalCount
+                if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
                 // 当前订单动作结束后，本地动作状态恢复为空闲
                 AppConfig.getAppConfig().moveStatus = 0
@@ -234,6 +237,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                     // 这里上报的是设备营业状态（onlineStatus），不是订单事件 status
                     // 订单结束时同时走 MQTT + HTTP，并做轻量重试，降低“假工作中”概率
                     syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
+                    // 订单结束后立即同步烤盘状态和库存到云端，确保小程序扫码看到实时数据
+                    DataManagementAPI.uploadDataToServer()
                     hideProcessingDialog()
                     if (orderCompleted) {
                         showCompletedDialog()
@@ -243,7 +248,10 @@ abstract class OrderActivity: BaseSauceDetection() {
                     // 显示QRCode
                     setDataToView()
                 }
+            } finally {
+                cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
             }
+        }
     }
 
     /**
