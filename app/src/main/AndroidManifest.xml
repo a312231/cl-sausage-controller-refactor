@@ -40,7 +40,7 @@
             android:name="ScopedStorage"
             android:value="true" />
 
-        <service android:name="org.eclipse.paho.android.service.MqttService" />
+        <!-- <service android:name="org.eclipse.paho.android.service.MqttService" /> 已彻底废弃 -->
 
         <!-- 后台拍照服务 -->
         <service
