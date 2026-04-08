@@ -63,6 +63,16 @@ object KaoChangOperate {
     private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
     private fun logW(category: String, message: String) = LogUtils.w("[$category] $message")
     private fun logE(category: String, message: String) = LogUtils.e("[$category] $message")
+    private fun logE(category: String, message: String, tr: Throwable) = LogUtils.e("[$category] $message", tr)
+
+    private fun onlineStatusDesc(status: Int): String = when (status) {
+        0 -> "0(未启用)"
+        1 -> "1(运营中)"
+        2 -> "2(休息中)"
+        3 -> "3(维护中)"
+        4 -> "4(工作中)"
+        else -> "$status(未知)"
+    }
 
     enum class TakeSausageResult {
         TAKEN_BY_USER,
@@ -1119,12 +1129,20 @@ object KaoChangOperate {
         if (config.errorStatus != 0) {
             config.onlineStatus = 3
             AppConfig.saveAppConfig(config)
-            logW(LOG_DEVICE, "设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到休息中")
+            logW(
+                LOG_DEVICE,
+                "营业时间结束：检测到设备故障标记，保持维护中 | errorStatus=${config.errorStatus}(0=正常, 非0=故障), " +
+                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
+            )
             NetApi.updateDeviceInfo()
             return
         }
         if (config.onlineStatus != 1) {
-            logD(LOG_DEVICE, "营业时间结束：当前状态=${config.onlineStatus}，非运营中，跳过自动切换休息中（尊重后台设置）")
+            logD(
+                LOG_DEVICE,
+                "营业时间结束：当前状态非运营中，跳过自动切换休息中（尊重后台设置） | " +
+                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
+            )
             return
         }
         // 当前是运营中，自动切换为休息中
@@ -1139,7 +1157,20 @@ object KaoChangOperate {
         try {
             KaoChangAlgorithm.resetKaoPan()
         } catch (e: Exception) {
-            TODO("Not yet implemented")
+            // 营业结束时若重置烤盘失败，不应抛未实现异常导致崩溃；
+            // 这里降级为维护中并上报，等待人工排查。
+            config.errorStatus = 2
+            config.onlineStatus = 3
+            AppConfig.saveAppConfig(config)
+            logE(
+                LOG_DEVICE,
+                "营业时间结束：重置烤盘失败，已降级为维护中并上报 | " +
+                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}, " +
+                    "errorStatus=${config.errorStatus}(2=设备故障), " +
+                    "exception=${e.javaClass.simpleName}, message=${e.message}",
+                e
+            )
+            NetApi.updateDeviceInfo()
         }
     }
 
