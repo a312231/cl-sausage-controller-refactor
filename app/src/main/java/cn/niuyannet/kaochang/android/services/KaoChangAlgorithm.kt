@@ -60,6 +60,8 @@ object KaoChangAlgorithm {
 
     private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
     private fun logW(category: String, message: String) = LogUtils.w(TAG, "[$category] $message")
+    private fun logI(category: String, message: String) = LogUtils.i(TAG, "[$category] $message")
+    private fun logE(category: String, message: String) = LogUtils.e(TAG, "[$category] $message")
 
     private fun modeText(value: Int): String = when (value) {
         1 -> "1(低并发)"
@@ -263,19 +265,21 @@ object KaoChangAlgorithm {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val kaoPanBoxList = KaoPanHelper.getKaoPanBoxList()
         var onlineStatus = config.onlineStatus
+        if (config.businessTime == null) {
+            logW(LOG_ALGORITHM, "【营业时间】营业时间配置为空（businessTime=null），算法按非营业时间处理，设备将不会运营。请检查后台是否已配置营业时间")
+        }
         val isWithinBusinessHours = isWithinBusinessHours(getCurrentTime(), config.businessTime)
         if (!isWithinBusinessHours) {
-            if (onlineStatus != 2) {
-                logD(LOG_ALGORITHM, "当前不在营业时间内，暂停算法调度并执行停业收尾")
+            // 只有运营中（1）才需要执行停业收尾切换到休息中（2）；
+            // 维护中/未启用等后台管理员设置的状态，不触发自动切换
+            if (onlineStatus == 1) {
+                logD(LOG_ALGORITHM, "当前不在营业时间内，设备运营中，执行停业收尾")
                 KaoChangOperate.pauseBusiness()
                 KaoChangOperate.endBusinessHours(config)
+            } else {
+                logD(LOG_ALGORITHM, "当前不在营业时间内，设备状态=${onlineStatusText(onlineStatus)}，跳过停业收尾")
             }
             return
-        } else {
-            if (onlineStatus == 2) {
-                KaoChangOperate.startBusinessHours(config)
-                onlineStatus = AppConfig.getAppConfig().onlineStatus
-            }
         }
 
         if (!(onlineStatus == 1 || onlineStatus == 4)) {
@@ -401,7 +405,7 @@ object KaoChangAlgorithm {
                     if (modbusReportedUnavailable) {
                         if (modbusReconnectSinceMs == null) {
                             modbusReconnectSinceMs = now
-                            logD(LOG_COMM, "检测到modbus恢复，开始稳定性观察")
+                            logI(LOG_COMM, "【Modbus】检测到下位机重新连接，开始稳定性观察 | port=${AppConfig.getAppConfig().modbusAddress}")
                         } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
                             val restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
                             config.errorStatus = 0
@@ -412,6 +416,7 @@ object KaoChangAlgorithm {
                             modbusReportedUnavailable = false
                             modbusReconnectSinceMs = null
                             loggedManualRecoveryRequiredAfterReconnect = false
+                            logI(LOG_COMM, "【Modbus】下位机稳定连接确认，自动恢复正常状态 | port=${AppConfig.getAppConfig().modbusAddress}, onlineStatus=$restoredOnlineStatus, errorStatus=0")
                             uploadDeviceStatus(
                                 "modbus串口恢复稳定，自动恢复原因=断连类错误，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
                             )

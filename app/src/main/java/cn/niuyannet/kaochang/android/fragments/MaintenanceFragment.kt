@@ -23,6 +23,7 @@ import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.blankj.utilcode.util.ToastUtils
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
@@ -272,6 +273,12 @@ class MaintenanceFragment : Fragment() {
 
         binding.btnErroStatus.setOnClickListener {
             lifecycleScope.launch {
+                // 方案A：下位机仍未连接时拦截，防止出现"异常状态=正常"的假阳性
+                if (!VMModbusHelper.connectStatus()) {
+                    ToastUtils.showLong("下位机串口仍未连接，请确认通信恢复后再操作")
+                    LogUtils.w("【维护操作】拒绝恢复正常状态：下位机串口仍未连接 | modbusAddress=${AppConfig.getAppConfig().modbusAddress}")
+                    return@launch
+                }
                 val config = AppConfig.getAppConfig()
                 val targetOnlineStatus =
                     if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2

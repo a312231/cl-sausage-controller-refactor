@@ -154,7 +154,7 @@ object VMModbusHelper {
         connectivityProbes.forEach { probe ->
             try {
                 master.readHoldingRegisters(1, probe.startAddress, probe.quantity)
-                LogUtils.d("Modbus 连通性探测成功：${probe.label}")
+                // 探测成功不记日志，每秒运行会刷屏；调用方按需记录连接状态变化
                 return true
             } catch (e: Exception) {
                 lastError = e
@@ -221,11 +221,11 @@ object VMModbusHelper {
                     modbusMaster = master
 
                     if (appConfigBean.modbusAddress != devicePath) {
-                        LogUtils.w("自动探测到可用串口：${appConfigBean.modbusAddress} -> $devicePath")
+                        LogUtils.i("【Modbus】自动探测到可用串口：${appConfigBean.modbusAddress} -> $devicePath，已更新配置")
                         appConfigBean.modbusAddress = devicePath
                         AppConfig.saveAppConfig(appConfigBean)
                     } else {
-                        LogUtils.d("Modbus 串口连接成功：$devicePath")
+                        LogUtils.i("【Modbus】串口连接成功：port=$devicePath")
                     }
 
                     callback.invoke(true)

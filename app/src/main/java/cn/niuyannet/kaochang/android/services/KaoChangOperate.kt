@@ -582,6 +582,12 @@ object KaoChangOperate {
             kaoPan.status=1//开始加热烤制
             // 记录开始时间
             kaoPan.startTime = System.currentTimeMillis()
+            // 从当前 config 刷新烤制时长和丢弃阈值，防止初始化时 config 尚未从云端加载
+            // 导致 bakingTime/closeTime 遗留为 0 而直接跳入保温状态
+            val cfg = AppConfig.getAppConfig()
+            kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
+            kaoPan.closeTime  = cfg.discardTime * 60L * 60L * 1000L
+            logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${kaoPan.id}")
         } else {
             logE(LOG_SUPPLEMENT, "补肠失败，未更新烤盘状态和库存：panId=${kaoPan.id}, boxPosition=${kaoPanBox.positionSn}, result=$result, result2=$result2")
         }
@@ -1087,28 +1093,27 @@ object KaoChangOperate {
     }
 
     /**
-     * 营业时间开始
+     * 营业时间开始。
+     * 只恢复物理加热状态，不修改 onlineStatus —— 营业状态由后台管理员控制。
      */
     suspend fun startBusinessHours(config: AppConfigBean){
         if (config.errorStatus != 0) {
             config.onlineStatus = 3
             AppConfig.saveAppConfig(config)
-            logW(LOG_DEVICE, "设备仍存在错误标记(errorStatus=${config.errorStatus})，禁止从维护中切换到运营中")
+            logW(LOG_DEVICE, "设备仍存在错误标记(errorStatus=${config.errorStatus})，跳过营业时间恢复")
             NetApi.updateDeviceInfo()
             return
         }
-        //修改设备状态 改为运营中
-        config.apply {
-            onlineStatus = 1
-        }
-        AppConfig.saveAppConfig(config)
-        restoreHeatingStateFromCurrentPans("切换到运营中")
-        //同步更新云端状态
-        NetApi.updateDeviceInfo()
+        // 不自动改 onlineStatus=1，营业状态由后台管理员控制；
+        // 这里只恢复烤盘加热物理状态
+        logD(LOG_DEVICE, "营业时间开始：恢复烤盘加热状态（onlineStatus 保持由后台控制，当前=${config.onlineStatus}）")
+        restoreHeatingStateFromCurrentPans("营业时间开始")
     }
 
     /**
-     * 营业时间结束
+     * 营业时间结束。
+     * 只有当设备当前是"运营中（1）"时才切换为"休息中（2）"；
+     * 若后台已手动设为维护中/未启用，不覆盖。
      */
     suspend fun endBusinessHours(config: AppConfigBean){
         if (config.errorStatus != 0) {
@@ -1118,11 +1123,16 @@ object KaoChangOperate {
             NetApi.updateDeviceInfo()
             return
         }
-        //修改设备状态 改为休息中
+        if (config.onlineStatus != 1) {
+            logD(LOG_DEVICE, "营业时间结束：当前状态=${config.onlineStatus}，非运营中，跳过自动切换休息中（尊重后台设置）")
+            return
+        }
+        // 当前是运营中，自动切换为休息中
         config.apply {
             onlineStatus = 2
         }
         AppConfig.saveAppConfig(config)
+        logD(LOG_DEVICE, "营业时间结束：已自动切换为休息中（2）")
         //同步更新云端状态
         NetApi.updateDeviceInfo()
         //执行丢弃操作
