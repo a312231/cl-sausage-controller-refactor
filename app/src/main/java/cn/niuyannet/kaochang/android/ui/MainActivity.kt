@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.ui
+﻿package cn.niuyannet.kaochang.android.ui
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
@@ -62,6 +62,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     private val recentIncomingOrderLogAtMs = ConcurrentHashMap<String, Long>()
     private val recentBusyOrderLogAtMs = ConcurrentHashMap<String, Long>()
     private var deviceStateRefreshJob: Job? = null
+    private var lastHomeDisplayLogSignature = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -125,6 +126,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         super.onResume()
         CameraMonitor.instance.startService(applicationContext)
         if (runtimeStarted) {
+            setDataToView()
             startDeviceStateRefreshLoop()
         }
     }
@@ -262,7 +264,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             .setView(editText)
             .setPositiveButton("确定") { _, _ ->
                 val password = editText.text.toString()
-                    if (password == "123") {
+                if (password == "123") {
                     SettingActivity.start(this)
                 } else {
                     ToastUtils.showShort("密码错误")
@@ -326,6 +328,39 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             Glide.with(this).load(AppConfig.getAppConfig().qcodeURL).into(binding.qrCodeImage)
         } else {
             binding.qrCodeImage.visibility = View.GONE
+        }
+
+        val statusText = when (appConfigBean.status) {
+            0 -> "0（未启用/离线）"
+            1 -> "1（启用/在线）"
+            else -> "${appConfigBean.status}（未知）"
+        }
+        val onlineStatusText = when (appConfigBean.onlineStatus) {
+            0 -> "0（未启用）"
+            1 -> "1（运营中）"
+            2 -> "2（休息中）"
+            3 -> "3（维护中）"
+            4 -> "4（工作中/正在出餐）"
+            else -> "${appConfigBean.onlineStatus}（未知）"
+        }
+        val qrVisible = binding.qrCodeImage.visibility == View.VISIBLE
+        val displaySignature = listOf(
+            appConfigBean.status,
+            appConfigBean.onlineStatus,
+            binding.tvScanTip.text.toString(),
+            qrVisible
+        ).joinToString("|")
+        if (lastHomeDisplayLogSignature != displaySignature) {
+            lastHomeDisplayLogSignature = displaySignature
+            LogUtils.d(
+                "【首页展示】刷新首页文案：" +
+                    "status（设备启用状态）=$statusText，" +
+                    "onlineStatus（设备营业状态）=$onlineStatusText，" +
+                    "available（二维码页预计时间）=${appConfigBean.available}，" +
+                    "availableCountdownLatched（二维码页预计时间锁存标记）=${appConfigBean.availableCountdownLatched}，" +
+                    "tvScanTip（首页提示文案）=${binding.tvScanTip.text}，" +
+                    "qrVisible（二维码是否展示）=$qrVisible"
+            )
         }
     }
 

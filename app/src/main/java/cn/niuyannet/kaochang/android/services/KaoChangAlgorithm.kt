@@ -53,6 +53,8 @@ object KaoChangAlgorithm {
     private var lastReconnectAttemptMs: Long = 0L
     private var modbusReportedUnavailable = false
     private var lastRecoverableOnlineStatus = 1
+    private var lastAvailableDecisionLogKey = ""
+    private var lastAvailableUpdateLogKey = ""
     private var loggedManualRecoveryRequiredOnDisconnect = false
     private var loggedManualRecoveryRequiredAfterReconnect = false
     private var lastPollStateSnapshot: String? = null
@@ -96,6 +98,12 @@ object KaoChangAlgorithm {
         1 -> "1(识别/流程错误)"
         2 -> "2(Modbus断连错误)"
         else -> "$value(未知)"
+    }
+
+    private fun isEnableText(value: Int): String = when (value) {
+        0 -> "0（关闭）"
+        1 -> "1（开启）"
+        else -> "$value（未知）"
     }
 
     fun restoreRoastAlgorithmState() {
@@ -142,15 +150,34 @@ object KaoChangAlgorithm {
         if (config.available == newAvailable && config.availableCountdownLatched == newLatched) {
             return
         }
-        logD(
-            LOG_ALGORITHM,
-            "更新二维码预计时间：reason=$reason, available=${config.available}->$newAvailable, " +
-                "availableCountdownLatched=${config.availableCountdownLatched}->$newLatched"
-        )
+        val oldDisplayText = buildAvailableDisplayText(config.available)
+        val newDisplayText = buildAvailableDisplayText(newAvailable)
+        val logKey = listOf(reason, newLatched, newDisplayText).joinToString("|")
+        if (lastAvailableUpdateLogKey != logKey) {
+            lastAvailableUpdateLogKey = logKey
+            logD(
+                LOG_ALGORITHM,
+                "更新二维码预计时间：reason=$reason，" +
+                    "available=${config.available}->$newAvailable，" +
+                    "availableCountdownLatched=${config.availableCountdownLatched}->$newLatched，" +
+                    "displayText=$oldDisplayText->$newDisplayText"
+            )
+        }
         config.available = newAvailable
         config.availableCountdownLatched = newLatched
         AppConfig.saveAppConfig(config)
         NetApi.updateDeviceInfo()
+    }
+
+    private fun buildAvailableDisplayText(available: Long): String {
+        if (available <= 0L) {
+            return "扫码下单 纯肉烤肠"
+        }
+        return if (available >= 60_000L) {
+            "预计烤制 ${kotlin.math.ceil(available / 60000.0).toInt()} 分钟"
+        } else {
+            "预计烤制 ${kotlin.math.ceil(available / 1000.0).toInt()} 秒"
+        }
     }
 
     private fun isHeatingPan(kaoPan: KaoPan): Boolean {
@@ -191,6 +218,59 @@ object KaoChangAlgorithm {
         }
     }
 
+    private fun buildAvailableDecisionContext(
+        config: AppConfigBean,
+        sellArea: List<KaoPan>,
+        heatArea: List<KaoPan>
+    ): String {
+        val frontOccupiedCount = sellArea.count { it.isHasSausage }
+        val frontHoldingCount = sellArea.count { isHoldingPan(it) }
+        val frontHeatingCount = sellArea.count { isHeatingPan(it) }
+        val heatAreaHeatingCount = heatArea.count { isHeatingPan(it) }
+        return "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+            "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}，" +
+            "modeType（并发模式）=${modeText(config.modeType)}，" +
+            "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}，" +
+            "frontOccupiedCount（前区有肠数）=$frontOccupiedCount，" +
+            "frontHoldingCount（前区保温数）=$frontHoldingCount，" +
+            "frontHeatingCount（前区加热数）=$frontHeatingCount，" +
+            "heatAreaHeatingCount（补热区加热数）=$heatAreaHeatingCount，" +
+            "available（二维码页预计时间）=${config.available}，" +
+            "availableCountdownLatched（二维码页预计时间锁存标记）=${config.availableCountdownLatched}"
+    }
+
+    private fun logAvailableDecision(
+        reason: String,
+        config: AppConfigBean,
+        sellArea: List<KaoPan>,
+        heatArea: List<KaoPan>
+    ) {
+        val frontOccupiedCount = sellArea.count { it.isHasSausage }
+        val frontHoldingCount = sellArea.count { isHoldingPan(it) }
+        val frontHeatingCount = sellArea.count { isHeatingPan(it) }
+        val heatAreaHeatingCount = heatArea.count { isHeatingPan(it) }
+        val logKey =
+            listOf(
+                reason,
+                config.onlineStatus,
+                config.isEnable,
+                config.modeType,
+                config.transitionMode,
+                frontOccupiedCount,
+                frontHoldingCount,
+                frontHeatingCount,
+                heatAreaHeatingCount,
+                config.availableCountdownLatched
+            ).joinToString("|")
+        if (lastAvailableDecisionLogKey == logKey) {
+            return
+        }
+        lastAvailableDecisionLogKey = logKey
+        logD(
+            LOG_ALGORITHM,
+            "二维码预计时间判定：reason=$reason，${buildAvailableDecisionContext(config, sellArea, heatArea)}"
+        )
+    }
     /**
      * 计算二维码页显示的“预计烤制时间”。
      * 展示规则：
@@ -216,17 +296,25 @@ object KaoChangAlgorithm {
         val now = System.currentTimeMillis()
 
         if (trackedPans.isEmpty()) {
+            logAvailableDecision("当前批次相关烤盘已全部清空", config, sellArea, heatArea)
             updateAvailableState(config, 0L, 0, "当前批次相关烤盘已全部清空")
             return
         }
 
         if (sellableHoldingPans.isNotEmpty()) {
+            logAvailableDecision("前区仍有保温烤肠，不展示预计时间", config, sellArea, heatArea)
             updateAvailableState(config, 0L, 1, "前区仍有保温烤肠，不展示预计时间")
             return
         }
 
         val openingBatchRemainHeatTime = calcBatchRemainHeatTime(sellArea, now)
         if (openingBatchRemainHeatTime != null) {
+            logAvailableDecision(
+                "前区暂无可售烤肠，显示当前开盘批次最后一根预计完成时间：remainingMs=$openingBatchRemainHeatTime",
+                config,
+                sellArea,
+                heatArea
+            )
             updateAvailableState(
                 config,
                 openingBatchRemainHeatTime,
@@ -245,6 +333,12 @@ object KaoChangAlgorithm {
             .minByOrNull { it.second }
 
         if (nextSupplementBatch != null) {
+            logAvailableDecision(
+                "前区已售空，显示${nextSupplementBatch.first}恢复可售前的预计时间：remainingMs=${nextSupplementBatch.second}",
+                config,
+                sellArea,
+                heatArea
+            )
             updateAvailableState(
                 config,
                 nextSupplementBatch.second,
@@ -254,6 +348,7 @@ object KaoChangAlgorithm {
             return
         }
 
+        logAvailableDecision("前区无保温烤肠，当前也没有正在加热的待开放批次", config, sellArea, heatArea)
         updateAvailableState(config, 0L, 0, "前区无保温烤肠，当前也没有正在加热的待开放批次")
     }
 
@@ -567,23 +662,54 @@ object KaoChangAlgorithm {
         return dateFormat.format(currentTime.time)
     }
 
-    fun enableRoastAlgorithm() {
+    fun enableRoastAlgorithm(
+        reason: String = "维护页手动开启算法",
+        syncToServer: Boolean = true
+    ) {
         KaoChangOperate.actionDebug()
+        val wasRunning = isRunning
         isEnabled = true
-        AppConfig.getAppConfig().isEnable = 1
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
-        logD(LOG_ALGORITHM, "维护操作：已开启烤制算法，modeType=${modeText(AppConfig.getAppConfig().modeType)}")
-        //同步更新云端状态
-        NetApi.updateDeviceInfo()
+        val config = AppConfig.getAppConfig()
+        config.isEnable = 1
+        AppConfig.saveAppConfig(config)
+        if (!wasRunning) {
+            logW(
+                LOG_ALGORITHM,
+                "手动开启烤肠算法时检测到轮询未运行，立即补启动算法服务：" +
+                    "reason=$reason，onlineStatus=${onlineStatusText(config.onlineStatus)}，" +
+                    "modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}"
+            )
+            runServer()
+        }
+        logD(
+            LOG_ALGORITHM,
+            "算法开关已开启：reason=$reason，" +
+                "isRunning（算法轮询是否运行）=$wasRunning->${isRunning}，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                "modeType（并发模式）=${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}，" +
+                "bakingTime（烤制时长，分钟）=${config.bakingTime}"
+        )
+        if (syncToServer) {
+            NetApi.updateDeviceInfo()
+        }
     }
 
-    fun disableRoastAlgorithm() {
+    fun disableRoastAlgorithm(
+        reason: String = "维护页手动关闭算法",
+        syncToServer: Boolean = true
+    ) {
         isEnabled = false
         AppConfig.getAppConfig().isEnable = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
-        logD(LOG_ALGORITHM, "维护操作：已关闭烤制算法")
-        //同步更新云端状态
-        NetApi.updateDeviceInfo()
+        val config = AppConfig.getAppConfig()
+        logD(
+            LOG_ALGORITHM,
+            "算法开关已关闭：reason=$reason, onlineStatus=${onlineStatusText(config.onlineStatus)}, modeType=${modeText(config.modeType)}"
+        )
+        if (syncToServer) {
+            NetApi.updateDeviceInfo()
+        }
     }
 
 }

@@ -38,6 +38,26 @@ object VMMqttHelper : VMMqtt() {
 
     private val messageListeners = ConcurrentHashMap<String, (TopicMessage) -> Unit>()
 
+    private fun summarizeInboundMessage(action: Int, payload: String): String {
+        return try {
+            val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
+            when (action) {
+                1 -> {
+                    val content = JSON.parseObject(topicMessage.content ?: "{}")
+                    val orderNo = content.getString("order_no").orEmpty()
+                    val goodsItems = content.getJSONArray("goods_items")
+                    val itemCount = goodsItems?.size ?: 0
+                    "收到下发订单：action=1（订单指令），orderNo=${orderNo.ifBlank { "未知" }}, itemCount=$itemCount"
+                }
+
+                2 -> "收到设备状态下发：action=2（设备状态同步），payloadLength=${payload.length}"
+                else -> "收到下发消息：action=$action，payloadLength=${payload.length}"
+            }
+        } catch (_: Exception) {
+            "收到下发消息：action=$action，payloadLength=${payload.length}"
+        }
+    }
+
     /**
      * 对上层暴露生命周期安全的监听接口，必须使用稳定的 ownerTag 进行注册。
      */
@@ -72,14 +92,17 @@ object VMMqttHelper : VMMqtt() {
                 if (expectedTopic == topic) {
                     try {
                         val payload = String(message?.payload ?: ByteArray(0))
-                        LogUtils.d("【MQTT业务】合法代次收到下发指令 | hookGen=$generation, topic=$topic | payload=$payload")
                         val bean = JSON.parseObject(payload, TopicMessage::class.java)
+                        LogUtils.d(
+                            "【MQTT业务】${summarizeInboundMessage(bean.action, payload)}，" +
+                                "generation=$generation，topic=$topic"
+                        )
                         
                         // 分发给所有安全注册的消费者
                         messageListeners.values.forEach { it.invoke(bean) }
                         
                     } catch (e: Exception) {
-                        LogUtils.e("【MQTT数据栈】指令解析分发异常 | error=${e.message}")
+                        LogUtils.e("【MQTT业务】下发消息解析失败：topic=$topic, error=${e.message}")
                     }
                 }
             }

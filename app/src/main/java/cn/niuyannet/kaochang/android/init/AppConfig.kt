@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.init
+﻿package cn.niuyannet.kaochang.android.init
 
 import android.provider.Settings
 import cn.niuyannet.kaochang.android.MyApp
@@ -11,6 +11,7 @@ object AppConfig {
     const val Sp_File_URL = "KAOCHANG_APP_CONFIG"
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
+    private val BENIGN_PRESERVED_FIELDS = setOf("available", "availableCountdownLatched")
     private var appConfigBean: AppConfigBean? = null
 
     data class RemoteConfigMergeResult(
@@ -77,7 +78,7 @@ object AppConfig {
         val config = getAppConfig()
         if (jsonData == null) {
             val hasFallback = hasValidDeviceConfig()
-            val message = "远端配置数据为空，原始响应=$rawContent"
+            val message = "远端配置数据为空，responseLength=${rawContent?.length ?: 0}"
             if (hasFallback) {
                 LogUtils.w("[$logPrefix] $message，继续使用本地有效配置")
             } else {
@@ -150,6 +151,8 @@ object AppConfig {
         mergeInt("concurrencyMode", "concurrencyMode") { config.modeType = it }
         mergeInt("transitionMode", "transitionMode") { config.transitionMode = it }
         mergeInt("errorStatus", "errorStatus") { config.errorStatus = it }
+        mergeInt("available", "available") { config.available = it.toLong() }
+        mergeInt("availableCountdownLatched", "availableCountdownLatched") { config.availableCountdownLatched = it }
         mergeInt("keepWarmTemperature", "keepWarmTemperature") { config.keepWarmTemperature = it }
         mergeInt("heatingTemperature", "heatingTemperature") { config.heatingTemperature = it }
         mergeInt("bakingTime", "bakingTime") { config.bakingTime = it }
@@ -184,9 +187,12 @@ object AppConfig {
         saveAppConfig(config)
 
         val hasValidConfig = hasValidDeviceConfig()
+        val preservedFieldSet = preservedFields.distinct()
+        val significantPreservedFields = preservedFieldSet.filterNot { it in BENIGN_PRESERVED_FIELDS }
+        val benignPreservedFields = preservedFieldSet.filter { it in BENIGN_PRESERVED_FIELDS }
         val details = mutableListOf<String>()
-        if (preservedFields.isNotEmpty()) {
-            details.add("preserved=${preservedFields.distinct().joinToString(",")}")
+        if (significantPreservedFields.isNotEmpty()) {
+            details.add("preserved=${significantPreservedFields.joinToString(",")}")
         }
         if (parseIssues.isNotEmpty()) {
             details.add("parseFailed=${parseIssues.distinct().joinToString(",")}")
@@ -194,12 +200,21 @@ object AppConfig {
 
         val message = buildString {
             append("远端配置合并完成")
-            if (details.isNotEmpty()) {
-                append("：")
-                append(details.joinToString("; "))
+            if (benignPreservedFields.isNotEmpty()) {
+                append("，首页预计时间字段继续沿用本地值：")
+                append(benignPreservedFields.joinToString(","))
             }
-            append("，原始响应=")
-            append(rawContent)
+            if (details.isNotEmpty()) {
+                append("（")
+                append(details.joinToString("; "))
+                append("）")
+            }
+            append("，deviceCode=")
+            append(config.deviceCode.ifBlank { "未知" })
+            jsonData.getString("updateTime")?.takeIf { it.isNotBlank() }?.let {
+                append("，serverUpdateTime=")
+                append(it)
+            }
         }
 
         if (details.isNotEmpty()) {

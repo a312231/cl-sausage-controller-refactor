@@ -53,6 +53,28 @@ class MaintenanceFragment : Fragment() {
         private const val MAINTENANCE_ACTION_COOLDOWN_SECONDS = 15
     }
 
+    private fun onlineStatusText(value: Int): String = when (value) {
+        0 -> "0（未启用）"
+        1 -> "1（运营中）"
+        2 -> "2（休息中）"
+        3 -> "3（维护中）"
+        4 -> "4（工作中/正在出餐）"
+        else -> "$value（未知）"
+    }
+
+    private fun modeText(value: Int): String = when (value) {
+        1 -> "1（低并发）"
+        2 -> "2（高并发）"
+        else -> "$value（未知）"
+    }
+
+    private fun transitionText(value: Int): String = when (value) {
+        0 -> "0（无过渡态）"
+        1 -> "1（低转高过渡）"
+        2 -> "2（高转低过渡）"
+        else -> "$value（未知）"
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -72,15 +94,40 @@ class MaintenanceFragment : Fragment() {
         setupButtons()
     }
 
-    private fun clearAvailableAfterManualPanReset(reason: String) {
+    private fun clearRuntimeStateAfterManualPanReset(reason: String) {
         val config = AppConfig.getAppConfig()
-        if (config.available != 0L || config.availableCountdownLatched != 0) {
-            LogUtils.i("【维护操作】$reason，同步清零二维码页预计烤制时间：available=${config.available}->0")
-            config.available = 0L
-            config.availableCountdownLatched = 0
-            AppConfig.saveAppConfig(config)
-            DataManagementAPI.uploadDeviceInfo()
+        val oldAvailable = config.available
+        val oldAvailableCountdownLatched = config.availableCountdownLatched
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        val needReset =
+            oldAvailable != 0L ||
+                oldAvailableCountdownLatched != 0 ||
+                oldModeType != 1 ||
+                oldTransitionMode != 0
+        if (!needReset) {
+            LogUtils.d(
+                "【维护操作】$reason，运行态已是清空后的默认值，跳过重复收口：" +
+                    "available=0，availableCountdownLatched=0，" +
+                    "modeType（并发模式）=${modeText(config.modeType)}，" +
+                    "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}"
+            )
+            return
         }
+
+        config.available = 0L
+        config.availableCountdownLatched = 0
+        config.modeType = 1
+        config.transitionMode = 0
+        AppConfig.saveAppConfig(config)
+        LogUtils.i(
+            "【维护操作】$reason，已重置运行态：" +
+                "available（二维码页预计时间）=$oldAvailable->0，" +
+                "availableCountdownLatched（二维码页预计时间锁存标记）=$oldAvailableCountdownLatched->0，" +
+                "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}"
+        )
+        DataManagementAPI.uploadDeviceInfo()
     }
 
     private fun setMaintenanceActionButtonsEnabled(enabled: Boolean) {
@@ -171,7 +218,7 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
-                clearAvailableAfterManualPanReset("点击清空烤盘")
+                clearRuntimeStateAfterManualPanReset("点击清空烤盘")
                 LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
                 finishMaintenanceAction()
                 clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
@@ -184,19 +231,51 @@ class MaintenanceFragment : Fragment() {
         }
 
         binding.swKzAlgorithm.setOnCheckedChangeListener { buttonView, isChecked ->
+            val currentConfig = AppConfig.getAppConfig()
             if (ignoreAlgorithmSwitchChange) {
+                LogUtils.d(
+                    "【维护操作】烤肠算法开关监听被忽略：" +
+                        "ignoreAlgorithmSwitchChange=true，requestedChecked=$isChecked，" +
+                        "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}"
+                )
                 return@setOnCheckedChangeListener
             }
             if (isAlgorithmCoolingDown) {
+                LogUtils.w(
+                    "【维护操作】烤肠算法开关处于冷却中，拒绝本次切换：" +
+                        "requestedChecked=$isChecked，" +
+                        "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
+                        "modeType（并发模式）=${modeText(currentConfig.modeType)}，" +
+                        "transitionMode（并发切换过渡态）=${transitionText(currentConfig.transitionMode)}"
+                )
                 buttonView.isChecked = !isChecked
                 return@setOnCheckedChangeListener
             }
 
+            LogUtils.i(
+                "【维护操作】收到手动切换烤肠算法请求：" +
+                    "requestedChecked=$isChecked，" +
+                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
+                    "modeType（并发模式）=${modeText(currentConfig.modeType)}，" +
+                    "transitionMode（并发切换过渡态）=${transitionText(currentConfig.transitionMode)}"
+            )
             if (isChecked) {
                 KaoChangAlgorithm.enableRoastAlgorithm()
             } else {
                 KaoChangAlgorithm.disableRoastAlgorithm()
             }
+            val afterConfig = AppConfig.getAppConfig()
+            LogUtils.i(
+                "【维护操作】手动切换烤肠算法完成：" +
+                    "requestedChecked=$isChecked，" +
+                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}->${afterConfig.isEnable}，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(afterConfig.onlineStatus)}，" +
+                    "modeType（并发模式）=${modeText(afterConfig.modeType)}，" +
+                    "transitionMode（并发切换过渡态）=${transitionText(afterConfig.transitionMode)}"
+            )
 
             isAlgorithmCoolingDown = true
             buttonView.isEnabled = false
@@ -250,7 +329,7 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
-                clearAvailableAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
+                clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
                 LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
                 finishMaintenanceAction()
                 resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {

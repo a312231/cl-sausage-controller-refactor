@@ -45,6 +45,22 @@ abstract class OrderActivity: BaseSauceDetection() {
     private var completedDialog: MaterialDialog? = null
     private var countDownTimer: CountDownTimer? = null
 
+    private fun orderEventStatusText(status: Int): String = when (status) {
+        1 -> "1（开始夹取）"
+        2 -> "2（单次履约完成：顾客已取走或超时丢弃）"
+        5 -> "5（单次履约失败）"
+        else -> "$status（未知）"
+    }
+
+    private fun onlineStatusText(status: Int): String = when (status) {
+        0 -> "0（未启用）"
+        1 -> "1（运营中）"
+        2 -> "2（休息中）"
+        3 -> "3（维护中）"
+        4 -> "4（工作中/正在出餐）"
+        else -> "$status（未知）"
+    }
+
     private val REQUEST_CODE_PERMISSIONS: Int = 10
     private val REQUIRED_PERMISSIONS: Array<String> = arrayOf(
         Manifest.permission.CAMERA
@@ -381,15 +397,19 @@ abstract class OrderActivity: BaseSauceDetection() {
      */
     protected fun syncDeviceStatusToServer(retryDelaysMs: List<Long> = emptyList()) {
         val expectedStatus = AppConfig.getAppConfig().onlineStatus
-        LogUtils.d("【设备状态】开始同步设备营业状态：expectedOnlineStatus=$expectedStatus, retryCount=${retryDelaysMs.size}")
-        LogUtils.d("【设备状态】触发 MQTT 上报：attempt=0, onlineStatus=$expectedStatus")
+        LogUtils.d(
+            "【设备状态】开始同步设备营业状态：" +
+                "expectedOnlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}, " +
+                "retryCount=${retryDelaysMs.size}"
+        )
+        LogUtils.d("【设备状态】触发 MQTT 上报：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         SendServerHelper.publishServiceUpdateStatus()
-        LogUtils.d("【设备状态】触发 HTTP 上报：attempt=0, onlineStatus=$expectedStatus")
+        LogUtils.d("【设备状态】触发 HTTP 上报：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         DataManagementAPI.uploadDeviceInfo { code, content ->
             if (code == 0) {
-                LogUtils.d("【设备状态】HTTP 上报成功：attempt=0, onlineStatus=$expectedStatus")
+                LogUtils.d("【设备状态】HTTP 上报成功：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
             } else {
-                LogUtils.e("【设备状态】HTTP 上报失败：attempt=0, onlineStatus=$expectedStatus, code=$code, content=$content")
+                LogUtils.e("【设备状态】HTTP 上报失败：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}, code=$code, content=$content")
             }
         }
 
@@ -399,19 +419,24 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val currentStatus = AppConfig.getAppConfig().onlineStatus
                 if (currentStatus == expectedStatus) {
                     val attempt = index + 1
-                    LogUtils.d("【设备状态】触发补发：attempt=$attempt, delayMs=$delayMs, onlineStatus=$currentStatus")
-                    LogUtils.d("【设备状态】触发 MQTT 上报：attempt=$attempt, onlineStatus=$currentStatus")
+                    LogUtils.d("【设备状态】触发补发：attempt=$attempt, delayMs=$delayMs, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
+                    LogUtils.d("【设备状态】触发 MQTT 上报：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     SendServerHelper.publishServiceUpdateStatus()
-                    LogUtils.d("【设备状态】触发 HTTP 上报：attempt=$attempt, onlineStatus=$currentStatus")
+                    LogUtils.d("【设备状态】触发 HTTP 上报：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     DataManagementAPI.uploadDeviceInfo { code, content ->
                         if (code == 0) {
-                            LogUtils.d("【设备状态】HTTP 上报成功：attempt=$attempt, onlineStatus=$currentStatus")
+                            LogUtils.d("【设备状态】HTTP 上报成功：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                         } else {
-                            LogUtils.e("【设备状态】HTTP 上报失败：attempt=$attempt, onlineStatus=$currentStatus, code=$code, content=$content")
+                            LogUtils.e("【设备状态】HTTP 上报失败：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}, code=$code, content=$content")
                         }
                     }
                 } else {
-                    LogUtils.d("【设备状态】取消补发：attempt=${index + 1}, expectedOnlineStatus=$expectedStatus, currentOnlineStatus=$currentStatus")
+                    LogUtils.d(
+                        "【设备状态】取消补发：" +
+                            "attempt=${index + 1}, " +
+                            "expectedOnlineStatus（期望设备营业状态）=${onlineStatusText(expectedStatus)}, " +
+                            "currentOnlineStatus（当前设备营业状态）=${onlineStatusText(currentStatus)}"
+                    )
                 }
             }
         }
@@ -422,12 +447,7 @@ abstract class OrderActivity: BaseSauceDetection() {
      * MQTT 发送失败不阻断出餐流程，但必须记录以便排查订单状态不同步问题。
      */
     protected fun reportOrderEvent(orderNo: String, itemId: Int, productId: Int, tasteCode: String, status: Int) {
-        val eventDesc = when (status) {
-            1 -> "开始夹取"
-            2 -> "夹取完成/顾客已取走"
-            5 -> "夹取失败"
-            else -> "未知事件($status)"
-        }
+        val eventDesc = orderEventStatusText(status)
         val payload = com.alibaba.fastjson.JSONObject().apply {
             put("order_no", orderNo)
             put("item_id", itemId)
@@ -437,9 +457,17 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
         val ok = SendServerHelper.publishServiceUpdateOrder(payload)
         if (!ok) {
-            LogUtils.e("【订单流转】MQTT上报订单事件失败（MQTT可能断连）：orderNo=$orderNo, itemId=$itemId, status=$status($eventDesc)，订单状态可能与服务端不同步")
+            LogUtils.e(
+                "【订单流转】MQTT上报订单事件失败（MQTT可能断连）：" +
+                    "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
+                    "status（订单事件状态）=$eventDesc，订单状态可能与服务端不同步"
+            )
         } else {
-            LogUtils.d("【订单流转】MQTT上报订单事件成功：orderNo=$orderNo, itemId=$itemId, status=$status($eventDesc)")
+            LogUtils.d(
+                "【订单流转】MQTT上报订单事件成功：" +
+                    "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
+                    "status（订单事件状态）=$eventDesc"
+            )
         }
     }
 

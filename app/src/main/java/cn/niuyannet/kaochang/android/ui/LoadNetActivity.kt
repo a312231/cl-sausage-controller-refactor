@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.ui
+﻿package cn.niuyannet.kaochang.android.ui
 
 import android.os.Bundle
 import android.view.View
@@ -7,6 +7,7 @@ import android.view.WindowManager
 import cn.niuyannet.kaochang.android.base.BaseActivity
 import cn.niuyannet.kaochang.android.databinding.MainActivityBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -52,8 +53,16 @@ abstract class LoadNetActivity : BaseActivity() {
                 return@getDeviceInfo
             }
 
+            val previousOnlineStatus = AppConfig.getAppConfig().onlineStatus
+            val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
             val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, "启动配置")
             if (mergeResult.applied) {
+                DataManagementAPI.handleRemoteOnlineStatusTransition(
+                    previousOnlineStatus = previousOnlineStatus,
+                    previousIsEnable = previousIsEnable,
+                    mergedConfig = AppConfig.getAppConfig(),
+                    source = "loadDeviceInfo"
+                )
                 binding.mainContent.visibility = View.VISIBLE
                 binding.loadingLayout.visibility = View.GONE
                 binding.emptyLayout.visibility = View.GONE

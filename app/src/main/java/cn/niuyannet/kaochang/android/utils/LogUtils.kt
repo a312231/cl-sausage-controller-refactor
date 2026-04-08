@@ -28,6 +28,17 @@ object LogUtils {
         "【补肠流程】",
         "【设备状态】"
     )
+    private val FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG = listOf(
+        "【首页展示】",
+        "更新二维码预计时间",
+        "算法开关已开启",
+        "算法开关已关闭",
+        "智能烤肠算法服务启动",
+        "算法状态变化",
+        "手动开启烤肠算法时检测到轮询未运行",
+        "【MQTT业务】收到下发订单",
+        "【MQTT业务】收到设备状态下发"
+    )
 
     const val LEVEL_VERBOSE = 1
     const val LEVEL_DEBUG = 2
@@ -148,7 +159,8 @@ object LogUtils {
         if (level == "W" || level == "E") {
             return true
         }
-        return FILE_LOG_KEYWORDS.any { keyword -> msg.contains(keyword) }
+        return FILE_LOG_KEYWORDS.any { keyword -> msg.contains(keyword) } ||
+            FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG.any { keyword -> msg.contains(keyword) }
     }
 
     fun getLogDirectory(context: Context): File = getLogDir(context)
