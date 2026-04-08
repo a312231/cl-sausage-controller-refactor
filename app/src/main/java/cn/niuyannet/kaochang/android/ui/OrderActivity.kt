@@ -292,13 +292,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                 if (!ensureModbusReadyForDelivery(orderNo, item.id)) {
                     throw IllegalStateException("出餐前检测到下位机未连接，已终止本次出餐：orderNo=$orderNo, itemId=${item.id}")
                 }
-                SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                    put("order_no", orderNo)
-                    put("item_id", item.id)
-                    put("product_id", item.productId)
-                    put("taste_code", item.tasteCode)
-                    put("status", 1)
-                })
+                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 1)
 
                 when (KaoChangAlgorithm.purchase(item.tasteCode, item.productId)) {
                     KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> {
@@ -307,13 +301,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                             "【履约完结】视觉判定顾客已取走，开始上报 Java 后台订单状态变更(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
-                        SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                            put("order_no", orderNo)
-                            put("item_id", item.id)
-                            put("product_id", item.productId)
-                            put("taste_code", item.tasteCode)
-                            put("status", 2)
-                        })
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
                     }
 
                     KaoChangOperate.TakeSausageResult.DISCARDED -> {
@@ -322,25 +310,13 @@ abstract class OrderActivity: BaseSauceDetection() {
                             "【履约完结】售卖口超时未取走，系统已丢弃并按本次履约完成处理，开始上报 Java 后台订单状态变更(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
-                        SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                            put("order_no", orderNo)
-                            put("item_id", item.id)
-                            put("product_id", item.productId)
-                            put("taste_code", item.tasteCode)
-                            put("status", 2)
-                        })
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
                         LogUtils.w("顾客未及时取走烤肠，系统已执行丢弃并按本次出餐完成处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                         LogUtils.w("现场请重点排查售卖口视觉识别是否稳定，以及顾客取走动作是否被正确识别：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {
-                        SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                            put("order_no", orderNo)
-                            put("item_id", item.id)
-                            put("product_id", item.productId)
-                            put("taste_code", item.tasteCode)
-                            put("status", 5)
-                        })
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
                         LogUtils.e("【订单流转】出餐流程进入故障分支，已上报 status=5：orderNo=$orderNo, itemId=${item.id}")
                         throw IllegalStateException("取肠失败，无法继续履约：orderNo=$orderNo, itemId=${item.id}")
                     }
@@ -361,13 +337,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         if (deliveredCount < item.quantity) {
             LogUtils.e("【订单流转】出餐数量不足，按故障处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
             LogUtils.e("【订单流转】当前已停止继续履约，请现场检查售卖口与机械链路后再恢复：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            SendServerHelper.publishServiceUpdateOrder(JSONObject().apply {
-                put("order_no", orderNo)
-                put("item_id", item.id)
-                put("product_id", item.productId)
-                put("taste_code", item.tasteCode)
-                put("status", 5)
-            })
+            reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
             return DeliveryResult(false, deliveredCount)
         }
 
@@ -444,6 +414,32 @@ abstract class OrderActivity: BaseSauceDetection() {
                     LogUtils.d("【设备状态】取消补发：attempt=${index + 1}, expectedOnlineStatus=$expectedStatus, currentOnlineStatus=$currentStatus")
                 }
             }
+        }
+    }
+
+    /**
+     * 上报订单事件到服务端（MQTT），并在发送失败时记录错误日志。
+     * MQTT 发送失败不阻断出餐流程，但必须记录以便排查订单状态不同步问题。
+     */
+    protected fun reportOrderEvent(orderNo: String, itemId: Int, productId: Int, tasteCode: String, status: Int) {
+        val eventDesc = when (status) {
+            1 -> "开始夹取"
+            2 -> "夹取完成/顾客已取走"
+            5 -> "夹取失败"
+            else -> "未知事件($status)"
+        }
+        val payload = com.alibaba.fastjson.JSONObject().apply {
+            put("order_no", orderNo)
+            put("item_id", itemId)
+            put("product_id", productId)
+            put("taste_code", tasteCode)
+            put("status", status)
+        }
+        val ok = SendServerHelper.publishServiceUpdateOrder(payload)
+        if (!ok) {
+            LogUtils.e("【订单流转】MQTT上报订单事件失败（MQTT可能断连）：orderNo=$orderNo, itemId=$itemId, status=$status($eventDesc)，订单状态可能与服务端不同步")
+        } else {
+            LogUtils.d("【订单流转】MQTT上报订单事件成功：orderNo=$orderNo, itemId=$itemId, status=$status($eventDesc)")
         }
     }
 

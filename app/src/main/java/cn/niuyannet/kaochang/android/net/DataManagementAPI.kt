@@ -141,9 +141,15 @@ object DataManagementAPI {
         if (metadataNormalized) {
             logD("上传前已统一烤盘口味元数据")
         }
-        NetApi.updateKaoPanList(JSON.toJSONString(KaoPanHelper.getKaoPanList())) { code, content ->
+        val kaoPanList = KaoPanHelper.getKaoPanList()
+        val kaoPanCount = kaoPanList.size
+        val warmingCount = kaoPanList.count { it.isHasSausage && it.status == 2 }
+        val bakingCount  = kaoPanList.count { it.isHasSausage && it.status == 1 }
+        NetApi.updateKaoPanList(JSON.toJSONString(kaoPanList)) { code, content ->
             if (code != 0) {
                 logE("烤盘同步失败：code=$code, content=$content")
+            } else {
+                logD("烤盘状态已同步：烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount")
             }
         }
 
@@ -156,6 +162,8 @@ object DataManagementAPI {
                 logE(
                     "库存同步失败：明细数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content"
                 )
+            } else {
+                logD("库存已同步：箱位数=$stockItemCount, 总库存=$stockTotalCount 根")
             }
         }
     }
@@ -324,6 +332,58 @@ object DataManagementAPI {
                     KaoChangOperate.restoreHeatingStateFromCurrentPans("远端配置切回非维护状态")
                 }
             }
+        }
+    }
+
+    fun refreshHomeDeviceState(onResult: ((changed: Boolean) -> Unit)? = null) {
+        val appConfigBean = AppConfig.getAppConfig()
+        val oldStatus = appConfigBean.status
+        val oldOnlineStatus = appConfigBean.onlineStatus
+        val oldQcodeUrl = appConfigBean.qcodeURL
+
+        NetApi.getDeviceInfo(AppConfig.getDeviceId()) { code, content ->
+            if (code != 0) {
+                logE("home device state refresh failed: code=$code, content=$content")
+                onResult?.invoke(false)
+                return@getDeviceInfo
+            }
+
+            val json = try {
+                JSON.parseObject(content)
+            } catch (e: Exception) {
+                logE("home device state refresh parse failed: raw=$content")
+                onResult?.invoke(false)
+                return@getDeviceInfo
+            }
+
+            if (json == null || json.getIntValue("code") != 200) {
+                logE("home device state refresh business failed: raw=$content")
+                onResult?.invoke(false)
+                return@getDeviceInfo
+            }
+
+            val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, "$LOG_SYNC-home")
+            if (!mergeResult.applied) {
+                onResult?.invoke(false)
+                return@getDeviceInfo
+            }
+
+            val mergedConfig = AppConfig.getAppConfig()
+            val changed =
+                oldStatus != mergedConfig.status ||
+                    oldOnlineStatus != mergedConfig.onlineStatus ||
+                    oldQcodeUrl != mergedConfig.qcodeURL
+
+            if (changed) {
+                logD(
+                    "home ui relevant config changed: " +
+                        "status=${oldStatus}->${mergedConfig.status}, " +
+                        "onlineStatus=${oldOnlineStatus}->${mergedConfig.onlineStatus}, " +
+                        "qrcodeChanged=${oldQcodeUrl != mergedConfig.qcodeURL}"
+                )
+            }
+
+            onResult?.invoke(changed)
         }
     }
 

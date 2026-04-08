@@ -13,6 +13,7 @@ import android.text.method.PasswordTransformationMethod
 import android.util.Log
 import android.view.View
 import android.widget.EditText
+import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
@@ -34,6 +35,10 @@ import com.jiangdg.ausbc.camera.CameraUVC
 import com.jiangdg.ausbc.camera.bean.CameraRequest
 import com.jiangdg.ausbc.render.env.RotateType
 import com.jiangdg.usb.USBMonitor
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 
@@ -41,9 +46,22 @@ import kotlin.math.ceil
  * 主界面
  */
 class MainActivity : OrderActivity(), ICameraStateCallBack {
+    companion object {
+        private const val DEVICE_STATE_REFRESH_INTERVAL_MS = 15_000L
+
+        init {
+            System.loadLibrary("UVCCamera")
+        }
+
+        fun start(context: Context?) {
+            context?.startActivity(Intent(context, MainActivity::class.java))
+        }
+    }
+
     private var runtimeStarted = false
     private val recentIncomingOrderLogAtMs = ConcurrentHashMap<String, Long>()
     private val recentBusyOrderLogAtMs = ConcurrentHashMap<String, Long>()
+    private var deviceStateRefreshJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,16 +117,22 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             }
             DataManagementAPI.getDeviceInfo()
             DataManagementAPI.uploadDataToServer()
+            startDeviceStateRefreshLoop()
         }
     }
 
     override fun onResume() {
         super.onResume()
         CameraMonitor.instance.startService(applicationContext)
+        if (runtimeStarted) {
+            startDeviceStateRefreshLoop()
+        }
     }
 
     override fun onStop() {
         super.onStop()
+        deviceStateRefreshJob?.cancel()
+        deviceStateRefreshJob = null
         CameraMonitor.instance.close()
         clearCamera()
     }
@@ -314,16 +338,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         KaoChangAlgorithm.stopServer()
     }
 
-    companion object {
-        init {
-            System.loadLibrary("UVCCamera")
-        }
-
-        fun start(context: Context?) {
-            context?.startActivity(Intent(context, MainActivity::class.java))
-        }
-    }
-
     private var mCameraClient: MultiCameraClient? = null
     private val mCameraMap = ConcurrentHashMap<Int, MultiCameraClient.ICamera>()
 
@@ -434,6 +448,27 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         LogUtils.d("【UVC相机】已清空本地摄像头缓存并销毁客户端")
     }
 
+    private fun startDeviceStateRefreshLoop() {
+        if (deviceStateRefreshJob?.isActive == true) {
+            return
+        }
+        deviceStateRefreshJob = lifecycleScope.launch {
+            while (isActive && !isFinishing && !isDestroyed) {
+                delay(DEVICE_STATE_REFRESH_INTERVAL_MS)
+                if (isFinishing || isDestroyed) {
+                    break
+                }
+                DataManagementAPI.refreshHomeDeviceState { changed ->
+                    if (changed && !isFinishing && !isDestroyed) {
+                        runOnUiThread {
+                            setDataToView()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCameraState(
         self: MultiCameraClient.ICamera,
         code: ICameraStateCallBack.State,
@@ -442,5 +477,3 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         LogUtils.d("【UVC相机】摄像头状态变更：state=${code.name}, message=$msg")
     }
 }
-
-

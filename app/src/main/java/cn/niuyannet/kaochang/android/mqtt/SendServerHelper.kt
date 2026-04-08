@@ -29,6 +29,9 @@ object SendServerHelper {
     fun publishServiceUpdateStatus(): Boolean {
         val payload = JSON.parseObject(JSON.toJSONString(AppConfig.getAppConfig()))
         payload["isEnable"] = AppConfig.getAlgorithmEnableFlag()
+        // onlineStatus 由后台管理员控制，MQTT 心跳不覆盖它；
+        // 只有订单流程（4→1/3）和故障上报才通过 HTTP 专项更新营业状态
+        payload.remove("onlineStatus")
         return VMMqttHelper.publishService(
             TopicMessage().apply {
                 action = 2
