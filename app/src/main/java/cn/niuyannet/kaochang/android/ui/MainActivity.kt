@@ -18,6 +18,7 @@ import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
@@ -198,8 +199,50 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             purchaseOrder(orderMessage)
                         }
                     }
+                    2 -> handleRuntimeControlMessage(data.content)
                 }
             }
+        }
+    }
+
+    private fun handleRuntimeControlMessage(content: String) {
+        val result = DataManagementAPI.applyRemoteRuntimeControl(
+            content = content,
+            source = "mqtt-action=2"
+        )
+        if (result.controlSeq > 0) {
+            val ackOk = SendServerHelper.publishRuntimeControlAck(
+                SendServerHelper.RuntimeControlAckPayload(
+                    controlSeq = result.controlSeq,
+                    applied = result.applied,
+                    reason = result.reason,
+                    onlineStatus = result.onlineStatus,
+                    isEnable = result.isEnable,
+                    restStatusSource = result.restStatusSource
+                )
+            )
+            if (ackOk) {
+                LogUtils.d(
+                    "【MQTT运行时控制】Ack 已发送：" +
+                        "controlSeq=${result.controlSeq}，applied=${result.applied}，reason=${result.reason}"
+                )
+            } else {
+                LogUtils.w(
+                    "【MQTT运行时控制】Ack 发送失败：" +
+                        "controlSeq=${result.controlSeq}，applied=${result.applied}，reason=${result.reason}"
+                )
+            }
+        }
+        LogUtils.d(
+            "【MQTT运行时控制】处理完成：" +
+                "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
+                "onlineStatus（设备营业状态）=${result.onlineStatus}，" +
+                "isEnable（烤肠算法开关）=${result.isEnable}，" +
+                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(result.restStatusSource)}"
+        )
+        if (result.applied && result.changed) {
+            SendServerHelper.publishServiceUpdateStatus()
+            setDataToView()
         }
     }
 

@@ -50,7 +50,19 @@ object VMMqttHelper : VMMqtt() {
                     "收到下发订单：action=1（订单指令），orderNo=${orderNo.ifBlank { "未知" }}, itemCount=$itemCount"
                 }
 
-                2 -> "收到设备状态下发：action=2（设备状态同步），payloadLength=${payload.length}"
+                2 -> {
+                    val content = JSON.parseObject(topicMessage.content ?: "{}")
+                    val messageType = content.getString("messageType").orEmpty()
+                    val controlSeq = content.getLongValue("controlSeq")
+                    val onlineStatus = content.getString("onlineStatus").orEmpty()
+                    val isEnable = if (content.containsKey("isEnable")) content.getString("isEnable") else ""
+                    when (messageType) {
+                        "runtime_control" ->
+                            "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable"
+                        else ->
+                            "收到设备状态下发：action=2（设备状态同步），messageType=${messageType.ifBlank { "unknown" }}, payloadLength=${payload.length}"
+                    }
+                }
                 else -> "收到下发消息：action=$action，payloadLength=${payload.length}"
             }
         } catch (_: Exception) {

@@ -32,7 +32,7 @@ import kotlinx.coroutines.withContext
  * - 接收已下发到上位机的订单内容
  * - 串行执行每一根烤肠的出餐
  * - 在动作开始/完成/失败时向后端上报订单事件
- * - 在订单结束时把设备营业状态从“工作中”收尾回“运营中/维护中”
+ * - 在订单结束时把设备营业状态从“工作中”收口回“运营中/维护中”
  */
 abstract class OrderActivity: BaseSauceDetection() {
 
@@ -49,7 +49,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         1 -> "1（开始夹取）"
         2 -> "2（单次履约完成：顾客已取走或超时丢弃）"
         5 -> "5（单次履约失败）"
-        else -> "$status（未知）"
+        else -> "${status}（未知）"
     }
 
     private fun onlineStatusText(status: Int): String = when (status) {
@@ -58,7 +58,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         2 -> "2（休息中）"
         3 -> "3（维护中）"
         4 -> "4（工作中/正在出餐）"
-        else -> "$status（未知）"
+        else -> "${status}（未知）"
     }
 
     private val REQUEST_CODE_PERMISSIONS: Int = 10
@@ -113,7 +113,7 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
     
     /**
-     * 显示烤肠已出对话框，5秒后自动关闭
+     * 显示烤肠已出对话框，5 秒后自动关闭
      */
      fun showCompletedDialog() {
         completedDialog?.show()
@@ -145,7 +145,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         LogUtils.d("【订单流转】订单页重新进入前台")
         // 如果已经有权限，重新启动相机
 //        if (allPermissionsGranted() &&SauceDetectionUitls.cameraProvider == null) {
-//            LogUtils.d("order 重启相机")
+//            LogUtils.d("order 重新启动相机")
 //            startCamera()
 //        }
     }
@@ -153,14 +153,14 @@ abstract class OrderActivity: BaseSauceDetection() {
         super.onPause()
          // 释放相机资源
 //        if (SauceDetectionUitls.cameraProvider != null) {
-//            LogUtils.d("order 释放相机")
+//            LogUtils.d("order 閲婃斁鐩告満")
 //            SauceDetectionUitls.cameraProvider!!.unbindAll()
 //            SauceDetectionUitls.cameraProvider=null
 //        }
     }
     override fun onDestroy() {
         super.onDestroy()
-        // 清理资源
+        // 娓呯悊璧勬簮
         countDownTimer?.cancel()
         processingDialog?.dismiss()
         completedDialog?.dismiss()
@@ -174,7 +174,7 @@ abstract class OrderActivity: BaseSauceDetection() {
 
     /**
      * 执行整单履约。
-     * 一个订单可能包含多个商品项、每个商品项又可能包含多根烤肠，这里按根串行处理。
+     * 一个订单可能包含多个商品项，每个商品项又可能包含多根烤肠，这里按根串行处理。
      */
     fun purchaseOrder(orderMessage:String) {
         val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
@@ -187,13 +187,13 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val checkInterval = 1000L
                 var waited = 0L
 
-                // 运动状态 为0是说明机械臂闲置
+                // 运动状态不为 0 时，说明机械臂仍在忙碌。
                 // moveStatus 是本地机械动作状态，不是设备营业状态：
                 // 0 = 空闲，2 = 正在执行取肠/出餐动作
                 var appState = AppConfig.getAppConfig().moveStatus
                 while (appState != 0 && waited < maxWaitTime) {
                     delay(checkInterval)
-                    LogUtils.d("【订单流转】等待机械臂空闲：currentMoveStatus=$appState, waitedMs=$waited")
+                    LogUtils.d("【订单流转】等待机械臂空闲中：currentMoveStatus=$appState, waitedMs=$waited")
                     appState = AppConfig.getAppConfig().moveStatus
                     waited += checkInterval
                 }
@@ -202,8 +202,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                     LogUtils.w("【订单流转】等待机械臂空闲超时，放弃本次取肠")
                 }
                 else {
-                    // 机械臂状态改为取肠
-                    // 机械开始执行当前订单，本地动作状态置为 2
+                    // 机械臂开始执行当前订单，本地动作状态置为 2。
+                    // 只有 moveStatus=2 才允许后续继续执行单根出餐。
                     appState = 2
                     AppConfig.getAppConfig().moveStatus = appState
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -219,7 +219,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     "itemId=${it.id}, productId=${it.productId}, tasteCode=${it.tasteCode}, quantity=${it.quantity}"
                 }
                 LogUtils.d(
-                    "【订单流转】开始执行整单履约：orderNo=$orderNo, itemCount=${goodsList.size}, totalQuantity=$totalCount, items=[$orderSummary]"
+                    "【订单流转】收到新的顾客下单请求：orderNo=$orderNo, itemCount=${goodsList.size}, totalQuantity=$totalCount, items=[$orderSummary]"
                 )
                 var deliveredTotal = 0
                 var orderCompleted = true
@@ -239,21 +239,21 @@ abstract class OrderActivity: BaseSauceDetection() {
                 orderCompleted = orderCompleted && deliveredTotal == totalCount
                 if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
-                // 当前订单动作结束后，本地动作状态恢复为空闲
+                // 当前订单动作结束后，本地动作状态恢复为空闲。
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 withContext(Dispatchers.Main) {
                     val config = AppConfig.getAppConfig()
                     val status = config.onlineStatus
-                    // 订单动作结束后，如果设备仍停留在 4（工作中），主动回到 1（运营中）
+                    // 订单动作结束后，如果设备仍停留在 4（工作中），主动收口到 1（运营中）或 3（维护中）。
                     if (status == 4){
                         config.onlineStatus = if (orderCompleted && config.errorStatus == 0) 1 else 3
                     }
                     AppConfig.saveAppConfig(config)
-                    // 这里上报的是设备营业状态（onlineStatus），不是订单事件 status
-                    // 订单结束时同时走 MQTT + HTTP，并做轻量重试，降低“假工作中”概率
+                    // 这里上报的是设备营业状态（onlineStatus），不是订单事件 status。
+                    // 订单结束后用 MQTT 轻量补发设备运行态，降低“假工作中”的概率。
                     syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
-                    // 订单结束后立即同步烤盘状态和库存到云端，确保小程序扫码看到实时数据
+                    // 订单结束后立即同步烤盘状态和库存到云端，保证扫码端看到实时数据。
                     DataManagementAPI.uploadDataToServer()
                     hideProcessingDialog()
                     if (orderCompleted) {
@@ -261,7 +261,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     } else {
                         Toast.makeText(this@OrderActivity, "订单未完成，请联系维护人员", Toast.LENGTH_LONG).show()
                     }
-                    // 显示QRCode
+                    // 鏄剧ずQRCode
                     setDataToView()
                 }
             } finally {
@@ -295,18 +295,18 @@ abstract class OrderActivity: BaseSauceDetection() {
             }
             val currentIndex = deliveredBase + deliveredCount + 1
             LogUtils.d(
-                "【订单流转】开始执行子订单：orderNo=$orderNo, itemId=${item.id}, productId=${item.productId}, " +
+                "【订单流转】开始处理单根烤肠：orderNo=$orderNo, itemId=${item.id}, productId=${item.productId}, " +
                     "tasteCode=${item.tasteCode}, current=$currentIndex/$totalCount, itemProgress=${deliveredCount + 1}/${item.quantity}, attempt=$attemptCount/$maxAttempts"
             )
             val currentMoveStatus = AppConfig.getAppConfig().moveStatus
             if (currentMoveStatus != 2) {
-                LogUtils.w("【订单流转】设备当前正处于夹取中，拦截本次订单执行请求：orderNo=$orderNo, itemId=${item.id}")
+                LogUtils.w("【订单流转】终止当前出餐：设备动作状态不是取肠中（moveStatus!=2），orderNo=$orderNo, itemId=${item.id}")
                 return DeliveryResult(false, deliveredCount)
             }
 
             try {
                 if (!ensureModbusReadyForDelivery(orderNo, item.id)) {
-                    throw IllegalStateException("出餐前检测到下位机未连接，已终止本次出餐：orderNo=$orderNo, itemId=${item.id}")
+                    throw IllegalStateException("下位机通信未恢复，无法开始本次出餐：orderNo=$orderNo, itemId=${item.id}")
                 }
                 reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 1)
 
@@ -314,7 +314,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> {
                         deliveredCount++
                         LogUtils.d(
-                            "【履约完结】视觉判定顾客已取走，开始上报 Java 后台订单状态变更(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】视觉判定顾客已取走，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
@@ -323,23 +323,23 @@ abstract class OrderActivity: BaseSauceDetection() {
                     KaoChangOperate.TakeSausageResult.DISCARDED -> {
                         deliveredCount++
                         LogUtils.w(
-                            "【履约完结】售卖口超时未取走，系统已丢弃并按本次履约完成处理，开始上报 Java 后台订单状态变更(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】烤肠已超时丢弃，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
-                        LogUtils.w("顾客未及时取走烤肠，系统已执行丢弃并按本次出餐完成处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
-                        LogUtils.w("现场请重点排查售卖口视觉识别是否稳定，以及顾客取走动作是否被正确识别：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                        LogUtils.w("【订单流转】本轮出餐按丢弃计完成，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                        LogUtils.w("【履约完结】本根烤肠因超时丢弃完成，不再重试：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-                        LogUtils.e("【订单流转】出餐流程进入故障分支，已上报 status=5：orderNo=$orderNo, itemId=${item.id}")
-                        throw IllegalStateException("取肠失败，无法继续履约：orderNo=$orderNo, itemId=${item.id}")
+                        LogUtils.e("【订单流转】单根出餐失败，已上报 Java 订单事件 status=5：orderNo=$orderNo, itemId=${item.id}")
+                        throw IllegalStateException("单根出餐失败：orderNo=$orderNo, itemId=${item.id}")
                     }
                 }
             } catch (e: Exception) {
-                LogUtils.e("【订单流转】出餐失败，设备切换为维护中：${e.message}")
-                LogUtils.e("【订单流转】设备已上报故障状态，请现场检查下位机连接、售卖口识别和机械执行状态：${e.message}")
+                LogUtils.e("【订单流转】处理单根烤肠时发生异常：${e.message}")
+                LogUtils.e("【设备状态】单根出餐异常，已切到维护中并准备上报：${e.message}")
                 withContext(Dispatchers.Main) {
                     AppConfig.getAppConfig().errorStatus = 2
                     AppConfig.getAppConfig().onlineStatus = 3
@@ -351,8 +351,8 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
 
         if (deliveredCount < item.quantity) {
-            LogUtils.e("【订单流转】出餐数量不足，按故障处理：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            LogUtils.e("【订单流转】当前已停止继续履约，请现场检查售卖口与机械链路后再恢复：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("【订单流转】商品项未全部履约完成：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("【订单流转】商品项履约失败，已上报订单事件 status=5：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
             reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
             return DeliveryResult(false, deliveredCount)
         }
@@ -374,43 +374,41 @@ abstract class OrderActivity: BaseSauceDetection() {
             return true
         }
 
-        LogUtils.w("【订单流转】出餐前检测到下位机连接断开，开始短时重连：orderNo=$orderNo, itemId=$itemId")
+        LogUtils.w("【订单流转】检测到 Modbus 未连接，开始出餐前通信重试：orderNo=$orderNo, itemId=$itemId")
         repeat(maxRetryCount) { index ->
             val attempt = index + 1
             VMModbusHelper.connectModbus { status ->
-                LogUtils.d("【订单流转】出餐前重连下位机结果：attempt=$attempt/$maxRetryCount, status=$status, orderNo=$orderNo, itemId=$itemId")
+                LogUtils.d("【订单流转】Modbus 重连结果：attempt=$attempt/$maxRetryCount, status=$status, orderNo=$orderNo, itemId=$itemId")
             }
             delay(retryDelayMs)
             if (VMModbusHelper.connectStatus()) {
-                LogUtils.d("【订单流转】出餐前下位机重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
+                LogUtils.d("【订单流转】Modbus 重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
                 return true
             }
         }
 
-        LogUtils.e("【订单流转】出餐前下位机持续断开，已放弃本次出餐：orderNo=$orderNo, itemId=$itemId")
+        LogUtils.e("【订单流转】Modbus 重连失败，放弃本次出餐：orderNo=$orderNo, itemId=$itemId")
         return false
     }
 
     /**
-     * 同步设备营业状态。
-     * MQTT 是主通道，HTTP 作为补偿通道；补发只在期望状态未变化时执行。
+     * 同步设备运行时状态。
+     * MQTT 是主通道，retryDelaysMs 仅用于 MQTT 轻量补发；
+     * HTTP 不再作为默认双写链路。
      */
     protected fun syncDeviceStatusToServer(retryDelaysMs: List<Long> = emptyList()) {
         val expectedStatus = AppConfig.getAppConfig().onlineStatus
         LogUtils.d(
             "【设备状态】开始同步设备营业状态：" +
-                "expectedOnlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}, " +
+                "expectedOnlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}，" +
                 "retryCount=${retryDelaysMs.size}"
         )
         LogUtils.d("【设备状态】触发 MQTT 上报：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
-        SendServerHelper.publishServiceUpdateStatus()
-        LogUtils.d("【设备状态】触发 HTTP 上报：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
-        DataManagementAPI.uploadDeviceInfo { code, content ->
-            if (code == 0) {
-                LogUtils.d("【设备状态】HTTP 上报成功：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
-            } else {
-                LogUtils.e("【设备状态】HTTP 上报失败：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}, code=$code, content=$content")
-            }
+        val firstPublishOk = SendServerHelper.publishServiceUpdateStatus()
+        if (firstPublishOk) {
+            LogUtils.d("【设备状态】MQTT 上报成功：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
+        } else {
+            LogUtils.e("【设备状态】MQTT 上报失败：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         }
 
         retryDelaysMs.forEachIndexed { index, delayMs ->
@@ -421,14 +419,11 @@ abstract class OrderActivity: BaseSauceDetection() {
                     val attempt = index + 1
                     LogUtils.d("【设备状态】触发补发：attempt=$attempt, delayMs=$delayMs, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     LogUtils.d("【设备状态】触发 MQTT 上报：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
-                    SendServerHelper.publishServiceUpdateStatus()
-                    LogUtils.d("【设备状态】触发 HTTP 上报：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
-                    DataManagementAPI.uploadDeviceInfo { code, content ->
-                        if (code == 0) {
-                            LogUtils.d("【设备状态】HTTP 上报成功：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
-                        } else {
-                            LogUtils.e("【设备状态】HTTP 上报失败：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}, code=$code, content=$content")
-                        }
+                    val retryPublishOk = SendServerHelper.publishServiceUpdateStatus()
+                    if (retryPublishOk) {
+                        LogUtils.d("【设备状态】MQTT 上报成功：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
+                    } else {
+                        LogUtils.e("【设备状态】MQTT 上报失败：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     }
                 } else {
                     LogUtils.d(
@@ -458,13 +453,13 @@ abstract class OrderActivity: BaseSauceDetection() {
         val ok = SendServerHelper.publishServiceUpdateOrder(payload)
         if (!ok) {
             LogUtils.e(
-                "【订单流转】MQTT上报订单事件失败（MQTT可能断连）：" +
+                "【订单流转】MQTT 上报订单事件失败（MQTT 可能断连）：" +
                     "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
                     "status（订单事件状态）=$eventDesc，订单状态可能与服务端不同步"
             )
         } else {
             LogUtils.d(
-                "【订单流转】MQTT上报订单事件成功：" +
+                "【订单流转】MQTT 上报订单事件成功：" +
                     "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
                     "status（订单事件状态）=$eventDesc"
             )
@@ -472,7 +467,7 @@ abstract class OrderActivity: BaseSauceDetection() {
     }
 
     /**
-     * 写入寄存器
+     * 写入寄存器。
      */
     private fun writeRegister(register: Int, value: Int, description: String) {
         lifecycleScope.launch {
@@ -481,10 +476,11 @@ abstract class OrderActivity: BaseSauceDetection() {
                 withContext(Dispatchers.IO) {
                     KaoChangOperate.writeSingleRegister(register, value)
                 }
-                LogUtils.d("【寄存器写入】写入成功：description=$description, register=$register, value=$value")
+                LogUtils.d("【寄存器写入】写入完成：description=$description, register=$register, value=$value")
             } catch (e: Exception) {
                 LogUtils.e("【寄存器写入】写入失败：description=$description, register=$register, value=$value, error=${e.message}", e)
             }
         }
     }
 }
+

@@ -219,11 +219,17 @@ object KaoPanHelper {
         val normalizedHours = discardTimeHours.coerceAtLeast(0).toLong()
         val closeTimeMillis = normalizedHours * 60L * 60L * 1000L
         val currentPans = getKaoPanList()
+        var correctedCount = 0
         currentPans.forEach { kaoPan ->
-            kaoPan.closeTime = closeTimeMillis
+            if (kaoPan.closeTime != closeTimeMillis) {
+                kaoPan.closeTime = closeTimeMillis
+                correctedCount += 1
+            }
         }
-        saveKaoPanList(currentPans)
-        return currentPans.size
+        if (correctedCount > 0) {
+            saveKaoPanList(currentPans)
+        }
+        return correctedCount
     }
 
     fun normalizeKaoPanTasteMetadata(): Boolean {

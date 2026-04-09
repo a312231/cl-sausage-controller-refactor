@@ -7,7 +7,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
-import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -231,7 +231,7 @@ object HighCurrentTrafficMode {
         }
         config.transitionMode = 0
         AppConfig.saveAppConfig(config)
-        NetApi.updateDeviceInfo()
+        SendServerHelper.publishServiceUpdateStatus()
         LogUtils.i(
             TAG,
             "【并发切换】低转高过渡完成：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}"
@@ -310,7 +310,7 @@ object HighCurrentTrafficMode {
             config.transitionMode = 0
             config.modeType = 1
             AppConfig.saveAppConfig(config)
-            NetApi.updateDeviceInfo()
+            SendServerHelper.publishServiceUpdateStatus()
             LogUtils.i(
                 TAG,
                 "【并发切换】高转低过渡完成：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}"
@@ -579,7 +579,7 @@ object HighCurrentTrafficMode {
             transitionMode = 2
         }
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
-        NetApi.updateDeviceInfo()
+        SendServerHelper.publishServiceUpdateStatus()
         pitCount = 0
         lastFillPitTime = 0L
     }

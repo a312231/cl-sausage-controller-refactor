@@ -7,6 +7,7 @@ import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -1178,7 +1179,7 @@ object KaoChangOperate {
                     "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}，" +
                     "errorStatus=${config.errorStatus}(0=正常, 非0=故障)"
             )
-            NetApi.updateDeviceInfo()
+            SendServerHelper.publishServiceUpdateStatus()
             return
         }
 
@@ -1219,7 +1220,7 @@ object KaoChangOperate {
                 "restStatusSource（休息中来源）=${restStatusSourceDesc(previousRestStatusSource)}->${restStatusSourceDesc(config.restStatusSource)}"
         )
         restoreHeatingStateFromCurrentPans("营业时间开始自动恢复")
-        NetApi.updateDeviceInfo()
+        SendServerHelper.publishServiceUpdateStatus()
     }
 
     /**
@@ -1237,7 +1238,7 @@ object KaoChangOperate {
                 "营业时间结束：检测到设备故障标记，保持维护中 | errorStatus=${config.errorStatus}(0=正常, 非0=故障), " +
                     "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
             )
-            NetApi.updateDeviceInfo()
+            SendServerHelper.publishServiceUpdateStatus()
             return
         }
         if (config.onlineStatus != 1) {
@@ -1260,7 +1261,7 @@ object KaoChangOperate {
                 "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
         )
         //同步更新云端状态
-        NetApi.updateDeviceInfo()
+        SendServerHelper.publishServiceUpdateStatus()
         //执行丢弃操作
         try {
             KaoChangAlgorithm.resetKaoPan()
@@ -1279,7 +1280,7 @@ object KaoChangOperate {
                     "exception=${e.javaClass.simpleName}, message=${e.message}",
                 e
             )
-            NetApi.updateDeviceInfo()
+            SendServerHelper.publishServiceUpdateStatus()
         }
     }
 

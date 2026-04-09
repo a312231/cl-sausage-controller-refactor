@@ -6,7 +6,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
-import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
 /**
@@ -443,6 +443,6 @@ object LowCurrentTrafficMode {
             TAG,
             "【并发切换】低转高状态已写入本地：modeType=${modeText(AppConfig.getAppConfig().modeType)}，transitionMode=${transitionText(AppConfig.getAppConfig().transitionMode)}"
         )
-        NetApi.updateDeviceInfo()
+        SendServerHelper.publishServiceUpdateStatus()
     }
 }

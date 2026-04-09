@@ -667,7 +667,6 @@ object KaoChangAlgorithm {
     private fun uploadDeviceStatus(logMessage: String) {
         logW(LOG_DEVICE, logMessage)
         SendServerHelper.publishServiceUpdateStatus()
-        NetApi.updateDeviceInfo()
     }
     /**
      * 判断当前时间是否在营业时间内
@@ -770,7 +769,7 @@ object KaoChangAlgorithm {
                 "bakingTime（烤制时长，分钟）=${config.bakingTime}"
         )
         if (syncToServer) {
-            NetApi.updateDeviceInfo()
+            SendServerHelper.publishServiceUpdateStatus()
         }
     }
 
@@ -787,7 +786,7 @@ object KaoChangAlgorithm {
             "算法开关已关闭：reason=$reason, onlineStatus=${onlineStatusText(config.onlineStatus)}, modeType=${modeText(config.modeType)}"
         )
         if (syncToServer) {
-            NetApi.updateDeviceInfo()
+            SendServerHelper.publishServiceUpdateStatus()
         }
     }
 

@@ -22,6 +22,8 @@ import kotlinx.coroutines.launch
 object DataManagementAPI {
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val LOG_SYNC = "云端同步"
+    @Volatile
+    private var lastAppliedRuntimeControlSeq: Long = -1L
 
     data class RemoteDeviceStateRefreshResult(
         val success: Boolean,
@@ -31,8 +33,45 @@ object DataManagementAPI {
         val restStatusSource: String
     )
 
+    data class RuntimeControlApplyResult(
+        val controlSeq: Long,
+        val applied: Boolean,
+        val changed: Boolean,
+        val reason: String,
+        val onlineStatus: Int,
+        val isEnable: Int,
+        val restStatusSource: String
+    )
+
     private fun logD(message: String) = LogUtils.d("[$LOG_SYNC] $message")
+    private fun logW(message: String) = LogUtils.w("[$LOG_SYNC] $message")
     private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
+
+    private fun reconcileDiscardCloseTime(
+        logPrefix: String,
+        oldDiscardTime: Int,
+        mergedConfig: AppConfigBean
+    ) {
+        val correctedCount = KaoPanHelper.refreshDiscardCloseTime(mergedConfig.discardTime)
+        if (correctedCount <= 0) {
+            return
+        }
+
+        val closeTimeMillis = mergedConfig.discardTime.coerceAtLeast(0) * 60L * 60L * 1000L
+        if (oldDiscardTime != mergedConfig.discardTime) {
+            LogUtils.d(
+                "[$logPrefix] 远端配置已更新丢弃时间，并已回刷烤盘保温超时阈值：" +
+                    "discardTime=${oldDiscardTime}小时->${mergedConfig.discardTime}小时, " +
+                    "已修正烤盘数=$correctedCount, 新closeTime=${closeTimeMillis}ms"
+            )
+        } else {
+            LogUtils.w(
+                "[$logPrefix] 启动/同步时发现烤盘保温超时阈值与当前配置不一致，已自动回刷：" +
+                    "discardTime=${mergedConfig.discardTime}小时, 已修正烤盘数=$correctedCount, " +
+                    "目标closeTime=${closeTimeMillis}ms"
+            )
+        }
+    }
 
     private fun formatDiffValue(label: String, value: Any?): String {
         if (value == null) {
@@ -134,7 +173,8 @@ object DataManagementAPI {
         previousIsEnable: Int,
         previousRestStatusSource: String,
         mergedConfig: AppConfigBean,
-        source: String
+        source: String,
+        syncAlgorithmChangeToServer: Boolean = true
     ) {
         if (mergedConfig.onlineStatus == 2) {
             val normalizedPreviousRestSource = AppConfig.normalizeRestStatusSource(previousRestStatusSource)
@@ -165,7 +205,8 @@ object DataManagementAPI {
                     "newIsEnable=${formatDiffValue("isEnable", 0)}"
             )
             KaoChangAlgorithm.disableRoastAlgorithm(
-                reason = "远端配置切换到维护中(source=$source)"
+                reason = "远端配置切换到维护中(source=$source)",
+                syncToServer = syncAlgorithmChangeToServer
             )
             return
         }
@@ -194,6 +235,130 @@ object DataManagementAPI {
                 KaoChangOperate.restoreHeatingStateFromCurrentPans("远端配置切回非维护状态且算法已开启")
             }
         }
+    }
+
+    fun applyRemoteRuntimeControl(content: String, source: String = "mqtt-action=2"): RuntimeControlApplyResult {
+        val json = try {
+            JSON.parseObject(content)
+        } catch (e: Exception) {
+            logE("远端运行时控制解析失败：source=$source, error=${e.message}, raw=$content")
+            val config = AppConfig.getAppConfig()
+            return RuntimeControlApplyResult(
+                controlSeq = -1L,
+                applied = false,
+                changed = false,
+                reason = "parse_failed",
+                onlineStatus = config.onlineStatus,
+                isEnable = config.isEnable,
+                restStatusSource = config.restStatusSource
+            )
+        }
+
+        val controlSeq = json.getLongValue("controlSeq").takeIf { it > 0 } ?: json.getLongValue("ts")
+        val hasOnlineStatus = json.containsKey("onlineStatus")
+        val hasIsEnable = json.containsKey("isEnable")
+        if (!hasOnlineStatus && !hasIsEnable) {
+            val config = AppConfig.getAppConfig()
+            logD(
+                "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "不包含 onlineStatus（设备营业状态）或 isEnable（烤肠算法开关）"
+            )
+            return RuntimeControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = "missing_runtime_fields",
+                onlineStatus = config.onlineStatus,
+                isEnable = config.isEnable,
+                restStatusSource = config.restStatusSource
+            )
+        }
+
+        val currentConfigBeforeApply = AppConfig.getAppConfig()
+        if (controlSeq > 0 && lastAppliedRuntimeControlSeq >= 0 && controlSeq <= lastAppliedRuntimeControlSeq) {
+            logW(
+                "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "lastAppliedRuntimeControlSeq=$lastAppliedRuntimeControlSeq，reason=stale_control_seq，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(currentConfigBeforeApply.onlineStatus)}，" +
+                    "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", currentConfigBeforeApply.isEnable)}"
+            )
+            return RuntimeControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = "stale_control_seq",
+                onlineStatus = currentConfigBeforeApply.onlineStatus,
+                isEnable = currentConfigBeforeApply.isEnable,
+                restStatusSource = currentConfigBeforeApply.restStatusSource
+            )
+        }
+
+        val config = currentConfigBeforeApply
+        val previousOnlineStatus = config.onlineStatus
+        val previousIsEnable = config.isEnable
+        val previousRestStatusSource = config.restStatusSource
+        val operator = json.getString("operator").orEmpty()
+
+        if (hasOnlineStatus) {
+            config.onlineStatus = json.getIntValue("onlineStatus")
+        }
+        AppConfig.alignRestStatusSource(config)
+        AppConfig.saveAppConfig(config)
+
+        if (hasOnlineStatus) {
+            handleRemoteOnlineStatusTransition(
+                previousOnlineStatus = previousOnlineStatus,
+                previousIsEnable = previousIsEnable,
+                previousRestStatusSource = previousRestStatusSource,
+                mergedConfig = config,
+                source = source,
+                syncAlgorithmChangeToServer = false
+            )
+        }
+
+        if (config.onlineStatus == 3) {
+            KaoChangAlgorithm.disableRoastAlgorithm(
+                reason = "远端MQTT运行时控制要求维护中(source=$source, operator=${operator.ifBlank { "unknown" }})",
+                syncToServer = false
+            )
+        } else if (hasIsEnable) {
+            when (json.getIntValue("isEnable")) {
+                1 -> KaoChangAlgorithm.enableRoastAlgorithm(
+                    reason = "远端MQTT运行时控制开启算法(source=$source, operator=${operator.ifBlank { "unknown" }})",
+                    syncToServer = false
+                )
+                else -> KaoChangAlgorithm.disableRoastAlgorithm(
+                    reason = "远端MQTT运行时控制关闭算法(source=$source, operator=${operator.ifBlank { "unknown" }})",
+                    syncToServer = false
+                )
+            }
+        }
+
+        val currentConfig = AppConfig.getAppConfig()
+        val changed =
+            previousOnlineStatus != currentConfig.onlineStatus ||
+                previousIsEnable != currentConfig.isEnable
+
+        if (controlSeq > 0) {
+            lastAppliedRuntimeControlSeq = maxOf(lastAppliedRuntimeControlSeq, controlSeq)
+        }
+
+        logD(
+            "远端运行时控制已应用：" +
+                "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
+                "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", previousIsEnable)}->${formatDiffValue("isEnable", currentConfig.isEnable)}，" +
+                "restStatusSource（休息中来源）=${restStatusSourceText(previousRestStatusSource)}->${restStatusSourceText(currentConfig.restStatusSource)}"
+        )
+        return RuntimeControlApplyResult(
+            controlSeq = controlSeq,
+            applied = true,
+            changed = changed,
+            reason = "applied",
+            onlineStatus = currentConfig.onlineStatus,
+            isEnable = currentConfig.isEnable,
+            restStatusSource = currentConfig.restStatusSource
+        )
     }
 
     fun dataSyncServer() {
@@ -394,15 +559,7 @@ object DataManagementAPI {
                 logD("远端配置已更新：${changes.joinToString(", ")}")
             }
 
-            if (oldDiscardTime != mergedConfig.discardTime) {
-                val refreshedCount = KaoPanHelper.refreshDiscardCloseTime(mergedConfig.discardTime)
-                val newCloseTimeMillis = mergedConfig.discardTime.coerceAtLeast(0) * 60L * 60L * 1000L
-                logD(
-                    "远端配置已更新丢弃时间，并已回刷烤盘保温超时阈值：" +
-                        "discardTime=${oldDiscardTime}小时->${mergedConfig.discardTime}小时, " +
-                        "回刷烤盘数=$refreshedCount, 新closeTime=${newCloseTimeMillis}ms"
-                )
-            }
+            reconcileDiscardCloseTime(LOG_SYNC, oldDiscardTime, mergedConfig)
 
             handleRemoteOnlineStatusTransition(
                 previousOnlineStatus,
@@ -424,6 +581,7 @@ object DataManagementAPI {
         val oldQcodeUrl = appConfigBean.qcodeURL
         val oldAvailable = appConfigBean.available
         val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
+        val oldDiscardTime = appConfigBean.discardTime
         val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
         val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
@@ -487,6 +645,7 @@ object DataManagementAPI {
             }
 
             val mergedConfig = AppConfig.getAppConfig()
+            reconcileDiscardCloseTime(logPrefix, oldDiscardTime, mergedConfig)
             handleRemoteOnlineStatusTransition(
                 oldOnlineStatus,
                 previousIsEnable,
