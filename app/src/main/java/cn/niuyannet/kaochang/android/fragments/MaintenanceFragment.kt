@@ -17,6 +17,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
@@ -127,7 +128,15 @@ class MaintenanceFragment : Fragment() {
                 "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
                 "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}"
         )
-        DataManagementAPI.uploadDeviceInfo()
+        val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
+        val availablePublishOk = SendServerHelper.publishAvailableState("maintenance:$reason")
+        if (!runtimePublishOk || !availablePublishOk) {
+            LogUtils.w(
+                "【维护操作】$reason，MQTT 主上报失败，回退 HTTP 补偿：" +
+                    "runtimePublishOk=$runtimePublishOk，availablePublishOk=$availablePublishOk"
+            )
+            DataManagementAPI.uploadDeviceInfo()
+        }
     }
 
     private fun setMaintenanceActionButtonsEnabled(enabled: Boolean) {

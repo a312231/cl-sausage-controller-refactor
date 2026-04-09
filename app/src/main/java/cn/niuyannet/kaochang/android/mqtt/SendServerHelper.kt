@@ -61,6 +61,31 @@ object SendServerHelper {
     }
 
     /**
+     * 通过 MQTT 上报首页展示相关状态（action=2）。
+     * 当前只收口：
+     * - available（二维码页预计时间）
+     * - availableCountdownLatched（二维码页预计时间锁存标记）
+     */
+    fun publishAvailableState(source: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        val payload = JSONObject()
+        payload["messageType"] = "available_state"
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["available"] = config.available
+        payload["availableCountdownLatched"] = config.availableCountdownLatched
+        payload["onlineStatus"] = config.onlineStatus
+        payload["status"] = config.status
+        payload["source"] = source
+        payload["reportedAt"] = System.currentTimeMillis()
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = 2
+                content = JSON.toJSONString(payload)
+            }
+        )
+    }
+
+    /**
      * 回执远端运行时控制（action=2）。
      * ack 仅确认“是否应用了这条 controlSeq”，不承担设备状态同步职责。
      */

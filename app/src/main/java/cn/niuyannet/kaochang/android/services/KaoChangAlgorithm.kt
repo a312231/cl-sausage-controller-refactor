@@ -9,6 +9,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -240,7 +241,16 @@ object KaoChangAlgorithm {
         config.available = newAvailable
         config.availableCountdownLatched = newLatched
         AppConfig.saveAppConfig(config)
-        NetApi.updateDeviceInfo()
+        HomeUiRefreshBridge.requestRefresh("available_state_changed")
+        val mqttOk = SendServerHelper.publishAvailableState("algorithm:$reason")
+        if (!mqttOk) {
+            logW(
+                LOG_ALGORITHM,
+                "二维码预计时间 MQTT 主上报失败，回退 HTTP 补偿：" +
+                    "reason=$reason，available=$newAvailable，availableCountdownLatched=$newLatched"
+            )
+            NetApi.updateDeviceInfo()
+        }
     }
 
     private fun buildAvailableDisplayText(available: Long): String {

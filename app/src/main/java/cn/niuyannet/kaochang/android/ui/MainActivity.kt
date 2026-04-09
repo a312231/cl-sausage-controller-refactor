@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
+import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import com.alibaba.fastjson.JSON
@@ -64,6 +65,15 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     private val recentBusyOrderLogAtMs = ConcurrentHashMap<String, Long>()
     private var deviceStateRefreshJob: Job? = null
     private var lastHomeDisplayLogSignature = ""
+    private val homeUiRefreshCallback: (String) -> Unit = { _ ->
+        if (!isFinishing && !isDestroyed) {
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    setDataToView()
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -145,6 +155,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     override fun onResume() {
         super.onResume()
         CameraMonitor.instance.startService(applicationContext)
+        HomeUiRefreshBridge.register(homeUiRefreshCallback)
         if (runtimeStarted) {
             setDataToView()
             startDeviceStateRefreshLoop()
@@ -153,6 +164,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onStop() {
         super.onStop()
+        HomeUiRefreshBridge.unregister(homeUiRefreshCallback)
         deviceStateRefreshJob?.cancel()
         deviceStateRefreshJob = null
         CameraMonitor.instance.close()
@@ -428,6 +440,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onDestroy() {
         super.onDestroy()
+        HomeUiRefreshBridge.unregister(homeUiRefreshCallback)
         VMMqttHelper.unregisterMessageListener(this::class.java.simpleName) // 组件解绑
         CameraMonitor.instance.close()
         clearCamera()
