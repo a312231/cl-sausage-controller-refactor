@@ -231,6 +231,61 @@ class MaintenanceFragment : Fragment() {
         }
 
         binding.swKzAlgorithm.setOnCheckedChangeListener { buttonView, isChecked ->
+            fun restoreSwitchControls() {
+                binding.tvCooldownHint.text = ""
+                buttonView.isEnabled = true
+                if (clearPanCooldownJob?.isActive != true) {
+                    binding.btnClearAll.isEnabled = true
+                }
+                if (resetPanCooldownJob?.isActive != true) {
+                    binding.btnCz.isEnabled = true
+                }
+            }
+
+            fun startAlgorithmSwitchCooldown() {
+                isAlgorithmCoolingDown = true
+                buttonView.isEnabled = false
+                setMaintenanceButtonsEnabled(false)
+                algorithmCooldownJob?.cancel()
+                algorithmCooldownJob = lifecycleScope.launch {
+                    waitUntilMachineIdle("等待机械动作完成") { binding.tvCooldownHint.text = it }
+                    var remaining = 10
+                    while (remaining > 0) {
+                        binding.tvCooldownHint.text = "冷却 ${String.format("%2d", remaining)} 秒"
+                        delay(1_000L)
+                        remaining--
+                    }
+                    binding.tvCooldownHint.text = ""
+                    buttonView.isEnabled = true
+                    isAlgorithmCoolingDown = false
+                    if (clearPanCooldownJob?.isActive != true) {
+                        binding.btnClearAll.isEnabled = true
+                    }
+                    if (resetPanCooldownJob?.isActive != true) {
+                        binding.btnCz.isEnabled = true
+                    }
+                }
+            }
+
+            fun applyAlgorithmSwitch(enable: Boolean, reason: String) {
+                val beforeIsEnable = AppConfig.getAppConfig().isEnable
+                if (enable) {
+                    KaoChangAlgorithm.enableRoastAlgorithm(reason = reason)
+                } else {
+                    KaoChangAlgorithm.disableRoastAlgorithm(reason = reason)
+                }
+                val afterConfig = AppConfig.getAppConfig()
+                LogUtils.i(
+                    "【维护操作】手动切换烤肠算法完成：" +
+                        "requestedChecked=$enable，" +
+                        "isEnable（烤肠算法开关）=$beforeIsEnable->${afterConfig.isEnable}，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(afterConfig.onlineStatus)}，" +
+                        "modeType（并发模式）=${modeText(afterConfig.modeType)}，" +
+                        "transitionMode（并发切换过渡态）=${transitionText(afterConfig.transitionMode)}"
+                )
+                startAlgorithmSwitchCooldown()
+            }
+
             val currentConfig = AppConfig.getAppConfig()
             if (ignoreAlgorithmSwitchChange) {
                 LogUtils.d(
@@ -262,41 +317,65 @@ class MaintenanceFragment : Fragment() {
                     "modeType（并发模式）=${modeText(currentConfig.modeType)}，" +
                     "transitionMode（并发切换过渡态）=${transitionText(currentConfig.transitionMode)}"
             )
-            if (isChecked) {
-                KaoChangAlgorithm.enableRoastAlgorithm()
-            } else {
-                KaoChangAlgorithm.disableRoastAlgorithm()
+            if (!isChecked) {
+                applyAlgorithmSwitch(enable = false, reason = "维护页手动关闭算法")
+                return@setOnCheckedChangeListener
             }
-            val afterConfig = AppConfig.getAppConfig()
-            LogUtils.i(
-                "【维护操作】手动切换烤肠算法完成：" +
-                    "requestedChecked=$isChecked，" +
-                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}->${afterConfig.isEnable}，" +
-                    "onlineStatus（设备营业状态）=${onlineStatusText(afterConfig.onlineStatus)}，" +
-                    "modeType（并发模式）=${modeText(afterConfig.modeType)}，" +
-                    "transitionMode（并发切换过渡态）=${transitionText(afterConfig.transitionMode)}"
-            )
 
-            isAlgorithmCoolingDown = true
             buttonView.isEnabled = false
             setMaintenanceButtonsEnabled(false)
-            algorithmCooldownJob?.cancel()
-            algorithmCooldownJob = lifecycleScope.launch {
-                waitUntilMachineIdle("等待机械动作完成") { binding.tvCooldownHint.text = it }
-                var remaining = 10
-                while (remaining > 0) {
-                    binding.tvCooldownHint.text = "冷却 ${String.format("%2d", remaining)} 秒"
-                    delay(1_000L)
-                    remaining--
-                }
-                binding.tvCooldownHint.text = ""
-                buttonView.isEnabled = true
-                isAlgorithmCoolingDown = false
-                if (clearPanCooldownJob?.isActive != true) {
-                    binding.btnClearAll.isEnabled = true
-                }
-                if (resetPanCooldownJob?.isActive != true) {
-                    binding.btnCz.isEnabled = true
+            binding.tvCooldownHint.text = "正在同步云端状态"
+            LogUtils.i(
+                "【维护操作】手动开启烤肠算法前，先同步云端设备状态：" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
+                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}"
+            )
+            DataManagementAPI.refreshRemoteDeviceState(logPrefix = "维护页开启算法前同步") { result ->
+                activity?.runOnUiThread {
+                    if (!isAdded || _binding == null) {
+                        return@runOnUiThread
+                    }
+                    val latestConfig = AppConfig.getAppConfig()
+                    if (!result.success) {
+                        LogUtils.w(
+                            "【维护操作】手动开启烤肠算法前同步云端状态失败，拒绝本次开启：" +
+                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                        )
+                        setAlgorithmSwitchCheckedSilently(false)
+                        ToastUtils.showShort("同步云端设备状态失败，请稍后重试")
+                        restoreSwitchControls()
+                        return@runOnUiThread
+                    }
+
+                    if (latestConfig.onlineStatus in setOf(0, 2, 3)) {
+                        LogUtils.w(
+                            "【维护操作】手动开启烤肠算法前已同步到云端最新状态，本次拒绝开启：" +
+                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                        )
+                        setAlgorithmSwitchCheckedSilently(false)
+                        val tip = when (latestConfig.onlineStatus) {
+                            0 -> "后台设备状态为未启用，请先启用后再开启算法"
+                            2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
+                            3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
+                            else -> "后台设备状态不允许开启算法"
+                        }
+                        ToastUtils.showShort(tip)
+                        restoreSwitchControls()
+                        return@runOnUiThread
+                    }
+
+                    LogUtils.i(
+                        "【维护操作】手动开启烤肠算法前已同步到云端最新状态，允许本次开启：" +
+                            "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                            "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                            "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                    )
+                    binding.tvCooldownHint.text = ""
+                    applyAlgorithmSwitch(enable = true, reason = "维护页手动开启算法（已先同步云端状态）")
                 }
             }
         }

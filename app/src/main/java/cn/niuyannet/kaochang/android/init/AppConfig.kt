@@ -20,6 +20,33 @@ object AppConfig {
         val message: String
     )
 
+    fun normalizeRestStatusSource(restStatusSource: String?): String {
+        return when (restStatusSource) {
+            AppConfigBean.REST_SOURCE_NONE,
+            AppConfigBean.REST_SOURCE_UNKNOWN,
+            AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS,
+            AppConfigBean.REST_SOURCE_MANUAL_REMOTE,
+            AppConfigBean.REST_SOURCE_MANUAL_LOCAL -> restStatusSource
+            else -> AppConfigBean.REST_SOURCE_UNKNOWN
+        }
+    }
+
+    fun restStatusSourceText(restStatusSource: String?): String = when (normalizeRestStatusSource(restStatusSource)) {
+        AppConfigBean.REST_SOURCE_NONE -> "NONE（当前不是休息中）"
+        AppConfigBean.REST_SOURCE_UNKNOWN -> "UNKNOWN（来源未知/历史旧数据）"
+        AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS -> "AUTO_END_BUSINESS（系统自动营业结束）"
+        AppConfigBean.REST_SOURCE_MANUAL_REMOTE -> "MANUAL_REMOTE（后台手动设置休息中）"
+        AppConfigBean.REST_SOURCE_MANUAL_LOCAL -> "MANUAL_LOCAL（本地人工设置休息中）"
+        else -> "${restStatusSource ?: "null"}（未知）"
+    }
+
+    fun alignRestStatusSource(config: AppConfigBean) {
+        config.restStatusSource = when (config.onlineStatus) {
+            2 -> normalizeRestStatusSource(config.restStatusSource)
+            else -> AppConfigBean.REST_SOURCE_NONE
+        }
+    }
+
     fun getTopicDeviceIdUrl(url: String): String {
         return url.replace("{device_id}", getDeviceId())
     }
@@ -53,6 +80,7 @@ object AppConfig {
     }
 
     fun saveAppConfig(appConfigBean: AppConfigBean) {
+        alignRestStatusSource(appConfigBean)
         this.appConfigBean = appConfigBean
         PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(appConfigBean))
     }

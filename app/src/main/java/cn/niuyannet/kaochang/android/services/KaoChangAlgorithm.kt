@@ -55,6 +55,7 @@ object KaoChangAlgorithm {
     private var lastRecoverableOnlineStatus = 1
     private var lastAvailableDecisionLogKey = ""
     private var lastAvailableUpdateLogKey = ""
+    private var lastBusinessStartRecoveryLogKey = ""
     private var loggedManualRecoveryRequiredOnDisconnect = false
     private var loggedManualRecoveryRequiredAfterReconnect = false
     private var lastPollStateSnapshot: String? = null
@@ -100,10 +101,83 @@ object KaoChangAlgorithm {
         else -> "$value(未知)"
     }
 
+    private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
+
     private fun isEnableText(value: Int): String = when (value) {
         0 -> "0（关闭）"
         1 -> "1（开启）"
         else -> "$value（未知）"
+    }
+
+    private fun logBusinessStartSkipOnce(source: String, reason: String, config: AppConfigBean) {
+        val logKey = listOf(
+            source,
+            reason,
+            config.onlineStatus,
+            config.errorStatus,
+            config.moveStatus,
+            config.isEnable,
+            AppConfig.normalizeRestStatusSource(config.restStatusSource)
+        ).joinToString("|")
+        if (lastBusinessStartRecoveryLogKey == logKey) {
+            return
+        }
+        lastBusinessStartRecoveryLogKey = logKey
+        logD(
+            LOG_DEVICE,
+            "跳过营业开始自动恢复：source=$source，原因=$reason，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}，" +
+                "restStatusSource（休息中来源）=${restStatusSourceText(config.restStatusSource)}，" +
+                "moveStatus（机械动作状态）=${moveStatusText(config.moveStatus)}，" +
+                "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}"
+        )
+    }
+
+    fun recoverBusinessStartIfNeeded(source: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        val businessTime = config.businessTime ?: return false
+        if (!isWithinBusinessHours(getCurrentTime(), businessTime)) {
+            lastBusinessStartRecoveryLogKey = ""
+            return false
+        }
+        return when (config.onlineStatus) {
+            2 -> {
+                if (AppConfig.normalizeRestStatusSource(config.restStatusSource) != AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS) {
+                    logBusinessStartSkipOnce(source, "休息中来源不是系统自动营业结束", config)
+                    return false
+                }
+                val previousOnlineStatus = config.onlineStatus
+                val previousIsEnable = config.isEnable
+                KaoChangOperate.startBusinessHours(config, source)
+                val currentConfig = AppConfig.getAppConfig()
+                val changed = previousOnlineStatus != currentConfig.onlineStatus || previousIsEnable != currentConfig.isEnable
+                if (changed) {
+                    lastBusinessStartRecoveryLogKey = ""
+                }
+                changed
+            }
+            1 -> {
+                lastBusinessStartRecoveryLogKey = ""
+                false
+            }
+            0 -> {
+                logBusinessStartSkipOnce(source, "未启用", config)
+                false
+            }
+            3 -> {
+                logBusinessStartSkipOnce(source, "维护中", config)
+                false
+            }
+            4 -> {
+                logBusinessStartSkipOnce(source, "正在出餐", config)
+                false
+            }
+            else -> {
+                logBusinessStartSkipOnce(source, "未知状态", config)
+                false
+            }
+        }
     }
 
     fun restoreRoastAlgorithmState() {
@@ -375,6 +449,11 @@ object KaoChangAlgorithm {
                 logD(LOG_ALGORITHM, "当前不在营业时间内，设备状态=${onlineStatusText(onlineStatus)}，跳过停业收尾")
             }
             return
+        }
+
+        if (onlineStatus == 2) {
+            recoverBusinessStartIfNeeded("pollKaoPanStatus")
+            onlineStatus = AppConfig.getAppConfig().onlineStatus
         }
 
         if (!(onlineStatus == 1 || onlineStatus == 4)) {

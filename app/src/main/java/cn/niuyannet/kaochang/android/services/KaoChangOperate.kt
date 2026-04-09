@@ -38,6 +38,7 @@ object KaoChangOperate {
     private const val LOG_SELL_MONITOR = "售卖口监控"
     private const val LOG_WINDOW = "窗口收尾"
     private const val LOG_SUPPLEMENT = "补肠流程"
+    private const val LOG_PAN_MOVE = "烤盘搬移"
     private const val LOG_HEAT = "加热控制"
     private const val LOG_DEVICE = "设备状态"
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
@@ -61,6 +62,7 @@ object KaoChangOperate {
     private var supplementBlockedUntilMs: Long = 0L
 
     private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
+    private fun logI(category: String, message: String) = LogUtils.i("[$category] $message")
     private fun logW(category: String, message: String) = LogUtils.w("[$category] $message")
     private fun logE(category: String, message: String) = LogUtils.e("[$category] $message")
     private fun logE(category: String, message: String, tr: Throwable) = LogUtils.e("[$category] $message", tr)
@@ -72,6 +74,25 @@ object KaoChangOperate {
         3 -> "3(维护中)"
         4 -> "4(工作中)"
         else -> "$status(未知)"
+    }
+
+    private fun restStatusSourceDesc(source: String?): String = AppConfig.restStatusSourceText(source)
+
+    private fun moveStatusDesc(status: Int): String = when (status) {
+        0 -> "0(空闲)"
+        1 -> "1(补肠中)"
+        2 -> "2(出餐中)"
+        3 -> "3(烤盘搬移中)"
+        4 -> "4(丢弃中)"
+        else -> "$status(未知)"
+    }
+
+    private fun actionExecutionResultDesc(result: ActionExecutionResult): String = when (result) {
+        ActionExecutionResult.SUCCESS -> "SUCCESS(成功)"
+        ActionExecutionResult.COMMAND_REJECTED -> "COMMAND_REJECTED(指令被拒绝)"
+        ActionExecutionResult.BUSY_TIMEOUT -> "BUSY_TIMEOUT(设备忙超时)"
+        ActionExecutionResult.DISCONNECTED -> "DISCONNECTED(通信断开)"
+        ActionExecutionResult.RUNNING_TIMEOUT -> "RUNNING_TIMEOUT(执行超时)"
     }
 
     enum class TakeSausageResult {
@@ -515,14 +536,19 @@ object KaoChangOperate {
         while (appState!=0) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
-            logD(LOG_SUPPLEMENT, "补充烤肠，等待售卖完成：state=$appState")
+            logD(LOG_SUPPLEMENT, "补肠前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
         }
         waitForPostSellSupplementGuardIfNeeded()
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
         val sausageName = getBoxTasteLabel(kaoPanBox)
-        logD(LOG_SUPPLEMENT, "开始补肠：目标烤盘=${kaoPan.positionSn}，来源烤肠箱=${kaoPanBox.positionSn}，口味=$sausageName，当前箱库存=${kaoPanBox.num}")
+        val boxStockBefore = kaoPanBox.num
+        logD(
+            LOG_SUPPLEMENT,
+            "开始补肠：目标烤盘=${kaoPan.positionSn}，来源烤肠箱=${kaoPanBox.positionSn}，口味=$sausageName，" +
+                "箱库存=$boxStockBefore，targetPanHasSausage=${kaoPan.isHasSausage}"
+        )
         logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
         CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
         val result = executeActionWithRetry(
@@ -579,7 +605,11 @@ object KaoChangOperate {
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             markActionFailure("平台到烤盘${kaoPan.positionSn}", result2)
         }
-        logD(LOG_SUPPLEMENT, "补肠完成态：烤肠($sausageName)已从升降台搬运到烤盘${kaoPan.positionSn}，result=$result2")
+        logD(
+            LOG_SUPPLEMENT,
+            "补肠完成态：烤肠($sausageName)已从升降台搬运到烤盘${kaoPan.positionSn}，" +
+                "result=${actionExecutionResultDesc(result2)}"
+        )
 
         kaoPan.cmdStatusMove = if (result2 == ActionExecutionResult.SUCCESS) 0 else 2
         val moveSuccess = result == ActionExecutionResult.SUCCESS && result2 == ActionExecutionResult.SUCCESS
@@ -598,8 +628,17 @@ object KaoChangOperate {
             kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
             kaoPan.closeTime  = cfg.discardTime * 60L * 60L * 1000L
             logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${kaoPan.id}")
+            logD(
+                LOG_SUPPLEMENT,
+                "补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，口味=$sausageName，" +
+                    "箱库存=$boxStockBefore->${kaoPanBox.num}，panStatus=${kaoPan.status}，startTime=${kaoPan.startTime}"
+            )
         } else {
-            logE(LOG_SUPPLEMENT, "补肠失败，未更新烤盘状态和库存：panId=${kaoPan.id}, boxPosition=${kaoPanBox.positionSn}, result=$result, result2=$result2")
+            logE(
+                LOG_SUPPLEMENT,
+                "补肠失败，未更新烤盘状态和库存：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, " +
+                    "result=${actionExecutionResultDesc(result)}, result2=${actionExecutionResultDesc(result2)}"
+            )
         }
 
         AppConfig.getAppConfig().moveStatus = 0
@@ -611,7 +650,7 @@ object KaoChangOperate {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         logD(LOG_SUPPLEMENT, "补肠后烤盘状态更新完成")
         }
-        logD(LOG_SUPPLEMENT, "从烤肠箱${kaoPanBox.positionSn}把烤肠搬运到烤盘${kaoPan.positionSn}：结束")
+        logD(LOG_SUPPLEMENT, "补肠流程结束：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，success=$moveSuccess")
 
         while (AppConfig.getAppConfig().onlineStatus == 4) {
             delay(5000L)
@@ -647,14 +686,20 @@ object KaoChangOperate {
         while (appState!=0) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
-            logD(LOG_ACTION, "烤盘搬移前等待售卖收尾：moveStatus=$appState")
+            logD(LOG_PAN_MOVE, "烤盘搬移前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
         }
         AppConfig.getAppConfig().moveStatus = 3
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        logD(
+            LOG_PAN_MOVE,
+            "开始搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，口味=${getPanTasteLabel(kaoPan)}，" +
+                "targetHoldingTime=$targetHoldingTime"
+        )
 
         if (!ensureModbusReady("烤盘${sourcePosition}到烤盘${targetPosition}搬移")) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=下位机通信断开")
             markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移前下位机通信断开，设备进入维护中")
             return false
         }
@@ -664,6 +709,7 @@ object KaoChangOperate {
         if (!writeMoveResult.isSuccess) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=203 指令下发失败，status=${writeMoveResult.status}")
             markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移指令下发失败：${writeMoveResult.status}")
             return false
         }
@@ -676,12 +722,14 @@ object KaoChangOperate {
             if (result == -1) {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=读取 203 失败")
                 markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移时读取203失败，设备进入维护中")
                 return false
             }
             if (System.currentTimeMillis() - moveStart > moveTimeoutMs) {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=203 长时间为 1（执行中）")
                 markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移长时间处于执行中(203=1)，设备进入维护中")
                 return false
             }
@@ -689,6 +737,7 @@ object KaoChangOperate {
         if (result != 0) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=$result")
             markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
             return false
         }
@@ -709,10 +758,15 @@ object KaoChangOperate {
         operateScope.launch {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         }
+        logD(
+            LOG_PAN_MOVE,
+            "搬移完成：来源烤盘=$sourcePosition 已清空，目标烤盘=$targetPosition 已写入，" +
+                "targetHoldingTime=${newKaoPan.holdingTime}，targetStatus=${newKaoPan.status}"
+        )
 
         while (AppConfig.getAppConfig().onlineStatus == 4) {
             delay(5000L)
-            logD(LOG_ACTION, "等待当前出餐结束后再继续烤盘搬移")
+            logD(LOG_PAN_MOVE, "等待当前出餐结束后再继续烤盘搬移")
         }
         return result==0
     }   
@@ -961,7 +1015,8 @@ object KaoChangOperate {
             kaoPan.startTime=0
             kaoPan.status=0
             LogUtils.i(
-                "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail"
+                "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail，" +
+                    "panHasSausage=${kaoPan.isHasSausage}，panStatus=${kaoPan.status}"
             )
         }
         AppConfig.getAppConfig().moveStatus = 0
@@ -1104,20 +1159,67 @@ object KaoChangOperate {
 
     /**
      * 营业时间开始。
-     * 只恢复物理加热状态，不修改 onlineStatus —— 营业状态由后台管理员控制。
+     * 若当前是休息中（2）且无故障，则自动恢复到运营中（1），并恢复算法与加热状态。
+     * 若存在故障，则切到维护中（3），避免带病恢复营业。
      */
-    suspend fun startBusinessHours(config: AppConfigBean){
+    fun startBusinessHours(config: AppConfigBean, source: String = "营业时间自动恢复") {
         if (config.errorStatus != 0) {
+            val previousOnlineStatus = config.onlineStatus
             config.onlineStatus = 3
+            config.isEnable = 0
+            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
-            logW(LOG_DEVICE, "设备仍存在错误标记(errorStatus=${config.errorStatus})，跳过营业时间恢复")
+            KaoChangAlgorithm.isEnabled = false
+            logW(
+                LOG_DEVICE,
+                "跳过营业开始自动恢复：原因=检测到故障，source=$source，" +
+                    "onlineStatus=${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
+                    "isEnable=${config.isEnable}(0=关闭)，" +
+                    "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}，" +
+                    "errorStatus=${config.errorStatus}(0=正常, 非0=故障)"
+            )
             NetApi.updateDeviceInfo()
             return
         }
-        // 不自动改 onlineStatus=1，营业状态由后台管理员控制；
-        // 这里只恢复烤盘加热物理状态
-        logD(LOG_DEVICE, "营业时间开始：恢复烤盘加热状态（onlineStatus 保持由后台控制，当前=${config.onlineStatus}）")
-        restoreHeatingStateFromCurrentPans("营业时间开始")
+
+        if (config.onlineStatus != 2) {
+            logD(
+                LOG_DEVICE,
+                "跳过营业开始自动恢复：原因=当前状态无需自动恢复，source=$source，" +
+                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}，" +
+                    "isEnable=${config.isEnable}，" +
+                    "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
+            )
+            return
+        }
+
+        if (AppConfig.normalizeRestStatusSource(config.restStatusSource) != AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS) {
+            logD(
+                LOG_DEVICE,
+                "跳过营业开始自动恢复：原因=休息中来源不允许自动恢复，source=$source，" +
+                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}，" +
+                    "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
+            )
+            return
+        }
+
+        val previousOnlineStatus = config.onlineStatus
+        val previousIsEnable = config.isEnable
+        val previousRestStatusSource = config.restStatusSource
+        config.onlineStatus = 1
+        config.isEnable = 1
+        config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
+        AppConfig.saveAppConfig(config)
+        KaoChangAlgorithm.isEnabled = true
+        logI(
+            LOG_DEVICE,
+            "营业开始自动恢复：source=$source，" +
+                "onlineStatus=${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
+                "isEnable=$previousIsEnable(0=关闭, 1=开启)->${config.isEnable}(1=开启)，" +
+                "restStatusSource（休息中来源）=${restStatusSourceDesc(previousRestStatusSource)}->${restStatusSourceDesc(config.restStatusSource)}"
+        )
+        restoreHeatingStateFromCurrentPans("营业时间开始自动恢复")
+        NetApi.updateDeviceInfo()
     }
 
     /**
@@ -1128,6 +1230,7 @@ object KaoChangOperate {
     suspend fun endBusinessHours(config: AppConfigBean){
         if (config.errorStatus != 0) {
             config.onlineStatus = 3
+            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
             logW(
                 LOG_DEVICE,
@@ -1148,9 +1251,14 @@ object KaoChangOperate {
         // 当前是运营中，自动切换为休息中
         config.apply {
             onlineStatus = 2
+            restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
         }
         AppConfig.saveAppConfig(config)
-        logD(LOG_DEVICE, "营业时间结束：已自动切换为休息中（2）")
+        logD(
+            LOG_DEVICE,
+            "营业时间结束：已自动切换为休息中（2），" +
+                "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
+        )
         //同步更新云端状态
         NetApi.updateDeviceInfo()
         //执行丢弃操作
@@ -1161,6 +1269,7 @@ object KaoChangOperate {
             // 这里降级为维护中并上报，等待人工排查。
             config.errorStatus = 2
             config.onlineStatus = 3
+            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
             logE(
                 LOG_DEVICE,

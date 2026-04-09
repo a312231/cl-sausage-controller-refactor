@@ -23,6 +23,14 @@ object DataManagementAPI {
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val LOG_SYNC = "云端同步"
 
+    data class RemoteDeviceStateRefreshResult(
+        val success: Boolean,
+        val changed: Boolean,
+        val onlineStatus: Int,
+        val isEnable: Int,
+        val restStatusSource: String
+    )
+
     private fun logD(message: String) = LogUtils.d("[$LOG_SYNC] $message")
     private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
 
@@ -100,6 +108,8 @@ object DataManagementAPI {
         else -> "$value（未知）"
     }
 
+    private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
+
     private fun appendBusinessTimeDiff(
         changes: MutableList<String>,
         oldValue: BusinessTime?,
@@ -122,9 +132,29 @@ object DataManagementAPI {
     fun handleRemoteOnlineStatusTransition(
         previousOnlineStatus: Int,
         previousIsEnable: Int,
+        previousRestStatusSource: String,
         mergedConfig: AppConfigBean,
         source: String
     ) {
+        if (mergedConfig.onlineStatus == 2) {
+            val normalizedPreviousRestSource = AppConfig.normalizeRestStatusSource(previousRestStatusSource)
+            val shouldMarkManualRemote =
+                previousOnlineStatus != 2 ||
+                    normalizedPreviousRestSource !in setOf(
+                        AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS,
+                        AppConfigBean.REST_SOURCE_MANUAL_REMOTE
+                    )
+            if (shouldMarkManualRemote) {
+                mergedConfig.restStatusSource = AppConfigBean.REST_SOURCE_MANUAL_REMOTE
+                AppConfig.saveAppConfig(mergedConfig)
+                logD(
+                    "远端状态同步：检测到后台手动设置 onlineStatus（设备营业状态）=2（休息中），" +
+                        "已标记 restStatusSource（休息中来源）=${restStatusSourceText(mergedConfig.restStatusSource)}，" +
+                        "source=$source，previousOnlineStatus=${formatDiffValue("onlineStatus", previousOnlineStatus)}"
+                )
+            }
+        }
+
         if (previousOnlineStatus != 3 && mergedConfig.onlineStatus == 3) {
             logD(
                 "远端配置切换到维护中，自动关闭算法并回写服务端：" +
@@ -285,6 +315,7 @@ object DataManagementAPI {
             val appConfigBean = AppConfig.getAppConfig()
             val previousOnlineStatus = appConfigBean.onlineStatus
             val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
+            val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
             val oldBusinessTime = appConfigBean.businessTime
             val oldStatus = appConfigBean.status
@@ -373,11 +404,20 @@ object DataManagementAPI {
                 )
             }
 
-            handleRemoteOnlineStatusTransition(previousOnlineStatus, previousIsEnable, mergedConfig, "getDeviceInfo")
+            handleRemoteOnlineStatusTransition(
+                previousOnlineStatus,
+                previousIsEnable,
+                previousRestStatusSource,
+                mergedConfig,
+                "getDeviceInfo"
+            )
         }
     }
 
-    fun refreshHomeDeviceState(onResult: ((changed: Boolean) -> Unit)? = null) {
+    fun refreshRemoteDeviceState(
+        logPrefix: String = "$LOG_SYNC-home",
+        onResult: ((result: RemoteDeviceStateRefreshResult) -> Unit)? = null
+    ) {
         val appConfigBean = AppConfig.getAppConfig()
         val oldStatus = appConfigBean.status
         val oldOnlineStatus = appConfigBean.onlineStatus
@@ -385,36 +425,75 @@ object DataManagementAPI {
         val oldAvailable = appConfigBean.available
         val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
         val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
+        val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
         NetApi.getDeviceInfo(AppConfig.getDeviceId()) { code, content ->
             if (code != 0) {
-                logE("首页状态轮询失败：HTTP请求失败，code=$code, content=$content")
-                onResult?.invoke(false)
+                logE("$logPrefix 失败：HTTP请求失败，code=$code, content=$content")
+                onResult?.invoke(
+                    RemoteDeviceStateRefreshResult(
+                        success = false,
+                        changed = false,
+                        onlineStatus = oldOnlineStatus,
+                        isEnable = previousIsEnable,
+                        restStatusSource = previousRestStatusSource
+                    )
+                )
                 return@getDeviceInfo
             }
 
             val json = try {
                 JSON.parseObject(content)
             } catch (e: Exception) {
-                logE("首页状态轮询失败：响应解析异常，raw=$content")
-                onResult?.invoke(false)
+                logE("$logPrefix 失败：响应解析异常，raw=$content")
+                onResult?.invoke(
+                    RemoteDeviceStateRefreshResult(
+                        success = false,
+                        changed = false,
+                        onlineStatus = oldOnlineStatus,
+                        isEnable = previousIsEnable,
+                        restStatusSource = previousRestStatusSource
+                    )
+                )
                 return@getDeviceInfo
             }
 
             if (json == null || json.getIntValue("code") != 200) {
-                logE("首页状态轮询失败：业务返回异常，raw=$content")
-                onResult?.invoke(false)
+                logE("$logPrefix 失败：业务返回异常，raw=$content")
+                onResult?.invoke(
+                    RemoteDeviceStateRefreshResult(
+                        success = false,
+                        changed = false,
+                        onlineStatus = oldOnlineStatus,
+                        isEnable = previousIsEnable,
+                        restStatusSource = previousRestStatusSource
+                    )
+                )
                 return@getDeviceInfo
             }
 
-            val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, "$LOG_SYNC-home")
+            val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, logPrefix)
             if (!mergeResult.applied) {
-                onResult?.invoke(false)
+                onResult?.invoke(
+                    RemoteDeviceStateRefreshResult(
+                        success = false,
+                        changed = false,
+                        onlineStatus = oldOnlineStatus,
+                        isEnable = previousIsEnable,
+                        restStatusSource = previousRestStatusSource
+                    )
+                )
                 return@getDeviceInfo
             }
 
             val mergedConfig = AppConfig.getAppConfig()
-            handleRemoteOnlineStatusTransition(oldOnlineStatus, previousIsEnable, mergedConfig, "refreshHomeDeviceState")
+            handleRemoteOnlineStatusTransition(
+                oldOnlineStatus,
+                previousIsEnable,
+                previousRestStatusSource,
+                mergedConfig,
+                "refreshHomeDeviceState"
+            )
             val changed =
                 oldStatus != mergedConfig.status ||
                     oldOnlineStatus != mergedConfig.onlineStatus ||
@@ -424,7 +503,7 @@ object DataManagementAPI {
 
             if (changed) {
                 logD(
-                    "首页相关配置发生变化：" +
+                    "$logPrefix 成功：首页相关配置发生变化：" +
                         "status（设备启用状态）=${formatDiffValue("status", oldStatus)}->${formatDiffValue("status", mergedConfig.status)}，" +
                         "onlineStatus（设备营业状态）=${onlineStatusText(oldOnlineStatus)}->${onlineStatusText(mergedConfig.onlineStatus)}，" +
                         "qrcodeChanged（二维码地址是否变化）=${oldQcodeUrl != mergedConfig.qcodeURL}，" +
@@ -433,7 +512,21 @@ object DataManagementAPI {
                 )
             }
 
-            onResult?.invoke(changed)
+            onResult?.invoke(
+                RemoteDeviceStateRefreshResult(
+                    success = true,
+                    changed = changed,
+                    onlineStatus = mergedConfig.onlineStatus,
+                    isEnable = AppConfig.getAlgorithmEnableFlag(),
+                    restStatusSource = AppConfig.normalizeRestStatusSource(mergedConfig.restStatusSource)
+                )
+            )
+        }
+    }
+
+    fun refreshHomeDeviceState(onResult: ((changed: Boolean) -> Unit)? = null) {
+        refreshRemoteDeviceState { result ->
+            onResult?.invoke(result.changed)
         }
     }
 
