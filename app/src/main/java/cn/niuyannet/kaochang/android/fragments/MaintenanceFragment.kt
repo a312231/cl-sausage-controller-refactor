@@ -456,7 +456,12 @@ class MaintenanceFragment : Fragment() {
                 config.errorStatus = 0
                 config.onlineStatus = targetOnlineStatus
                 AppConfig.saveAppConfig(config)
-                DataManagementAPI.uploadDeviceInfo()
+                val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
+                if (!runtimePublishOk) {
+                    LogUtils.w("【维护操作】恢复正常状态时 MQTT 主上报失败，回退 HTTP 补偿：" +
+                        "onlineStatus=${onlineStatusText(config.onlineStatus)}，errorStatus=${config.errorStatus}，targetOnlineStatus=${onlineStatusText(targetOnlineStatus)}")
+                    DataManagementAPI.uploadDeviceInfo()
+                }
             }
         }
     }

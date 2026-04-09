@@ -117,12 +117,20 @@ object KaoChangOperate {
         RUNNING_TIMEOUT
     }
 
+    private fun publishRuntimeStateWithHttpFallback(reason: String) {
+        val mqttOk = SendServerHelper.publishServiceUpdateStatus()
+        if (!mqttOk) {
+            logW(LOG_DEVICE, "$reason：MQTT 主上报失败，回退 HTTP 补偿")
+            DataManagementAPI.uploadDeviceInfo()
+        }
+    }
+
     private fun markDeviceErrorAndUpload(logMessage: String) {
         AppConfig.getAppConfig().errorStatus = 2
         AppConfig.getAppConfig().onlineStatus = 3
         operateScope.launch {
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            DataManagementAPI.uploadDeviceInfo()
+            publishRuntimeStateWithHttpFallback("设备故障状态上报")
         }
         logE(LOG_DEVICE, logMessage)
     }
@@ -576,7 +584,7 @@ object KaoChangOperate {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             operateScope.launch {
-                DataManagementAPI.uploadDeviceInfo()
+                publishRuntimeStateWithHttpFallback("补肠失败后设备状态上报")
             }
             //未检测到烤肠直接就结束了
             return false
