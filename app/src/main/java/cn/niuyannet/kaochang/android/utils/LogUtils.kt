@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.utils
+﻿package cn.niuyannet.kaochang.android.utils
 
 import android.content.Context
 import android.util.Log
@@ -19,13 +19,14 @@ object LogUtils {
         "【订单流转】",
         "【履约完结】",
         "【维护操作】",
-        "【云端下控更新】",
+        "【云端同步】",
         "【丢弃流程】",
         "【并发切换】",
         "【动作执行】",
         "【售卖口监控】",
         "【窗口收尾】",
         "【补肠流程】",
+        "【烤盘搬移】",
         "【设备状态】"
     )
     private val FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG = listOf(
@@ -117,7 +118,7 @@ object LogUtils {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to clean old log files", e)
+                Log.e(TAG, "清理旧日志文件失败", e)
             }
         }
     }
@@ -147,7 +148,7 @@ object LogUtils {
                     writer.append(logMessage).append("\n")
                 }
             } catch (e: IOException) {
-                Log.e(TAG, "Failed to write log to file", e)
+                Log.e(TAG, "写入日志文件失败", e)
             }
         }
     }

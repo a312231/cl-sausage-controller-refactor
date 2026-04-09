@@ -101,6 +101,17 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             LogUtils.w("【启动流程】设备配置仍无效，拒绝启动算法和状态同步：source=$source")
             return
         }
+        val correctedByBusinessStart = KaoChangAlgorithm.recoverBusinessStartIfNeeded("startRuntimeAfterConfigLoaded:$source")
+        val correctedConfig = AppConfig.getAppConfig()
+        if (correctedByBusinessStart) {
+            LogUtils.d(
+                "【启动流程】启动纠偏：检测到已进入营业时间，纠正本地旧状态 | " +
+                    "source=$source，onlineStatus（设备营业状态）=${correctedConfig.onlineStatus}，" +
+                    "isEnable（烤肠算法开关）=${correctedConfig.isEnable}，" +
+                    "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(correctedConfig.restStatusSource)}"
+            )
+        }
+
         val shouldStartRuntime = !runtimeStarted
         if (shouldStartRuntime) {
             runtimeStarted = true
@@ -109,6 +120,14 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             KaoChangAlgorithm.runServer()
         }
         if (syncStatus) {
+            val syncReason = if (correctedByBusinessStart) "营业开始纠偏后再同步" else "远端配置后正常同步"
+            val currentConfig = AppConfig.getAppConfig()
+            LogUtils.d(
+                "【启动流程】准备同步设备营业状态：source=$source，syncReason=$syncReason，" +
+                    "onlineStatus（设备营业状态）=${currentConfig.onlineStatus}，" +
+                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
+                    "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(currentConfig.restStatusSource)}"
+            )
             syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
         }
         if (shouldStartRuntime) ConnectManageHelper.lunStatus {

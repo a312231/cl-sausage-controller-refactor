@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.services
+﻿package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
