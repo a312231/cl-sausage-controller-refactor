@@ -25,7 +25,7 @@ object SendServerHelper {
     fun publishServiceUpdateOrder(msgObj: JSONObject): Boolean {
         return VMMqttHelper.publishService(
             TopicMessage().apply {
-                action = 1
+                action = MqttProtocol.ACTION_ORDER_EVENT
                 content = JSON.toJSONString(msgObj)
             }
         )
@@ -42,7 +42,7 @@ object SendServerHelper {
     fun publishServiceUpdateStatus(): Boolean {
         val config = AppConfig.getAppConfig()
         val payload = JSONObject()
-        payload["messageType"] = "runtime_state"
+        payload["messageType"] = MqttProtocol.TYPE_RUNTIME_STATE
         payload["deviceCode"] = AppConfig.getDeviceId()
         payload["status"] = config.status
         payload["onlineStatus"] = config.onlineStatus
@@ -54,7 +54,7 @@ object SendServerHelper {
         payload["restStatusSource"] = config.restStatusSource
         return VMMqttHelper.publishService(
             TopicMessage().apply {
-                action = 2
+                action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
             }
         )
@@ -69,7 +69,7 @@ object SendServerHelper {
     fun publishAvailableState(source: String): Boolean {
         val config = AppConfig.getAppConfig()
         val payload = JSONObject()
-        payload["messageType"] = "available_state"
+        payload["messageType"] = MqttProtocol.TYPE_AVAILABLE_STATE
         payload["deviceCode"] = AppConfig.getDeviceId()
         payload["available"] = config.available
         payload["availableCountdownLatched"] = config.availableCountdownLatched
@@ -79,7 +79,7 @@ object SendServerHelper {
         payload["reportedAt"] = System.currentTimeMillis()
         return VMMqttHelper.publishService(
             TopicMessage().apply {
-                action = 2
+                action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
             }
         )
@@ -91,7 +91,7 @@ object SendServerHelper {
      */
     fun publishRuntimeControlAck(ack: RuntimeControlAckPayload): Boolean {
         val payload = JSONObject()
-        payload["messageType"] = "runtime_control_ack"
+        payload["messageType"] = MqttProtocol.TYPE_RUNTIME_CONTROL_ACK
         payload["deviceCode"] = AppConfig.getDeviceId()
         payload["controlSeq"] = ack.controlSeq
         payload["applied"] = ack.applied
@@ -102,7 +102,7 @@ object SendServerHelper {
         payload["ackTs"] = System.currentTimeMillis()
         return VMMqttHelper.publishService(
             TopicMessage().apply {
-                action = 2
+                action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
             }
         )

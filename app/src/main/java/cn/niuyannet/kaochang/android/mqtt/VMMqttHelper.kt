@@ -1,4 +1,4 @@
-package cn.niuyannet.kaochang.android.mqtt
+﻿package cn.niuyannet.kaochang.android.mqtt
 
 import android.os.Handler
 import android.os.Looper
@@ -38,31 +38,41 @@ object VMMqttHelper : VMMqtt() {
 
     private val messageListeners = ConcurrentHashMap<String, (TopicMessage) -> Unit>()
 
+    private fun summarizeServiceStateMessage(payload: String): String {
+        val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        val messageType = content.getString("messageType").orEmpty()
+        val controlSeq = content.getLongValue("controlSeq")
+        val onlineStatus = content.getString("onlineStatus").orEmpty()
+        val isEnable = if (content.containsKey("isEnable")) content.getString("isEnable") else ""
+        return when (messageType) {
+            MqttProtocol.TYPE_RUNTIME_CONTROL ->
+                "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable"
+            MqttProtocol.TYPE_RUNTIME_CONTROL_ACK ->
+                "收到运行时控制回执：action=2（设备状态同步），controlSeq=$controlSeq, payloadLength=${payload.length}"
+            MqttProtocol.TYPE_AVAILABLE_STATE ->
+                "收到首页展示态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
+            MqttProtocol.TYPE_RUNTIME_STATE ->
+                "收到运行时状态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
+            else ->
+                "收到设备状态下发：action=2（设备状态同步），messageType=${messageType.ifBlank { "unknown" }}, payloadLength=${payload.length}"
+        }
+    }
+
     private fun summarizeInboundMessage(action: Int, payload: String): String {
         return try {
-            val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
             when (action) {
-                1 -> {
+                MqttProtocol.ACTION_ORDER_EVENT -> {
+                    val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
                     val content = JSON.parseObject(topicMessage.content ?: "{}")
                     val orderNo = content.getString("order_no").orEmpty()
                     val goodsItems = content.getJSONArray("goods_items")
                     val itemCount = goodsItems?.size ?: 0
                     "收到下发订单：action=1（订单指令），orderNo=${orderNo.ifBlank { "未知" }}, itemCount=$itemCount"
                 }
-
-                2 -> {
-                    val content = JSON.parseObject(topicMessage.content ?: "{}")
-                    val messageType = content.getString("messageType").orEmpty()
-                    val controlSeq = content.getLongValue("controlSeq")
-                    val onlineStatus = content.getString("onlineStatus").orEmpty()
-                    val isEnable = if (content.containsKey("isEnable")) content.getString("isEnable") else ""
-                    when (messageType) {
-                        "runtime_control" ->
-                            "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable"
-                        else ->
-                            "收到设备状态下发：action=2（设备状态同步），messageType=${messageType.ifBlank { "unknown" }}, payloadLength=${payload.length}"
-                    }
-                }
+                MqttProtocol.ACTION_SERVICE_STATE -> summarizeServiceStateMessage(payload)
+                MqttProtocol.ACTION_DEVICE_LOG ->
+                    "收到设备动作日志消息：action=3，payloadLength=${payload.length}"
                 else -> "收到下发消息：action=$action，payloadLength=${payload.length}"
             }
         } catch (_: Exception) {
@@ -220,3 +230,4 @@ object VMMqttHelper : VMMqtt() {
         }
     }
 }
+

@@ -18,6 +18,7 @@ import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
+import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
@@ -180,7 +181,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             // MQTT 回调运行在子线程，UI 操作（Dialog、View）必须切到主线程
             runOnUiThread {
                 when (data.action) {
-                    1 -> {
+                    MqttProtocol.ACTION_ORDER_EVENT -> {
                         val orderMessage = data.content
                         val orderNo = extractOrderNo(orderMessage)
                         if (orderNo.isBlank()) {
@@ -211,7 +212,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             purchaseOrder(orderMessage)
                         }
                     }
-                    2 -> handleRuntimeControlMessage(data.content)
+                    MqttProtocol.ACTION_SERVICE_STATE -> handleRuntimeControlMessage(data.content)
                 }
             }
         }
@@ -220,7 +221,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     private fun handleRuntimeControlMessage(content: String) {
         val result = DataManagementAPI.applyRemoteRuntimeControl(
             content = content,
-            source = "mqtt-action=2"
+            source = MqttProtocol.SOURCE_MQTT_ACTION_2
         )
         if (result.controlSeq > 0) {
             val ackOk = SendServerHelper.publishRuntimeControlAck(

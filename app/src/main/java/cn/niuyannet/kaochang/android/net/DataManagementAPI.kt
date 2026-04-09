@@ -3,6 +3,7 @@
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
+import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
@@ -237,7 +238,10 @@ object DataManagementAPI {
         }
     }
 
-    fun applyRemoteRuntimeControl(content: String, source: String = "mqtt-action=2"): RuntimeControlApplyResult {
+    fun applyRemoteRuntimeControl(
+        content: String,
+        source: String = MqttProtocol.SOURCE_MQTT_ACTION_2
+    ): RuntimeControlApplyResult {
         val json = try {
             JSON.parseObject(content)
         } catch (e: Exception) {
