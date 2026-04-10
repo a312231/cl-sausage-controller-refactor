@@ -38,6 +38,93 @@ object VMMqttHelper : VMMqtt() {
 
     private val messageListeners = ConcurrentHashMap<String, (TopicMessage) -> Unit>()
 
+    private fun consumeRuntimeStateAckIfNeeded(topicMessage: TopicMessage): Boolean {
+        if (topicMessage.action != MqttProtocol.ACTION_SERVICE_STATE) {
+            return false
+        }
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        if (content.getString("messageType").orEmpty() != MqttProtocol.TYPE_RUNTIME_STATE_ACK) {
+            return false
+        }
+        val runtimeSeq = content.getLongValue("runtimeSeq")
+        val applied = content.getBooleanValue("applied")
+        val reason = content.getString("reason").orEmpty()
+        val status = content.getIntValue("status")
+        val onlineStatus = content.getIntValue("onlineStatus")
+        val isEnable = content.getIntValue("isEnable")
+        val modeType = content.getIntValue("modeType")
+        val transitionMode = content.getIntValue("transitionMode")
+        val moveStatus = content.getIntValue("moveStatus")
+        val errorStatus = content.getIntValue("errorStatus")
+        val ackTs = content.getLongValue("ackTs")
+        val ackResult = SendServerHelper.markRuntimeStateAcked(runtimeSeq)
+        val payloadLength = (topicMessage.content ?: "").length
+        LogUtils.d(
+            "【MQTT业务】收到运行时状态回执：" +
+                "action=2（设备状态同步），runtimeSeq=$runtimeSeq，payloadLength=$payloadLength"
+        )
+        if (applied) {
+            LogUtils.d(
+                "【MQTT运行态】服务端已确认运行时状态：" +
+                    "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
+                    "status=$status，onlineStatus=$onlineStatus，isEnable=$isEnable，" +
+                    "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
+                    "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    "source=${ackResult.snapshot?.source ?: "unknown"}"
+            )
+        } else {
+            LogUtils.w(
+                "【MQTT运行态】服务端未应用运行时状态：" +
+                    "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
+                    "status=$status，onlineStatus=$onlineStatus，isEnable=$isEnable，" +
+                    "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
+                    "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    "source=${ackResult.snapshot?.source ?: "unknown"}"
+            )
+        }
+        return true
+    }
+
+    private fun consumeAvailableStateAckIfNeeded(topicMessage: TopicMessage): Boolean {
+        if (topicMessage.action != MqttProtocol.ACTION_SERVICE_STATE) {
+            return false
+        }
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        if (content.getString("messageType").orEmpty() != MqttProtocol.TYPE_AVAILABLE_STATE_ACK) {
+            return false
+        }
+        val availableSeq = content.getLongValue("availableSeq")
+        val applied = content.getBooleanValue("applied")
+        val reason = content.getString("reason").orEmpty()
+        val available = content.getLongValue("available")
+        val availableCountdownLatched = content.getIntValue("availableCountdownLatched")
+        val ackTs = content.getLongValue("ackTs")
+        val ackResult = SendServerHelper.markAvailableStateAcked(availableSeq)
+        val payloadLength = (topicMessage.content ?: "").length
+        LogUtils.d(
+            "【MQTT业务】收到首页展示态回执：" +
+                "action=2（设备状态同步），availableSeq=$availableSeq，payloadLength=$payloadLength"
+        )
+        if (applied) {
+            LogUtils.d(
+                "【MQTT展示态】服务端已确认首页展示态：" +
+                    "availableSeq=$availableSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
+                    "available=$available，availableCountdownLatched=$availableCountdownLatched，" +
+                    "ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    "source=${ackResult.snapshot?.source ?: "unknown"}"
+            )
+        } else {
+            LogUtils.w(
+                "【MQTT展示态】服务端未应用首页展示态：" +
+                    "availableSeq=$availableSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
+                    "available=$available，availableCountdownLatched=$availableCountdownLatched，" +
+                    "ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    "source=${ackResult.snapshot?.source ?: "unknown"}"
+            )
+        }
+        return true
+    }
+
     private fun summarizeServiceStateMessage(payload: String): String {
         val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
         val content = JSON.parseObject(topicMessage.content ?: "{}")
@@ -50,6 +137,14 @@ object VMMqttHelper : VMMqtt() {
                 "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable"
             MqttProtocol.TYPE_RUNTIME_CONTROL_ACK ->
                 "收到运行时控制回执：action=2（设备状态同步），controlSeq=$controlSeq, payloadLength=${payload.length}"
+            MqttProtocol.TYPE_RUNTIME_STATE_ACK -> {
+                val runtimeSeq = content.getLongValue("runtimeSeq")
+                "收到运行时状态回执：action=2（设备状态同步），runtimeSeq=$runtimeSeq, payloadLength=${payload.length}"
+            }
+            MqttProtocol.TYPE_AVAILABLE_STATE_ACK -> {
+                val availableSeq = content.getLongValue("availableSeq")
+                "收到首页展示态回执：action=2（设备状态同步），availableSeq=$availableSeq, payloadLength=${payload.length}"
+            }
             MqttProtocol.TYPE_AVAILABLE_STATE ->
                 "收到首页展示态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
             MqttProtocol.TYPE_RUNTIME_STATE ->
@@ -115,6 +210,12 @@ object VMMqttHelper : VMMqtt() {
                     try {
                         val payload = String(message?.payload ?: ByteArray(0))
                         val bean = JSON.parseObject(payload, TopicMessage::class.java)
+                        if (consumeRuntimeStateAckIfNeeded(bean)) {
+                            return
+                        }
+                        if (consumeAvailableStateAckIfNeeded(bean)) {
+                            return
+                        }
                         LogUtils.d(
                             "【MQTT业务】${summarizeInboundMessage(bean.action, payload)}，" +
                                 "generation=$generation，topic=$topic"

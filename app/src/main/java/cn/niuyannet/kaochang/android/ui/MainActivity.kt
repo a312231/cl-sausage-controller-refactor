@@ -212,9 +212,25 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             purchaseOrder(orderMessage)
                         }
                     }
-                    MqttProtocol.ACTION_SERVICE_STATE -> handleRuntimeControlMessage(data.content)
+                    MqttProtocol.ACTION_SERVICE_STATE -> handleServiceStateMessage(data.content)
                 }
             }
+        }
+    }
+
+    private fun handleServiceStateMessage(content: String) {
+        val json = try {
+            JSON.parseObject(content)
+        } catch (e: Exception) {
+            LogUtils.e("【MQTT业务】设备状态同步消息解析失败：error=${e.message}, raw=$content")
+            return
+        }
+        when (json.getString("messageType").orEmpty()) {
+            MqttProtocol.TYPE_RUNTIME_CONTROL -> handleRuntimeControlMessage(content)
+            else -> LogUtils.w(
+                "【MQTT业务】收到未处理的 action=2 消息，已忽略：" +
+                    "messageType=${json.getString("messageType").orEmpty().ifBlank { "unknown" }}"
+            )
         }
     }
 

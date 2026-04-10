@@ -7,7 +7,9 @@ object MqttProtocol {
 
     const val TYPE_RUNTIME_CONTROL = "runtime_control"
     const val TYPE_RUNTIME_STATE = "runtime_state"
+    const val TYPE_RUNTIME_STATE_ACK = "runtime_state_ack"
     const val TYPE_AVAILABLE_STATE = "available_state"
+    const val TYPE_AVAILABLE_STATE_ACK = "available_state_ack"
     const val TYPE_RUNTIME_CONTROL_ACK = "runtime_control_ack"
 
     const val SOURCE_MQTT_ACTION_2 = "mqtt-action=2"

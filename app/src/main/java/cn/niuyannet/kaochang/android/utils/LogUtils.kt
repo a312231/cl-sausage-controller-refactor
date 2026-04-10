@@ -31,14 +31,18 @@ object LogUtils {
     )
     private val FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG = listOf(
         "【首页展示】",
+        "【MQTT运行态】",
         "更新二维码预计时间",
+        "【MQTT展示态】",
         "算法开关已开启",
         "算法开关已关闭",
         "智能烤肠算法服务启动",
         "算法状态变化",
         "手动开启烤肠算法时检测到轮询未运行",
         "【MQTT业务】收到下发订单",
-        "【MQTT业务】收到设备状态下发"
+        "【MQTT业务】收到设备状态下发",
+        "【MQTT业务】收到运行时状态回执",
+        "【MQTT业务】收到首页展示态回执"
     )
 
     const val LEVEL_VERBOSE = 1
