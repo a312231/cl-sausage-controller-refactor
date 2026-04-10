@@ -86,4 +86,7 @@ public class AppConfigBean implements Serializable {
 
     // 强制跳过视觉识别并固定返回成功（仅用于下位机模拟器本地联调）：0=关闭，1=开启
     public int forceVisionSuccess = 0;
+
+    public int zone3Dirty = 0;
+    public int zone3CleanPending = 0;
 }

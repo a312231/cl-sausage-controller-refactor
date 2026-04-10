@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +43,7 @@ object KaoChangOperate {
     private const val LOG_PAN_MOVE = "烤盘搬移"
     private const val LOG_HEAT = "加热控制"
     private const val LOG_DEVICE = "设备状态"
+    private const val LOG_SELF_CLEAN = "【自清洁】"
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
     private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
@@ -85,6 +87,7 @@ object KaoChangOperate {
         2 -> "2(出餐中)"
         3 -> "3(烤盘搬移中)"
         4 -> "4(丢弃中)"
+        5 -> "5(自清洁中)"
         else -> "$status(未知)"
     }
 
@@ -101,6 +104,14 @@ object KaoChangOperate {
         DISCARDED,
         ERROR
     }
+
+    data class SelfCleanExecutionReport(
+        val success: Boolean,
+        val command: Int,
+        val targetLabel: String,
+        val status201: Int,
+        val message: String
+    )
 
     private enum class ActionStatus201 {
         IDLE,
@@ -368,6 +379,9 @@ object KaoChangOperate {
     val action_address_1_temperature_write = 503
     val action_address_2_temperature_write = 504
     val action_address_3_temperature_write = 505
+    private const val self_clean_command_min = 501
+    private const val self_clean_command_max = 533
+    private const val self_clean_sell_platform_command = 534
 
     val keepWarmTemperature = 90
     val heatingTemperature = 150
@@ -523,6 +537,173 @@ object KaoChangOperate {
             ActionExecutionResult.RUNNING_TIMEOUT -> "$actionName 长时间处于执行中(201=1)，设备进入维护中"
         }
         markDeviceErrorAndUpload(logMessage)
+    }
+
+    private fun buildSelfCleanCommand(positionSn: Int): Int {
+        require(positionSn in 1..33) { "positionSn out of range: $positionSn" }
+        return 500 + positionSn
+    }
+
+    private fun buildSelfCleanFailureReport(
+        command: Int,
+        targetLabel: String,
+        result: ActionExecutionResult
+    ): SelfCleanExecutionReport {
+        val status201 = when (result) {
+            ActionExecutionResult.SUCCESS -> 0
+            ActionExecutionResult.RUNNING_TIMEOUT -> 1
+            ActionExecutionResult.BUSY_TIMEOUT -> 2
+            ActionExecutionResult.COMMAND_REJECTED,
+            ActionExecutionResult.DISCONNECTED -> -1
+        }
+        return SelfCleanExecutionReport(
+            success = false,
+            command = command,
+            targetLabel = targetLabel,
+            status201 = status201,
+            message = "result=${actionExecutionResultDesc(result)}"
+        )
+    }
+
+    private fun markSelfCleanFailure(targetLabel: String, result: ActionExecutionResult) {
+        val config = AppConfig.getAppConfig()
+        config.errorStatus = 2
+        config.onlineStatus = 3
+        config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
+        config.zone3Dirty = 0
+        config.zone3CleanPending = 0
+        AppConfig.saveAppConfig(config)
+        publishRuntimeStateWithHttpFallback("自清洁失败，进入维护中")
+        HomeUiRefreshBridge.requestRefresh("self_clean:failed")
+        logE(
+            LOG_SELF_CLEAN,
+            "自清洁失败：target=$targetLabel，result=${actionExecutionResultDesc(result)}，" +
+                "onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}，" +
+                "errorStatus（设备故障状态）=${config.errorStatus}(2=设备故障)"
+        )
+    }
+
+    private suspend fun executeSelfCleanCommand(
+        command: Int,
+        targetLabel: String,
+        source: String
+    ): SelfCleanExecutionReport {
+        logI(
+            LOG_SELF_CLEAN,
+            "开始执行自清洁：source=$source，target=$targetLabel，command（下位机自清洁指令）=$command，" +
+                "moveStatus（机械动作状态）=${moveStatusDesc(AppConfig.getAppConfig().moveStatus)}，" +
+                "onlineStatus（设备营业状态）=${onlineStatusDesc(AppConfig.getAppConfig().onlineStatus)}"
+        )
+        val result = executeActionWithRetry(
+            actionName = "$targetLabel 自清洁",
+            runningPollDelayMs = 1000L,
+            runningTimeoutMs = 180_000L
+        ) {
+            writeSingleRegister2(action_address, command)
+        }
+        if (result != ActionExecutionResult.SUCCESS) {
+            logE(
+                LOG_SELF_CLEAN,
+                "自清洁失败：source=$source，target=$targetLabel，command=$command，result=${actionExecutionResultDesc(result)}"
+            )
+            markSelfCleanFailure(targetLabel, result)
+            return buildSelfCleanFailureReport(command, targetLabel, result)
+        }
+
+        logI(
+            LOG_SELF_CLEAN,
+            "自清洁完成：source=$source，target=$targetLabel，command=$command，status201（动作状态寄存器）=0（空闲/完成）"
+        )
+        return SelfCleanExecutionReport(
+            success = true,
+            command = command,
+            targetLabel = targetLabel,
+            status201 = 0,
+            message = "completed"
+        )
+    }
+
+    suspend fun cleanPanPosition(positionSn: Int, source: String): SelfCleanExecutionReport {
+        val command = buildSelfCleanCommand(positionSn)
+        return runPanSelfCleanSequence(listOf(positionSn), includeSellPlatform = false, source = source)
+            .reports
+            .firstOrNull()
+            ?: SelfCleanExecutionReport(false, command, "烤盘$positionSn", -1, "missing_report")
+    }
+
+    suspend fun cleanSellPlatform(source: String): SelfCleanExecutionReport {
+        return runPanSelfCleanSequence(emptyList(), includeSellPlatform = true, source = source)
+            .reports
+            .firstOrNull()
+            ?: SelfCleanExecutionReport(false, self_clean_sell_platform_command, "出肠台", -1, "missing_report")
+    }
+
+    data class SelfCleanSequenceResult(
+        val success: Boolean,
+        val reports: List<SelfCleanExecutionReport>
+    )
+
+    suspend fun runPanSelfCleanSequence(
+        positionSnList: List<Int>,
+        includeSellPlatform: Boolean,
+        source: String
+    ): SelfCleanSequenceResult {
+        val uniquePositions = positionSnList.distinct().sorted()
+        val config = AppConfig.getAppConfig()
+        if (config.errorStatus != 0) {
+            val report = SelfCleanExecutionReport(false, -1, "自清洁前置检查", -1, "device_error")
+            logW(LOG_SELF_CLEAN, "跳过自清洁：设备当前已处于故障态，source=$source")
+            return SelfCleanSequenceResult(false, listOf(report))
+        }
+
+        var moveStatus = AppConfig.getAppConfig().moveStatus
+        while (moveStatus != 0) {
+            delay(2000L)
+            moveStatus = AppConfig.getAppConfig().moveStatus
+            logD(LOG_SELF_CLEAN, "等待其他机械动作结束后再执行自清洁：moveStatus=${moveStatusDesc(moveStatus)}，source=$source")
+        }
+
+        val reports = mutableListOf<SelfCleanExecutionReport>()
+        val previousMoveStatus = AppConfig.getAppConfig().moveStatus
+        AppConfig.getAppConfig().moveStatus = 5
+        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        publishRuntimeStateWithHttpFallback("自清洁开始")
+        HomeUiRefreshBridge.requestRefresh("self_clean:start")
+
+        try {
+            uniquePositions.forEach { positionSn ->
+                val report = executeSelfCleanCommand(
+                    command = buildSelfCleanCommand(positionSn),
+                    targetLabel = "烤盘$positionSn",
+                    source = source
+                )
+                reports += report
+                if (!report.success) {
+                    return SelfCleanSequenceResult(false, reports)
+                }
+            }
+
+            if (includeSellPlatform) {
+                val report = executeSelfCleanCommand(
+                    command = self_clean_sell_platform_command,
+                    targetLabel = "出肠台",
+                    source = source
+                )
+                reports += report
+                if (!report.success) {
+                    return SelfCleanSequenceResult(false, reports)
+                }
+            }
+            return SelfCleanSequenceResult(true, reports)
+        } finally {
+            val latestConfig = AppConfig.getAppConfig()
+            latestConfig.moveStatus = if (latestConfig.onlineStatus == 3) 0 else previousMoveStatus
+            AppConfig.saveAppConfig(latestConfig)
+            if (latestConfig.onlineStatus != 3) {
+                publishRuntimeStateWithHttpFallback("自清洁结束")
+                HomeUiRefreshBridge.requestRefresh("self_clean:finished")
+            }
+        }
     }
 
     /**
@@ -901,7 +1082,7 @@ object KaoChangOperate {
         // - 只需要等待与出餐冲突的动作（补肠/搬盘/丢弃）结束：1/3/4。
         // - 如果当前是 0（例如非整单场景直接调用），这里临时占用为 2，结束后再恢复。
         var appState = AppConfig.getAppConfig().moveStatus
-        while (appState == 1 || appState == 3 || appState == 4) {
+        while (appState == 1 || appState == 3 || appState == 4 || appState == 5) {
             delay(2000)
             appState = AppConfig.getAppConfig().moveStatus
             logD(LOG_ACTION, "正式出餐前等待机械动作收尾：moveStatus=$appState")
@@ -927,6 +1108,7 @@ object KaoChangOperate {
                 markActionFailure("烤盘${kaoPan.positionSn}到售卖口", result)
                 return TakeSausageResult.ERROR
             }
+            SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
 
             val presenceResults = captureSellPlatformPresenceSequence()
             val detectedSausageInQuickRetries = presenceResults.any { it?.code == 2 }
@@ -1273,6 +1455,27 @@ object KaoChangOperate {
         //执行丢弃操作
         try {
             KaoChangAlgorithm.resetKaoPan()
+            val selfCleanResult = runPanSelfCleanSequence(
+                positionSnList = (1..33).toList(),
+                includeSellPlatform = true,
+                source = "营业结束全量自清洁"
+            )
+            if (!selfCleanResult.success) {
+                val failedReport = selfCleanResult.reports.lastOrNull()
+                logE(
+                    LOG_SELF_CLEAN,
+                    "营业结束全量自清洁失败：target=${failedReport?.targetLabel ?: "unknown"}，" +
+                        "command=${failedReport?.command ?: -1}，message=${failedReport?.message ?: "unknown"}"
+                )
+                return
+            }
+            config.zone3Dirty = 0
+            config.zone3CleanPending = 0
+            AppConfig.saveAppConfig(config)
+            logI(
+                LOG_SELF_CLEAN,
+                "营业结束全量自清洁完成：sequence=501..533,534，onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}"
+            )
         } catch (e: Exception) {
             // 营业结束时若重置烤盘失败，不应抛未实现异常导致崩溃；
             // 这里降级为维护中并上报，等待人工排查。

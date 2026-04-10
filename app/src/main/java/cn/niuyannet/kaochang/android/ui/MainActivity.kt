@@ -191,7 +191,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                         logIncomingOrder(orderMessage)
                         val moveStatus = AppConfig.getAppConfig().moveStatus
                         val onlineStatus = AppConfig.getAppConfig().onlineStatus
-                        if (moveStatus == 2 || onlineStatus == 4) {
+                        if (moveStatus == 2 || moveStatus == 5 || onlineStatus == 4) {
                             logBusyOrderRejected(orderNo, moveStatus, onlineStatus)
                             OrderStateManager.recordBusyIgnored(orderNo)
                         } else {

@@ -27,7 +27,8 @@ object LogUtils {
         "【窗口收尾】",
         "【补肠流程】",
         "【烤盘搬移】",
-        "【设备状态】"
+        "【设备状态】",
+        "【自清洁】"
     )
     private val FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG = listOf(
         "【首页展示】",
