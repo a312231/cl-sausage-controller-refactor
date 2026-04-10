@@ -178,6 +178,7 @@ abstract class OrderActivity: BaseSauceDetection() {
      */
     fun purchaseOrder(orderMessage:String) {
         val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
+        cn.niuyannet.kaochang.android.services.SelfCleanManager.beginOrderTracking(safeOrderNo)
 
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
@@ -237,6 +238,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                 }
                 orderCompleted = orderCompleted && deliveredTotal == totalCount
+                cn.niuyannet.kaochang.android.services.SelfCleanManager.finishOrderTracking(orderNo, orderCompleted)
                 if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
                 // 当前订单动作结束后，本地动作状态恢复为空闲。
@@ -265,6 +267,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     setDataToView()
                 }
             } finally {
+                cn.niuyannet.kaochang.android.services.SelfCleanManager.clearOrderTrackingIfMatches(safeOrderNo)
                 cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
             }
         }

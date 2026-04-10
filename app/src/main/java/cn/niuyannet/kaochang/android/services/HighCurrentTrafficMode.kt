@@ -110,6 +110,7 @@ object HighCurrentTrafficMode {
                 checkHighHeatEnd(list10_21, 2)
                 checkHighHeatDiscard(list1_21)
                 checkSwitchToLow()
+                SelfCleanManager.maybeRunZone3SelfClean(list)
 
                 // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
@@ -384,7 +385,10 @@ object HighCurrentTrafficMode {
                     if (box.num > 0 && index < emptyPositions25_33.size) {
                         val targetPosition = emptyPositions25_33[index]
                         targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                        KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
+                        val moved = KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
+                        if (moved) {
+                            SelfCleanManager.markZone3Dirty()
+                        }
                     }
                 }
             }
@@ -427,6 +431,7 @@ object HighCurrentTrafficMode {
             }
             KaoChangOperate.stopHeating(3)
             pitCount = 0
+            SelfCleanManager.markZone3CleanPendingIfNeeded(list)
         }
     }
 

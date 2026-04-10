@@ -130,6 +130,8 @@ object LowCurrentTrafficMode {
             switchLowToHigh()
         }
 
+        SelfCleanManager.maybeRunZone3SelfClean(kaoPanList)
+
         // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         return totalEmpty
