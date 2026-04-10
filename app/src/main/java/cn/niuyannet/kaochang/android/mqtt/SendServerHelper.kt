@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 
 object SendServerHelper {
     private const val RUNTIME_STATE_ACK_TIMEOUT_MS = 8_000L
@@ -27,6 +28,10 @@ object SendServerHelper {
     private var lastPublishedAvailableStateSeq: Long = -1L
     @Volatile
     private var lastAckedAvailableStateSeq: Long = -1L
+    @Volatile
+    private var activeRuntimeStateSignature: String? = null
+    @Volatile
+    private var activeRuntimeStateSeq: Long = -1L
 
     data class RuntimeControlAckPayload(
         val controlSeq: Long,
@@ -48,6 +53,7 @@ object SendServerHelper {
         val moveStatus: Int,
         val errorStatus: Int,
         val restStatusSource: String?,
+        val stateSignature: String,
         val publishedAt: Long
     )
 
@@ -105,8 +111,9 @@ object SendServerHelper {
      */
     fun publishServiceUpdateStatus(source: String = "runtime_state:auto"): Boolean {
         val config = AppConfig.getAppConfig()
-        val seq = runtimeStateSeq.incrementAndGet()
         val now = System.currentTimeMillis()
+        val stateSignature = buildRuntimeStateSignature(config)
+        val (seq, reusedSeq) = resolveRuntimeStateSeq(stateSignature)
         val payload = JSONObject()
         payload["messageType"] = MqttProtocol.TYPE_RUNTIME_STATE
         payload["deviceCode"] = AppConfig.getDeviceId()
@@ -140,13 +147,14 @@ object SendServerHelper {
                 moveStatus = config.moveStatus,
                 errorStatus = config.errorStatus,
                 restStatusSource = config.restStatusSource,
+                stateSignature = stateSignature,
                 publishedAt = now
             )
             pendingRuntimeStateAcks[seq] = snapshot
             scheduleRuntimeStateAckTimeout(snapshot)
             LogUtils.d(
                 "【MQTT运行态】已上报运行时状态：" +
-                    "runtimeSeq=$seq，source=$source，status=${config.status}，" +
+                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，" +
                     "onlineStatus=${config.onlineStatus}，isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
                     "modeType=${config.modeType}，transitionMode=${config.transitionMode}，" +
                     "moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}，" +
@@ -155,7 +163,7 @@ object SendServerHelper {
         } else {
             LogUtils.w(
                 "【MQTT运行态】运行时状态上报失败：" +
-                    "source=$source，status=${config.status}，onlineStatus=${config.onlineStatus}，" +
+                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，onlineStatus=${config.onlineStatus}，" +
                     "isEnable=${AppConfig.getAlgorithmEnableFlag()}，modeType=${config.modeType}，" +
                     "transitionMode=${config.transitionMode}，moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}"
             )
@@ -241,6 +249,9 @@ object SendServerHelper {
     private fun scheduleRuntimeStateAckTimeout(snapshot: RuntimeStatePublishSnapshot) {
         runtimeStateAckHandler.postDelayed({
             val pending = pendingRuntimeStateAcks[snapshot.runtimeSeq] ?: return@postDelayed
+            if (pending.publishedAt != snapshot.publishedAt) {
+                return@postDelayed
+            }
             if (pending.runtimeSeq <= lastAckedRuntimeStateSeq) {
                 pendingRuntimeStateAcks.remove(snapshot.runtimeSeq)
                 return@postDelayed
@@ -317,6 +328,31 @@ object SendServerHelper {
             snapshot = snapshot,
             ackLatencyMs = ackLatencyMs
         )
+    }
+
+    private fun buildRuntimeStateSignature(config: AppConfigBean): String {
+        return buildString {
+            append(config.status).append('|')
+            append(config.onlineStatus).append('|')
+            append(AppConfig.getAlgorithmEnableFlag()).append('|')
+            append(config.modeType).append('|')
+            append(config.transitionMode).append('|')
+            append(config.moveStatus).append('|')
+            append(config.errorStatus).append('|')
+            append(config.restStatusSource ?: "")
+        }
+    }
+
+    private fun resolveRuntimeStateSeq(stateSignature: String): Pair<Long, Boolean> {
+        synchronized(pendingRuntimeStateAcks) {
+            if (activeRuntimeStateSeq > 0L && stateSignature == activeRuntimeStateSignature) {
+                return activeRuntimeStateSeq to true
+            }
+            val nextSeq = runtimeStateSeq.incrementAndGet()
+            activeRuntimeStateSignature = stateSignature
+            activeRuntimeStateSeq = nextSeq
+            return nextSeq to false
+        }
     }
 
     fun lastPublishedRuntimeStateSeq(): Long = lastPublishedRuntimeStateSeq
