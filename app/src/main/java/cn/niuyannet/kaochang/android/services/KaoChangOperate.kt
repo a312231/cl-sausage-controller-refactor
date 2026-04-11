@@ -624,15 +624,40 @@ object KaoChangOperate {
     }
 
     suspend fun cleanPanPosition(positionSn: Int, source: String): SelfCleanExecutionReport {
+        return cleanPanPosition(positionSn, source, busyDuringClean = false)
+    }
+
+    suspend fun cleanPanPosition(
+        positionSn: Int,
+        source: String,
+        busyDuringClean: Boolean
+    ): SelfCleanExecutionReport {
         val command = buildSelfCleanCommand(positionSn)
-        return runPanSelfCleanSequence(listOf(positionSn), includeSellPlatform = false, source = source)
+        return runPanSelfCleanSequence(
+            listOf(positionSn),
+            includeSellPlatform = false,
+            source = source,
+            busyDuringClean = busyDuringClean
+        )
             .reports
             .firstOrNull()
             ?: SelfCleanExecutionReport(false, command, "烤盘$positionSn", -1, "missing_report")
     }
 
     suspend fun cleanSellPlatform(source: String): SelfCleanExecutionReport {
-        return runPanSelfCleanSequence(emptyList(), includeSellPlatform = true, source = source)
+        return cleanSellPlatform(source, busyDuringClean = false)
+    }
+
+    suspend fun cleanSellPlatform(
+        source: String,
+        busyDuringClean: Boolean
+    ): SelfCleanExecutionReport {
+        return runPanSelfCleanSequence(
+            emptyList(),
+            includeSellPlatform = true,
+            source = source,
+            busyDuringClean = busyDuringClean
+        )
             .reports
             .firstOrNull()
             ?: SelfCleanExecutionReport(false, self_clean_sell_platform_command, "出肠台", -1, "missing_report")
@@ -646,7 +671,8 @@ object KaoChangOperate {
     suspend fun runPanSelfCleanSequence(
         positionSnList: List<Int>,
         includeSellPlatform: Boolean,
-        source: String
+        source: String,
+        busyDuringClean: Boolean = false
     ): SelfCleanSequenceResult {
         val uniquePositions = positionSnList.distinct().sorted()
         val config = AppConfig.getAppConfig()
@@ -664,9 +690,15 @@ object KaoChangOperate {
         }
 
         val reports = mutableListOf<SelfCleanExecutionReport>()
-        val previousMoveStatus = AppConfig.getAppConfig().moveStatus
-        AppConfig.getAppConfig().moveStatus = 5
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        val runtimeConfig = AppConfig.getAppConfig()
+        val previousMoveStatus = runtimeConfig.moveStatus
+        val previousOnlineStatus = runtimeConfig.onlineStatus
+        val switchedToBusyOnlineStatus = busyDuringClean && previousOnlineStatus == 1
+        runtimeConfig.moveStatus = 5
+        if (switchedToBusyOnlineStatus) {
+            runtimeConfig.onlineStatus = 4
+        }
+        AppConfig.saveAppConfig(runtimeConfig)
         publishRuntimeStateWithHttpFallback("自清洁开始")
         HomeUiRefreshBridge.requestRefresh("self_clean:start")
 
@@ -698,6 +730,9 @@ object KaoChangOperate {
         } finally {
             val latestConfig = AppConfig.getAppConfig()
             latestConfig.moveStatus = if (latestConfig.onlineStatus == 3) 0 else previousMoveStatus
+            if (switchedToBusyOnlineStatus && latestConfig.onlineStatus == 4) {
+                latestConfig.onlineStatus = previousOnlineStatus
+            }
             AppConfig.saveAppConfig(latestConfig)
             if (latestConfig.onlineStatus != 3) {
                 publishRuntimeStateWithHttpFallback("自清洁结束")

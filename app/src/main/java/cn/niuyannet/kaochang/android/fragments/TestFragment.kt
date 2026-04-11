@@ -149,7 +149,11 @@ class TestFragment : Fragment() {
             lifecycleScope.launch {
                 binding.tvSelfCleanResult.text = "正在执行烤盘 ${positionSn} 自清洁..."
                 val report = withContext(Dispatchers.IO) {
-                    KaoChangOperate.cleanPanPosition(positionSn, "测试下位机页面手动触发")
+                    KaoChangOperate.cleanPanPosition(
+                        positionSn = positionSn,
+                        source = "测试下位机页面手动触发",
+                        busyDuringClean = true
+                    )
                 }
                 binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
             }
@@ -159,7 +163,10 @@ class TestFragment : Fragment() {
             lifecycleScope.launch {
                 binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
                 val report = withContext(Dispatchers.IO) {
-                    KaoChangOperate.cleanSellPlatform("测试下位机页面手动触发")
+                    KaoChangOperate.cleanSellPlatform(
+                        source = "测试下位机页面手动触发",
+                        busyDuringClean = true
+                    )
                 }
                 binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
             }
