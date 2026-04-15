@@ -234,6 +234,9 @@ object NetApi {
         json["deviceCode"] = deviceCode
         json["errorStatus"] = AppConfig.getAppConfig().errorStatus
         json["onlineStatus"] = AppConfig.getAppConfig().onlineStatus
+        json["supplyStatus"] = AppConfig.getAppConfig().supplyStatus
+        json["scanBlockStatus"] = AppConfig.getAppConfig().scanBlockStatus
+        json["inspectionMode"] = AppConfig.getAppConfig().inspectionMode
         json["modeType"] = AppConfig.getAppConfig().modeType
         json["transitionMode"] = AppConfig.getAppConfig().transitionMode
         json["available"] = AppConfig.getAppConfig().available

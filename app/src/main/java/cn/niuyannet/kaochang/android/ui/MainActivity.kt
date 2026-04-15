@@ -1,4 +1,4 @@
-﻿package cn.niuyannet.kaochang.android.ui
+package cn.niuyannet.kaochang.android.ui
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
@@ -27,6 +27,7 @@ import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
@@ -246,6 +247,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     applied = result.applied,
                     reason = result.reason,
                     onlineStatus = result.onlineStatus,
+                    supplyStatus = result.supplyStatus,
+                    scanBlockStatus = result.scanBlockStatus,
+                    inspectionMode = result.inspectionMode,
                     isEnable = result.isEnable,
                     restStatusSource = result.restStatusSource
                 )
@@ -266,12 +270,20 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             "【MQTT运行时控制】处理完成：" +
                 "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
                 "onlineStatus（设备营业状态）=${result.onlineStatus}，" +
+                "supplyStatus（补货状态）=${result.supplyStatus}，" +
+                "scanBlockStatus（前台屏蔽状态）=${result.scanBlockStatus}，" +
+                "inspectionMode（检修模式）=${result.inspectionMode}，" +
                 "isEnable（烤肠算法开关）=${result.isEnable}，" +
                 "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(result.restStatusSource)}"
         )
         if (result.applied && result.changed) {
             SendServerHelper.publishServiceUpdateStatus()
             setDataToView()
+        }
+        if (result.applied) {
+            MaintenanceUiRefreshBridge.requestRefresh(
+                "runtime_control:${result.reason}:seq=${result.controlSeq}"
+            )
         }
     }
 
@@ -368,15 +380,35 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     @SuppressLint("SetTextI18n")
     override fun setDataToView() {
         val appConfigBean = AppConfig.getAppConfig()
+        val isInspectionMode = appConfigBean.inspectionMode == 1
+        val isScanBlocked = appConfigBean.scanBlockStatus == 1
+        val isSupplySoldOut =
+            appConfigBean.status == 1 &&
+                appConfigBean.onlineStatus == 1 &&
+                appConfigBean.supplyStatus == 1
         if (appConfigBean.status == 1) {
-            when (appConfigBean.onlineStatus) {
+            when {
+                isInspectionMode -> {
+                    binding.deviceStatusText.text = "检修中"
+                    binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_maintaining))
+                }
+                isScanBlocked -> {
+                    binding.deviceStatusText.text = "前台已屏蔽"
+                    binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_working))
+                }
+                else -> when (appConfigBean.onlineStatus) {
                 0 -> {
                     binding.deviceStatusText.text = "未启用"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
                 }
                 1 -> {
-                    binding.deviceStatusText.text = "运营中"
-                    binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_operating))
+                    if (isSupplySoldOut) {
+                        binding.deviceStatusText.text = "售罄/待补货"
+                        binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_resting))
+                    } else {
+                        binding.deviceStatusText.text = "运营中"
+                        binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_operating))
+                    }
                 }
                 2 -> {
                     binding.deviceStatusText.text = "休息中"
@@ -391,13 +423,20 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_working))
                 }
             }
+            }
         } else {
             binding.deviceStatusText.text = "离线"
             binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
         }
 
-        if (appConfigBean.onlineStatus == 3) {
+        if (isInspectionMode) {
+            binding.tvScanTip.text = "设备检修中"
+        } else if (isScanBlocked) {
+            binding.tvScanTip.text = "当前暂停扫码下单"
+        } else if (appConfigBean.onlineStatus == 3) {
             binding.tvScanTip.text = "设备维护中"
+        } else if (isSupplySoldOut) {
+            binding.tvScanTip.text = "售罄/补货中"
         } else {
             if (appConfigBean.available > 0) {
                 val leftTime = appConfigBean.available
@@ -414,7 +453,12 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
 
         binding.deviceNameText.text = appConfigBean.deviceName + "(" + appConfigBean.deviceCode + ")"
-        if (appConfigBean.status == 1 && AppConfig.getAppConfig().onlineStatus == 1) {
+        if (appConfigBean.status == 1 &&
+            AppConfig.getAppConfig().onlineStatus == 1 &&
+            !isSupplySoldOut &&
+            !isScanBlocked &&
+            !isInspectionMode
+        ) {
             binding.qrCodeImage.visibility = View.VISIBLE
             Glide.with(this).load(AppConfig.getAppConfig().qcodeURL).into(binding.qrCodeImage)
         } else {
@@ -434,10 +478,28 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             4 -> "4（工作中/正在出餐）"
             else -> "${appConfigBean.onlineStatus}（未知）"
         }
+        val supplyStatusText = when (appConfigBean.supplyStatus) {
+            0 -> "0（正常）"
+            1 -> "1（售罄/待补货）"
+            else -> "${appConfigBean.supplyStatus}（未知）"
+        }
+        val scanBlockStatusText = when (appConfigBean.scanBlockStatus) {
+            0 -> "0（正常展示）"
+            1 -> "1（隐藏二维码并禁止下单/支付）"
+            else -> "${appConfigBean.scanBlockStatus}（未知）"
+        }
+        val inspectionModeText = when (appConfigBean.inspectionMode) {
+            0 -> "0（正常）"
+            1 -> "1（检修中）"
+            else -> "${appConfigBean.inspectionMode}（未知）"
+        }
         val qrVisible = binding.qrCodeImage.visibility == View.VISIBLE
         val displaySignature = listOf(
             appConfigBean.status,
             appConfigBean.onlineStatus,
+            appConfigBean.supplyStatus,
+            appConfigBean.scanBlockStatus,
+            appConfigBean.inspectionMode,
             binding.tvScanTip.text.toString(),
             qrVisible
         ).joinToString("|")
@@ -447,6 +509,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 "【首页展示】刷新首页文案：" +
                     "status（设备启用状态）=$statusText，" +
                     "onlineStatus（设备营业状态）=$onlineStatusText，" +
+                    "supplyStatus（补货状态）=$supplyStatusText，" +
+                    "scanBlockStatus（前台屏蔽状态）=$scanBlockStatusText，" +
+                    "inspectionMode（检修模式）=$inspectionModeText，" +
                     "available（二维码页预计时间）=${appConfigBean.available}，" +
                     "availableCountdownLatched（二维码页预计时间锁存标记）=${appConfigBean.availableCountdownLatched}，" +
                     "tvScanTip（首页提示文案）=${binding.tvScanTip.text}，" +

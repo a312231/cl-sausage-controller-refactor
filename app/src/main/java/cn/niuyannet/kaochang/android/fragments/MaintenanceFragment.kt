@@ -23,6 +23,7 @@ import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import com.blankj.utilcode.util.ToastUtils
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.Job
@@ -46,12 +47,30 @@ class MaintenanceFragment : Fragment() {
 
     private var isAlgorithmCoolingDown = false
     private var ignoreAlgorithmSwitchChange = false
+    private var ignoreInspectionSwitchChange = false
     private var algorithmCooldownJob: Job? = null
     private var clearPanCooldownJob: Job? = null
     private var resetPanCooldownJob: Job? = null
+    private var algorithmSwitchFallbackTickCount = 0
+    private val maintenanceUiRefreshCallback: (String) -> Unit = { reason ->
+        activity?.runOnUiThread {
+            if (!isAdded || _binding == null) {
+                return@runOnUiThread
+            }
+            syncAlgorithmSwitchFromRuntimeState(
+                reason = "远端事件驱动同步:$reason",
+                forceLog = true
+            )
+            syncInspectionSwitchFromRuntimeState(
+                reason = "远端事件驱动同步:$reason",
+                forceLog = true
+            )
+        }
+    }
 
     companion object {
         private const val MAINTENANCE_ACTION_COOLDOWN_SECONDS = 15
+        private const val ALGORITHM_SWITCH_FALLBACK_SYNC_INTERVAL_SECONDS = 5
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
@@ -76,6 +95,70 @@ class MaintenanceFragment : Fragment() {
         else -> "$value（未知）"
     }
 
+    private fun moveStatusText(value: Int): String = when (value) {
+        0 -> "0（机械臂空闲）"
+        1 -> "1（机械臂运动中）"
+        5 -> "5（自清洁中）"
+        else -> "$value（未知）"
+    }
+
+    private fun isEnableText(value: Int): String = when (value) {
+        0 -> "0（关闭）"
+        1 -> "1（开启）"
+        else -> "$value（未知）"
+    }
+
+    private fun inspectionModeText(value: Int): String = when (value) {
+        0 -> "0（正常）"
+        1 -> "1（检修中）"
+        else -> "$value（未知）"
+    }
+
+    private fun syncAlgorithmSwitchFromRuntimeState(reason: String, forceLog: Boolean = false) {
+        val config = AppConfig.getAppConfig()
+        val actualChecked = config.isEnable == 1
+        val uiChecked = binding.swKzAlgorithm.isChecked
+        val memoryChecked = KaoChangAlgorithm.isEnabled
+        if (!forceLog && uiChecked == actualChecked) {
+            return
+        }
+
+        setAlgorithmSwitchCheckedSilently(actualChecked)
+        val message =
+            "【维护操作】同步烤肠算法开关UI：" +
+                "reason=$reason，" +
+                "uiChecked=$uiChecked->$actualChecked，" +
+                "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}，" +
+                "algorithmMemoryEnabled（算法内存态）=$memoryChecked，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                "moveStatus（机械动作状态）=${moveStatusText(config.moveStatus)}"
+        when {
+            uiChecked != actualChecked -> LogUtils.i(message)
+            forceLog -> LogUtils.d(message)
+        }
+    }
+
+    private fun syncInspectionSwitchFromRuntimeState(reason: String, forceLog: Boolean = false) {
+        val config = AppConfig.getAppConfig()
+        val actualChecked = config.inspectionMode == 1
+        val uiChecked = binding.swInspectionMode.isChecked
+        if (!forceLog && uiChecked == actualChecked) {
+            return
+        }
+
+        setInspectionSwitchCheckedSilently(actualChecked)
+        val message =
+            "【检修模式】同步检修模式开关UI：" +
+                "reason=$reason，" +
+                "uiChecked=$uiChecked->$actualChecked，" +
+                "inspectionMode（检修模式）=${inspectionModeText(config.inspectionMode)}，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}"
+        when {
+            uiChecked != actualChecked -> LogUtils.i(message)
+            forceLog -> LogUtils.d(message)
+        }
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -91,8 +174,11 @@ class MaintenanceFragment : Fragment() {
         val versionName = requireContext().packageManager
             .getPackageInfo(requireContext().packageName, 0).versionName
         binding.versionNo.text = "版本号 v-$versionName"
+        MaintenanceUiRefreshBridge.register(maintenanceUiRefreshCallback)
         setupGrid()
         setupButtons()
+        syncAlgorithmSwitchFromRuntimeState("维护页初始化", forceLog = true)
+        syncInspectionSwitchFromRuntimeState("维护页初始化", forceLog = true)
     }
 
     private fun clearRuntimeStateAfterManualPanReset(reason: String) {
@@ -156,19 +242,25 @@ class MaintenanceFragment : Fragment() {
         ignoreAlgorithmSwitchChange = false
     }
 
+    private fun setInspectionSwitchCheckedSilently(checked: Boolean) {
+        ignoreInspectionSwitchChange = true
+        binding.swInspectionMode.isChecked = checked
+        ignoreInspectionSwitchChange = false
+    }
+
     private fun disableAlgorithmForMaintenance(reason: String) {
         if (KaoChangAlgorithm.isEnabled || AppConfig.getAppConfig().isEnable == 1) {
             LogUtils.i("【维护操作】$reason，立即关闭烤制算法并保持关闭，防止继续自动补肠")
-            KaoChangAlgorithm.disableRoastAlgorithm()
+            KaoChangAlgorithm.disableRoastAlgorithm(reason = reason)
         } else {
             LogUtils.i("【维护操作】$reason，烤制算法当前已关闭")
         }
-        setAlgorithmSwitchCheckedSilently(false)
+        syncAlgorithmSwitchFromRuntimeState("维护强操作后同步:$reason", forceLog = true)
     }
 
     private fun finishMaintenanceAction() {
-        setAlgorithmSwitchCheckedSilently(false)
         binding.tvCooldownHint.text = ""
+        syncAlgorithmSwitchFromRuntimeState("维护动作结束", forceLog = true)
     }
 
     private fun startMaintenanceCooldown(
@@ -211,8 +303,6 @@ class MaintenanceFragment : Fragment() {
     }
 
     private fun setupButtons() {
-        setAlgorithmSwitchCheckedSilently(KaoChangAlgorithm.isEnabled)
-
         binding.btnClearAll.setOnClickListener {
             if (clearPanCooldownJob?.isActive == true) return@setOnClickListener
 
@@ -265,6 +355,7 @@ class MaintenanceFragment : Fragment() {
                         remaining--
                     }
                     binding.tvCooldownHint.text = ""
+                    syncAlgorithmSwitchFromRuntimeState("算法开关冷却结束")
                     buttonView.isEnabled = true
                     isAlgorithmCoolingDown = false
                     if (clearPanCooldownJob?.isActive != true) {
@@ -284,6 +375,10 @@ class MaintenanceFragment : Fragment() {
                     KaoChangAlgorithm.disableRoastAlgorithm(reason = reason)
                 }
                 val afterConfig = AppConfig.getAppConfig()
+                syncAlgorithmSwitchFromRuntimeState(
+                    reason = "本地手动切换完成:$reason",
+                    forceLog = true
+                )
                 LogUtils.i(
                     "【维护操作】手动切换烤肠算法完成：" +
                         "requestedChecked=$enable，" +
@@ -314,7 +409,7 @@ class MaintenanceFragment : Fragment() {
                         "modeType（并发模式）=${modeText(currentConfig.modeType)}，" +
                         "transitionMode（并发切换过渡态）=${transitionText(currentConfig.transitionMode)}"
                 )
-                buttonView.isChecked = !isChecked
+                setAlgorithmSwitchCheckedSilently(!isChecked)
                 return@setOnCheckedChangeListener
             }
 
@@ -352,24 +447,28 @@ class MaintenanceFragment : Fragment() {
                                 "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
                                 "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
                         )
-                        setAlgorithmSwitchCheckedSilently(false)
+                        syncAlgorithmSwitchFromRuntimeState("开启算法前同步失败后回滚UI", forceLog = true)
                         ToastUtils.showShort("同步云端设备状态失败，请稍后重试")
                         restoreSwitchControls()
                         return@runOnUiThread
                     }
 
-                    if (latestConfig.onlineStatus in setOf(0, 2, 3)) {
+                    if (latestConfig.onlineStatus in setOf(0, 2, 3) || latestConfig.inspectionMode == 1 || latestConfig.errorStatus != 0) {
                         LogUtils.w(
                             "【维护操作】手动开启烤肠算法前已同步到云端最新状态，本次拒绝开启：" +
                                 "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                "inspectionMode（检修模式）=${inspectionModeText(latestConfig.inspectionMode)}，" +
+                                "errorStatus（设备故障状态）=${latestConfig.errorStatus}，" +
                                 "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
                                 "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
                         )
-                        setAlgorithmSwitchCheckedSilently(false)
-                        val tip = when (latestConfig.onlineStatus) {
-                            0 -> "后台设备状态为未启用，请先启用后再开启算法"
-                            2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
-                            3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
+                        syncAlgorithmSwitchFromRuntimeState("开启算法前云端状态不允许后回滚UI", forceLog = true)
+                        val tip = when {
+                            latestConfig.inspectionMode == 1 -> "设备当前处于检修模式，请先退出检修模式再开启算法"
+                            latestConfig.errorStatus != 0 -> "设备当前存在故障，请先恢复设备状态再开启算法"
+                            latestConfig.onlineStatus == 0 -> "后台设备状态为未启用，请先启用后再开启算法"
+                            latestConfig.onlineStatus == 2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
+                            latestConfig.onlineStatus == 3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
                             else -> "后台设备状态不允许开启算法"
                         }
                         ToastUtils.showShort(tip)
@@ -387,6 +486,42 @@ class MaintenanceFragment : Fragment() {
                     applyAlgorithmSwitch(enable = true, reason = "维护页手动开启算法（已先同步云端状态）")
                 }
             }
+        }
+
+        binding.swInspectionMode.setOnCheckedChangeListener { _, isChecked ->
+            if (ignoreInspectionSwitchChange) {
+                return@setOnCheckedChangeListener
+            }
+            val config = AppConfig.getAppConfig()
+            if (isChecked) {
+                AppConfig.saveInspectionSnapshot("维护页手动进入检修模式")
+                config.inspectionMode = 1
+                AppConfig.saveAppConfig(config)
+                LogUtils.i(
+                    "【检修模式】已进入检修模式：" +
+                        "inspectionMode（检修模式）=${inspectionModeText(config.inspectionMode)}，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                        "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
+                )
+            } else {
+                val snapshot = AppConfig.getInspectionSnapshot()
+                config.inspectionMode = 0
+                AppConfig.saveAppConfig(config)
+                LogUtils.i(
+                    "【检修模式】已退出检修模式：" +
+                        "inspectionMode（检修模式）=${inspectionModeText(config.inspectionMode)}，" +
+                        "snapshotFound=${snapshot != null}，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                        "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
+                )
+                AppConfig.clearInspectionSnapshot()
+            }
+            val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
+            if (!runtimePublishOk) {
+                LogUtils.w("【检修模式】检修模式状态 MQTT 主上报失败，回退 HTTP 补偿")
+                DataManagementAPI.uploadDeviceInfo()
+            }
+            syncInspectionSwitchFromRuntimeState("本地手动切换检修模式完成", forceLog = true)
         }
     }
 
@@ -582,6 +717,7 @@ class MaintenanceFragment : Fragment() {
      */
     private fun startRefreshTimer() {
         refreshJob?.cancel()
+        algorithmSwitchFallbackTickCount = 0
         refreshJob = lifecycleScope.launch {
             flow {
                 while (true) {
@@ -591,6 +727,12 @@ class MaintenanceFragment : Fragment() {
             }.collect {
                 kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
                 kaoPanAdapter.notifyDataSetChanged()
+                algorithmSwitchFallbackTickCount++
+                if (algorithmSwitchFallbackTickCount >= ALGORITHM_SWITCH_FALLBACK_SYNC_INTERVAL_SECONDS) {
+                    algorithmSwitchFallbackTickCount = 0
+                    syncAlgorithmSwitchFromRuntimeState("5秒低频兜底同步")
+                    syncInspectionSwitchFromRuntimeState("5秒低频兜底同步")
+                }
                 binding.tvErroStatus.apply {
                     val isNormal = AppConfig.getAppConfig().errorStatus == 0
                     text = if (isNormal) "状态：正常" else "状态：错误"
@@ -606,6 +748,7 @@ class MaintenanceFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        MaintenanceUiRefreshBridge.unregister(maintenanceUiRefreshCallback)
         refreshJob?.cancel()
         _binding = null
     }

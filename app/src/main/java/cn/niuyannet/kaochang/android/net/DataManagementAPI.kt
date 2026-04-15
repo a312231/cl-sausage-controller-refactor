@@ -30,6 +30,9 @@ object DataManagementAPI {
         val success: Boolean,
         val changed: Boolean,
         val onlineStatus: Int,
+        val supplyStatus: Int,
+        val scanBlockStatus: Int,
+        val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String
     )
@@ -40,6 +43,9 @@ object DataManagementAPI {
         val changed: Boolean,
         val reason: String,
         val onlineStatus: Int,
+        val supplyStatus: Int,
+        val scanBlockStatus: Int,
+        val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String
     )
@@ -91,6 +97,24 @@ object DataManagementAPI {
                 2 -> "2(休息中)"
                 3 -> "3(维护中)"
                 4 -> "4(工作中/正在出餐)"
+                else -> value.toString()
+            }
+
+            "supplyStatus" -> when ((value as? Number)?.toInt()) {
+                AppConfigBean.SUPPLY_STATUS_NORMAL -> "0(正常)"
+                AppConfigBean.SUPPLY_STATUS_SOLD_OUT -> "1(售罄/待补货)"
+                else -> value.toString()
+            }
+
+            "scanBlockStatus" -> when ((value as? Number)?.toInt()) {
+                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0(正常展示)"
+                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1(隐藏二维码并禁止下单/支付)"
+                else -> value.toString()
+            }
+
+            "inspectionMode" -> when ((value as? Number)?.toInt()) {
+                AppConfigBean.INSPECTION_MODE_NORMAL -> "0(正常)"
+                AppConfigBean.INSPECTION_MODE_ACTIVE -> "1(检修中)"
                 else -> value.toString()
             }
 
@@ -148,6 +172,24 @@ object DataManagementAPI {
         else -> "$value（未知）"
     }
 
+    private fun scanBlockStatusText(value: Int): String = when (value) {
+        AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0（正常展示）"
+        AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1（隐藏二维码并禁止下单/支付）"
+        else -> "$value（未知）"
+    }
+
+    private fun inspectionModeText(value: Int): String = when (value) {
+        AppConfigBean.INSPECTION_MODE_NORMAL -> "0（正常）"
+        AppConfigBean.INSPECTION_MODE_ACTIVE -> "1（检修中）"
+        else -> "$value（未知）"
+    }
+
+    private fun canEnableAlgorithm(config: AppConfigBean): Boolean {
+        return config.onlineStatus in listOf(1, 4) &&
+            config.inspectionMode == AppConfigBean.INSPECTION_MODE_NORMAL &&
+            config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
+    }
+
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
 
     private fun appendBusinessTimeDiff(
@@ -166,8 +208,8 @@ object DataManagementAPI {
      * 处理远端配置同步后的营业状态跃迁副作用。
      *
      * 约束：
-     * - 进入维护中：自动关闭算法，并回写 isEnable=0
-     * - 离开维护中：保持算法关闭，不自动恢复加热
+     * - 进入 0/2/3（未启用/休息中/维护中）：自动关闭算法，但当前硬件流程允许自然收尾
+     * - 离开维护中：若算法仍处于开启态且当前允许开启，则按烤盘现状恢复加热/保温
      */
     fun handleRemoteOnlineStatusTransition(
         previousOnlineStatus: Int,
@@ -196,9 +238,9 @@ object DataManagementAPI {
             }
         }
 
-        if (previousOnlineStatus != 3 && mergedConfig.onlineStatus == 3) {
+        if (previousOnlineStatus in listOf(1, 4) && mergedConfig.onlineStatus in listOf(0, 2, 3)) {
             logD(
-                "远端配置切换到维护中，自动关闭算法并回写服务端：" +
+                "远端配置切出可开算法营业状态，自动关闭算法：" +
                     "source=$source, " +
                     "previousOnlineStatus=${formatDiffValue("onlineStatus", previousOnlineStatus)}, " +
                     "newOnlineStatus=${formatDiffValue("onlineStatus", mergedConfig.onlineStatus)}, " +
@@ -206,13 +248,13 @@ object DataManagementAPI {
                     "newIsEnable=${formatDiffValue("isEnable", 0)}"
             )
             KaoChangAlgorithm.disableRoastAlgorithm(
-                reason = "远端配置切换到维护中(source=$source)",
+                reason = "远端配置切出运营/工作中(source=$source)",
                 syncToServer = syncAlgorithmChangeToServer
             )
             return
         }
 
-        if (previousOnlineStatus == 3 && mergedConfig.onlineStatus in listOf(1, 2)) {
+        if (previousOnlineStatus == 3 && mergedConfig.onlineStatus in listOf(1, 4)) {
             val currentIsEnable = AppConfig.getAlgorithmEnableFlag()
             if (!VMModbusHelper.connectStatus()) {
                 logD(
@@ -223,11 +265,13 @@ object DataManagementAPI {
                 )
                 return
             }
-            if (!KaoChangAlgorithm.isEnabled || currentIsEnable != 1) {
+            if (!KaoChangAlgorithm.isEnabled || currentIsEnable != 1 || !canEnableAlgorithm(mergedConfig)) {
                 logD(
-                    "远端配置已离开维护中，但按约定保持算法关闭，不自动恢复加热：" +
+                    "远端配置已离开维护中，但当前条件不满足自动恢复加热：" +
                         "source=$source, " +
                         "newOnlineStatus=${formatDiffValue("onlineStatus", mergedConfig.onlineStatus)}, " +
+                        "inspectionMode（检修模式）=${inspectionModeText(mergedConfig.inspectionMode)}，" +
+                        "errorStatus=${mergedConfig.errorStatus}，" +
                         "currentIsEnable=${formatDiffValue("isEnable", currentIsEnable)}"
                 )
                 return
@@ -253,6 +297,9 @@ object DataManagementAPI {
                 changed = false,
                 reason = "parse_failed",
                 onlineStatus = config.onlineStatus,
+                supplyStatus = config.supplyStatus,
+                scanBlockStatus = config.scanBlockStatus,
+                inspectionMode = config.inspectionMode,
                 isEnable = config.isEnable,
                 restStatusSource = config.restStatusSource
             )
@@ -261,11 +308,12 @@ object DataManagementAPI {
         val controlSeq = json.getLongValue("controlSeq").takeIf { it > 0 } ?: json.getLongValue("ts")
         val hasOnlineStatus = json.containsKey("onlineStatus")
         val hasIsEnable = json.containsKey("isEnable")
-        if (!hasOnlineStatus && !hasIsEnable) {
+        val hasScanBlockStatus = json.containsKey("scanBlockStatus")
+        if (!hasOnlineStatus && !hasIsEnable && !hasScanBlockStatus) {
             val config = AppConfig.getAppConfig()
             logD(
                 "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
-                    "不包含 onlineStatus（设备营业状态）或 isEnable（烤肠算法开关）"
+                    "不包含 onlineStatus（设备营业状态）、scanBlockStatus（前台屏蔽状态）或 isEnable（烤肠算法开关）"
             )
             return RuntimeControlApplyResult(
                 controlSeq = controlSeq,
@@ -273,6 +321,9 @@ object DataManagementAPI {
                 changed = false,
                 reason = "missing_runtime_fields",
                 onlineStatus = config.onlineStatus,
+                supplyStatus = config.supplyStatus,
+                scanBlockStatus = config.scanBlockStatus,
+                inspectionMode = config.inspectionMode,
                 isEnable = config.isEnable,
                 restStatusSource = config.restStatusSource
             )
@@ -292,6 +343,9 @@ object DataManagementAPI {
                 changed = false,
                 reason = "stale_control_seq",
                 onlineStatus = currentConfigBeforeApply.onlineStatus,
+                supplyStatus = currentConfigBeforeApply.supplyStatus,
+                scanBlockStatus = currentConfigBeforeApply.scanBlockStatus,
+                inspectionMode = currentConfigBeforeApply.inspectionMode,
                 isEnable = currentConfigBeforeApply.isEnable,
                 restStatusSource = currentConfigBeforeApply.restStatusSource
             )
@@ -299,12 +353,22 @@ object DataManagementAPI {
 
         val config = currentConfigBeforeApply
         val previousOnlineStatus = config.onlineStatus
+        val previousSupplyStatus = config.supplyStatus
+        val previousScanBlockStatus = config.scanBlockStatus
+        val previousInspectionMode = config.inspectionMode
         val previousIsEnable = config.isEnable
         val previousRestStatusSource = config.restStatusSource
         val operator = json.getString("operator").orEmpty()
 
         if (hasOnlineStatus) {
             config.onlineStatus = json.getIntValue("onlineStatus")
+        }
+        if (hasScanBlockStatus) {
+            config.scanBlockStatus = if (json.getIntValue("scanBlockStatus") == AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED) {
+                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED
+            } else {
+                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
+            }
         }
         AppConfig.alignRestStatusSource(config)
         AppConfig.saveAppConfig(config)
@@ -341,6 +405,9 @@ object DataManagementAPI {
         val currentConfig = AppConfig.getAppConfig()
         val changed =
             previousOnlineStatus != currentConfig.onlineStatus ||
+                previousSupplyStatus != currentConfig.supplyStatus ||
+                previousScanBlockStatus != currentConfig.scanBlockStatus ||
+                previousInspectionMode != currentConfig.inspectionMode ||
                 previousIsEnable != currentConfig.isEnable
 
         if (controlSeq > 0) {
@@ -351,6 +418,9 @@ object DataManagementAPI {
             "远端运行时控制已应用：" +
                 "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                 "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
+                "supplyStatus（补货状态）=${formatDiffValue("supplyStatus", previousSupplyStatus)}->${formatDiffValue("supplyStatus", currentConfig.supplyStatus)}，" +
+                "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(previousScanBlockStatus)}->${scanBlockStatusText(currentConfig.scanBlockStatus)}，" +
+                "inspectionMode（检修模式）=${inspectionModeText(previousInspectionMode)}->${inspectionModeText(currentConfig.inspectionMode)}，" +
                 "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", previousIsEnable)}->${formatDiffValue("isEnable", currentConfig.isEnable)}，" +
                 "restStatusSource（休息中来源）=${restStatusSourceText(previousRestStatusSource)}->${restStatusSourceText(currentConfig.restStatusSource)}"
         )
@@ -360,6 +430,9 @@ object DataManagementAPI {
             changed = changed,
             reason = "applied",
             onlineStatus = currentConfig.onlineStatus,
+            supplyStatus = currentConfig.supplyStatus,
+            scanBlockStatus = currentConfig.scanBlockStatus,
+            inspectionMode = currentConfig.inspectionMode,
             isEnable = currentConfig.isEnable,
             restStatusSource = currentConfig.restStatusSource
         )
@@ -457,10 +530,10 @@ object DataManagementAPI {
             }
         }
 
-        NetApi.getDeviceInfo(AppConfig.getDeviceId()) { code, content ->
+        NetApi.getDeviceInfo(AppConfig.getDeviceId()) deviceInfoCallback@{ code, content ->
             if (code != 0) {
                 logE("设备配置获取失败：code=$code, content=$content")
-                return@getDeviceInfo
+                return@deviceInfoCallback
             }
 
             val json = try {
@@ -468,17 +541,17 @@ object DataManagementAPI {
             } catch (e: Exception) {
                 logE("设备配置响应解析失败：raw=$content")
                 e.printStackTrace()
-                return@getDeviceInfo
+                return@deviceInfoCallback
             }
 
             if (json == null) {
                 logE("设备配置响应为空：raw=$content")
-                return@getDeviceInfo
+                return@deviceInfoCallback
             }
 
             if (json.getIntValue("code") != 200) {
                 logE("设备配置业务返回失败：code=${json.getIntValue("code")}, content=$content")
-                return@getDeviceInfo
+                return@deviceInfoCallback
             }
 
             val appConfigBean = AppConfig.getAppConfig()
@@ -489,6 +562,9 @@ object DataManagementAPI {
             val oldBusinessTime = appConfigBean.businessTime
             val oldStatus = appConfigBean.status
             val oldOnlineStatus = appConfigBean.onlineStatus
+            val oldSupplyStatus = appConfigBean.supplyStatus
+            val oldScanBlockStatus = appConfigBean.scanBlockStatus
+            val oldInspectionMode = appConfigBean.inspectionMode
             val oldModeType = appConfigBean.modeType
             val oldTransitionMode = appConfigBean.transitionMode
             val oldKeepWarmTemperature = appConfigBean.keepWarmTemperature
@@ -506,7 +582,7 @@ object DataManagementAPI {
 
             val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, LOG_SYNC)
             if (!mergeResult.applied) {
-                return@getDeviceInfo
+                return@deviceInfoCallback
             }
 
             val mergedConfig = AppConfig.getAppConfig()
@@ -514,6 +590,9 @@ object DataManagementAPI {
             appendBusinessTimeDiff(changes, oldBusinessTime, mergedConfig.businessTime)
             appendDiff(changes, "status", oldStatus, mergedConfig.status)
             appendDiff(changes, "onlineStatus", oldOnlineStatus, mergedConfig.onlineStatus)
+            appendDiff(changes, "supplyStatus", oldSupplyStatus, mergedConfig.supplyStatus)
+            appendDiff(changes, "scanBlockStatus", oldScanBlockStatus, mergedConfig.scanBlockStatus)
+            appendDiff(changes, "inspectionMode", oldInspectionMode, mergedConfig.inspectionMode)
             appendDiff(changes, "modeType", oldModeType, mergedConfig.modeType)
             appendDiff(changes, "transitionMode", oldTransitionMode, mergedConfig.transitionMode)
             appendDiff(changes, "keepWarmTemperature", oldKeepWarmTemperature, mergedConfig.keepWarmTemperature)
@@ -582,6 +661,9 @@ object DataManagementAPI {
         val appConfigBean = AppConfig.getAppConfig()
         val oldStatus = appConfigBean.status
         val oldOnlineStatus = appConfigBean.onlineStatus
+        val oldSupplyStatus = appConfigBean.supplyStatus
+        val oldScanBlockStatus = appConfigBean.scanBlockStatus
+        val oldInspectionMode = appConfigBean.inspectionMode
         val oldQcodeUrl = appConfigBean.qcodeURL
         val oldAvailable = appConfigBean.available
         val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
@@ -589,7 +671,7 @@ object DataManagementAPI {
         val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
         val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
-        NetApi.getDeviceInfo(AppConfig.getDeviceId()) { code, content ->
+        NetApi.getDeviceInfo(AppConfig.getDeviceId()) refreshStateCallback@{ code, content ->
             if (code != 0) {
                 logE("$logPrefix 失败：HTTP请求失败，code=$code, content=$content")
                 onResult?.invoke(
@@ -597,11 +679,14 @@ object DataManagementAPI {
                         success = false,
                         changed = false,
                         onlineStatus = oldOnlineStatus,
+                        supplyStatus = oldSupplyStatus,
+                        scanBlockStatus = oldScanBlockStatus,
+                        inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
                     )
                 )
-                return@getDeviceInfo
+                return@refreshStateCallback
             }
 
             val json = try {
@@ -613,11 +698,14 @@ object DataManagementAPI {
                         success = false,
                         changed = false,
                         onlineStatus = oldOnlineStatus,
+                        supplyStatus = oldSupplyStatus,
+                        scanBlockStatus = oldScanBlockStatus,
+                        inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
                     )
                 )
-                return@getDeviceInfo
+                return@refreshStateCallback
             }
 
             if (json == null || json.getIntValue("code") != 200) {
@@ -627,11 +715,14 @@ object DataManagementAPI {
                         success = false,
                         changed = false,
                         onlineStatus = oldOnlineStatus,
+                        supplyStatus = oldSupplyStatus,
+                        scanBlockStatus = oldScanBlockStatus,
+                        inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
                     )
                 )
-                return@getDeviceInfo
+                return@refreshStateCallback
             }
 
             val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, logPrefix)
@@ -641,11 +732,14 @@ object DataManagementAPI {
                         success = false,
                         changed = false,
                         onlineStatus = oldOnlineStatus,
+                        supplyStatus = oldSupplyStatus,
+                        scanBlockStatus = oldScanBlockStatus,
+                        inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
                     )
                 )
-                return@getDeviceInfo
+                return@refreshStateCallback
             }
 
             val mergedConfig = AppConfig.getAppConfig()
@@ -660,6 +754,9 @@ object DataManagementAPI {
             val changed =
                 oldStatus != mergedConfig.status ||
                     oldOnlineStatus != mergedConfig.onlineStatus ||
+                    oldSupplyStatus != mergedConfig.supplyStatus ||
+                    oldScanBlockStatus != mergedConfig.scanBlockStatus ||
+                    oldInspectionMode != mergedConfig.inspectionMode ||
                     oldQcodeUrl != mergedConfig.qcodeURL ||
                     oldAvailable != mergedConfig.available ||
                     oldAvailableCountdownLatched != mergedConfig.availableCountdownLatched
@@ -669,6 +766,9 @@ object DataManagementAPI {
                     "$logPrefix 成功：首页相关配置发生变化：" +
                         "status（设备启用状态）=${formatDiffValue("status", oldStatus)}->${formatDiffValue("status", mergedConfig.status)}，" +
                         "onlineStatus（设备营业状态）=${onlineStatusText(oldOnlineStatus)}->${onlineStatusText(mergedConfig.onlineStatus)}，" +
+                        "supplyStatus（补货状态）=${formatDiffValue("supplyStatus", oldSupplyStatus)}->${formatDiffValue("supplyStatus", mergedConfig.supplyStatus)}，" +
+                        "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(oldScanBlockStatus)}->${scanBlockStatusText(mergedConfig.scanBlockStatus)}，" +
+                        "inspectionMode（检修模式）=${inspectionModeText(oldInspectionMode)}->${inspectionModeText(mergedConfig.inspectionMode)}，" +
                         "qrcodeChanged（二维码地址是否变化）=${oldQcodeUrl != mergedConfig.qcodeURL}，" +
                         "available（二维码页预计时间）=${oldAvailable}->${mergedConfig.available}，" +
                         "availableCountdownLatched（二维码页预计时间锁存标记）=${oldAvailableCountdownLatched}->${mergedConfig.availableCountdownLatched}"
@@ -680,6 +780,9 @@ object DataManagementAPI {
                     success = true,
                     changed = changed,
                     onlineStatus = mergedConfig.onlineStatus,
+                    supplyStatus = mergedConfig.supplyStatus,
+                    scanBlockStatus = mergedConfig.scanBlockStatus,
+                    inspectionMode = mergedConfig.inspectionMode,
                     isEnable = AppConfig.getAlgorithmEnableFlag(),
                     restStatusSource = AppConfig.normalizeRestStatusSource(mergedConfig.restStatusSource)
                 )

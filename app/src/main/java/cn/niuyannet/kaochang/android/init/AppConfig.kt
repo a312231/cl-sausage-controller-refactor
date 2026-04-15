@@ -2,6 +2,7 @@
 
 import android.provider.Settings
 import cn.niuyannet.kaochang.android.MyApp
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
@@ -11,6 +12,7 @@ object AppConfig {
     const val Sp_File_URL = "KAOCHANG_APP_CONFIG"
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
+    private const val KEY_INSPECTION_SNAPSHOT_JSON = "sp_inspection_snapshot_json"
     private val BENIGN_PRESERVED_FIELDS = setOf("available", "availableCountdownLatched")
     private var appConfigBean: AppConfigBean? = null
 
@@ -18,6 +20,13 @@ object AppConfig {
         val applied: Boolean,
         val usedLocalFallback: Boolean,
         val message: String
+    )
+
+    data class InspectionSnapshot(
+        val savedAt: Long,
+        val configJson: String,
+        val kaoPanJson: String,
+        val kaoPanBoxJson: String
     )
 
     fun normalizeRestStatusSource(restStatusSource: String?): String {
@@ -176,6 +185,27 @@ object AppConfig {
 
         mergeInt("status", "status") { config.status = it }
         mergeInt("onlineStatus", "onlineStatus") { config.onlineStatus = it }
+        mergeInt("supplyStatus", "supplyStatus") {
+            config.supplyStatus = if (it == AppConfigBean.SUPPLY_STATUS_SOLD_OUT) {
+                AppConfigBean.SUPPLY_STATUS_SOLD_OUT
+            } else {
+                AppConfigBean.SUPPLY_STATUS_NORMAL
+            }
+        }
+        mergeInt("scanBlockStatus", "scanBlockStatus") {
+            config.scanBlockStatus = if (it == AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED) {
+                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED
+            } else {
+                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
+            }
+        }
+        mergeInt("inspectionMode", "inspectionMode") {
+            config.inspectionMode = if (it == AppConfigBean.INSPECTION_MODE_ACTIVE) {
+                AppConfigBean.INSPECTION_MODE_ACTIVE
+            } else {
+                AppConfigBean.INSPECTION_MODE_NORMAL
+            }
+        }
         mergeInt("concurrencyMode", "concurrencyMode") { config.modeType = it }
         mergeInt("transitionMode", "transitionMode") { config.transitionMode = it }
         mergeInt("errorStatus", "errorStatus") { config.errorStatus = it }
@@ -281,5 +311,37 @@ object AppConfig {
 
     fun saveDeviceId(androidId: String) {
         PreferenceUtils.saveStringPreference(Sp_File_URL, "sp_android_id", androidId)
+    }
+
+    fun saveInspectionSnapshot(reason: String) {
+        val payload = InspectionSnapshot(
+            savedAt = System.currentTimeMillis(),
+            configJson = JSON.toJSONString(getAppConfig()),
+            kaoPanJson = JSON.toJSONString(KaoPanHelper.getKaoPanList()),
+            kaoPanBoxJson = JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())
+        )
+        PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_INSPECTION_SNAPSHOT_JSON, JSON.toJSONString(payload))
+        LogUtils.i(
+            "[检修模式] 已保存进入前快照：" +
+                "reason=$reason，savedAt=${payload.savedAt}，" +
+                "kaoPanCount=${KaoPanHelper.getKaoPanList().size}，kaoPanBoxCount=${KaoPanHelper.getKaoPanBoxList().size}"
+        )
+    }
+
+    fun getInspectionSnapshot(): InspectionSnapshot? {
+        val raw = PreferenceUtils.getStringPreference(Sp_File_URL, KEY_INSPECTION_SNAPSHOT_JSON, null)
+        if (raw.isNullOrBlank()) {
+            return null
+        }
+        return try {
+            JSON.parseObject(raw, InspectionSnapshot::class.java)
+        } catch (e: Exception) {
+            LogUtils.w("[检修模式] 读取检修快照失败，已忽略损坏数据", e)
+            null
+        }
+    }
+
+    fun clearInspectionSnapshot() {
+        PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_INSPECTION_SNAPSHOT_JSON, "")
     }
 }

@@ -38,6 +38,9 @@ object SendServerHelper {
         val applied: Boolean,
         val reason: String,
         val onlineStatus: Int,
+        val supplyStatus: Int,
+        val scanBlockStatus: Int,
+        val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String?
     )
@@ -47,6 +50,9 @@ object SendServerHelper {
         val source: String,
         val status: Int,
         val onlineStatus: Int,
+        val supplyStatus: Int,
+        val scanBlockStatus: Int,
+        val inspectionMode: Int,
         val isEnable: Int,
         val modeType: Int,
         val transitionMode: Int,
@@ -120,6 +126,9 @@ object SendServerHelper {
         payload["runtimeSeq"] = seq
         payload["status"] = config.status
         payload["onlineStatus"] = config.onlineStatus
+        payload["supplyStatus"] = config.supplyStatus
+        payload["scanBlockStatus"] = config.scanBlockStatus
+        payload["inspectionMode"] = config.inspectionMode
         payload["isEnable"] = AppConfig.getAlgorithmEnableFlag()
         payload["modeType"] = config.modeType
         payload["transitionMode"] = config.transitionMode
@@ -141,6 +150,9 @@ object SendServerHelper {
                 source = source,
                 status = config.status,
                 onlineStatus = config.onlineStatus,
+                supplyStatus = config.supplyStatus,
+                scanBlockStatus = config.scanBlockStatus,
+                inspectionMode = config.inspectionMode,
                 isEnable = AppConfig.getAlgorithmEnableFlag(),
                 modeType = config.modeType,
                 transitionMode = config.transitionMode,
@@ -155,7 +167,9 @@ object SendServerHelper {
             LogUtils.d(
                 "【MQTT运行态】已上报运行时状态：" +
                     "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，" +
-                    "onlineStatus=${config.onlineStatus}，isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
+                    "onlineStatus=${config.onlineStatus}，supplyStatus=${config.supplyStatus}，" +
+                    "scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
+                    "isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
                     "modeType=${config.modeType}，transitionMode=${config.transitionMode}，" +
                     "moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}，" +
                     "restStatusSource=${config.restStatusSource}"
@@ -164,6 +178,7 @@ object SendServerHelper {
             LogUtils.w(
                 "【MQTT运行态】运行时状态上报失败：" +
                     "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，onlineStatus=${config.onlineStatus}，" +
+                    "supplyStatus=${config.supplyStatus}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
                     "isEnable=${AppConfig.getAlgorithmEnableFlag()}，modeType=${config.modeType}，" +
                     "transitionMode=${config.transitionMode}，moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}"
             )
@@ -235,6 +250,9 @@ object SendServerHelper {
         payload["applied"] = ack.applied
         payload["reason"] = ack.reason
         payload["onlineStatus"] = ack.onlineStatus
+        payload["supplyStatus"] = ack.supplyStatus
+        payload["scanBlockStatus"] = ack.scanBlockStatus
+        payload["inspectionMode"] = ack.inspectionMode
         payload["isEnable"] = ack.isEnable
         payload["restStatusSource"] = ack.restStatusSource
         payload["ackTs"] = System.currentTimeMillis()
@@ -261,6 +279,7 @@ object SendServerHelper {
                 "【MQTT运行态】运行时状态上报后仍未收到服务端确认：" +
                     "runtimeSeq=${pending.runtimeSeq}，source=${pending.source}，" +
                     "status=${pending.status}，onlineStatus=${pending.onlineStatus}，" +
+                    "supplyStatus=${pending.supplyStatus}，scanBlockStatus=${pending.scanBlockStatus}，inspectionMode=${pending.inspectionMode}，" +
                     "isEnable=${pending.isEnable}，modeType=${pending.modeType}，" +
                     "transitionMode=${pending.transitionMode}，moveStatus=${pending.moveStatus}，" +
                     "errorStatus=${pending.errorStatus}，ageMs=$ageMs"
@@ -334,6 +353,9 @@ object SendServerHelper {
         return buildString {
             append(config.status).append('|')
             append(config.onlineStatus).append('|')
+            append(config.supplyStatus).append('|')
+            append(config.scanBlockStatus).append('|')
+            append(config.inspectionMode).append('|')
             append(AppConfig.getAlgorithmEnableFlag()).append('|')
             append(config.modeType).append('|')
             append(config.transitionMode).append('|')

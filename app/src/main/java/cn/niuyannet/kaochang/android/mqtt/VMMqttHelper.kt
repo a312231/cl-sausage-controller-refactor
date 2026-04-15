@@ -51,6 +51,7 @@ object VMMqttHelper : VMMqtt() {
         val reason = content.getString("reason").orEmpty()
         val status = content.getIntValue("status")
         val onlineStatus = content.getIntValue("onlineStatus")
+        val supplyStatus = content.getIntValue("supplyStatus")
         val isEnable = content.getIntValue("isEnable")
         val modeType = content.getIntValue("modeType")
         val transitionMode = content.getIntValue("transitionMode")
@@ -67,7 +68,7 @@ object VMMqttHelper : VMMqtt() {
             LogUtils.d(
                 "【MQTT运行态】服务端已确认运行时状态：" +
                     "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "status=$status，onlineStatus=$onlineStatus，isEnable=$isEnable，" +
+                    "status=$status，onlineStatus=$onlineStatus，supplyStatus=$supplyStatus，isEnable=$isEnable，" +
                     "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
                     "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
                     "source=${ackResult.snapshot?.source ?: "unknown"}"
@@ -76,7 +77,7 @@ object VMMqttHelper : VMMqtt() {
             LogUtils.w(
                 "【MQTT运行态】服务端未应用运行时状态：" +
                     "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "status=$status，onlineStatus=$onlineStatus，isEnable=$isEnable，" +
+                    "status=$status，onlineStatus=$onlineStatus，supplyStatus=$supplyStatus，isEnable=$isEnable，" +
                     "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
                     "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
                     "source=${ackResult.snapshot?.source ?: "unknown"}"

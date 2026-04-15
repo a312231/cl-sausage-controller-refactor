@@ -3,6 +3,15 @@ package cn.niuyannet.kaochang.android.init;
 import java.io.Serializable;
 
 public class AppConfigBean implements Serializable {
+    public static final int SUPPLY_STATUS_NORMAL = 0;
+    public static final int SUPPLY_STATUS_SOLD_OUT = 1;
+    public static final int SCAN_BLOCK_STATUS_NORMAL = 0;
+    public static final int SCAN_BLOCK_STATUS_BLOCKED = 1;
+    public static final int INSPECTION_MODE_NORMAL = 0;
+    public static final int INSPECTION_MODE_ACTIVE = 1;
+    public static final int ERROR_STATUS_NORMAL = 0;
+    public static final int ERROR_STATUS_PROCESS = 1;
+    public static final int ERROR_STATUS_HARDWARE = 2;
     public static final String REST_SOURCE_NONE = "NONE";
     public static final String REST_SOURCE_UNKNOWN = "UNKNOWN";
     public static final String REST_SOURCE_AUTO_END_BUSINESS = "AUTO_END_BUSINESS";
@@ -32,6 +41,15 @@ public class AppConfigBean implements Serializable {
     // 设备营业状态：0=未启用，1=运营中，2=休息中，3=维护中，4=工作中/正在出餐
     public int onlineStatus;
 
+    // 补货状态：0=正常，1=售罄/待补货
+    public int supplyStatus = SUPPLY_STATUS_NORMAL;
+
+    // 前台屏蔽状态：0=正常展示，1=隐藏二维码并禁止小程序下单/支付
+    public int scanBlockStatus = SCAN_BLOCK_STATUS_NORMAL;
+
+    // 检修模式：0=正常，1=检修中
+    public int inspectionMode = INSPECTION_MODE_NORMAL;
+
     // 休息中来源：
     // - NONE：当前不是休息中
     // - UNKNOWN：历史旧数据或来源未知，按保守策略不自动恢复
@@ -56,7 +74,7 @@ public class AppConfigBean implements Serializable {
     // 并发切换中的过渡态：0=无过渡态，1=低转高过渡，2=高转低过渡
     public int transitionMode;
 
-    // 设备错误状态：0=正常，其它值表示故障
+    // 设备故障状态：0=正常，1=识别/流程错误，2=通信/硬件级故障
     public int errorStatus;
 
     // 烤制算法开关：0=关闭，1=开启
