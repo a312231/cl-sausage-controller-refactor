@@ -16,6 +16,9 @@ import java.util.Random
 
 class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) : 
     RecyclerView.Adapter<KaoPanBoxAdapter.ViewHolder>() {
+    private companion object {
+        const val BOX_FULL_CAPACITY = 16
+    }
 
     private var dataList = mutableListOf<KaoPanBox>()
 
@@ -77,7 +80,7 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                 tvNum.text = "${kaoPanBox.num}"
                 
                 // 根据加满状态设置不同样式
-                if (kaoPanBox.num >= 10) {
+                if (kaoPanBox.num >= BOX_FULL_CAPACITY) {
                     // 已加满状态
                     tvNum.setTextColor(ContextCompat.getColor(root.context, R.color.primary))
                     tvNum.textSize = 26f

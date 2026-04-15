@@ -18,17 +18,17 @@ public class KaoPanBox implements Serializable {
     @SerializedName("sku_id")
     private String skuId ;
     @SerializedName("position_sn")
-    private int positionSn; // 位置序号 1-12
+    private int positionSn; // 位置序号 1-22
     @SerializedName("last_position_sn")
     private int lastPositionSn; // 上一次取的位置
     @SerializedName("num")
-    private int num; // 最大值14
+    private int num; // 当前箱位库存数量，新的加满口径为16根
     @SerializedName("taste_code")
     private String tasteCode; // 口味CODE
     @SerializedName("taste_name")
     private String tasteName; // 口味名称
     @SerializedName("cmd_value_take")
-    private int cmdValueTake; // 从烤肠箱取出烤肠cmd值【201-212】
+    private int cmdValueTake; // 从烤肠箱取出烤肠 cmd 值【201-222】
     
     @SerializedName("cmd_status_take")
     private int cmdStatusTake; // 命令执行状态 （无符号16位整型，0为正常，1为运动中，其余为错误码）

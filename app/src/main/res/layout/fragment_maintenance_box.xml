@@ -13,8 +13,8 @@
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rv_kaopan_box"
             app:layoutManager="androidx.recyclerview.widget.GridLayoutManager"
-            app:spanCount="12"
-            tools:itemCount="24"
+            app:spanCount="11"
+            tools:itemCount="22"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"/>
                     <!-- 加满按钮 -->

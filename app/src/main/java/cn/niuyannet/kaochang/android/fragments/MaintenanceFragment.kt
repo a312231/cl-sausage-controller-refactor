@@ -30,6 +30,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -71,6 +72,7 @@ class MaintenanceFragment : Fragment() {
     companion object {
         private const val MAINTENANCE_ACTION_COOLDOWN_SECONDS = 15
         private const val ALGORITHM_SWITCH_FALLBACK_SYNC_INTERVAL_SECONDS = 5
+        private const val MANUAL_ACTION_IDLE_TIMEOUT_MS = 15_000L
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
@@ -190,11 +192,10 @@ class MaintenanceFragment : Fragment() {
         val needReset =
             oldAvailable != 0L ||
                 oldAvailableCountdownLatched != 0 ||
-                oldModeType != 1 ||
                 oldTransitionMode != 0
         if (!needReset) {
             LogUtils.d(
-                "【维护操作】$reason，运行态已是清空后的默认值，跳过重复收口：" +
+                "【维护操作】$reason，运行态已完成必要收口，保持原并发模式：" +
                     "available=0，availableCountdownLatched=0，" +
                     "modeType（并发模式）=${modeText(config.modeType)}，" +
                     "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}"
@@ -204,14 +205,13 @@ class MaintenanceFragment : Fragment() {
 
         config.available = 0L
         config.availableCountdownLatched = 0
-        config.modeType = 1
         config.transitionMode = 0
         AppConfig.saveAppConfig(config)
         LogUtils.i(
             "【维护操作】$reason，已重置运行态：" +
                 "available（二维码页预计时间）=$oldAvailable->0，" +
                 "availableCountdownLatched（二维码页预计时间锁存标记）=$oldAvailableCountdownLatched->0，" +
-                "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
+                "modeType（并发模式）保持=${modeText(config.modeType)}，" +
                 "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}"
         )
         val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
@@ -279,11 +279,48 @@ class MaintenanceFragment : Fragment() {
         )
     }
 
-    private suspend fun waitUntilMachineIdle(waitingText: String, update: (String) -> Unit) {
-        while (AppConfig.getAppConfig().moveStatus != 0) {
-            update(waitingText)
-            delay(2_000L)
+    private fun tryRecoverIdleMoveStatus(reason: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        if (config.moveStatus == 0) {
+            return true
         }
+        if (!VMModbusHelper.connectStatus()) {
+            return false
+        }
+        val status201 = VMModbusHelper.readHoldingRegisters(
+            KaoChangOperate.modbus_address,
+            KaoChangOperate.action_address_status
+        )
+        if (status201 == 0) {
+            val oldMoveStatus = config.moveStatus
+            config.moveStatus = 0
+            AppConfig.saveAppConfig(config)
+            LogUtils.w(
+                "【维护操作】检测到本地机械状态与下位机空闲状态不一致，已自动收口：" +
+                    "reason=$reason，moveStatus（机械动作状态）=$oldMoveStatus->0，status201（下位机动作状态）=0"
+            )
+            return true
+        }
+        return false
+    }
+
+    private suspend fun waitUntilMachineIdleOrTimeout(
+        reason: String,
+        waitingText: String,
+        update: ((String) -> Unit)? = null,
+        timeoutMs: Long = MANUAL_ACTION_IDLE_TIMEOUT_MS
+    ): Boolean {
+        val result = withTimeoutOrNull(timeoutMs) {
+            while (AppConfig.getAppConfig().moveStatus != 0) {
+                update?.invoke(waitingText)
+                if (tryRecoverIdleMoveStatus(reason)) {
+                    break
+                }
+                delay(1_000L)
+            }
+            true
+        }
+        return result == true && AppConfig.getAppConfig().moveStatus == 0
     }
 
     private fun startCountdown(
@@ -312,8 +349,20 @@ class MaintenanceFragment : Fragment() {
             disableAlgorithmForMaintenance("点击清空烤盘")
 
             clearPanCooldownJob = lifecycleScope.launch {
-                waitUntilMachineIdle("等待机械动作完成后清空烤盘") {
-                    binding.tvCooldownHint.text = it
+                val idleReady = waitUntilMachineIdleOrTimeout(
+                    reason = "维护页点击清空烤盘等待空闲",
+                    waitingText = "等待机械动作完成后清空烤盘",
+                    update = {
+                        binding.tvCooldownHint.text = it
+                    }
+                )
+                if (!idleReady) {
+                    LogUtils.w("【维护操作】点击清空烤盘等待机械空闲超时，已取消本次操作")
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                    clearPanCooldownJob = null
+                    return@launch
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
@@ -347,7 +396,25 @@ class MaintenanceFragment : Fragment() {
                 setMaintenanceButtonsEnabled(false)
                 algorithmCooldownJob?.cancel()
                 algorithmCooldownJob = lifecycleScope.launch {
-                    waitUntilMachineIdle("等待机械动作完成") { binding.tvCooldownHint.text = it }
+                    val idleReady = waitUntilMachineIdleOrTimeout(
+                        reason = "维护页切换算法后冷却等待空闲",
+                        waitingText = "等待机械动作完成",
+                        update = { binding.tvCooldownHint.text = it }
+                    )
+                    if (!idleReady) {
+                        LogUtils.w("【维护操作】算法开关冷却前等待机械空闲超时，结束冷却并恢复操作控件")
+                        binding.tvCooldownHint.text = ""
+                        buttonView.isEnabled = true
+                        isAlgorithmCoolingDown = false
+                        if (clearPanCooldownJob?.isActive != true) {
+                            binding.btnClearAll.isEnabled = true
+                        }
+                        if (resetPanCooldownJob?.isActive != true) {
+                            binding.btnCz.isEnabled = true
+                        }
+                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                        return@launch
+                    }
                     var remaining = 10
                     while (remaining > 0) {
                         binding.tvCooldownHint.text = "冷却 ${String.format("%2d", remaining)} 秒"
@@ -544,8 +611,18 @@ class MaintenanceFragment : Fragment() {
             disableAlgorithmForMaintenance("点击丢弃所有烤肠并重置烤盘")
 
             resetPanCooldownJob = lifecycleScope.launch {
-                waitUntilMachineIdle("等待机械动作完成后重置烤盘") {
-                    binding.tvCooldownHint.text = it
+                val idleReady = waitUntilMachineIdleOrTimeout(
+                    reason = "维护页点击重置烤盘等待空闲",
+                    waitingText = "等待机械动作完成后重置烤盘",
+                    update = { binding.tvCooldownHint.text = it }
+                )
+                if (!idleReady) {
+                    LogUtils.w("【维护操作】点击重置烤盘等待机械空闲超时，已取消本次操作")
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                    resetPanCooldownJob = null
+                    return@launch
                 }
                 KaoChangAlgorithm.resetKaoPan { current, total, _ ->
                     binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
@@ -687,6 +764,11 @@ class MaintenanceFragment : Fragment() {
                     ToastUtils.showShort("请等待当前操作完成")
                     return@setPositiveButton
                 }
+                if (!VMModbusHelper.connectStatus()) {
+                    ToastUtils.showShort("下位机未连接，请先恢复通信")
+                    LogUtils.w("【维护操作】拒绝手动取肠：下位机当前未连接")
+                    return@setPositiveButton
+                }
                 status.set(false)
                 val tasteLabel = kaoPan.taste.productName?.takeIf { it.isNotBlank() }
                     ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
@@ -694,14 +776,26 @@ class MaintenanceFragment : Fragment() {
                 LogUtils.d("【维护操作】手动取肠确认：准备从烤盘${kaoPan.positionSn}取出烤肠($tasteLabel)")
 
                 lifecycleScope.launch {
-                    waitUntilMachineIdle("请等待上位机空闲") { }
+                    val idleReady = waitUntilMachineIdleOrTimeout(
+                        reason = "维护页手动取肠等待空闲",
+                        waitingText = "请等待上位机空闲"
+                    )
+                    if (!idleReady) {
+                        LogUtils.w(
+                            "【维护操作】手动取肠等待机械空闲超时：" +
+                                "moveStatus（机械动作状态）=${AppConfig.getAppConfig().moveStatus}"
+                        )
+                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                        dialog.dismiss()
+                        status.set(true)
+                        return@launch
+                    }
                     try {
-                        AppConfig.getAppConfig().moveStatus = 1
-                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                        KaoChangOperate.takeSausage(kaoPan)
+                        val result = KaoChangOperate.takeSausage(kaoPan)
+                        if (!result) {
+                            ToastUtils.showShort("手动取肠失败，请查看日志")
+                        }
                     } finally {
-                        AppConfig.getAppConfig().moveStatus = 0
-                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
                         dialog.dismiss()
                         status.set(true)
                     }
