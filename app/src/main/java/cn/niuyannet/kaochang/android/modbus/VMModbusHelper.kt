@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.modbus
 
+import android.os.Build
 import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -28,11 +29,30 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 object VMModbusHelper {
-    // 指定这块安卓 12 板卡固定优先走 ttyS7，避免串口枚举顺序变化导致连错设备。
-    private const val preferredBoardSerialPort = "/dev/ttyS7"
-    private val forcedSerialPortDeviceIds = setOf(
-        "3a27355579c4dee5"
+    private data class BoardSerialProfile(
+        val name: String,
+        val keywords: List<String>,
+        val preferredPorts: List<String>
     )
+
+    private val boardSerialProfiles = listOf(
+        BoardSerialProfile(
+            name = "rk3568_s",
+            keywords = listOf("rk3568_s"),
+            preferredPorts = listOf("/dev/ttyS7", "/dev/ttyS2", "/dev/ttyUSB0", "/dev/ttyUSB1")
+        ),
+        BoardSerialProfile(
+            name = "rk3568_r",
+            keywords = listOf("rk3568_r"),
+            preferredPorts = listOf("/dev/ttyS2", "/dev/ttyS7", "/dev/ttyUSB0", "/dev/ttyUSB1")
+        ),
+        BoardSerialProfile(
+            name = "rk3568_generic",
+            keywords = listOf("rk3568"),
+            preferredPorts = listOf("/dev/ttyS2", "/dev/ttyS7", "/dev/ttyUSB0", "/dev/ttyUSB1")
+        )
+    )
+
     private data class ProbeRead(val startAddress: Int, val quantity: Int, val label: String)
     private val connectivityProbes = listOf(
         ProbeRead(0, 10, "bootstrap_0_9"),
@@ -94,10 +114,7 @@ object VMModbusHelper {
     }
 
     private fun serialPortTieBreaker(path: String): Int {
-        return when (path) {
-            preferredBoardSerialPort -> -1
-            else -> 0
-        }
+        return 0
     }
 
     private fun listAvailableSerialPorts(): List<String> {
@@ -124,22 +141,41 @@ object VMModbusHelper {
             .sortedWith(compareBy<String>({ serialPortPriority(it) }, { serialPortTieBreaker(it) }, { it }))
     }
 
-    private fun shouldForcePreferredSerialPort(): Boolean {
-        return forcedSerialPortDeviceIds.contains(AppConfig.getDeviceId())
+    private fun buildBoardFingerprint(): String {
+        return listOf(
+            Build.MANUFACTURER,
+            Build.BRAND,
+            Build.MODEL,
+            Build.DEVICE,
+            Build.PRODUCT,
+            Build.BOARD,
+            Build.HARDWARE
+        )
+            .filterNotNull()
+            .joinToString(" | ")
+            .lowercase()
+    }
+
+    private fun resolveBoardSerialProfile(): BoardSerialProfile? {
+        val fingerprint = buildBoardFingerprint()
+        return boardSerialProfiles.firstOrNull { profile ->
+            profile.keywords.any { keyword -> fingerprint.contains(keyword) }
+        }
     }
 
     private fun resolveCandidatePorts(configuredAddress: String?): List<String> {
-        if (shouldForcePreferredSerialPort()) {
-            return listOf(preferredBoardSerialPort)
-        }
         val preferred = configuredAddress?.takeIf { it.isNotBlank() }
         val availablePorts = listAvailableSerialPorts()
+        val boardProfile = resolveBoardSerialProfile()
+        val profilePorts = boardProfile?.preferredPorts.orEmpty()
         return buildList {
             if (!preferred.isNullOrBlank()) {
                 add(preferred)
             }
-            if (!contains(preferredBoardSerialPort) && availablePorts.contains(preferredBoardSerialPort)) {
-                add(preferredBoardSerialPort)
+            profilePorts.forEach { port ->
+                if (!contains(port) && availablePorts.contains(port)) {
+                    add(port)
+                }
             }
             availablePorts.forEach { port ->
                 if (!contains(port)) {
@@ -184,15 +220,9 @@ object VMModbusHelper {
             val appConfigBean = AppConfig.getAppConfig()
             Modbus.setLogLevel(Modbus.LogLevel.LEVEL_DEBUG)
             SerialUtils.setSerialPortFactory(SerialPortFactoryJSSC())
-            if (shouldForcePreferredSerialPort() && appConfigBean.modbusAddress != preferredBoardSerialPort) {
-                LogUtils.w(
-                    "设备 ${AppConfig.getDeviceId()} 强制使用串口：" +
-                        "${appConfigBean.modbusAddress} -> $preferredBoardSerialPort"
-                )
-                appConfigBean.modbusAddress = preferredBoardSerialPort
-                AppConfig.saveAppConfig(appConfigBean)
-            }
             val candidatePorts = resolveCandidatePorts(appConfigBean.modbusAddress)
+            val boardProfile = resolveBoardSerialProfile()
+            val boardFingerprint = buildBoardFingerprint()
             if (candidatePorts.isEmpty()) {
                 LogUtils.e("没有找到可用的 Modbus 串口候选，当前配置=${appConfigBean.modbusAddress}")
                 disconnectModbusMaster()
@@ -202,6 +232,8 @@ object VMModbusHelper {
 
             LogUtils.d(
                 "开始探测 Modbus 串口：当前配置=${appConfigBean.modbusAddress}，" +
+                    "boardProfile=${boardProfile?.name ?: "none"}，" +
+                    "boardFingerprint=$boardFingerprint，" +
                     "candidates=${candidatePorts.joinToString()}"
             )
             var lastErrorMessage: String? = null
