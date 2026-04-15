@@ -61,7 +61,9 @@ object LowCurrentTrafficMode {
     suspend fun lowTrafficMode(
         config: AppConfigBean,
         kaoPanList: List<KaoPan>,
-        listBox: List<KaoPanBox>
+        listBox: List<KaoPanBox>,
+        boxSupplyAvailable: Boolean,
+        schedulingEnabled: Boolean = true
     ): Int {
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
         val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
@@ -90,7 +92,7 @@ object LowCurrentTrafficMode {
             KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
         if (totalEmpty == list1_9.size + list13_18.size) {
-            if (config.errorStatus == 0 && !isBeforeCloseWindow) {
+            if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 initLowTrafficMode(kaoPanList, listBox)
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
@@ -102,11 +104,11 @@ object LowCurrentTrafficMode {
                 checkLowHeatSausage(kaoPanList)
             }
 
-            if (supplementDecision == 1 && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            if (schedulingEnabled && supplementDecision == 1 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
                 addLowHeatSausage(kaoPanList, listBox, list13_15.size)
                 LogUtils.i(TAG, "【低并发补肠】已向 13~15 补热区补肠")
-            } else if (supplementDecision == 2 && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            } else if (schedulingEnabled && supplementDecision == 2 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
                 addLowHeatSausage16_18(kaoPanList, listBox, list16_18.size)
                 LogUtils.i(TAG, "【低并发补肠】已向 16~18 补热区补肠")
@@ -122,7 +124,7 @@ object LowCurrentTrafficMode {
         checkLowHeatEnd(list1_9)
         checkLowHeatDiscard(list1_9)
 
-        if (config.modeType == 1 && config.transitionMode == 0 && p1_9 >= 7 && p13_18 == 0) {
+        if (schedulingEnabled && boxSupplyAvailable && config.modeType == 1 && config.transitionMode == 0 && p1_9 >= 7 && p13_18 == 0) {
             LogUtils.w(
                 TAG,
                 "【并发切换】触发低转高：1~9 空位=$p1_9，13~18 全满，modeType=${modeText(config.modeType)}->2(高并发)，transitionMode=${transitionText(config.transitionMode)}->1(低转高过渡)"
@@ -130,7 +132,9 @@ object LowCurrentTrafficMode {
             switchLowToHigh()
         }
 
-        SelfCleanManager.maybeRunZone3SelfClean(kaoPanList)
+        if (schedulingEnabled) {
+            SelfCleanManager.maybeRunZone3SelfClean(kaoPanList)
+        }
 
         // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())

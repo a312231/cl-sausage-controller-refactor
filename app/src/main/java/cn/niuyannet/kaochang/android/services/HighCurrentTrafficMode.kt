@@ -54,7 +54,9 @@ object HighCurrentTrafficMode {
     suspend fun highTrafficMode(
         config: AppConfigBean,
         list: List<KaoPan>,
-        listBox: List<KaoPanBox>
+        listBox: List<KaoPanBox>,
+        boxSupplyAvailable: Boolean,
+        schedulingEnabled: Boolean = true
     ) {
         when (config.transitionMode) {
             0 -> {
@@ -79,18 +81,18 @@ object HighCurrentTrafficMode {
                     KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
                 if (totalEmpty == 30) {
-                    if (config.errorStatus == 0 && !isBeforeCloseWindow) {
+                    if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                         initHighTrafficMode(list, listBox)
                         pitCount = 0
                     } else {
                         LogUtils.w(
                             TAG,
-                            "【高并发初始化】跳过初始化：errorStatus=${config.errorStatus}，处于停业前收口窗口=$isBeforeCloseWindow"
+                            "【高并发初始化】跳过初始化：boxSupplyAvailable=$boxSupplyAvailable，errorStatus=${config.errorStatus}，处于停业前收口窗口=$isBeforeCloseWindow"
                         )
                     }
                 } else if (p1_21 >= 9) {
                     if (p25_33 == 9) {
-                        if (config.errorStatus == 0 && !isBeforeCloseWindow) {
+                        if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                             addHighHeatSausage(list, listBox)
                             pitCount = 9
                             lastFillPitTime = System.currentTimeMillis()
@@ -109,15 +111,19 @@ object HighCurrentTrafficMode {
                 checkHighHeatEnd(list1_9, 1)
                 checkHighHeatEnd(list10_21, 2)
                 checkHighHeatDiscard(list1_21)
-                checkSwitchToLow()
-                SelfCleanManager.maybeRunZone3SelfClean(list)
+                if (schedulingEnabled && boxSupplyAvailable) {
+                    checkSwitchToLow()
+                }
+                if (schedulingEnabled) {
+                    SelfCleanManager.maybeRunZone3SelfClean(list)
+                }
 
                 // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
 
             1 -> {
-                lowTrafficModeTransition(config, list, listBox)
+                lowTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
             }
 
             2 -> {
@@ -137,7 +143,9 @@ object HighCurrentTrafficMode {
     private suspend fun lowTrafficModeTransition(
         config: AppConfigBean,
         list: List<KaoPan>,
-        listBox: List<KaoPanBox>
+        listBox: List<KaoPanBox>,
+        boxSupplyAvailable: Boolean,
+        schedulingEnabled: Boolean
     ) {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
@@ -156,7 +164,7 @@ object HighCurrentTrafficMode {
         }
 
         val hasStartedHighHeatSupply = list25_33.any { it.isHasSausage }
-        if (!hasStartedHighHeatSupply) {
+        if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
             val flavorAllocation = KaoPanHelper.computeHighKaoPamRatio(listBox, frontEmptyCount)
             var currentPosition = 0
@@ -211,6 +219,17 @@ object HighCurrentTrafficMode {
 
         val hasActiveHeatingIn13_15 = list13_15.any { it.isHasSausage && it.startTime > 0 }
         val hasStartedHighHeatSupplyNow = list25_33.any { it.isHasSausage }
+        if ((!boxSupplyAvailable || !schedulingEnabled) && !hasActiveHeatingIn13_15 && !hasStartedHighHeatSupplyNow) {
+            config.transitionMode = 0
+            config.modeType = 1
+            AppConfig.saveAppConfig(config)
+            SendServerHelper.publishServiceUpdateStatus()
+            LogUtils.i(
+                TAG,
+                "【并发切换】低转高过渡已提前结束：未继续允许新高并发批次，恢复低并发等待后续调度"
+            )
+            return
+        }
         if (hasActiveHeatingIn13_15 || !hasStartedHighHeatSupplyNow) {
             return
         }

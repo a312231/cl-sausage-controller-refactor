@@ -31,10 +31,18 @@ object KaoChangAlgorithm {
         val pans: List<KaoPan>
     )
 
+    data class SupplyRuntimeContext(
+        val hasSupplyBoxesAvailable: Boolean,
+        val hasSellableSausage: Boolean,
+        val hasActiveBatch: Boolean
+    )
+
     private val TAG = "KaoChangAlgorithm"
     private const val LOG_ALGORITHM = "算法轮询"
     private const val LOG_DEVICE = "设备状态"
     private const val LOG_COMM = "通信状态"
+    private const val SUPPLY_RECOVER_SOURCE = "runtime_state:supply_status_recovered"
+    private const val SUPPLY_SOLD_OUT_SOURCE = "runtime_state:supply_status_sold_out"
     private const val MODBUS_MONITOR_INTERVAL_MS = 1_000L
     private const val MODBUS_DISCONNECT_REPORT_DELAY_MS = 5_000L
     private const val MODBUS_RECONNECT_STABLE_DELAY_MS = 5_000L
@@ -59,6 +67,7 @@ object KaoChangAlgorithm {
     private var lastBusinessStartRecoveryLogKey = ""
     private var loggedManualRecoveryRequiredOnDisconnect = false
     private var loggedManualRecoveryRequiredAfterReconnect = false
+    private var inspectionDisconnectSuppressedLogged = false
     private var lastPollStateSnapshot: String? = null
     var isEnabled = false
 
@@ -98,11 +107,17 @@ object KaoChangAlgorithm {
     private fun errorStatusText(value: Int): String = when (value) {
         0 -> "0(正常)"
         1 -> "1(识别/流程错误)"
-        2 -> "2(Modbus断连错误)"
+        2 -> "2(通信/硬件级故障)"
         else -> "$value(未知)"
     }
 
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
+
+    private fun supplyStatusText(value: Int): String = when (value) {
+        AppConfigBean.SUPPLY_STATUS_NORMAL -> "0(正常)"
+        AppConfigBean.SUPPLY_STATUS_SOLD_OUT -> "1(售罄/待补货)"
+        else -> "$value(未知)"
+    }
 
     private fun isEnableText(value: Int): String = when (value) {
         0 -> "0（关闭）"
@@ -436,6 +451,121 @@ object KaoChangAlgorithm {
         updateAvailableState(config, 0L, 0, "前区无保温烤肠，当前也没有正在加热的待开放批次")
     }
 
+    private fun getSellArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
+        return if (config.modeType == 1 || config.transitionMode == 1) {
+            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
+        } else {
+            TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
+        }
+    }
+
+    private fun getTrackedArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
+        return if (config.modeType == 1 || config.transitionMode == 1) {
+            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
+        } else {
+            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
+        }
+    }
+
+    private fun evaluateSupplyRuntimeContext(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>,
+        kaoPanBoxList: List<cn.niuyannet.kaochang.android.model.bean.KaoPanBox>
+    ): SupplyRuntimeContext {
+        val sellArea = getSellArea(config, kaoPanList)
+        val trackedArea = getTrackedArea(config, kaoPanList)
+        val hasSupplyBoxesAvailable = kaoPanBoxList.any { it.num > 0 }
+        val hasSellableSausage = sellArea.any { isHoldingPan(it) }
+        val hasActiveBatch =
+            trackedArea.any { it.isHasGrilling } ||
+                trackedArea.any { it.isHasSausage && !isHoldingPan(it) } ||
+                config.moveStatus != 0 ||
+                config.onlineStatus == 4 ||
+                config.transitionMode != 0 ||
+                config.zone3CleanPending == 1
+        return SupplyRuntimeContext(
+            hasSupplyBoxesAvailable = hasSupplyBoxesAvailable,
+            hasSellableSausage = hasSellableSausage,
+            hasActiveBatch = hasActiveBatch
+        )
+    }
+
+    private fun publishRuntimeStateOrFallback(source: String) {
+        val mqttOk = SendServerHelper.publishServiceUpdateStatus(source)
+        if (!mqttOk) {
+            logW(LOG_DEVICE, "运行态主上报失败，回退 HTTP 补偿：source=$source")
+            NetApi.updateDeviceInfo()
+        }
+    }
+
+    private fun stopHeatingForSoldOutState(config: AppConfigBean) {
+        KaoChangOperate.stopHeating(1)
+        if (config.modeType == 1 || config.transitionMode == 1) {
+            KaoChangOperate.stopHeating(2)
+            return
+        }
+        KaoChangOperate.stopHeating(2)
+        KaoChangOperate.stopHeating(3)
+    }
+
+    private fun refreshSupplyStatus(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>,
+        kaoPanBoxList: List<cn.niuyannet.kaochang.android.model.bean.KaoPanBox>
+    ): SupplyRuntimeContext {
+        val context = evaluateSupplyRuntimeContext(config, kaoPanList, kaoPanBoxList)
+        val targetSupplyStatus =
+            if (!context.hasSupplyBoxesAvailable && !context.hasSellableSausage && !context.hasActiveBatch) {
+                AppConfigBean.SUPPLY_STATUS_SOLD_OUT
+            } else {
+                AppConfigBean.SUPPLY_STATUS_NORMAL
+            }
+        if (config.supplyStatus == targetSupplyStatus) {
+            return context
+        }
+
+        val previousSupplyStatus = config.supplyStatus
+        config.supplyStatus = targetSupplyStatus
+        AppConfig.saveAppConfig(config)
+        if (targetSupplyStatus == AppConfigBean.SUPPLY_STATUS_SOLD_OUT) {
+            stopHeatingForSoldOutState(config)
+            logW(
+                LOG_DEVICE,
+                "补货状态已切换为售罄：supplyStatus（补货状态）=${supplyStatusText(previousSupplyStatus)}->${supplyStatusText(config.supplyStatus)}，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                    "原因=烤肠箱已空且当前无可售烤肠、无活动批次"
+            )
+            publishRuntimeStateOrFallback(SUPPLY_SOLD_OUT_SOURCE)
+        } else {
+            logI(
+                LOG_DEVICE,
+                "补货状态已恢复正常：supplyStatus（补货状态）=${supplyStatusText(previousSupplyStatus)}->${supplyStatusText(config.supplyStatus)}，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                    "原因=检测到烤肠箱已补货或仍有可继续售卖/处理的批次"
+            )
+            publishRuntimeStateOrFallback(SUPPLY_RECOVER_SOURCE)
+        }
+        HomeUiRefreshBridge.requestRefresh("supply_status_changed")
+        return context
+    }
+
+    fun hasBlockingActiveBatchForAlgorithmDisable(): Boolean {
+        val config = AppConfig.getAppConfig()
+        val kaoPanList = KaoPanHelper.getKaoPanList()
+        val context = evaluateSupplyRuntimeContext(config, kaoPanList, KaoPanHelper.getKaoPanBoxList())
+        return context.hasActiveBatch
+    }
+
+    private fun canEnableAlgorithm(config: AppConfigBean, onlineStatus: Int = config.onlineStatus): Boolean {
+        return onlineStatus in listOf(1, 4) &&
+            config.inspectionMode == AppConfigBean.INSPECTION_MODE_NORMAL &&
+            config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
+    }
+
+    private fun shouldFreezeByInspection(config: AppConfigBean): Boolean {
+        return config.inspectionMode == AppConfigBean.INSPECTION_MODE_ACTIVE
+    }
+
     /**
      * 轮询烤盘和设备状态，决定当前调度模式。
      */
@@ -470,37 +600,67 @@ object KaoChangAlgorithm {
             logD(LOG_DEVICE, "设备当前处于${onlineStatusText(onlineStatus)}，跳过算法调度")
             return
         }
+        if (shouldFreezeByInspection(config)) {
+            logD(
+                LOG_DEVICE,
+                "设备当前处于检修模式，已冻结自动调度：" +
+                    "inspectionMode=${config.inspectionMode}，onlineStatus=${onlineStatusText(onlineStatus)}，" +
+                    "isEnable=${isEnableText(config.isEnable)}"
+            )
+            return
+        }
         if (!VMModbusHelper.connectStatus()) {
             logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
             return
         }
-        if (!isEnabled) {
-            return
-        }
+
+        val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
+        val schedulingEnabled = isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus)
 
         val pollStateSnapshot =
-            "mode=${config.modeType},transition=${config.transitionMode},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus}"
+            "mode=${config.modeType},transition=${config.transitionMode},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},scanBlock=${config.scanBlockStatus},inspection=${config.inspectionMode},enable=$schedulingEnabled"
         if (pollStateSnapshot != lastPollStateSnapshot) {
             logD(
                 LOG_ALGORITHM,
-                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，onlineStatus=${onlineStatusText(onlineStatus)}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}"
+                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，onlineStatus=${onlineStatusText(onlineStatus)}，supplyStatus=${supplyStatusText(config.supplyStatus)}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}，schedulingEnabled=$schedulingEnabled"
             )
             lastPollStateSnapshot = pollStateSnapshot
         }
 
         checkAvailable(config, kaoPanList)
+        if (config.supplyStatus == AppConfigBean.SUPPLY_STATUS_SOLD_OUT) {
+            return
+        }
 
         when {
             config.transitionMode != 0 -> {
-                HighCurrentTrafficMode.highTrafficMode(config, list = kaoPanList, listBox = kaoPanBoxList)
+                HighCurrentTrafficMode.highTrafficMode(
+                    config,
+                    list = kaoPanList,
+                    listBox = kaoPanBoxList,
+                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                    schedulingEnabled = schedulingEnabled
+                )
             }
 
             config.modeType == 1 -> {
-                LowCurrentTrafficMode.lowTrafficMode(config, kaoPanList, kaoPanBoxList)
+                LowCurrentTrafficMode.lowTrafficMode(
+                    config,
+                    kaoPanList,
+                    kaoPanBoxList,
+                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                    schedulingEnabled = schedulingEnabled
+                )
             }
 
             config.modeType == 2 -> {
-                HighCurrentTrafficMode.highTrafficMode(config, list = kaoPanList, listBox = kaoPanBoxList)
+                HighCurrentTrafficMode.highTrafficMode(
+                    config,
+                    list = kaoPanList,
+                    listBox = kaoPanBoxList,
+                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                    schedulingEnabled = schedulingEnabled
+                )
             }
         }
     }
@@ -579,6 +739,24 @@ object KaoChangAlgorithm {
                 val now = System.currentTimeMillis()
                 val connected = VMModbusHelper.connectStatus()
                 val config = AppConfig.getAppConfig()
+
+                if (shouldFreezeByInspection(config)) {
+                    modbusDisconnectSinceMs = null
+                    modbusReconnectSinceMs = null
+                    lastReconnectAttemptMs = 0L
+                    loggedManualRecoveryRequiredOnDisconnect = false
+                    loggedManualRecoveryRequiredAfterReconnect = false
+                    if (!connected && !inspectionDisconnectSuppressedLogged) {
+                        inspectionDisconnectSuppressedLogged = true
+                        logD(LOG_COMM, "检修模式下检测到 Modbus 断连，已抑制自动切维护和刷屏错误日志")
+                    } else if (connected && inspectionDisconnectSuppressedLogged) {
+                        inspectionDisconnectSuppressedLogged = false
+                        logD(LOG_COMM, "检修模式下检测到 Modbus 已恢复连接，继续保持日志抑制")
+                    }
+                    delay(MODBUS_MONITOR_INTERVAL_MS)
+                    continue
+                }
+                inspectionDisconnectSuppressedLogged = false
 
                 if (connected) {
                     modbusDisconnectSinceMs = null
@@ -754,10 +932,24 @@ object KaoChangAlgorithm {
         reason: String = "维护页手动开启算法",
         syncToServer: Boolean = true
     ) {
+        val config = AppConfig.getAppConfig()
+        if (!canEnableAlgorithm(config)) {
+            logW(
+                LOG_ALGORITHM,
+                "拒绝开启烤肠算法：reason=$reason，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                    "inspectionMode（检修模式）=${config.inspectionMode}，" +
+                    "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}，" +
+                    "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
+            )
+            if (syncToServer) {
+                SendServerHelper.publishServiceUpdateStatus()
+            }
+            return
+        }
         KaoChangOperate.actionDebug()
         val wasRunning = isRunning
         isEnabled = true
-        val config = AppConfig.getAppConfig()
         config.isEnable = 1
         AppConfig.saveAppConfig(config)
         if (!wasRunning) {
@@ -788,12 +980,16 @@ object KaoChangAlgorithm {
         syncToServer: Boolean = true
     ) {
         isEnabled = false
-        AppConfig.getAppConfig().isEnable = 0
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
         val config = AppConfig.getAppConfig()
+        config.isEnable = 0
+        AppConfig.saveAppConfig(config)
         logD(
             LOG_ALGORITHM,
-            "算法开关已关闭：reason=$reason, onlineStatus=${onlineStatusText(config.onlineStatus)}, modeType=${modeText(config.modeType)}"
+            "算法开关已关闭：reason=$reason，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                "modeType（并发模式）=${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}，" +
+                "收口语义=停止自动补肠/停止开新批次/停止新的并发切换，但当前烤制/搬盘/出餐/转保温继续自然完成"
         )
         if (syncToServer) {
             SendServerHelper.publishServiceUpdateStatus()
