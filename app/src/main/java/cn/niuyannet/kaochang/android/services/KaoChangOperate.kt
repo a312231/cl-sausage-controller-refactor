@@ -47,6 +47,7 @@ object KaoChangOperate {
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
     private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
+    private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     private const val SELL_PLATFORM_RETRY_DELAY_MS = 300L
     private const val SELL_PLATFORM_CAPTURE_TIMEOUT_MS = 2500L
     private val SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS = listOf(300L, 500L, 700L)
@@ -112,6 +113,55 @@ object KaoChangOperate {
         val status201: Int,
         val message: String
     )
+
+    private fun tryRecoverIdleMoveStatus(reason: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        if (config.moveStatus == 0) {
+            return true
+        }
+        if (!VMModbusHelper.connectStatus()) {
+            return false
+        }
+        return when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
+            ActionStatus201.IDLE -> {
+                val oldMoveStatus = config.moveStatus
+                config.moveStatus = 0
+                AppConfig.saveAppConfig(config)
+                logW(
+                    LOG_ACTION,
+                    "检测到本地机械状态残留，已按下位机空闲状态自动收口：" +
+                        "reason=$reason，moveStatus（机械动作状态）=${moveStatusDesc(oldMoveStatus)}->${moveStatusDesc(config.moveStatus)}"
+                )
+                true
+            }
+            else -> false
+        }
+    }
+
+    private suspend fun waitUntilMoveStatusIdleOrTimeout(
+        actionName: String,
+        timeoutMs: Long = MANUAL_TAKE_IDLE_TIMEOUT_MS
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var appState = AppConfig.getAppConfig().moveStatus
+        while (appState != 0) {
+            if (tryRecoverIdleMoveStatus(actionName)) {
+                return true
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                logW(
+                    LOG_ACTION,
+                    "$actionName 等待机械动作归零超时：" +
+                        "moveStatus（机械动作状态）=${moveStatusDesc(appState)}，timeoutMs=$timeoutMs"
+                )
+                return false
+            }
+            delay(1_000L)
+            appState = AppConfig.getAppConfig().moveStatus
+            logD(LOG_ACTION, "$actionName 等待机械动作收尾：moveStatus=${moveStatusDesc(appState)}")
+        }
+        return true
+    }
 
     private enum class ActionStatus201 {
         IDLE,
@@ -1001,11 +1051,8 @@ object KaoChangOperate {
      * 这条路径不参与订单履约状态机，但故障时也会进入维护中并补齐 errorStatus。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
-        var appState = AppConfig.getAppConfig().moveStatus
-        while (appState != 0) {
-            delay(2000)
-            appState = AppConfig.getAppConfig().moveStatus
-            logD(LOG_ACTION, "手动取肠前等待机械动作收尾：moveStatus=$appState")
+        if (!waitUntilMoveStatusIdleOrTimeout("手动取肠前等待机械动作归零")) {
+            return false
         }
         AppConfig.getAppConfig().moveStatus = 2
         AppConfig.saveAppConfig(AppConfig.getAppConfig())

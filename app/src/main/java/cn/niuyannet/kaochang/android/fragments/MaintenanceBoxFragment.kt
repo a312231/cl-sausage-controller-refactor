@@ -40,6 +40,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MaintenanceBoxFragment : Fragment() {
+    private companion object {
+        const val BOX_GRID_SPAN_COUNT = 11
+        const val BOX_REFILL_TARGET_NUM = 16
+    }
     private var _binding: FragmentMaintenanceBoxBinding? = null
     private val binding get() = _binding!!
     private var refreshJob: Job? = null
@@ -211,7 +215,7 @@ class MaintenanceBoxFragment : Fragment() {
             kaoPanBoxAdapter.notifyDataSetChanged()
         }
         binding.rvKaopanBox.apply {
-            layoutManager = GridLayoutManager(context, 9)
+            layoutManager = GridLayoutManager(context, BOX_GRID_SPAN_COUNT)
             adapter = kaoPanBoxAdapter
         }
         startRefreshTimer()
@@ -287,7 +291,7 @@ class MaintenanceBoxFragment : Fragment() {
             val selectedTaste = tastes[selectedIndex]
             LogUtils.d(
                 "[维护操作] 准备加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}，" +
-                    "口味=${selectedTaste.productName}(${selectedTaste.tasteName})，目标库存=10"
+                    "口味=${selectedTaste.productName}(${selectedTaste.tasteName})，目标库存=$BOX_REFILL_TARGET_NUM"
             )
 
             for (box in selectedBoxes) {
@@ -295,7 +299,7 @@ class MaintenanceBoxFragment : Fragment() {
                 box.tasteCode = selectedTaste.tasteCode
                 box.tasteName = "${selectedTaste.productName}(${selectedTaste.tasteName})"
                 box.checkStatus = false
-                box.num = 10
+                box.num = BOX_REFILL_TARGET_NUM
             }
 
             showLoadingExt("设置中...")
@@ -308,7 +312,7 @@ class MaintenanceBoxFragment : Fragment() {
                         kaoPanBoxAdapter.notifyDataSetChanged()
                         LogUtils.d(
                             "[维护操作] 已加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}，" +
-                                "口味=${selectedTaste.productName}(${selectedTaste.tasteName})，库存=10"
+                                "口味=${selectedTaste.productName}(${selectedTaste.tasteName})，库存=$BOX_REFILL_TARGET_NUM"
                         )
                         ToastUtils.showShort("已成功加满选中的烤肠箱")
                         dialog.dismiss()
