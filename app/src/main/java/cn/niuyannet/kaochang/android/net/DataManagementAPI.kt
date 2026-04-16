@@ -439,6 +439,14 @@ object DataManagementAPI {
     }
 
     fun dataSyncServer() {
+        refreshStockData()
+        getDeviceInfo()
+    }
+
+    fun refreshStockData(
+        logPrefix: String = LOG_SYNC,
+        onResult: ((success: Boolean, stockCount: Int) -> Unit)? = null
+    ) {
         NetApi.getStockData { code, content ->
             val kaoPanBoxList = mutableListOf<KaoPanBox>()
             if (code == 0) {
@@ -462,14 +470,17 @@ object DataManagementAPI {
                         kaoPanBoxList.add(kaoPanBox)
                     }
                     saveKaoPanBoxList(kaoPanBoxList)
+                    logD("[$logPrefix] 烤肠箱库存同步完成：箱位数=${kaoPanBoxList.size}")
+                    onResult?.invoke(true, kaoPanBoxList.size)
+                    return@getStockData
                 }
+                logE("[$logPrefix] 烤肠箱库存业务返回异常：content=$content")
             } else {
                 ToastUtils.showShort("网络错误")
-                logE("同步烤肠箱库存失败：code=$code, content=$content")
+                logE("[$logPrefix] 同步烤肠箱库存失败：code=$code, content=$content")
             }
+            onResult?.invoke(false, 0)
         }
-
-        getDeviceInfo()
     }
 
     fun uploadDataToServer() {
@@ -651,6 +662,7 @@ object DataManagementAPI {
                 mergedConfig,
                 "getDeviceInfo"
             )
+            refreshStockData(logPrefix = "$LOG_SYNC-stock-after-config")
         }
     }
 

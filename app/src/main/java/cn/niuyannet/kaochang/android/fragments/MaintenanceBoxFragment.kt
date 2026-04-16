@@ -20,6 +20,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -62,6 +63,7 @@ class MaintenanceBoxFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         setupGrid()
         setupButtons()
+        ensureBoxDataLoaded()
     }
 
     /**
@@ -228,6 +230,28 @@ class MaintenanceBoxFragment : Fragment() {
             }
             LogUtils.d("[维护操作] 点击加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
             showTasteSelectDialog(selectedBoxes)
+        }
+    }
+
+    private fun ensureBoxDataLoaded() {
+        if (KaoPanHelper.getKaoPanBoxList().isNotEmpty()) {
+            return
+        }
+        LogUtils.w("[维护操作] 烤肠箱本地缓存为空，进入页面后主动补拉库存")
+        showLoadingExt("同步烤肠箱中...")
+        DataManagementAPI.refreshStockData(logPrefix = "维护页烤肠箱首屏补拉") { success, stockCount ->
+            activity?.runOnUiThread {
+                dismissLoadingExt()
+                if (!isAdded || _binding == null) {
+                    return@runOnUiThread
+                }
+                if (success) {
+                    kaoPanBoxAdapter.setData(KaoPanHelper.getKaoPanBoxList())
+                    LogUtils.i("[维护操作] 烤肠箱首屏补拉完成：箱位数=$stockCount")
+                } else {
+                    ToastUtils.showShort("烤肠箱数据同步失败，请稍后重试")
+                }
+            }
         }
     }
 
