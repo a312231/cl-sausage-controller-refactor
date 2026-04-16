@@ -375,7 +375,7 @@ object KaoChangAlgorithm {
      * 展示规则：
      * 1. 前区还有保温烤肠时，不展示预计烤制时间；
      * 2. 前区没有可售烤肠时：
-     *    - 若当前开盘批次仍在前区加热，则显示这一批最后一根烤好的剩余时间；
+     *    - 若当前开盘批次仍在前区加热，则显示“最早能恢复可售”的开盘批次剩余时间；
      *    - 若只剩补肠批次在补热区加热，则显示“最早能恢复可售”的那一批剩余时间；
      * 3. 当前批次全部进入保温后才一次性开放；
      * 4. 小程序可售开关仍通过 availableCountdownLatched 控制。
@@ -406,19 +406,23 @@ object KaoChangAlgorithm {
             return
         }
 
-        val openingBatchRemainHeatTime = calcBatchRemainHeatTime(sellArea, now)
-        if (openingBatchRemainHeatTime != null) {
+        val nextOpeningBatch = findNextOpeningSellBatch(
+            isLowOrTransition = isLowOrTransition,
+            sellArea = sellArea,
+            now = now
+        )
+        if (nextOpeningBatch != null) {
             logAvailableDecision(
-                "前区暂无可售烤肠，显示当前开盘批次最后一根预计完成时间：remainingMs=$openingBatchRemainHeatTime",
+                "前区暂无可售烤肠，显示${nextOpeningBatch.name}恢复可售前的预计时间：remainingMs=${nextOpeningBatch.remainHeatTimeMs}",
                 config,
                 sellArea,
                 heatArea
             )
             updateAvailableState(
                 config,
-                openingBatchRemainHeatTime,
+                nextOpeningBatch.remainHeatTimeMs,
                 0,
-                "前区暂无可售烤肠，显示当前开盘批次最后一根预计完成时间"
+                "前区暂无可售烤肠，显示${nextOpeningBatch.name}恢复可售前的预计时间"
             )
             return
         }
