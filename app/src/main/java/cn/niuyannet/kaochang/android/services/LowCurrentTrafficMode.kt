@@ -329,11 +329,16 @@ object LowCurrentTrafficMode {
             return
         }
 
+        TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
         val emptyPositions = list1_9.filter { !it.isHasSausage && !it.isHasGrilling }
         val emptyPositions13_15 = list13_15.filter { !it.isHasSausage }
         if (emptyPositions.size >= pNum && emptyPositions13_15.size >= pNum) {
             KaoChangOperate.heating(2)
-            val neededTastes = emptyPositions.take(pNum).map { it.taste.tasteCode }
+            val neededTastes = emptyPositions.take(pNum).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
+            if (neededTastes.size < pNum) {
+                LogUtils.w(TAG, "【低并发补肠】跳过 13~15 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
+                return
+            }
             neededTastes.forEachIndexed { index, tasteCode ->
                 val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->
@@ -363,11 +368,16 @@ object LowCurrentTrafficMode {
             return
         }
 
+        TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
         val emptyPositions = list1_9.filter { !it.isHasSausage && !it.isHasGrilling }
         val emptyPositions16_18 = list16_18.filter { !it.isHasSausage }
         if (emptyPositions.size >= pNum && emptyPositions16_18.size >= pNum) {
             KaoChangOperate.heating(2)
-            val neededTastes = emptyPositions.take(pNum).map { it.taste.tasteCode }
+            val neededTastes = emptyPositions.take(pNum).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
+            if (neededTastes.size < pNum) {
+                LogUtils.w(TAG, "【低并发补肠】跳过 16~18 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
+                return
+            }
             neededTastes.forEachIndexed { index, tasteCode ->
                 val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->

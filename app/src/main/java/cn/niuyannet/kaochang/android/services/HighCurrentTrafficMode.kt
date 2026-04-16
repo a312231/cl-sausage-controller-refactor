@@ -393,11 +393,19 @@ object HighCurrentTrafficMode {
             return
         }
 
+        TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
         val emptyPositions = list1_21.filter { !it.isHasSausage }
         val emptyPositions25_33 = list25_33.filter { !it.isHasSausage }
         if (emptyPositions.size >= 9 && emptyPositions25_33.size >= 9) {
             KaoChangOperate.heating(3)
-            val neededTastes = emptyPositions.take(9).map { it.taste.tasteCode }
+            val neededTastes = emptyPositions.take(9).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
+            if (neededTastes.size < 9) {
+                LogUtils.w(
+                    TAG,
+                    "【高并发补肠】跳过 25~33 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}"
+                )
+                return
+            }
             neededTastes.forEachIndexed { index, tasteCode ->
                 val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
                 matchingBox?.let { box ->
