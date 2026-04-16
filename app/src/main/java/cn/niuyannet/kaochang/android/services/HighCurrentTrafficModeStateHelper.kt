@@ -5,6 +5,31 @@ internal data class HighTrafficSupplementTrackingState(
     val lastFillPitTime: Long
 )
 
+internal data class HighTrafficModeState(
+    val modeType: Int,
+    val transitionMode: Int
+)
+
+internal fun resolveLowToHighTransitionIdleState(
+    currentModeType: Int,
+    schedulingEnabled: Boolean,
+    boxSupplyAvailable: Boolean,
+    hasActiveHeatingIn13_15: Boolean,
+    hasStartedHighHeatSupplyNow: Boolean
+): HighTrafficModeState? {
+    val shouldExitTransitionWithoutNewBatch =
+        (!boxSupplyAvailable || !schedulingEnabled) &&
+            !hasActiveHeatingIn13_15 &&
+            !hasStartedHighHeatSupplyNow
+    if (!shouldExitTransitionWithoutNewBatch) {
+        return null
+    }
+    return HighTrafficModeState(
+        modeType = currentModeType.takeIf { it == 2 } ?: 2,
+        transitionMode = 0
+    )
+}
+
 internal fun recordHighTrafficSupplementLaunch(
     previous: HighTrafficSupplementTrackingState,
     filledCount: Int,

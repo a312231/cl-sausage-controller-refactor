@@ -2,10 +2,39 @@ package cn.niuyannet.kaochang.android.services
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HighCurrentTrafficModeStateHelperTest {
+
+    @Test
+    fun resolveLowToHighTransitionIdleState_shouldKeepHighModeWhenSchedulingIsDisabled() {
+        val resolved = resolveLowToHighTransitionIdleState(
+            currentModeType = 2,
+            schedulingEnabled = false,
+            boxSupplyAvailable = true,
+            hasActiveHeatingIn13_15 = false,
+            hasStartedHighHeatSupplyNow = false
+        )
+
+        assertNotNull(resolved)
+        assertEquals(2, resolved!!.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveLowToHighTransitionIdleState_shouldReturnNullWhenStillWaitingForOldOrNewBatch() {
+        val resolved = resolveLowToHighTransitionIdleState(
+            currentModeType = 2,
+            schedulingEnabled = false,
+            boxSupplyAvailable = true,
+            hasActiveHeatingIn13_15 = true,
+            hasStartedHighHeatSupplyNow = false
+        )
+
+        assertEquals(null, resolved)
+    }
 
     @Test
     fun recordSupplementLaunch_shouldRefreshTrackingWhenTransitionStartsNewBatch() {

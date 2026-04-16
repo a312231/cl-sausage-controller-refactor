@@ -293,15 +293,22 @@ object HighCurrentTrafficMode {
 
         val hasActiveHeatingIn13_15 = list13_15.any { it.isHasSausage && it.startTime > 0 }
         val hasStartedHighHeatSupplyNow = list25_33.any { it.isHasSausage }
-        if ((!boxSupplyAvailable || !schedulingEnabled) && !hasActiveHeatingIn13_15 && !hasStartedHighHeatSupplyNow) {
-            config.transitionMode = 0
-            config.modeType = 1
+        val idleResolvedState = resolveLowToHighTransitionIdleState(
+            currentModeType = config.modeType,
+            schedulingEnabled = schedulingEnabled,
+            boxSupplyAvailable = boxSupplyAvailable,
+            hasActiveHeatingIn13_15 = hasActiveHeatingIn13_15,
+            hasStartedHighHeatSupplyNow = hasStartedHighHeatSupplyNow
+        )
+        if (idleResolvedState != null) {
+            config.transitionMode = idleResolvedState.transitionMode
+            config.modeType = idleResolvedState.modeType
             AppConfig.saveAppConfig(config)
             SendServerHelper.publishServiceUpdateStatus()
-            resetSupplementTracking("低转高过渡提前结束并回落低并发")
+            resetSupplementTracking("低转高过渡收口并保留高并发目标")
             LogUtils.i(
                 TAG,
-                "【并发切换】低转高过渡已提前结束：未继续允许新高并发批次，恢复低并发等待后续调度"
+                "【并发切换】低转高过渡暂不继续补肠：boxSupplyAvailable=$boxSupplyAvailable，schedulingEnabled=$schedulingEnabled，保留高并发目标等待后续调度启用"
             )
             return
         }
