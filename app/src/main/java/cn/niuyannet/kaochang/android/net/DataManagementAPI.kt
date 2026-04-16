@@ -25,6 +25,8 @@ object DataManagementAPI {
     private const val LOG_SYNC = "云端同步"
     @Volatile
     private var lastAppliedRuntimeControlSeq: Long = -1L
+    @Volatile
+    private var lastAppliedConcurrencyControlSeq: Long = -1L
 
     data class RemoteDeviceStateRefreshResult(
         val success: Boolean,
@@ -48,6 +50,16 @@ object DataManagementAPI {
         val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String
+    )
+
+    data class ConcurrencyControlApplyResult(
+        val controlSeq: Long,
+        val applied: Boolean,
+        val changed: Boolean,
+        val reason: String,
+        val modeType: Int,
+        val transitionMode: Int,
+        val overrodeConflictingTransition: Boolean
     )
 
     private fun logD(message: String) = LogUtils.d("[$LOG_SYNC] $message")
@@ -435,6 +447,116 @@ object DataManagementAPI {
             inspectionMode = currentConfig.inspectionMode,
             isEnable = currentConfig.isEnable,
             restStatusSource = currentConfig.restStatusSource
+        )
+    }
+
+    fun applyRemoteConcurrencyControl(
+        content: String,
+        source: String = MqttProtocol.SOURCE_MQTT_ACTION_2
+    ): ConcurrencyControlApplyResult {
+        val json = try {
+            JSON.parseObject(content)
+        } catch (e: Exception) {
+            logE("远端并发控制解析失败：source=$source, error=${e.message}, raw=$content")
+            val config = AppConfig.getAppConfig()
+            return ConcurrencyControlApplyResult(
+                controlSeq = -1L,
+                applied = false,
+                changed = false,
+                reason = "parse_failed",
+                modeType = config.modeType,
+                transitionMode = config.transitionMode,
+                overrodeConflictingTransition = false
+            )
+        }
+
+        val controlSeq = json.getLongValue("controlSeq").takeIf { it > 0 } ?: json.getLongValue("ts")
+        val hasModeType = json.containsKey("modeType")
+        val hasTransitionMode = json.containsKey("transitionMode")
+        if (!hasModeType && !hasTransitionMode) {
+            val config = AppConfig.getAppConfig()
+            logD(
+                "远端并发控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "不包含 modeType（并发模式）或 transitionMode（并发切换过渡态）"
+            )
+            return ConcurrencyControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = "missing_concurrency_fields",
+                modeType = config.modeType,
+                transitionMode = config.transitionMode,
+                overrodeConflictingTransition = false
+            )
+        }
+
+        val currentConfigBeforeApply = AppConfig.getAppConfig()
+        if (controlSeq > 0 && lastAppliedConcurrencyControlSeq >= 0 && controlSeq <= lastAppliedConcurrencyControlSeq) {
+            logW(
+                "远端并发控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "lastAppliedConcurrencyControlSeq=$lastAppliedConcurrencyControlSeq，reason=stale_control_seq，" +
+                    "modeType（并发模式）=${formatDiffValue("modeType", currentConfigBeforeApply.modeType)}，" +
+                    "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", currentConfigBeforeApply.transitionMode)}"
+            )
+            return ConcurrencyControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = "stale_control_seq",
+                modeType = currentConfigBeforeApply.modeType,
+                transitionMode = currentConfigBeforeApply.transitionMode,
+                overrodeConflictingTransition = false
+            )
+        }
+
+        val previousModeType = currentConfigBeforeApply.modeType
+        val previousTransitionMode = currentConfigBeforeApply.transitionMode
+        val requestedModeType = json.getInteger("modeType") ?: previousModeType
+        val requestedTransitionMode = json.getInteger("transitionMode")
+        val operator = json.getString("operator").orEmpty()
+        val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = previousModeType,
+            currentTransitionMode = previousTransitionMode,
+            requestedModeType = requestedModeType,
+            requestedTransitionMode = requestedTransitionMode
+        )
+
+        currentConfigBeforeApply.modeType = resolvedTarget.modeType
+        currentConfigBeforeApply.transitionMode = resolvedTarget.transitionMode
+        AppConfig.saveAppConfig(currentConfigBeforeApply)
+
+        val currentConfig = AppConfig.getAppConfig()
+        val changed =
+            previousModeType != currentConfig.modeType ||
+                previousTransitionMode != currentConfig.transitionMode
+
+        if (controlSeq > 0) {
+            lastAppliedConcurrencyControlSeq = maxOf(lastAppliedConcurrencyControlSeq, controlSeq)
+        }
+
+        if (resolvedTarget.overrodeConflictingTransition) {
+            logW(
+                "远端并发控制覆盖了本地高转低过渡：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                    "后台目标 modeType（并发模式）=${formatDiffValue("modeType", resolvedTarget.modeType)}，" +
+                    "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", resolvedTarget.transitionMode)}，" +
+                    "策略=以后台最新目标为准"
+            )
+        }
+
+        logD(
+            "远端并发控制已应用：" +
+                "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                "modeType（并发模式）=${formatDiffValue("modeType", previousModeType)}->${formatDiffValue("modeType", currentConfig.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", previousTransitionMode)}->${formatDiffValue("transitionMode", currentConfig.transitionMode)}"
+        )
+        return ConcurrencyControlApplyResult(
+            controlSeq = controlSeq,
+            applied = true,
+            changed = changed,
+            reason = "applied",
+            modeType = currentConfig.modeType,
+            transitionMode = currentConfig.transitionMode,
+            overrodeConflictingTransition = resolvedTarget.overrodeConflictingTransition
         )
     }
 

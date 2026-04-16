@@ -228,6 +228,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
         when (json.getString("messageType").orEmpty()) {
             MqttProtocol.TYPE_RUNTIME_CONTROL -> handleRuntimeControlMessage(content)
+            MqttProtocol.TYPE_CONCURRENCY_CONTROL -> handleConcurrencyControlMessage(content)
             else -> LogUtils.w(
                 "【MQTT业务】收到未处理的 action=2 消息，已忽略：" +
                     "messageType=${json.getString("messageType").orEmpty().ifBlank { "unknown" }}"
@@ -283,6 +284,51 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         if (result.applied) {
             MaintenanceUiRefreshBridge.requestRefresh(
                 "runtime_control:${result.reason}:seq=${result.controlSeq}"
+            )
+        }
+    }
+
+    private fun handleConcurrencyControlMessage(content: String) {
+        val result = DataManagementAPI.applyRemoteConcurrencyControl(
+            content = content,
+            source = MqttProtocol.SOURCE_MQTT_ACTION_2
+        )
+        if (result.controlSeq > 0) {
+            val ackOk = SendServerHelper.publishConcurrencyControlAck(
+                SendServerHelper.ConcurrencyControlAckPayload(
+                    controlSeq = result.controlSeq,
+                    applied = result.applied,
+                    changed = result.changed,
+                    reason = result.reason,
+                    modeType = result.modeType,
+                    transitionMode = result.transitionMode
+                )
+            )
+            if (ackOk) {
+                LogUtils.d(
+                    "【MQTT并发控制】Ack 已发送：" +
+                        "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}"
+                )
+            } else {
+                LogUtils.w(
+                    "【MQTT并发控制】Ack 发送失败：" +
+                        "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}"
+                )
+            }
+        }
+        LogUtils.d(
+            "【MQTT并发控制】处理完成：" +
+                "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
+                "modeType（并发模式）=${result.modeType}，transitionMode（并发切换过渡态）=${result.transitionMode}，" +
+                "overrodeConflictingTransition=${result.overrodeConflictingTransition}"
+        )
+        if (result.applied && result.changed) {
+            SendServerHelper.publishServiceUpdateStatus("runtime_state:remote_concurrency_control")
+            setDataToView()
+        }
+        if (result.applied) {
+            MaintenanceUiRefreshBridge.requestRefresh(
+                "concurrency_control:${result.reason}:seq=${result.controlSeq}"
             )
         }
     }

@@ -45,6 +45,15 @@ object SendServerHelper {
         val restStatusSource: String?
     )
 
+    data class ConcurrencyControlAckPayload(
+        val controlSeq: Long,
+        val applied: Boolean,
+        val changed: Boolean,
+        val reason: String,
+        val modeType: Int,
+        val transitionMode: Int
+    )
+
     data class RuntimeStatePublishSnapshot(
         val runtimeSeq: Long,
         val source: String,
@@ -255,6 +264,25 @@ object SendServerHelper {
         payload["inspectionMode"] = ack.inspectionMode
         payload["isEnable"] = ack.isEnable
         payload["restStatusSource"] = ack.restStatusSource
+        payload["ackTs"] = System.currentTimeMillis()
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            }
+        )
+    }
+
+    fun publishConcurrencyControlAck(ack: ConcurrencyControlAckPayload): Boolean {
+        val payload = JSONObject()
+        payload["messageType"] = MqttProtocol.TYPE_CONCURRENCY_CONTROL_ACK
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["controlSeq"] = ack.controlSeq
+        payload["applied"] = ack.applied
+        payload["changed"] = ack.changed
+        payload["reason"] = ack.reason
+        payload["modeType"] = ack.modeType
+        payload["transitionMode"] = ack.transitionMode
         payload["ackTs"] = System.currentTimeMillis()
         return VMMqttHelper.publishService(
             TopicMessage().apply {
