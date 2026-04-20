@@ -18,3 +18,4 @@ local.properties
 /app/build/
 # 忽略所有 class 文件
 *.class
+.worktrees/
