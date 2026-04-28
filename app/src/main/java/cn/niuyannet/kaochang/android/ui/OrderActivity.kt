@@ -15,6 +15,7 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.customview.customView
@@ -47,7 +48,8 @@ abstract class OrderActivity: BaseSauceDetection() {
 
     private fun orderEventStatusText(status: Int): String = when (status) {
         1 -> "1（开始夹取）"
-        2 -> "2（单次履约完成：顾客已取走或超时丢弃）"
+        2 -> "2（单次履约完成：顾客已取走）"
+        6 -> "6（顾客超时未取，已自动丢弃）"
         5 -> "5（单次履约失败）"
         else -> "${status}（未知）"
     }
@@ -317,25 +319,25 @@ abstract class OrderActivity: BaseSauceDetection() {
                     KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> {
                         deliveredCount++
                         LogUtils.d(
-                            "【履约完结】视觉判定顾客已取走，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】光电判定顾客已取走，已上报订单事件(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.TAKEN_BY_USER))
                     }
 
                     KaoChangOperate.TakeSausageResult.DISCARDED -> {
                         deliveredCount++
                         LogUtils.w(
-                            "【履约完结】烤肠已超时丢弃，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】顾客超时未取，烤肠已由 out5 自动丢弃，已上报订单事件(status=6)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.DISCARDED))
                         LogUtils.w("【订单流转】本轮出餐按丢弃计完成，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                         LogUtils.w("【履约完结】本根烤肠因超时丢弃完成，不再重试：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.ERROR))
                         LogUtils.e("【订单流转】单根出餐失败，已上报 Java 订单事件 status=5：orderNo=$orderNo, itemId=${item.id}")
                         throw IllegalStateException("单根出餐失败：orderNo=$orderNo, itemId=${item.id}")
                     }
@@ -486,4 +488,3 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
     }
 }
-
