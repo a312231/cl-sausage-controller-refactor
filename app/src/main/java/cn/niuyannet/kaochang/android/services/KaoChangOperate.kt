@@ -15,6 +15,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBoo
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSession
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSessionType
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetryContext
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
@@ -607,11 +609,19 @@ object KaoChangOperate {
         markDeviceErrorAndUpload(logMessage)
     }
 
-    private fun createAtomicActionClient(): AtomicActionClient {
+    private fun createAtomicActionClient(
+        telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext()
+    ): AtomicActionClient {
         return AtomicActionExecutor(
             gateway = VmAtomicModbusGateway(modbus_address),
-            logger = { message -> logD(LOG_ACTION_GROUP, message) }
+            logger = { message -> logD(LOG_ACTION_GROUP, message) },
+            telemetryContext = telemetryContext,
+            telemetrySink = { telemetry -> publishActionGroupTelemetry(telemetry) }
         )
+    }
+
+    private fun publishActionGroupTelemetry(telemetry: ActionGroupTelemetry) {
+        SendServerHelper.publishActionGroupTelemetry(telemetry)
     }
 
     private fun actionGroupResultDesc(result: ActionGroupResult): String {
@@ -1107,7 +1117,16 @@ object KaoChangOperate {
                 "补肠动作组开始：protocol=300_400，sourceBox=${kaoPanBox.positionSn}，targetPan=${kaoPan.positionSn}，" +
                     "resourceLocks=${actionGroupLocks.snapshot()}"
             )
-            val result = InActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
+            val result = InActionGroupRunner(
+                createAtomicActionClient(
+                    ActionGroupTelemetryContext(
+                        sessionId = owner,
+                        boxNo = kaoPanBox.positionSn,
+                        panNo = kaoPan.positionSn,
+                        resourceLocks = actionGroupLocks.snapshot()
+                    )
+                )
+            ) { message -> logD(LOG_ACTION_GROUP, message) }
                 .run(kaoPanBox.positionSn, kaoPan.positionSn)
             actionGroupCompleted = true
             result
@@ -1463,7 +1482,16 @@ object KaoChangOperate {
                     LOG_ACTION_GROUP,
                     "出餐动作组开始：protocol=300_400，sourcePan=${kaoPan.positionSn}，resourceLocks=${actionGroupLocks.snapshot()}"
                 )
-                val result = OutActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
+                val result = OutActionGroupRunner(
+                    createAtomicActionClient(
+                        ActionGroupTelemetryContext(
+                            sessionId = owner,
+                            panNo = kaoPan.positionSn,
+                            orderId = null,
+                            resourceLocks = actionGroupLocks.snapshot()
+                        )
+                    )
+                ) { message -> logD(LOG_ACTION_GROUP, message) }
                     .run(kaoPan.positionSn)
                 actionGroupCompleted = true
                 result

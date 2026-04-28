@@ -49,6 +49,41 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldEmitTelemetryWhenActionFinishes() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IDLE))
+        )
+        val telemetry = mutableListOf<ActionGroupTelemetry>()
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            telemetryContext = ActionGroupTelemetryContext(
+                sessionId = "session-1",
+                boxNo = 17,
+                panNo = 2,
+                orderId = "order-1",
+                resourceLocks = "BOTTOM|LIFT|ABOVE"
+            ),
+            telemetrySink = { telemetry += it }
+        )
+
+        val result = executor.execute(AtomicActions.in7, infoValue = 2)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(1, telemetry.size)
+        assertEquals("300_400", telemetry.first().actionProtocolVersion)
+        assertEquals("session-1", telemetry.first().sessionId)
+        assertEquals("in7", telemetry.first().actionName)
+        assertEquals(370, telemetry.first().registerAddress)
+        assertEquals(371, telemetry.first().resultRegister)
+        assertEquals(17, telemetry.first().boxNo)
+        assertEquals(2, telemetry.first().panNo)
+        assertEquals("order-1", telemetry.first().orderId)
+        assertEquals("BOTTOM|LIFT|ABOVE", telemetry.first().resourceLocks)
+        assertEquals(null, telemetry.first().errorCode)
+    }
+
+    @Test
     fun definitions_shouldUse300And400Registers() {
         assertEquals(AtomicActionSpec("in7", 370, 371, 372, 120_000L, 500L, "in7：上平台从升降台夹肠并放入烤盘"), AtomicActions.in7)
         assertEquals(AtomicActionSpec("out5", 450, 451, 452, 90_000L, 500L, "out5：检查顾客是否取走，超时未取由下位机自动丢弃"), AtomicActions.out5)

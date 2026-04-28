@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
@@ -290,6 +291,44 @@ object SendServerHelper {
                 content = JSON.toJSONString(payload)
             }
         )
+    }
+
+    fun publishActionGroupTelemetry(telemetry: ActionGroupTelemetry): Boolean {
+        val payload = JSONObject()
+        payload["messageType"] = MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["reportedAt"] = System.currentTimeMillis()
+        payload["actionProtocolVersion"] = telemetry.actionProtocolVersion
+        payload["sessionId"] = telemetry.sessionId
+        payload["actionName"] = telemetry.actionName
+        payload["registerAddress"] = telemetry.registerAddress
+        payload["resultRegister"] = telemetry.resultRegister
+        payload["errorCode"] = telemetry.errorCode
+        payload["errorMessage"] = telemetry.errorMessage
+        payload["boxNo"] = telemetry.boxNo
+        payload["panNo"] = telemetry.panNo
+        payload["orderId"] = telemetry.orderId
+        payload["resourceLocks"] = telemetry.resourceLocks
+        payload["elapsedMs"] = telemetry.elapsedMs
+        val ok = VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_DEVICE_LOG
+                content = JSON.toJSONString(payload)
+            }
+        )
+        if (ok) {
+            LogUtils.d(
+                "【300/400动作组】已上报结构化动作日志：" +
+                    "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
+                    "errorCode=${telemetry.errorCode}，elapsedMs=${telemetry.elapsedMs}"
+            )
+        } else {
+            LogUtils.w(
+                "【300/400动作组】结构化动作日志上报失败：" +
+                    "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，errorCode=${telemetry.errorCode}"
+            )
+        }
+        return ok
     }
 
     private fun scheduleRuntimeStateAckTimeout(snapshot: RuntimeStatePublishSnapshot) {

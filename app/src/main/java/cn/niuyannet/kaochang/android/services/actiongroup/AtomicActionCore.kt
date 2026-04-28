@@ -74,7 +74,9 @@ interface AtomicActionStateReader {
 
 class AtomicActionExecutor(
     private val gateway: AtomicModbusGateway,
-    private val logger: (String) -> Unit
+    private val logger: (String) -> Unit,
+    private val telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext(),
+    private val telemetrySink: (ActionGroupTelemetry) -> Unit = {}
 ) : AtomicActionClient, AtomicActionStateReader {
 
     override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
@@ -83,8 +85,12 @@ class AtomicActionExecutor(
 
     override suspend fun execute(spec: AtomicActionSpec, infoValue: Int): AtomicActionResult {
         return when (val current = readResult(spec)) {
-            is AtomicReadResult.Failure -> AtomicActionResult.ModbusError(
-                "${spec.name} 启动前读取结果寄存器 ${spec.resultRegister} 失败：${current.message}"
+            is AtomicReadResult.Failure -> finishWithTelemetry(
+                spec = spec,
+                result = AtomicActionResult.ModbusError(
+                    "${spec.name} 启动前读取结果寄存器 ${spec.resultRegister} 失败：${current.message}"
+                ),
+                startedAtMs = System.currentTimeMillis()
             )
             is AtomicReadResult.Success -> {
                 if (current.value == AtomicActionCodes.RUNNING) {
@@ -103,14 +109,22 @@ class AtomicActionExecutor(
                 "info=${spec.infoRegister}，infoValue=$infoValue，description=${spec.description}"
         )
         when (val writeInfo = gateway.writeRegister(spec.infoRegister, infoValue)) {
-            is AtomicIoResult.Failure -> return AtomicActionResult.ModbusError(
-                "${spec.name} 写信息寄存器 ${spec.infoRegister} 失败：${writeInfo.message}"
+            is AtomicIoResult.Failure -> return finishWithTelemetry(
+                spec = spec,
+                result = AtomicActionResult.ModbusError(
+                    "${spec.name} 写信息寄存器 ${spec.infoRegister} 失败：${writeInfo.message}"
+                ),
+                startedAtMs = System.currentTimeMillis()
             )
             AtomicIoResult.Success -> Unit
         }
         when (val writeCommand = gateway.writeRegister(spec.commandRegister, 1)) {
-            is AtomicIoResult.Failure -> return AtomicActionResult.ModbusError(
-                "${spec.name} 写命令寄存器 ${spec.commandRegister} 失败：${writeCommand.message}"
+            is AtomicIoResult.Failure -> return finishWithTelemetry(
+                spec = spec,
+                result = AtomicActionResult.ModbusError(
+                    "${spec.name} 写命令寄存器 ${spec.commandRegister} 失败：${writeCommand.message}"
+                ),
+                startedAtMs = System.currentTimeMillis()
             )
             AtomicIoResult.Success -> Unit
         }
@@ -122,7 +136,9 @@ class AtomicActionExecutor(
             when (val read = gateway.readRegister(spec.resultRegister)) {
                 is AtomicReadResult.Failure -> return AtomicActionResult.ModbusError(
                     "${spec.name} 读取结果寄存器 ${spec.resultRegister} 失败：${read.message}"
-                )
+                ).let {
+                    finishWithTelemetry(spec, it, startedAtMs)
+                }
                 is AtomicReadResult.Success -> {
                     val code = read.value
                     logger(
@@ -130,15 +146,61 @@ class AtomicActionExecutor(
                             "resultCode=${formatCode(code)}，elapsedMs=${System.currentTimeMillis() - startedAtMs}"
                     )
                     when {
-                        code == AtomicActionCodes.IDLE -> return AtomicActionResult.Success
+                        code == AtomicActionCodes.IDLE -> return finishWithTelemetry(
+                            spec,
+                            AtomicActionResult.Success,
+                            startedAtMs
+                        )
                         code == AtomicActionCodes.RUNNING -> delay(spec.pollDelayMs)
-                        code >= AtomicActionCodes.PARAM_ERROR -> return AtomicActionResult.Failed(code, messageOf(code))
-                        else -> return AtomicActionResult.ModbusError("${spec.name} 未知结果码：${formatCode(code)}")
+                        code >= AtomicActionCodes.PARAM_ERROR -> return finishWithTelemetry(
+                            spec,
+                            AtomicActionResult.Failed(code, messageOf(code)),
+                            startedAtMs
+                        )
+                        else -> return finishWithTelemetry(
+                            spec,
+                            AtomicActionResult.ModbusError("${spec.name} 未知结果码：${formatCode(code)}"),
+                            startedAtMs
+                        )
                     }
                 }
             }
         }
-        return AtomicActionResult.Timeout("${spec.name} 执行超时：timeoutMs=${spec.timeoutMs}")
+        return finishWithTelemetry(
+            spec,
+            AtomicActionResult.Timeout("${spec.name} 执行超时：timeoutMs=${spec.timeoutMs}"),
+            startedAtMs
+        )
+    }
+
+    private fun finishWithTelemetry(
+        spec: AtomicActionSpec,
+        result: AtomicActionResult,
+        startedAtMs: Long
+    ): AtomicActionResult {
+        val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
+        val (errorCode, errorMessage) = when (result) {
+            AtomicActionResult.Success -> null to null
+            is AtomicActionResult.Failed -> result.errorCode to result.message
+            is AtomicActionResult.ModbusError -> null to result.message
+            is AtomicActionResult.Timeout -> null to result.message
+        }
+        telemetrySink(
+            ActionGroupTelemetry(
+                sessionId = telemetryContext.sessionId,
+                actionName = spec.name,
+                registerAddress = spec.commandRegister,
+                resultRegister = spec.resultRegister,
+                errorCode = errorCode,
+                errorMessage = errorMessage,
+                boxNo = telemetryContext.boxNo,
+                panNo = telemetryContext.panNo,
+                orderId = telemetryContext.orderId,
+                resourceLocks = telemetryContext.resourceLocks,
+                elapsedMs = elapsedMs
+            )
+        )
+        return result
     }
 
     companion object {

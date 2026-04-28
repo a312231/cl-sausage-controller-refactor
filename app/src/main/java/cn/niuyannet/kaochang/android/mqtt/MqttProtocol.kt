@@ -13,6 +13,7 @@ object MqttProtocol {
     const val TYPE_AVAILABLE_STATE_ACK = "available_state_ack"
     const val TYPE_RUNTIME_CONTROL_ACK = "runtime_control_ack"
     const val TYPE_CONCURRENCY_CONTROL_ACK = "concurrency_control_ack"
+    const val TYPE_ACTION_GROUP_TELEMETRY = "action_group_telemetry"
 
     const val SOURCE_MQTT_ACTION_2 = "mqtt-action=2"
 }
