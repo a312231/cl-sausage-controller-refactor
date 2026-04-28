@@ -9,6 +9,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
@@ -677,7 +678,11 @@ object KaoChangAlgorithm {
      * 2. 高并发从 1~21 号可售区选取；
      * 3. 按 holdingTime 最小值优先，即“最早进入保温的先卖”。
      */
-    suspend fun purchase(tasteCode: String, productId: Int): KaoChangOperate.TakeSausageResult {
+    suspend fun purchase(
+        tasteCode: String,
+        productId: Int,
+        orderContext: ActionGroupOrderContext? = null
+    ): KaoChangOperate.TakeSausageResult {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
         val targetKaoPan: KaoPan? = if (config.modeType == 1 || config.transitionMode == 1) {
@@ -699,7 +704,7 @@ object KaoChangAlgorithm {
                 LOG_ALGORITHM,
                 "收到出货订单：口味=$tasteCode，商品=$productId，已调度托盘 ID=${targetKaoPan.id}，烤盘位=${targetKaoPan.positionSn}，holdingTime=${targetKaoPan.holdingTime}"
             )
-            return KaoChangOperate.takeSausageResult(targetKaoPan)
+            return KaoChangOperate.takeSausageResult(targetKaoPan, orderContext)
         } else {
             logW(LOG_DEVICE, "收到出货订单失败：当前没有找到可售烤肠 [口味=$tasteCode, 商品=$productId]")
         }

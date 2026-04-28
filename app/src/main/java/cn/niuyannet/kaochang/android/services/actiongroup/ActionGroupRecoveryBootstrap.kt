@@ -76,7 +76,6 @@ class ActionGroupRecoveryBootstrap(
             ActionGroupSessionType.OUT_SELL -> OutActionGroupRunner(client, logger)
                 .run(session.sourceNo)
         }
-        sessionStore.clear()
         resourceLocks.release(session.sessionId)
         logger(
             "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"

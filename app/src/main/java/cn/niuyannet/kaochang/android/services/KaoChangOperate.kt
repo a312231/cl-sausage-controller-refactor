@@ -13,6 +13,9 @@ import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBootstrap
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResult
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventPayloadBuilder
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSession
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSessionType
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
@@ -25,6 +28,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupRunner
 import cn.niuyannet.kaochang.android.services.actiongroup.OutActionGroupRunner
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceLocks
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
+import cn.niuyannet.kaochang.android.services.actiongroup.PendingActionGroupOrderEvent
+import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupOrderEventStore
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupSessionStore
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
@@ -81,6 +86,7 @@ object KaoChangOperate {
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val actionGroupLocks = ResourceLocks()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
+    private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -610,13 +616,17 @@ object KaoChangOperate {
     }
 
     private fun createAtomicActionClient(
-        telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext()
+        telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext(),
+        onTelemetry: (ActionGroupTelemetry) -> Unit = {}
     ): AtomicActionClient {
         return AtomicActionExecutor(
             gateway = VmAtomicModbusGateway(modbus_address),
             logger = { message -> logD(LOG_ACTION_GROUP, message) },
             telemetryContext = telemetryContext,
-            telemetrySink = { telemetry -> publishActionGroupTelemetry(telemetry) }
+            telemetrySink = { telemetry ->
+                publishActionGroupTelemetry(telemetry)
+                onTelemetry(telemetry)
+            }
         )
     }
 
@@ -690,6 +700,116 @@ object KaoChangOperate {
         AppConfig.saveAppConfig(config)
     }
 
+    private fun orderEventStatusDesc(status: Int): String = when (status) {
+        1 -> "1(开始夹取)"
+        ActionGroupOrderStatus.FINISHED -> "2(单次履约完成)"
+        5 -> "5(单次履约失败)"
+        ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED -> "6(顾客超时未取已丢弃)"
+        else -> "$status(未知)"
+    }
+
+    private fun isSamePendingOrderEvent(
+        pending: PendingActionGroupOrderEvent,
+        orderContext: ActionGroupOrderContext,
+        status: Int
+    ): Boolean {
+        return pending.status == status &&
+            pending.orderContext.orderNo == orderContext.orderNo &&
+            pending.orderContext.itemId == orderContext.itemId &&
+            pending.orderContext.productId == orderContext.productId &&
+            pending.orderContext.tasteCode == orderContext.tasteCode
+    }
+
+    private fun savePendingActionGroupOrderEvent(
+        orderContext: ActionGroupOrderContext,
+        status: Int,
+        panNo: Int,
+        discarded: Boolean
+    ) {
+        actionGroupOrderEventStore.save(
+            PendingActionGroupOrderEvent(
+                orderContext = orderContext,
+                status = status,
+                panNo = panNo,
+                discarded = discarded
+            )
+        )
+        logW(
+            LOG_ACTION_GROUP,
+            "已持久化动作组订单终态待补偿事件：orderNo=${orderContext.orderNo}，" +
+                "itemId=${orderContext.itemId}，panNo=$panNo，status=${orderEventStatusDesc(status)}"
+        )
+    }
+
+    fun reportActionGroupOrderTerminalEvent(
+        orderContext: ActionGroupOrderContext,
+        status: Int,
+        source: String
+    ): Boolean {
+        if (!orderContext.isValid()) {
+            logE(LOG_ORDER, "动作组订单终态上报失败：订单上下文不完整，source=$source，orderContext=$orderContext")
+            return false
+        }
+        val ok = SendServerHelper.publishServiceUpdateOrder(
+            ActionGroupOrderEventPayloadBuilder.build(orderContext, status)
+        )
+        if (ok) {
+            logD(
+                LOG_ORDER,
+                "动作组订单终态上报成功：source=$source，orderNo=${orderContext.orderNo}，" +
+                    "itemId=${orderContext.itemId}，productId=${orderContext.productId}，" +
+                    "tasteCode=${orderContext.tasteCode}，status=${orderEventStatusDesc(status)}"
+            )
+            val pending = actionGroupOrderEventStore.load()
+            if (pending != null && isSamePendingOrderEvent(pending, orderContext, status)) {
+                actionGroupOrderEventStore.clear()
+                logD(LOG_ACTION_GROUP, "已清理动作组订单终态待补偿事件：orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}")
+            }
+        } else {
+            logE(
+                LOG_ORDER,
+                "动作组订单终态 MQTT 上报失败，保留待补偿事件：source=$source，" +
+                    "orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}，status=${orderEventStatusDesc(status)}"
+            )
+        }
+        return ok
+    }
+
+    private fun flushPendingActionGroupOrderEvent(reason: String): Boolean {
+        val pending = actionGroupOrderEventStore.load() ?: return true
+        logW(
+            LOG_ACTION_GROUP,
+            "发现动作组订单终态待补偿事件，准备补发：reason=$reason，orderNo=${pending.orderContext.orderNo}，" +
+                "itemId=${pending.orderContext.itemId}，panNo=${pending.panNo}，status=${orderEventStatusDesc(pending.status)}"
+        )
+        return reportActionGroupOrderTerminalEvent(
+            orderContext = pending.orderContext,
+            status = pending.status,
+            source = "动作组恢复补偿:$reason"
+        )
+    }
+
+    private fun persistOutTerminalEventFromTelemetry(
+        telemetry: ActionGroupTelemetry,
+        orderContext: ActionGroupOrderContext?,
+        panNo: Int
+    ) {
+        if (telemetry.actionName != "out5" || orderContext == null || !orderContext.isValid()) {
+            return
+        }
+        val status = when (telemetry.errorCode) {
+            null -> ActionGroupOrderStatus.FINISHED
+            AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED -> ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED
+            else -> return
+        }
+        savePendingActionGroupOrderEvent(
+            orderContext = orderContext,
+            status = status,
+            panNo = panNo,
+            discarded = status == ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED
+        )
+    }
+
     suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
         if (!VMModbusHelper.connectStatus()) {
             logW(LOG_ACTION_GROUP, "跳过动作组恢复：Modbus 未连接，reason=$reason")
@@ -710,6 +830,7 @@ object KaoChangOperate {
                     AppConfig.saveAppConfig(config)
                     logW(LOG_ACTION_GROUP, "动作组恢复：下位机无执行中动作，已清理本地 moveStatus=${config.moveStatus}，reason=$reason")
                 }
+                flushPendingActionGroupOrderEvent(reason)
                 true
             }
             is ActionGroupRecoveryResult.MaintenanceRequired -> {
@@ -759,6 +880,7 @@ object KaoChangOperate {
                 KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                actionGroupSessionStore.clear()
                 logW(LOG_ACTION_GROUP, "补肠动作组恢复完成并已回写本地状态：reason=$reason，session=$session")
                 true
             }
@@ -781,6 +903,25 @@ object KaoChangOperate {
         reason: String,
         discarded: Boolean
     ): Boolean {
+        val orderContext = session.orderContext
+        if (orderContext == null || !orderContext.isValid()) {
+            enterActionGroupMaintenance(
+                "出餐恢复完成但本地动作组会话缺少订单上下文，无法补偿回写后端订单状态，需人工确认：" +
+                    "reason=$reason，session=$session"
+            )
+            return false
+        }
+        val terminalStatus = if (discarded) {
+            ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED
+        } else {
+            ActionGroupOrderStatus.FINISHED
+        }
+        savePendingActionGroupOrderEvent(
+            orderContext = orderContext,
+            status = terminalStatus,
+            panNo = session.sourceNo,
+            discarded = discarded
+        )
         val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == session.sourceNo }
         if (pan == null) {
             enterActionGroupMaintenance("出餐恢复完成但本地找不到源烤盘，需人工确认：reason=$reason，session=$session")
@@ -796,6 +937,8 @@ object KaoChangOperate {
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
         val resultText = if (discarded) "顾客超时未取且已自动丢弃" else "顾客已取走"
         logW(LOG_ACTION_GROUP, "出餐动作组恢复完成并已清空烤盘：$resultText，reason=$reason，session=$session")
+        actionGroupSessionStore.clear()
+        flushPendingActionGroupOrderEvent("出餐动作组恢复完成:$reason")
         return true
     }
 
@@ -1424,7 +1567,10 @@ object KaoChangOperate {
      * - 超时未取且系统已丢弃：返回 DISCARDED，当前订单逻辑按“本次已处理完成”推进
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
-    suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
+    suspend fun takeSausageResult(
+        kaoPan: KaoPan,
+        orderContext: ActionGroupOrderContext? = null
+    ): TakeSausageResult {
         // 说明：
         // - 订单流程会在整单开始时把 moveStatus 置为 2，表示“订单出餐进行中”。
         // - 这里不能再要求 moveStatus==0，否则会和整单锁冲突，导致出餐卡住。
@@ -1466,14 +1612,14 @@ object KaoChangOperate {
                 return TakeSausageResult.ERROR
             }
 
-            var actionGroupCompleted = false
             val actionGroupResult = try {
                 actionGroupSessionStore.save(
                     ActionGroupSession(
                         sessionId = owner,
                         type = ActionGroupSessionType.OUT_SELL,
                         sourceNo = kaoPan.positionSn,
-                        orderId = null,
+                        orderId = orderContext?.orderNo,
+                        orderContext = orderContext,
                         currentAction = "out1",
                         resourceMask = lockMask
                     )
@@ -1487,18 +1633,16 @@ object KaoChangOperate {
                         ActionGroupTelemetryContext(
                             sessionId = owner,
                             panNo = kaoPan.positionSn,
-                            orderId = null,
+                            orderId = orderContext?.orderNo,
                             resourceLocks = actionGroupLocks.snapshot()
                         )
-                    )
+                    ) { telemetry ->
+                        persistOutTerminalEventFromTelemetry(telemetry, orderContext, kaoPan.positionSn)
+                    }
                 ) { message -> logD(LOG_ACTION_GROUP, message) }
                     .run(kaoPan.positionSn)
-                actionGroupCompleted = true
                 result
             } finally {
-                if (actionGroupCompleted) {
-                    actionGroupSessionStore.clear()
-                }
                 actionGroupLocks.release(owner)
             }
 
@@ -1518,9 +1662,25 @@ object KaoChangOperate {
             }
 
             if (takeResult == TakeSausageResult.ERROR) {
+                actionGroupSessionStore.clear()
                 return takeResult
             }
 
+            val terminalStatus = ActionGroupOrderStatus.statusFor(takeResult)
+            if (orderContext != null && orderContext.isValid()) {
+                savePendingActionGroupOrderEvent(
+                    orderContext = orderContext,
+                    status = terminalStatus,
+                    panNo = kaoPan.positionSn,
+                    discarded = takeResult == TakeSausageResult.DISCARDED
+                )
+            } else {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "正式出餐完成但缺少订单上下文，无法建立订单终态补偿事件：panNo=${kaoPan.positionSn}，" +
+                        "takeResult=$takeResult，orderContext=$orderContext"
+                )
+            }
             SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
             kaoPan.cmdStatusTake = 0
             kaoPan.isHasSausage = false
@@ -1537,6 +1697,7 @@ object KaoChangOperate {
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
+            actionGroupSessionStore.clear()
 
             return takeResult
         } finally {

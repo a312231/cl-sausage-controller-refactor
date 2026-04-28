@@ -29,7 +29,7 @@ class ActionGroupRecoveryBootstrapTest {
     }
 
     @Test
-    fun recover_shouldTakeOverRunningActionWhenSessionExists() = runBlocking {
+    fun recover_shouldTakeOverRunningActionWhenSessionExistsAndKeepSessionUntilCallerHandlesResult() = runBlocking {
         val session = ActionGroupSession(
             sessionId = "in-session",
             type = ActionGroupSessionType.IN_SUPPLEMENT,
@@ -54,7 +54,7 @@ class ActionGroupRecoveryBootstrapTest {
         assertTrue(result is ActionGroupRecoveryResult.TakeoverFinished)
         assertEquals(ActionGroupResult.Success, (result as ActionGroupRecoveryResult.TakeoverFinished).actionResult)
         assertEquals(listOf("in5:0", "in6:0", "in7:2"), client.calls)
-        assertEquals(null, store.session)
+        assertEquals(session, store.session)
     }
 
     @Test

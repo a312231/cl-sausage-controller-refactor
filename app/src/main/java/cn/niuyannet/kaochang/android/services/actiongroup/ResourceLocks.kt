@@ -69,6 +69,7 @@ data class ActionGroupSession(
     val sourceNo: Int,
     val targetNo: Int? = null,
     val orderId: String? = null,
+    val orderContext: ActionGroupOrderContext? = null,
     val currentAction: String? = null,
     val resourceMask: Int = ResourceMask.none,
     val startedAtMs: Long = System.currentTimeMillis()
