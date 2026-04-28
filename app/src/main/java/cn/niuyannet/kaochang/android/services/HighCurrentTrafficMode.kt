@@ -252,14 +252,11 @@ object HighCurrentTrafficMode {
             KaoChangOperate.heating(3)
             var movedCount = 0
             neededTastes.forEachIndexed { index, tasteCode ->
-                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
-                matchingBox?.let { box ->
-                    if (box.num > 0 && index < emptyPositions25_33.size) {
-                        val targetPosition = emptyPositions25_33[index]
-                        targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                        if (KaoChangOperate.moveSausageToKaoPan(targetPosition, box)) {
-                            movedCount += 1
-                        }
+                if (index < emptyPositions25_33.size) {
+                    val targetPosition = emptyPositions25_33[index]
+                    targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
+                    if (KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)) {
+                        movedCount += 1
                     }
                 }
             }
@@ -455,12 +452,7 @@ object HighCurrentTrafficMode {
         }
 
         list1_21.forEach { kaoPan ->
-            val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, kaoPan.taste?.tasteCode)
-            matchingBox?.let { box ->
-                if (box.num > 0) {
-                    KaoChangOperate.moveSausageToKaoPan(kaoPan, box)
-                }
-            }
+            KaoChangOperate.moveSausageToKaoPanByTaste(kaoPan, kaoPan.taste?.tasteCode)
         }
     }
 
@@ -491,16 +483,13 @@ object HighCurrentTrafficMode {
             }
             var movedCount = 0
             neededTastes.forEachIndexed { index, tasteCode ->
-                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
-                matchingBox?.let { box ->
-                    if (box.num > 0 && index < emptyPositions25_33.size) {
-                        val targetPosition = emptyPositions25_33[index]
-                        targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                        val moved = KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
-                        if (moved) {
-                            movedCount += 1
-                            SelfCleanManager.markZone3Dirty()
-                        }
+                if (index < emptyPositions25_33.size) {
+                    val targetPosition = emptyPositions25_33[index]
+                    targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
+                    val moved = KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)
+                    if (moved) {
+                        movedCount += 1
+                        SelfCleanManager.markZone3Dirty()
                     }
                 }
             }

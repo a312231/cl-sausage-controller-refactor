@@ -16,6 +16,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryRes
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSession
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSessionType
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupRunner
@@ -996,7 +997,49 @@ object KaoChangOperate {
      * 只有“烤肠箱 -> 平台”和“平台 -> 烤盘”两个动作都成功时，
      * 才允许扣减烤肠箱库存并写入目标烤盘状态。
      */
-    suspend fun moveSausageToKaoPan(kaoPan: KaoPan, kaoPanBox: KaoPanBox):Boolean {
+    suspend fun moveSausageToKaoPanByTaste(kaoPan: KaoPan, tasteCode: String?): Boolean {
+        val candidates = TrafficModeHelper.findSupplyBoxesByTaste(KaoPanHelper.getKaoPanBoxList(), tasteCode)
+        if (candidates.isEmpty()) {
+            logE(LOG_SUPPLEMENT, "补肠失败：找不到同口味可用烤肠箱，targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode")
+            return false
+        }
+        candidates.forEachIndexed { index, box ->
+            logD(
+                LOG_SUPPLEMENT,
+                "按口味补肠尝试：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，" +
+                    "candidate=${index + 1}/${candidates.size}，box=${box.positionSn}，stock=${box.num}"
+            )
+            val moved = moveSausageToKaoPan(kaoPan, box, allowPickFailureFallback = true)
+            if (moved) {
+                return true
+            }
+            if (box.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），尝试同口味下一箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
+                )
+            } else {
+                logE(
+                    LOG_SUPPLEMENT,
+                    "补肠遇到非取肠红外失败，停止切箱：targetPan=${kaoPan.positionSn}，box=${box.positionSn}，" +
+                        "cmdStatusTake=${AtomicActionExecutor.formatCode(box.cmdStatusTake)}"
+                )
+                return false
+            }
+        }
+        logE(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，boxCount=${candidates.size}")
+        return false
+    }
+
+    suspend fun moveSausageToKaoPan(kaoPan: KaoPan, kaoPanBox: KaoPanBox): Boolean {
+        return moveSausageToKaoPan(kaoPan, kaoPanBox, allowPickFailureFallback = false)
+    }
+
+    private suspend fun moveSausageToKaoPan(
+        kaoPan: KaoPan,
+        kaoPanBox: KaoPanBox,
+        allowPickFailureFallback: Boolean
+    ):Boolean {
         if (AppConfig.getAppConfig().errorStatus>0){
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠操作")
             return false
@@ -1110,7 +1153,14 @@ object KaoChangOperate {
                 "补肠失败，未更新烤盘状态和库存：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, " +
                     "result=${actionGroupResultDesc(actionGroupResult)}"
             )
-            markActionGroupFailure("补肠", actionGroupResult)
+            if (allowPickFailureFallback && atomicFailureCode(actionGroupResult) == AtomicActionCodes.IR_PICK_FAILED) {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "补肠取肠失败由同口味切箱逻辑接管，暂不切维护：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}"
+                )
+            } else {
+                markActionGroupFailure("补肠", actionGroupResult)
+            }
         }
 
         AppConfig.getAppConfig().moveStatus = 0

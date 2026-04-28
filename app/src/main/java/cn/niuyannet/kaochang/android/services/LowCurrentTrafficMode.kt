@@ -200,12 +200,7 @@ object LowCurrentTrafficMode {
         }
 
         list1_9.forEach { kaoPan ->
-            val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, kaoPan.taste?.tasteCode)
-            matchingBox?.let { box ->
-                if (box.num > 0) {
-                    KaoChangOperate.moveSausageToKaoPan(kaoPan, box)
-                }
-            }
+            KaoChangOperate.moveSausageToKaoPanByTaste(kaoPan, kaoPan.taste?.tasteCode)
         }
     }
 
@@ -340,14 +335,9 @@ object LowCurrentTrafficMode {
                 return
             }
             neededTastes.forEachIndexed { index, tasteCode ->
-                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
-                matchingBox?.let { box ->
-                    if (box.num > 0) {
-                        val targetPosition = emptyPositions13_15[index]
-                        targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                        KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
-                    }
-                }
+                val targetPosition = emptyPositions13_15[index]
+                targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
+                KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)
             }
             emptyPositions.forEach { it.isHasGrilling = true }
         }
@@ -379,14 +369,9 @@ object LowCurrentTrafficMode {
                 return
             }
             neededTastes.forEachIndexed { index, tasteCode ->
-                val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
-                matchingBox?.let { box ->
-                    if (box.num > 0) {
-                        val targetPosition = emptyPositions16_18[index]
-                        targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                        KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
-                    }
-                }
+                val targetPosition = emptyPositions16_18[index]
+                targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
+                KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)
             }
             emptyPositions.forEach { it.isHasGrilling = true }
         }

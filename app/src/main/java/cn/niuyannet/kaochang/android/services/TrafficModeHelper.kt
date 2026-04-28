@@ -108,12 +108,16 @@ object TrafficModeHelper {
      * 这样可以缩短机械臂整体取肠路径。
      */
     fun findSupplyBoxByTaste(listBox: List<KaoPanBox>, tasteCode: String?): KaoPanBox? {
+        return findSupplyBoxesByTaste(listBox, tasteCode).firstOrNull()
+    }
+
+    fun findSupplyBoxesByTaste(listBox: List<KaoPanBox>, tasteCode: String?): List<KaoPanBox> {
         if (tasteCode.isNullOrBlank()) {
-            return null
+            return emptyList()
         }
         return listBox
             .filter { it.tasteCode == tasteCode && it.num > 0 }
-            .maxByOrNull { it.positionSn }
+            .sortedByDescending { it.positionSn }
     }
 
     private fun safeLogInfo(message: String) {
