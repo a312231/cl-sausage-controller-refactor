@@ -68,6 +68,7 @@ object KaoChangAlgorithm {
     private var loggedManualRecoveryRequiredOnDisconnect = false
     private var loggedManualRecoveryRequiredAfterReconnect = false
     private var inspectionDisconnectSuppressedLogged = false
+    private var actionGroupRecoveredAfterModbusConnect = false
     private var lastPollStateSnapshot: String? = null
     var isEnabled = false
 
@@ -767,6 +768,13 @@ object KaoChangAlgorithm {
                     lastReconnectAttemptMs = 0L
                     loggedManualRecoveryRequiredOnDisconnect = false
                     rememberRecoverableOnlineStatus(config.onlineStatus)
+                    if (!actionGroupRecoveredAfterModbusConnect) {
+                        actionGroupRecoveredAfterModbusConnect = true
+                        val recovered = KaoChangOperate.recoverActionGroupStateAfterModbusReady("Modbus 已连接/重连后的动作组恢复检查")
+                        if (!recovered) {
+                            logW(LOG_COMM, "300/400 动作组恢复检查未通过，已保持或切入维护态，等待人工确认")
+                        }
+                    }
 
                     if (modbusReportedUnavailable) {
                         if (modbusReconnectSinceMs == null) {
@@ -801,6 +809,7 @@ object KaoChangAlgorithm {
                         }
                     }
                 } else {
+                    actionGroupRecoveredAfterModbusConnect = false
                     modbusReconnectSinceMs = null
                     loggedManualRecoveryRequiredAfterReconnect = false
                     if (modbusDisconnectSinceMs == null) {

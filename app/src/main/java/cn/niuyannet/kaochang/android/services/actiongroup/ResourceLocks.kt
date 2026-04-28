@@ -30,6 +30,16 @@ class ResourceLocks {
     }
 
     @Synchronized
+    fun forceAcquire(mask: Int, owner: String) {
+        owners[owner] = mask
+    }
+
+    @Synchronized
+    fun clear() {
+        owners.clear()
+    }
+
+    @Synchronized
     fun isIdle(): Boolean = owners.isEmpty()
 
     @Synchronized

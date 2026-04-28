@@ -376,7 +376,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         retryDelayMs: Long = 1500L
     ): Boolean {
         if (VMModbusHelper.connectStatus()) {
-            return true
+            return KaoChangOperate.recoverActionGroupStateAfterModbusReady("订单出餐前通信已连接：orderNo=$orderNo,itemId=$itemId")
         }
 
         LogUtils.w("【订单流转】检测到 Modbus 未连接，开始出餐前通信重试：orderNo=$orderNo, itemId=$itemId")
@@ -388,7 +388,7 @@ abstract class OrderActivity: BaseSauceDetection() {
             delay(retryDelayMs)
             if (VMModbusHelper.connectStatus()) {
                 LogUtils.d("【订单流转】Modbus 重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
-                return true
+                return KaoChangOperate.recoverActionGroupStateAfterModbusReady("订单出餐前 Modbus 重连成功：orderNo=$orderNo,itemId=$itemId")
             }
         }
 

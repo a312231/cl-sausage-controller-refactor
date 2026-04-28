@@ -11,6 +11,10 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBootstrap
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResult
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSession
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSessionType
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
@@ -18,6 +22,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupRunner
 import cn.niuyannet.kaochang.android.services.actiongroup.OutActionGroupRunner
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceLocks
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
+import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupSessionStore
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -72,6 +77,7 @@ object KaoChangOperate {
      */
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val actionGroupLocks = ResourceLocks()
+    private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -664,6 +670,124 @@ object KaoChangOperate {
         )
     }
 
+    private fun enterActionGroupMaintenance(reason: String) {
+        markDeviceErrorAndUpload(reason)
+        val config = AppConfig.getAppConfig()
+        config.moveStatus = 0
+        config.onlineStatus = 3
+        config.isEnable = 0
+        AppConfig.saveAppConfig(config)
+    }
+
+    suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
+        if (!VMModbusHelper.connectStatus()) {
+            logW(LOG_ACTION_GROUP, "跳过动作组恢复：Modbus 未连接，reason=$reason")
+            return false
+        }
+        val client = createAtomicActionClient()
+        val result = ActionGroupRecoveryBootstrap(
+            client = client,
+            sessionStore = actionGroupSessionStore,
+            resourceLocks = actionGroupLocks,
+            logger = { message -> logD(LOG_ACTION_GROUP, message) }
+        ).recover()
+        return when (result) {
+            ActionGroupRecoveryResult.Idle -> {
+                val config = AppConfig.getAppConfig()
+                if (config.moveStatus in listOf(1, 2)) {
+                    config.moveStatus = 0
+                    AppConfig.saveAppConfig(config)
+                    logW(LOG_ACTION_GROUP, "动作组恢复：下位机无执行中动作，已清理本地 moveStatus=${config.moveStatus}，reason=$reason")
+                }
+                true
+            }
+            is ActionGroupRecoveryResult.MaintenanceRequired -> {
+                enterActionGroupMaintenance("动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}")
+                false
+            }
+            is ActionGroupRecoveryResult.TakeoverFinished -> {
+                handleRecoveredActionGroupSession(result.session, result.actionResult, reason)
+            }
+        }
+    }
+
+    private fun handleRecoveredActionGroupSession(
+        session: ActionGroupSession,
+        result: ActionGroupResult,
+        reason: String
+    ): Boolean {
+        return when (result) {
+            ActionGroupResult.Success -> handleRecoveredSuccess(session, reason)
+            ActionGroupResult.Discarded -> handleRecoveredDiscarded(session, reason)
+            is ActionGroupResult.Failed -> {
+                markActionGroupFailure("动作组恢复接管", result)
+                false
+            }
+        }
+    }
+
+    private fun handleRecoveredSuccess(session: ActionGroupSession, reason: String): Boolean {
+        return when (session.type) {
+            ActionGroupSessionType.IN_SUPPLEMENT -> {
+                val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == session.targetNo }
+                val box = KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == session.sourceNo }
+                if (pan == null || box == null) {
+                    enterActionGroupMaintenance(
+                        "补肠恢复成功但本地找不到烤盘或肠箱，需人工确认：reason=$reason，session=$session"
+                    )
+                    return false
+                }
+                pan.isHasSausage = true
+                box.num = maxOf(0, box.num - 1)
+                pan.taste = KaoPanHelper.buildTasteFromBox(box, pan.taste)
+                pan.status = 1
+                pan.startTime = System.currentTimeMillis()
+                pan.cmdStatusMove = 0
+                box.cmdStatusTake = 0
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                AppConfig.getAppConfig().moveStatus = 0
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                logW(LOG_ACTION_GROUP, "补肠动作组恢复完成并已回写本地状态：reason=$reason，session=$session")
+                true
+            }
+            ActionGroupSessionType.OUT_SELL -> {
+                clearRecoveredOutPan(session, reason, discarded = false)
+            }
+        }
+    }
+
+    private fun handleRecoveredDiscarded(session: ActionGroupSession, reason: String): Boolean {
+        if (session.type != ActionGroupSessionType.OUT_SELL) {
+            enterActionGroupMaintenance("补肠恢复出现 DISCARDED 结果，协议语义异常：reason=$reason，session=$session")
+            return false
+        }
+        return clearRecoveredOutPan(session, reason, discarded = true)
+    }
+
+    private fun clearRecoveredOutPan(
+        session: ActionGroupSession,
+        reason: String,
+        discarded: Boolean
+    ): Boolean {
+        val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == session.sourceNo }
+        if (pan == null) {
+            enterActionGroupMaintenance("出餐恢复完成但本地找不到源烤盘，需人工确认：reason=$reason，session=$session")
+            return false
+        }
+        pan.cmdStatusTake = 0
+        pan.isHasSausage = false
+        pan.holdingTime = 0L
+        pan.startTime = 0
+        pan.status = 0
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        AppConfig.getAppConfig().moveStatus = 0
+        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        val resultText = if (discarded) "顾客超时未取且已自动丢弃" else "顾客已取走"
+        logW(LOG_ACTION_GROUP, "出餐动作组恢复完成并已清空烤盘：$resultText，reason=$reason，session=$session")
+        return true
+    }
+
     private fun buildSelfCleanCommand(positionSn: Int): Int {
         require(positionSn in 1..33) { "positionSn out of range: $positionSn" }
         return 500 + positionSn
@@ -881,6 +1005,11 @@ object KaoChangOperate {
             logE(LOG_SUPPLEMENT, "补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
             return false
         }
+        if (!ensureModbusReady("补肠动作组恢复检查") ||
+            !recoverActionGroupStateAfterModbusReady("补肠入口前恢复检查")
+        ) {
+            return false
+        }
 
         var appState = AppConfig.getAppConfig().moveStatus
         while (appState!=0) {
@@ -918,15 +1047,31 @@ object KaoChangOperate {
             return false
         }
 
+        var actionGroupCompleted = false
         val actionGroupResult = try {
+            actionGroupSessionStore.save(
+                ActionGroupSession(
+                    sessionId = owner,
+                    type = ActionGroupSessionType.IN_SUPPLEMENT,
+                    sourceNo = kaoPanBox.positionSn,
+                    targetNo = kaoPan.positionSn,
+                    currentAction = "in1",
+                    resourceMask = lockMask
+                )
+            )
             logD(
                 LOG_ACTION_GROUP,
                 "补肠动作组开始：protocol=300_400，sourceBox=${kaoPanBox.positionSn}，targetPan=${kaoPan.positionSn}，" +
                     "resourceLocks=${actionGroupLocks.snapshot()}"
             )
-            InActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
+            val result = InActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
                 .run(kaoPanBox.positionSn, kaoPan.positionSn)
+            actionGroupCompleted = true
+            result
         } finally {
+            if (actionGroupCompleted) {
+                actionGroupSessionStore.clear()
+            }
             actionGroupLocks.release(owner)
         }
 
@@ -1216,6 +1361,11 @@ object KaoChangOperate {
         // - 这里不能再要求 moveStatus==0，否则会和整单锁冲突，导致出餐卡住。
         // - 只需要等待与出餐冲突的动作（补肠/搬盘/丢弃）结束：1/3/4。
         // - 如果当前是 0（例如非整单场景直接调用），这里临时占用为 2，结束后再恢复。
+        if (!ensureModbusReady("出餐动作组恢复检查") ||
+            !recoverActionGroupStateAfterModbusReady("正式出餐入口前恢复检查")
+        ) {
+            return TakeSausageResult.ERROR
+        }
         var appState = AppConfig.getAppConfig().moveStatus
         while (appState == 1 || appState == 3 || appState == 4 || appState == 5) {
             delay(2000)
@@ -1247,14 +1397,30 @@ object KaoChangOperate {
                 return TakeSausageResult.ERROR
             }
 
+            var actionGroupCompleted = false
             val actionGroupResult = try {
+                actionGroupSessionStore.save(
+                    ActionGroupSession(
+                        sessionId = owner,
+                        type = ActionGroupSessionType.OUT_SELL,
+                        sourceNo = kaoPan.positionSn,
+                        orderId = null,
+                        currentAction = "out1",
+                        resourceMask = lockMask
+                    )
+                )
                 logD(
                     LOG_ACTION_GROUP,
                     "出餐动作组开始：protocol=300_400，sourcePan=${kaoPan.positionSn}，resourceLocks=${actionGroupLocks.snapshot()}"
                 )
-                OutActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
+                val result = OutActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
                     .run(kaoPan.positionSn)
+                actionGroupCompleted = true
+                result
             } finally {
+                if (actionGroupCompleted) {
+                    actionGroupSessionStore.clear()
+                }
                 actionGroupLocks.release(owner)
             }
 
