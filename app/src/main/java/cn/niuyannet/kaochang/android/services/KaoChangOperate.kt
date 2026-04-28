@@ -10,6 +10,15 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
+import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupRunner
+import cn.niuyannet.kaochang.android.services.actiongroup.OutActionGroupRunner
+import cn.niuyannet.kaochang.android.services.actiongroup.ResourceLocks
+import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
+import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
@@ -40,6 +49,7 @@ object KaoChangOperate {
     private const val LOG_SELL_MONITOR = "售卖口监控"
     private const val LOG_WINDOW = "窗口收尾"
     private const val LOG_SUPPLEMENT = "补肠流程"
+    private const val LOG_ACTION_GROUP = "300/400动作组"
     private const val LOG_PAN_MOVE = "烤盘搬移"
     private const val LOG_HEAT = "加热控制"
     private const val LOG_DEVICE = "设备状态"
@@ -61,6 +71,7 @@ object KaoChangOperate {
      * 但又需要切回主线程执行的任务，避免继续使用 GlobalScope 造成悬挂协程。
      */
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val actionGroupLocks = ResourceLocks()
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -589,6 +600,70 @@ object KaoChangOperate {
         markDeviceErrorAndUpload(logMessage)
     }
 
+    private fun createAtomicActionClient(): AtomicActionClient {
+        return AtomicActionExecutor(
+            gateway = VmAtomicModbusGateway(modbus_address),
+            logger = { message -> logD(LOG_ACTION_GROUP, message) }
+        )
+    }
+
+    private fun actionGroupResultDesc(result: ActionGroupResult): String {
+        return when (result) {
+            ActionGroupResult.Success -> "SUCCESS（动作组完成）"
+            ActionGroupResult.Discarded -> "DISCARDED（顾客超时未取，已自动丢弃）"
+            is ActionGroupResult.Failed -> "FAILED（${result.actionName}：${result.message}）"
+        }
+    }
+
+    private fun atomicFailureCode(result: ActionGroupResult): Int {
+        return when (result) {
+            ActionGroupResult.Success,
+            ActionGroupResult.Discarded -> 0
+            is ActionGroupResult.Failed -> when (val atomicResult = result.result) {
+                is AtomicActionResult.Failed -> atomicResult.errorCode
+                is AtomicActionResult.ModbusError -> 2
+                is AtomicActionResult.Timeout -> 2
+                AtomicActionResult.Success -> 0
+            }
+        }
+    }
+
+    private fun isActionGroupEnabledOrEnterMaintenance(actionName: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        if (config.useActionGroupV2 == 1) {
+            return true
+        }
+        markDeviceErrorAndUpload(
+            "$actionName 被维护开关 useActionGroupV2=0 拦截；新 Android 12 主流程不回退旧视觉链路，设备进入维护/暂停新单"
+        )
+        return false
+    }
+
+    private fun applyPendingActionGroupDisableIfIdle(reason: String) {
+        val config = AppConfig.getAppConfig()
+        if (config.pendingDisableActionGroupV2 != 1 || config.moveStatus != 0) {
+            return
+        }
+        config.pendingDisableActionGroupV2 = 0
+        config.useActionGroupV2 = 0
+        config.onlineStatus = 3
+        config.isEnable = 0
+        AppConfig.saveAppConfig(config)
+        logW(
+            LOG_ACTION_GROUP,
+            "$reason：已执行 pendingDisableActionGroupV2=1（待会话收口后关闭），" +
+                "useActionGroupV2=0（动作组关闭），onlineStatus=3（维护中），isEnable=0（算法关闭）"
+        )
+        publishRuntimeStateWithHttpFallback("动作组维护开关延迟关闭完成")
+    }
+
+    private fun markActionGroupFailure(actionName: String, result: ActionGroupResult) {
+        markDeviceErrorAndUpload(
+            "$actionName 动作组失败：protocol=300_400，result=${actionGroupResultDesc(result)}，" +
+                "resourceLocks=${actionGroupLocks.snapshot()}"
+        )
+    }
+
     private fun buildSelfCleanCommand(positionSn: Int): Int {
         require(positionSn in 1..33) { "positionSn out of range: $positionSn" }
         return 500 + positionSn
@@ -824,70 +899,46 @@ object KaoChangOperate {
             "开始补肠：目标烤盘=${kaoPan.positionSn}，来源烤肠箱=${kaoPanBox.positionSn}，口味=$sausageName，" +
                 "箱库存=$boxStockBefore，targetPanHasSausage=${kaoPan.isHasSausage}"
         )
-        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
-        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
-        val result = executeActionWithRetry(
-            actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
-            runningTimeoutMs = getBoxToPlatformTimeoutMs()
-        ) {
-            writeSingleRegister2(action_address, kaoPanBox.cmdValueTake)
-        }
-        if (result != ActionExecutionResult.SUCCESS) {
+        if (!isActionGroupEnabledOrEnterMaintenance("补肠")) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            markActionFailure("烤肠箱${kaoPanBox.positionSn}到平台", result)
             return false
         }
-        logD(LOG_SUPPLEMENT, "补肠中间态：烤肠($sausageName)已从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
-        kaoPanBox.cmdStatusTake = 0
 
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
-        if (sausageInfo==null){
-            writeSingleRegister2(action_address_shenjiatai,0)
-            //未检测到烤肠，报错
-            logE(LOG_SUPPLEMENT, "补肠失败：机械臂已将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台，但视觉未识别到烤肠，已置 errorStatus=1")
-            AppConfig.getAppConfig().errorStatus=1//未识别到烤肠报错
+        val owner = "in:${kaoPanBox.positionSn}->${kaoPan.positionSn}:${System.currentTimeMillis()}"
+        val lockMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+        if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            operateScope.launch {
-                publishRuntimeStateWithHttpFallback("补肠失败后设备状态上报")
-            }
-            //未检测到烤肠直接就结束了
+            logW(
+                LOG_ACTION_GROUP,
+                "补肠动作组资源忙，拒绝下发：sourceBox=${kaoPanBox.positionSn}，targetPan=${kaoPan.positionSn}，" +
+                    "need=${ResourceLocks.describe(lockMask)}，held=${actionGroupLocks.snapshot()}"
+            )
             return false
-        }else{
-            var value_y=sausageInfo.worldY.toInt()
-            logD(LOG_SUPPLEMENT, "升降台识别原始坐标：worldY=$value_y")
-            if(value_y < 60){
-                value_y=60
-            }
-            logD(LOG_SUPPLEMENT, "升降台识别坐标修正后：worldY=$value_y")
-            var value = (1 shl 8) or value_y
-            logD(LOG_SUPPLEMENT, "升降台识别寄存器写入值：206=$value")
-
-            writeSingleRegister2(action_address_shenjiatai,value)
-            logD(LOG_SUPPLEMENT, "补肠识别成功：升降台检测到烤肠($sausageName)，世界坐标Y=${sausageInfo.worldY}，寄存器206写入=$value")
         }
 
-        delay(200)
-        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从升降台搬运到烤盘${kaoPan.positionSn}")
-        val result2 = executeActionWithRetry(
-            actionName = "平台到烤盘${kaoPan.positionSn}"
-        ) {
-            writeSingleRegister2(action_address, kaoPan.cmdValueMove)
+        val actionGroupResult = try {
+            logD(
+                LOG_ACTION_GROUP,
+                "补肠动作组开始：protocol=300_400，sourceBox=${kaoPanBox.positionSn}，targetPan=${kaoPan.positionSn}，" +
+                    "resourceLocks=${actionGroupLocks.snapshot()}"
+            )
+            InActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
+                .run(kaoPanBox.positionSn, kaoPan.positionSn)
+        } finally {
+            actionGroupLocks.release(owner)
         }
-        if (result2 != ActionExecutionResult.SUCCESS) {
-            AppConfig.getAppConfig().moveStatus = 0
-            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            markActionFailure("平台到烤盘${kaoPan.positionSn}", result2)
-        }
+
+        val moveSuccess = actionGroupResult == ActionGroupResult.Success
+        kaoPanBox.cmdStatusTake = if (moveSuccess) 0 else atomicFailureCode(actionGroupResult)
+        kaoPan.cmdStatusMove = if (moveSuccess) 0 else atomicFailureCode(actionGroupResult)
         logD(
             LOG_SUPPLEMENT,
-            "补肠完成态：烤肠($sausageName)已从升降台搬运到烤盘${kaoPan.positionSn}，" +
-                "result=${actionExecutionResultDesc(result2)}"
+            "补肠动作组结束：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，" +
+                "result=${actionGroupResultDesc(actionGroupResult)}"
         )
 
-        kaoPan.cmdStatusMove = if (result2 == ActionExecutionResult.SUCCESS) 0 else 2
-        val moveSuccess = result == ActionExecutionResult.SUCCESS && result2 == ActionExecutionResult.SUCCESS
         if (moveSuccess){
             kaoPan.isHasSausage=true
             // 减少烤肠箱中的数量，最低只允许到 0，防止库存被写成负数
@@ -912,12 +963,14 @@ object KaoChangOperate {
             logE(
                 LOG_SUPPLEMENT,
                 "补肠失败，未更新烤盘状态和库存：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, " +
-                    "result=${actionExecutionResultDesc(result)}, result2=${actionExecutionResultDesc(result2)}"
+                    "result=${actionGroupResultDesc(actionGroupResult)}"
             )
+            markActionGroupFailure("补肠", actionGroupResult)
         }
 
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        applyPendingActionGroupDisableIfIdle("补肠动作组会话收口")
 
         //更新烤肠箱的库存和烤盘的状态
         operateScope.launch {
@@ -1177,57 +1230,66 @@ object KaoChangOperate {
         }
 
         val sausageName = getPanTasteLabel(kaoPan)
-        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
-        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
+        logD(LOG_ACTION, "300/400 动作组将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
         try {
-            val result = executeActionWithRetry(
-                actionName = "烤盘${kaoPan.positionSn}到售卖口",
-                runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
-            ) {
-                writeSingleRegister2(action_address, kaoPan.cmdValueTake)
-            }
-            if (result != ActionExecutionResult.SUCCESS) {
-                markActionFailure("烤盘${kaoPan.positionSn}到售卖口", result)
+            if (!isActionGroupEnabledOrEnterMaintenance("正式出餐")) {
                 return TakeSausageResult.ERROR
             }
-            SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
 
-            val presenceResults = captureSellPlatformPresenceSequence()
-            val detectedSausageInQuickRetries = presenceResults.any { it?.code == 2 }
-            val allPresenceCapturesFailed = presenceResults.all { it == null }
-            val detectDeadlineMs = System.currentTimeMillis() + SELL_PLATFORM_WAIT_TIMEOUT_MS
-            val takeResult = when {
-                allPresenceCapturesFailed -> {
-                    tryCloseSellPlatformOnError("售卖台首次确认阶段连续拍照失败")
-                    markDeviceErrorAndUpload("售卖台首次确认阶段连续拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
+            val owner = "out:${kaoPan.positionSn}:${System.currentTimeMillis()}"
+            val lockMask = ResourceMask.above or ResourceMask.gate or ResourceMask.stick or ResourceMask.lift
+            if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "出餐动作组资源忙，拒绝下发：sourcePan=${kaoPan.positionSn}，" +
+                        "need=${ResourceLocks.describe(lockMask)}，held=${actionGroupLocks.snapshot()}"
+                )
+                return TakeSausageResult.ERROR
+            }
+
+            val actionGroupResult = try {
+                logD(
+                    LOG_ACTION_GROUP,
+                    "出餐动作组开始：protocol=300_400，sourcePan=${kaoPan.positionSn}，resourceLocks=${actionGroupLocks.snapshot()}"
+                )
+                OutActionGroupRunner(createAtomicActionClient()) { message -> logD(LOG_ACTION_GROUP, message) }
+                    .run(kaoPan.positionSn)
+            } finally {
+                actionGroupLocks.release(owner)
+            }
+
+            logD(
+                LOG_ACTION_GROUP,
+                "出餐动作组结束：sourcePan=${kaoPan.positionSn}，result=${actionGroupResultDesc(actionGroupResult)}"
+            )
+
+            val takeResult = when (actionGroupResult) {
+                ActionGroupResult.Success -> TakeSausageResult.TAKEN_BY_USER
+                ActionGroupResult.Discarded -> TakeSausageResult.DISCARDED
+                is ActionGroupResult.Failed -> {
+                    kaoPan.cmdStatusTake = atomicFailureCode(actionGroupResult)
+                    markActionGroupFailure("正式出餐", actionGroupResult)
                     TakeSausageResult.ERROR
                 }
-
-                !detectedSausageInQuickRetries -> {
-                    logW(LOG_SELL_MONITOR, "售卖台首次确认阶段未检测到烤肠，已完成 1.5 秒短频补拍，继续每秒轮询确认是否到货或已被顾客快速取走")
-                    monitorSellPlatformUntilTakenOrDiscarded(
-                        detectDeadlineMs = detectDeadlineMs,
-                        detectedSausageBeforeMonitor = false
-                    )
-                }
-
-                else -> {
-                    logD(LOG_SELL_MONITOR, "售卖台首次确认阶段已检测到烤肠，开始每秒轮询顾客是否已取走")
-                    monitorSellPlatformUntilTakenOrDiscarded(
-                        detectDeadlineMs = detectDeadlineMs,
-                        detectedSausageBeforeMonitor = true
-                    )
-                }
             }
 
+            if (takeResult == TakeSausageResult.ERROR) {
+                return takeResult
+            }
+
+            SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
             kaoPan.cmdStatusTake = 0
-            if (result == ActionExecutionResult.SUCCESS) {
-                kaoPan.isHasSausage = false
-                kaoPan.holdingTime = 0L
-                kaoPan.startTime = 0
-                kaoPan.status = 0
+            kaoPan.isHasSausage = false
+            kaoPan.holdingTime = 0L
+            kaoPan.startTime = 0
+            kaoPan.status = 0
+            armPostSellSupplementGuard("out5 已完成关窗和安全位收口")
+            if (takeResult == TakeSausageResult.DISCARDED) {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "顾客超时未取，out5 已自动执行 SAU_DISCARD 丢弃；本订单项按已收口处理，不退款、不补发，panNo=${kaoPan.positionSn}"
+                )
             }
-
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
@@ -1237,6 +1299,7 @@ object KaoChangOperate {
             if (acquiredByThisCall) {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                applyPendingActionGroupDisableIfIdle("出餐动作组会话收口")
             }
         }
     }
