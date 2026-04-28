@@ -16,7 +16,7 @@ import com.blankj.utilcode.util.ToastUtils
 /**
  * 设备初始化入口页。
  *
- * 当前联调阶段直接跳过 ARUCO 前置检测，点击确认后直接执行设备初始化。
+ * 当前主流程不再依赖视觉识别或 ARUCO 标定作为设备初始化前置条件。
  */
 class StartInitActivity : BaseActivity() {
     private lateinit var binding: ActivityStartInitBinding
@@ -35,17 +35,16 @@ class StartInitActivity : BaseActivity() {
         binding.etDeviceId.setText(AppConfig.getDeviceId())
 
         binding.btnConfirm.setOnClickListener {
-            // 优化：仅在“联调模式（forceVisionSuccess=1）”下跳过 ARUCO 校准判定
-            if (AppConfig.getAppConfig().forceVisionSuccess == 0) {
-                val sharedPreferences = getSharedPreferences("aruco_helper_prefs", MODE_PRIVATE)
-                val cornersJson = sharedPreferences.getString("corners_data", null)
-                if (cornersJson == null) {
-                    ToastUtils.showShort("未检测到前置 ARUCO 标识，禁止初始化设备")
-                    return@setOnClickListener
-                }
-            } else {
-                LogUtils.w("设备初始化：当前已开启联调模式，跳过 ARUCO 硬件校准检测，直接尝试登录！")
+            val config = AppConfig.getAppConfig()
+            val canInitialize = StartInitPolicy.canInitializeDevice(
+                forceVisionSuccess = config.forceVisionSuccess,
+                hasArucoCorners = false
+            )
+            if (!canInitialize) {
+                ToastUtils.showShort("当前设备状态不允许初始化")
+                return@setOnClickListener
             }
+            LogUtils.i("设备初始化：跳过 ARUCO 前置检测，直接尝试登录")
             
             showLoadingExt("初始化中...")
             NetApi.initDevice(binding.etDeviceId.text.toString()) { code, content ->
