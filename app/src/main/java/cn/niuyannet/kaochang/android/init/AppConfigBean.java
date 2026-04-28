@@ -105,6 +105,18 @@ public class AppConfigBean implements Serializable {
     // 强制跳过视觉识别并固定返回成功（仅用于下位机模拟器本地联调）：0=关闭，1=开启
     public int forceVisionSuccess = 0;
 
+    // 300/400 动作组协议开关：1=允许运行新动作组，0=进入维护/暂停新单，不回退旧视觉链路
+    public int useActionGroupV2 = 1;
+
+    // 动作组补肠预取开关：0=关闭，1=允许按资源锁提前预取
+    public int enableActionGroupPrefetch = 0;
+
+    // 视觉影子模式：0=关闭，1=仅记录视觉对账结果，不参与动作决策
+    public int enableVisionShadowMode = 0;
+
+    // 远程关闭动作组时，若当前动作未收口则暂存为待关闭：0=无，1=会话结束后关闭
+    public int pendingDisableActionGroupV2 = 0;
+
     public int zone3Dirty = 0;
     public int zone3CleanPending = 0;
 }

@@ -236,6 +236,31 @@ object AppConfig {
         if (jsonData.containsKey("cameraPrewarmHoldSeconds")) {
             config.cameraPrewarmHoldSeconds = jsonData.getIntValue("cameraPrewarmHoldSeconds")
         }
+        if (jsonData.containsKey("useActionGroupV2")) {
+            val requestedUseActionGroupV2 = if (jsonData.getIntValue("useActionGroupV2") == 0) 0 else 1
+            if (requestedUseActionGroupV2 == 0 && config.useActionGroupV2 == 1 && config.moveStatus in listOf(1, 2)) {
+                config.pendingDisableActionGroupV2 = 1
+                preservedFields.add("useActionGroupV2(pending_until_action_group_idle)")
+                LogUtils.w(
+                    "[$logPrefix] 收到 useActionGroupV2=0（关闭 300/400 动作组）但当前 moveStatus=${config.moveStatus}（动作组会话运行中），" +
+                        "已记录 pendingDisableActionGroupV2=1（待会话收口后关闭）"
+                )
+            } else {
+                config.useActionGroupV2 = requestedUseActionGroupV2
+                if (requestedUseActionGroupV2 == 1) {
+                    config.pendingDisableActionGroupV2 = 0
+                }
+            }
+        }
+        if (jsonData.containsKey("enableActionGroupPrefetch")) {
+            config.enableActionGroupPrefetch = if (jsonData.getIntValue("enableActionGroupPrefetch") == 1) 1 else 0
+        }
+        if (jsonData.containsKey("enableVisionShadowMode")) {
+            config.enableVisionShadowMode = if (jsonData.getIntValue("enableVisionShadowMode") == 1) 1 else 0
+        }
+        if (jsonData.containsKey("pendingDisableActionGroupV2")) {
+            config.pendingDisableActionGroupV2 = if (jsonData.getIntValue("pendingDisableActionGroupV2") == 1) 1 else 0
+        }
 
         if (config.onlineStatus in 1..4 && config.status != 1) {
             preservedFields.add("status(normalized_from_onlineStatus)")
