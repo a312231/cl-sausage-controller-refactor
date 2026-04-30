@@ -2,6 +2,8 @@ package cn.niuyannet.kaochang.android.services.actiongroup
 
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class VmAtomicModbusGateway(
     private val serverAddress: Int,
@@ -11,7 +13,9 @@ class VmAtomicModbusGateway(
         if (operationDelayMs > 0L) {
             delay(operationDelayMs)
         }
-        val result = VMModbusHelper.writeSingleRegister(serverAddress, address, value)
+        val result = modbusOperationMutex.withLock {
+            VMModbusHelper.writeSingleRegister(serverAddress, address, value)
+        }
         return if (result.isSuccess) {
             AtomicIoResult.Success
         } else {
@@ -23,11 +27,17 @@ class VmAtomicModbusGateway(
         if (operationDelayMs > 0L) {
             delay(operationDelayMs)
         }
-        val value = VMModbusHelper.readHoldingRegisters(serverAddress, address)
+        val value = modbusOperationMutex.withLock {
+            VMModbusHelper.readHoldingRegisters(serverAddress, address)
+        }
         return if (value >= 0) {
             AtomicReadResult.Success(value)
         } else {
             AtomicReadResult.Failure("读取寄存器 $address 返回 $value")
         }
+    }
+
+    companion object {
+        private val modbusOperationMutex = Mutex()
     }
 }

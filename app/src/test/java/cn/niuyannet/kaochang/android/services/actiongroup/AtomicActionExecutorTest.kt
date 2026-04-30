@@ -21,6 +21,44 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldRejectStaleIdleAfterCommandUntilRunningIsObserved() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 80L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IDLE, AtomicActionCodes.IDLE))
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 2)
+
+        assertTrue("未观察到 0x0001（执行中）时，旧 0x0000 不能被当作成功", result is AtomicActionResult.Timeout)
+        assertTrue(logs.any { it.contains("动作未确认启动") })
+        assertTrue(
+            "技术日志要说明动作编号、中文含义和结果寄存器，文件运维日志由动作组 Runner 统一补上下文",
+            logs.any {
+                it.contains("动作启动失败：out1-test（out1：从烤盘取熟肠到穿签位）下位机未确认执行") &&
+                    it.contains("结果寄存器411一直为0x0000（旧成功/空闲）")
+            }
+        )
+        assertEquals(listOf(Write(412, 2), Write(410, 1)), gateway.writes)
+    }
+
+    @Test
+    fun execute_shouldSucceedOnlyAfterRunningThenIdle() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 2)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertTrue(logs.any { it.contains("动作启动确认成功") })
+    }
+
+    @Test
     fun execute_shouldTakeOverPollingWhenActionIsAlreadyRunning() = runBlocking {
         val gateway = FakeGateway(
             reads = mapOf(321 to queueOf(AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
@@ -51,7 +89,7 @@ class AtomicActionExecutorTest {
     @Test
     fun execute_shouldEmitTelemetryWhenActionFinishes() = runBlocking {
         val gateway = FakeGateway(
-            reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IDLE))
+            reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
         )
         val telemetry = mutableListOf<ActionGroupTelemetry>()
         val executor = AtomicActionExecutor(

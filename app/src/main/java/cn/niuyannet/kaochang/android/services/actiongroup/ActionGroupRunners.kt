@@ -12,7 +12,10 @@ sealed class ActionGroupResult {
 
 class InActionGroupRunner(
     private val client: AtomicActionClient,
-    private val logger: (String) -> Unit = {}
+    private val logger: (String) -> Unit = {},
+    private val operationLogContext: ActionGroupOperationLogContext? = null,
+    private val operationLogger: (String) -> Unit = {},
+    private val failureLogger: (String) -> Unit = operationLogger
 ) {
     suspend fun run(sourceBoxNo: Int, targetPanNo: Int): ActionGroupResult {
         if (sourceBoxNo !in 1..22) {
@@ -39,13 +42,28 @@ class InActionGroupRunner(
             ActionStep(AtomicActions.in6, 0),
             ActionStep(AtomicActions.in7, targetPanNo)
         )
-        return executeSteps(client, steps, resumeStartIndex(steps, client, logger), logger)
+        logger(
+            "补肠动作组计划：sourceBox=$sourceBoxNo，targetPan=$targetPanNo，" +
+                "steps=${steps.joinToString(" -> ") { it.spec.description }}"
+        )
+        return executeSteps(
+            client = client,
+            steps = steps,
+            startIndex = resumeStartIndex(steps, client, logger),
+            logger = logger,
+            operationLogContext = operationLogContext,
+            operationLogger = operationLogger,
+            failureLogger = failureLogger
+        )
     }
 }
 
 class OutActionGroupRunner(
     private val client: AtomicActionClient,
-    private val logger: (String) -> Unit = {}
+    private val logger: (String) -> Unit = {},
+    private val operationLogContext: ActionGroupOperationLogContext? = null,
+    private val operationLogger: (String) -> Unit = {},
+    private val failureLogger: (String) -> Unit = operationLogger
 ) {
     suspend fun run(sourcePanNo: Int): ActionGroupResult {
         if (sourcePanNo !in 1..33) {
@@ -63,9 +81,26 @@ class OutActionGroupRunner(
             ActionStep(AtomicActions.out4, 0),
             ActionStep(AtomicActions.out5, 0, discardedOnCustomerTimeout = true)
         )
-        return executeSteps(client, steps, resumeStartIndex(steps, client, logger), logger)
+        logger(
+            "出餐动作组计划：sourcePan=$sourcePanNo，检测方式=out5 光电传感器，" +
+                "steps=${steps.joinToString(" -> ") { it.spec.description }}"
+        )
+        return executeSteps(
+            client = client,
+            steps = steps,
+            startIndex = resumeStartIndex(steps, client, logger),
+            logger = logger,
+            operationLogContext = operationLogContext,
+            operationLogger = operationLogger,
+            failureLogger = failureLogger
+        )
     }
 }
+
+data class ActionGroupOperationLogContext(
+    val category: String,
+    val subject: String? = null
+)
 
 private data class ActionStep(
     val spec: AtomicActionSpec,
@@ -78,13 +113,36 @@ private suspend fun executeSteps(
     client: AtomicActionClient,
     steps: List<ActionStep>,
     startIndex: Int,
-    logger: (String) -> Unit
+    logger: (String) -> Unit,
+    operationLogContext: ActionGroupOperationLogContext?,
+    operationLogger: (String) -> Unit,
+    failureLogger: (String) -> Unit
 ): ActionGroupResult {
     for (step in steps.drop(startIndex)) {
+        logger(
+            "动作组步骤开始：action=${step.spec.name}，description=${step.spec.description}，" +
+                "infoValue=${step.infoValue}，retryableErrorCode=${step.retryableErrorCode?.let { AtomicActionExecutor.formatCode(it) } ?: "NONE"}"
+        )
+        val stepStartedAtMs = System.currentTimeMillis()
+        operationLogContext?.let { context ->
+            operationLogger(formatOperationStepStart(context, step.spec))
+        }
         val result = if (step.retryableErrorCode == null) {
             mapActionResult(step, client.execute(step.spec, step.infoValue))
         } else {
             executeRetriableStep(client, step, logger)
+        }
+        val elapsedMs = (System.currentTimeMillis() - stepStartedAtMs).coerceAtLeast(0L)
+        logger(
+            "动作组步骤结束：action=${step.spec.name}，description=${step.spec.description}，" +
+                "result=${actionGroupResultDesc(result)}"
+        )
+        operationLogContext?.let { context ->
+            when (result) {
+                ActionGroupResult.Success,
+                ActionGroupResult.Discarded -> operationLogger(formatOperationStepFinished(context, step.spec, elapsedMs))
+                is ActionGroupResult.Failed -> failureLogger(formatOperationStepFailed(context, step.spec, result))
+            }
         }
         when (result) {
             ActionGroupResult.Success -> Unit
@@ -155,5 +213,69 @@ private fun describe(result: AtomicActionResult): String {
         is AtomicActionResult.Failed -> "${AtomicActionExecutor.formatCode(result.errorCode)}（${result.message}）"
         is AtomicActionResult.ModbusError -> "Modbus 读写失败：${result.message}"
         is AtomicActionResult.Timeout -> "执行超时：${result.message}"
+    }
+}
+
+private fun formatOperationStepStart(
+    context: ActionGroupOperationLogContext,
+    spec: AtomicActionSpec
+): String {
+    return "${operationPrefix(context)}${actionLabel(spec)}开始"
+}
+
+private fun formatOperationStepFinished(
+    context: ActionGroupOperationLogContext,
+    spec: AtomicActionSpec,
+    elapsedMs: Long
+): String {
+    val actionText = if (context.category == "补肠" && spec.name == "in7") {
+        actionLabel(spec)
+    } else {
+        spec.name
+    }
+    val suffix = if (context.category == "补肠" && spec.name == "in7") {
+        "，烤盘开始烤制计时"
+    } else {
+        ""
+    }
+    return "${operationPrefix(context)}$actionText 完成$suffix，用时=${formatElapsedSeconds(elapsedMs)}秒"
+}
+
+private fun formatOperationStepFailed(
+    context: ActionGroupOperationLogContext,
+    spec: AtomicActionSpec,
+    result: ActionGroupResult.Failed
+): String {
+    val prefix = "【失败原因】${context.subject?.let { "$it " } ?: ""}"
+    val actionText = actionLabel(spec)
+    val atomicResult = result.result
+    val reason = if (atomicResult is AtomicActionResult.Timeout &&
+        atomicResult.message.contains("未确认启动")
+    ) {
+        "${actionText}启动失败：下位机未确认执行，结果寄存器${spec.resultRegister}一直为0x0000（旧成功/空闲）"
+    } else {
+        "${actionText}失败：${describe(atomicResult)}"
+    }
+    return "$prefix$reason"
+}
+
+private fun operationPrefix(context: ActionGroupOperationLogContext): String {
+    val subject = context.subject?.let { "$it " } ?: ""
+    return "【${context.category}】$subject"
+}
+
+private fun actionLabel(spec: AtomicActionSpec): String {
+    return "${spec.name}（${spec.description.substringAfter('：', spec.description)}）"
+}
+
+private fun formatElapsedSeconds(elapsedMs: Long): String {
+    return String.format(java.util.Locale.US, "%.1f", elapsedMs / 1000.0)
+}
+
+private fun actionGroupResultDesc(result: ActionGroupResult): String {
+    return when (result) {
+        ActionGroupResult.Success -> "SUCCESS（动作成功）"
+        ActionGroupResult.Discarded -> "DISCARDED（顾客超时未取，out5 已自动丢弃）"
+        is ActionGroupResult.Failed -> "FAILED（${result.actionName}：${result.message}）"
     }
 }

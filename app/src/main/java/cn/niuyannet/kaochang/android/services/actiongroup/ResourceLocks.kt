@@ -77,5 +77,6 @@ data class ActionGroupSession(
 
 enum class ActionGroupSessionType {
     IN_SUPPLEMENT,
-    OUT_SELL
+    OUT_SELL,
+    OUT_MANUAL
 }

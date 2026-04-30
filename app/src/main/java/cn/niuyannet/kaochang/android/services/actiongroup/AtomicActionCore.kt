@@ -65,7 +65,11 @@ interface AtomicModbusGateway {
 }
 
 interface AtomicActionClient {
-    suspend fun execute(spec: AtomicActionSpec, infoValue: Int = 0): AtomicActionResult
+    suspend fun execute(
+        spec: AtomicActionSpec,
+        infoValue: Int = 0,
+        onCommandDispatched: (() -> Unit)? = null
+    ): AtomicActionResult
 }
 
 interface AtomicActionStateReader {
@@ -83,55 +87,111 @@ class AtomicActionExecutor(
         return gateway.readRegister(spec.resultRegister)
     }
 
-    override suspend fun execute(spec: AtomicActionSpec, infoValue: Int): AtomicActionResult {
+    override suspend fun execute(
+        spec: AtomicActionSpec,
+        infoValue: Int,
+        onCommandDispatched: (() -> Unit)?
+    ): AtomicActionResult {
+        val startedAtMs = System.currentTimeMillis()
         return when (val current = readResult(spec)) {
             is AtomicReadResult.Failure -> finishWithTelemetry(
                 spec = spec,
                 result = AtomicActionResult.ModbusError(
                     "${spec.name} 启动前读取结果寄存器 ${spec.resultRegister} 失败：${current.message}"
                 ),
-                startedAtMs = System.currentTimeMillis()
+                startedAtMs = startedAtMs
             )
             is AtomicReadResult.Success -> {
                 if (current.value == AtomicActionCodes.RUNNING) {
-                    logger("接管原子动作轮询：action=${spec.name}，resultRegister=${spec.resultRegister}")
-                    pollUntilFinish(spec, startedAtMs = System.currentTimeMillis())
+                    logger(
+                        "接管原子动作轮询：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                            "resultRegister=${spec.resultRegister}，resultCode=${formatCode(current.value)}"
+                    )
+                    onCommandDispatched?.invoke()
+                    pollUntilFinish(
+                        spec = spec,
+                        startedAtMs = startedAtMs,
+                        requireRunningBeforeSuccess = false
+                    )
                 } else {
-                    startAndPoll(spec, infoValue)
+                    startAndPoll(spec, infoValue, startedAtMs, onCommandDispatched)
                 }
             }
         }
     }
 
-    private suspend fun startAndPoll(spec: AtomicActionSpec, infoValue: Int): AtomicActionResult {
+    private suspend fun startAndPoll(
+        spec: AtomicActionSpec,
+        infoValue: Int,
+        startedAtMs: Long,
+        onCommandDispatched: (() -> Unit)?
+    ): AtomicActionResult {
         logger(
-            "启动原子动作：action=${spec.name}，cmd=${spec.commandRegister}，result=${spec.resultRegister}，" +
-                "info=${spec.infoRegister}，infoValue=$infoValue，description=${spec.description}"
+            "准备下发原子动作：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                "description=${spec.description}，commandRegister（命令寄存器）=${spec.commandRegister}，" +
+                "resultRegister（结果寄存器）=${spec.resultRegister}，infoRegister（信息寄存器）=${spec.infoRegister}，" +
+                "infoValue（信息值）=$infoValue"
         )
         when (val writeInfo = gateway.writeRegister(spec.infoRegister, infoValue)) {
-            is AtomicIoResult.Failure -> return finishWithTelemetry(
-                spec = spec,
-                result = AtomicActionResult.ModbusError(
-                    "${spec.name} 写信息寄存器 ${spec.infoRegister} 失败：${writeInfo.message}"
-                ),
-                startedAtMs = System.currentTimeMillis()
+            is AtomicIoResult.Failure -> {
+                logger(
+                    "写入信息寄存器失败：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                        "infoRegister（信息寄存器）=${spec.infoRegister}，infoValue（信息值）=$infoValue，" +
+                        "message=${writeInfo.message}"
+                )
+                return finishWithTelemetry(
+                    spec = spec,
+                    result = AtomicActionResult.ModbusError(
+                        "${spec.name} 写信息寄存器 ${spec.infoRegister} 失败：${writeInfo.message}"
+                    ),
+                    startedAtMs = startedAtMs
+                )
+            }
+            AtomicIoResult.Success -> logger(
+                "写入信息寄存器成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                    "infoRegister（信息寄存器）=${spec.infoRegister}，infoValue（信息值）=$infoValue"
             )
-            AtomicIoResult.Success -> Unit
         }
         when (val writeCommand = gateway.writeRegister(spec.commandRegister, 1)) {
-            is AtomicIoResult.Failure -> return finishWithTelemetry(
-                spec = spec,
-                result = AtomicActionResult.ModbusError(
-                    "${spec.name} 写命令寄存器 ${spec.commandRegister} 失败：${writeCommand.message}"
-                ),
-                startedAtMs = System.currentTimeMillis()
-            )
-            AtomicIoResult.Success -> Unit
+            is AtomicIoResult.Failure -> {
+                logger(
+                    "写入命令寄存器失败：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                        "commandRegister（命令寄存器）=${spec.commandRegister}，commandValue（命令值）=1，" +
+                        "message=${writeCommand.message}"
+                )
+                return finishWithTelemetry(
+                    spec = spec,
+                    result = AtomicActionResult.ModbusError(
+                        "${spec.name} 写命令寄存器 ${spec.commandRegister} 失败：${writeCommand.message}"
+                    ),
+                    startedAtMs = startedAtMs
+                )
+            }
+            AtomicIoResult.Success -> {
+                logger(
+                    "写入命令寄存器成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                        "commandRegister（命令寄存器）=${spec.commandRegister}，commandValue（命令值）=1"
+                )
+                onCommandDispatched?.invoke()
+            }
         }
-        return pollUntilFinish(spec, startedAtMs = System.currentTimeMillis())
+        return pollUntilFinish(
+            spec = spec,
+            startedAtMs = startedAtMs,
+            requireRunningBeforeSuccess = true
+        )
     }
 
-    private suspend fun pollUntilFinish(spec: AtomicActionSpec, startedAtMs: Long): AtomicActionResult {
+    private suspend fun pollUntilFinish(
+        spec: AtomicActionSpec,
+        startedAtMs: Long,
+        requireRunningBeforeSuccess: Boolean
+    ): AtomicActionResult {
+        var lastRunningLogAtMs = 0L
+        var hasLoggedRunning = false
+        var hasObservedRunning = !requireRunningBeforeSuccess
+        var hasLoggedStartupWait = false
+        val startupConfirmTimeoutMs = minOf(STARTUP_CONFIRM_TIMEOUT_MS, spec.timeoutMs)
         while (System.currentTimeMillis() - startedAtMs <= spec.timeoutMs) {
             when (val read = gateway.readRegister(spec.resultRegister)) {
                 is AtomicReadResult.Failure -> return AtomicActionResult.ModbusError(
@@ -141,17 +201,58 @@ class AtomicActionExecutor(
                 }
                 is AtomicReadResult.Success -> {
                     val code = read.value
-                    logger(
-                        "轮询原子动作：action=${spec.name}，resultRegister=${spec.resultRegister}，" +
-                            "resultCode=${formatCode(code)}，elapsedMs=${System.currentTimeMillis() - startedAtMs}"
-                    )
+                    val nowMs = System.currentTimeMillis()
+                    val elapsedMs = nowMs - startedAtMs
+                    if (code != AtomicActionCodes.RUNNING ||
+                        !hasLoggedRunning ||
+                        nowMs - lastRunningLogAtMs >= RUNNING_PROGRESS_LOG_INTERVAL_MS
+                    ) {
+                        logger(
+                            "轮询原子动作：action=${spec.name}，resultRegister=${spec.resultRegister}，" +
+                                "resultCode=${formatCode(code)}，elapsedMs=$elapsedMs"
+                        )
+                        if (code == AtomicActionCodes.RUNNING) {
+                            hasLoggedRunning = true
+                            lastRunningLogAtMs = nowMs
+                        }
+                    }
                     when {
-                        code == AtomicActionCodes.IDLE -> return finishWithTelemetry(
+                        code == AtomicActionCodes.IDLE && hasObservedRunning -> return finishWithTelemetry(
                             spec,
                             AtomicActionResult.Success,
                             startedAtMs
                         )
-                        code == AtomicActionCodes.RUNNING -> delay(spec.pollDelayMs)
+                        code == AtomicActionCodes.IDLE -> {
+                            if (!hasLoggedStartupWait) {
+                                hasLoggedStartupWait = true
+                                logger(
+                                    "等待动作启动确认：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                                        "resultRegister（结果寄存器）=${spec.resultRegister}，当前结果=${formatCode(code)}，" +
+                                        "startupConfirmTimeoutMs=$startupConfirmTimeoutMs"
+                                )
+                            }
+                            if (elapsedMs >= startupConfirmTimeoutMs) {
+                                val message = "${spec.name} 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：" +
+                                    "resultRegister=${spec.resultRegister}，elapsedMs=$elapsedMs"
+                                logStartupNotConfirmedFailure(spec, elapsedMs)
+                                return finishWithTelemetry(
+                                    spec,
+                                    AtomicActionResult.Timeout(message),
+                                    startedAtMs
+                                )
+                            }
+                            delay(spec.pollDelayMs)
+                        }
+                        code == AtomicActionCodes.RUNNING -> {
+                            if (!hasObservedRunning) {
+                                hasObservedRunning = true
+                                logger(
+                                    "动作启动确认成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                                        "resultRegister（结果寄存器）=${spec.resultRegister}，resultCode=${formatCode(code)}，elapsedMs=$elapsedMs"
+                                )
+                            }
+                            delay(spec.pollDelayMs)
+                        }
                         code >= AtomicActionCodes.PARAM_ERROR -> return finishWithTelemetry(
                             spec,
                             AtomicActionResult.Failed(code, messageOf(code)),
@@ -166,10 +267,32 @@ class AtomicActionExecutor(
                 }
             }
         }
+        val elapsedMs = System.currentTimeMillis() - startedAtMs
+        if (requireRunningBeforeSuccess && !hasObservedRunning) {
+            val message = "${spec.name} 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：" +
+                "resultRegister=${spec.resultRegister}，elapsedMs=$elapsedMs"
+            logStartupNotConfirmedFailure(spec, elapsedMs)
+            return finishWithTelemetry(
+                spec,
+                AtomicActionResult.Timeout(message),
+                startedAtMs
+            )
+        }
         return finishWithTelemetry(
             spec,
             AtomicActionResult.Timeout("${spec.name} 执行超时：timeoutMs=${spec.timeoutMs}"),
             startedAtMs
+        )
+    }
+
+    private fun logStartupNotConfirmedFailure(spec: AtomicActionSpec, elapsedMs: Long) {
+        logger(
+            "动作未确认启动，拒绝将旧 0x0000 当作成功：sessionId=${telemetryContext.sessionId}，" +
+                "action=${spec.name}，resultRegister（结果寄存器）=${spec.resultRegister}，elapsedMs=$elapsedMs"
+        )
+        logger(
+            "动作启动失败：${spec.name}（${spec.description}）下位机未确认执行，" +
+                "结果寄存器${spec.resultRegister}一直为0x0000（旧成功/空闲）"
         )
     }
 
@@ -179,6 +302,10 @@ class AtomicActionExecutor(
         startedAtMs: Long
     ): AtomicActionResult {
         val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
+        logger(
+            "原子动作完成：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                "success=${result == AtomicActionResult.Success}，result=${describeResult(result)}，elapsedMs=$elapsedMs"
+        )
         val (errorCode, errorMessage) = when (result) {
             AtomicActionResult.Success -> null to null
             is AtomicActionResult.Failed -> result.errorCode to result.message
@@ -203,7 +330,19 @@ class AtomicActionExecutor(
         return result
     }
 
+    private fun describeResult(result: AtomicActionResult): String {
+        return when (result) {
+            AtomicActionResult.Success -> "0x0000（成功）"
+            is AtomicActionResult.Failed -> "${formatCode(result.errorCode)}（${result.message}）"
+            is AtomicActionResult.ModbusError -> "MODBUS_ERROR（${result.message}）"
+            is AtomicActionResult.Timeout -> "TIMEOUT（${result.message}）"
+        }
+    }
+
     companion object {
+        private const val RUNNING_PROGRESS_LOG_INTERVAL_MS = 5_000L
+        private const val STARTUP_CONFIRM_TIMEOUT_MS = 3_000L
+
         fun formatCode(code: Int): String = "0x${code.toString(16).uppercase().padStart(4, '0')}"
 
         fun messageOf(code: Int): String = when (code) {

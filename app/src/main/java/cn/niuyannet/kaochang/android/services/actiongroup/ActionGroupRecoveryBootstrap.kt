@@ -73,7 +73,8 @@ class ActionGroupRecoveryBootstrap(
         val actionResult = when (session.type) {
             ActionGroupSessionType.IN_SUPPLEMENT -> InActionGroupRunner(client, logger)
                 .run(session.sourceNo, session.targetNo ?: 0)
-            ActionGroupSessionType.OUT_SELL -> OutActionGroupRunner(client, logger)
+            ActionGroupSessionType.OUT_SELL,
+            ActionGroupSessionType.OUT_MANUAL -> OutActionGroupRunner(client, logger)
                 .run(session.sourceNo)
         }
         resourceLocks.release(session.sessionId)

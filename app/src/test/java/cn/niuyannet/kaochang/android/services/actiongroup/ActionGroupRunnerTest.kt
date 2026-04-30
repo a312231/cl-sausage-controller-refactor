@@ -65,6 +65,59 @@ class ActionGroupRunnerTest {
     }
 
     @Test
+    fun outRunner_shouldEmitReadableOperationStepLogsWithProgress() = runBlocking {
+        val client = FakeClient()
+        val operationLogs = mutableListOf<String>()
+        val failureLogs = mutableListOf<String>()
+        val runner = OutActionGroupRunner(
+            client = client,
+            operationLogContext = ActionGroupOperationLogContext(
+                category = "动作组",
+                subject = "第2/3根"
+            ),
+            operationLogger = { operationLogs += it },
+            failureLogger = { failureLogs += it }
+        )
+
+        val result = runner.run(sourcePanNo = 9)
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertTrue(operationLogs.any { it.contains("【动作组】第2/3根 out1（从烤盘取熟肠到穿签位）开始") })
+        assertTrue(operationLogs.any { it.contains("【动作组】第2/3根 out5 完成，用时=") })
+        assertTrue(failureLogs.isEmpty())
+    }
+
+    @Test
+    fun outRunner_shouldEmitReadableFailureReasonWithStepAndProgress() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Timeout("out3 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：resultRegister=431")
+            )
+        )
+        val failureLogs = mutableListOf<String>()
+        val runner = OutActionGroupRunner(
+            client = client,
+            operationLogContext = ActionGroupOperationLogContext(
+                category = "动作组",
+                subject = "第2/3根"
+            ),
+            failureLogger = { failureLogs += it }
+        )
+
+        val result = runner.run(sourcePanNo = 9)
+
+        assertTrue(result is ActionGroupResult.Failed)
+        assertTrue(
+            failureLogs.any {
+                it.contains("【失败原因】第2/3根 out3（从穿签位放到预推送位置）启动失败") &&
+                    it.contains("结果寄存器431一直为0x0000（旧成功/空闲）")
+            }
+        )
+    }
+
+    @Test
     fun inRunner_shouldResumeFromRunningActionWithoutRestartingEarlierActions() = runBlocking {
         val client = FakeClient(
             results = queueOf(
@@ -98,8 +151,13 @@ class ActionGroupRunnerTest {
     ) : AtomicActionClient, AtomicActionStateReader {
         val calls = mutableListOf<String>()
 
-        override suspend fun execute(spec: AtomicActionSpec, infoValue: Int): AtomicActionResult {
+        override suspend fun execute(
+            spec: AtomicActionSpec,
+            infoValue: Int,
+            onCommandDispatched: (() -> Unit)?
+        ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
+            onCommandDispatched?.invoke()
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }
 

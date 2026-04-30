@@ -58,6 +58,34 @@ class ActionGroupRecoveryBootstrapTest {
     }
 
     @Test
+    fun recover_shouldTakeOverManualOutSessionWithoutOrderContext() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "out-manual-session",
+            type = ActionGroupSessionType.OUT_MANUAL,
+            sourceNo = 3,
+            resourceMask = ResourceMask.above or ResourceMask.gate or ResourceMask.stick or ResourceMask.lift
+        )
+        val store = MemorySessionStore(session)
+        val client = FakeClient(
+            states = mutableMapOf("out3" to AtomicActionCodes.RUNNING),
+            results = ArrayDeque(
+                listOf(
+                    AtomicActionResult.Success,
+                    AtomicActionResult.Success,
+                    AtomicActionResult.Success
+                )
+            )
+        )
+
+        val result = ActionGroupRecoveryBootstrap(client, store, ResourceLocks()).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.TakeoverFinished)
+        assertEquals(ActionGroupResult.Success, (result as ActionGroupRecoveryResult.TakeoverFinished).actionResult)
+        assertEquals(listOf("out3:0", "out4:0", "out5:0"), client.calls)
+        assertEquals(session, store.session)
+    }
+
+    @Test
     fun recover_shouldEnterMaintenanceWhenRunningActionHasNoSession() = runBlocking {
         val client = FakeClient(states = mutableMapOf("out4" to AtomicActionCodes.RUNNING))
 
@@ -96,8 +124,13 @@ class ActionGroupRecoveryBootstrapTest {
     ) : AtomicActionClient, AtomicActionStateReader {
         val calls = mutableListOf<String>()
 
-        override suspend fun execute(spec: AtomicActionSpec, infoValue: Int): AtomicActionResult {
+        override suspend fun execute(
+            spec: AtomicActionSpec,
+            infoValue: Int,
+            onCommandDispatched: (() -> Unit)?
+        ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
+            onCommandDispatched?.invoke()
             states[spec.name] = AtomicActionCodes.IDLE
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }
