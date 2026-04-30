@@ -77,6 +77,15 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
     }
 
+    private fun onlineStatusLabelForLog(status: Int): String = when (status) {
+        0 -> "0（未启用/离线）"
+        1 -> "1（运营中）"
+        2 -> "2（休息中）"
+        3 -> "3（维护中）"
+        4 -> "4（工作中/正在出餐）"
+        else -> "$status（未知）"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         OrderStateManager.performFullSpCleanup() // 执行一次全量过期 SP 清理
@@ -204,6 +213,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                                 "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
                                     "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
                                     "onlineStatus=$onlineStatus, moveStatus=$moveStatus"
+                            )
+                            LogUtils.i(
+                                "【状态切换】设备进入出餐：onlineStatus（设备营业状态）=" +
+                                    "${onlineStatusLabelForLog(onlineStatus)}->${onlineStatusLabelForLog(4)}"
                             )
                             AppConfig.getAppConfig().onlineStatus = 4
                             AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -376,9 +389,15 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             }
             val goodsList = JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java)
             val totalQuantity = goodsList.sumOf { it.quantity }
+            val tasteSummary = goodsList
+                .mapNotNull { it.tasteCode?.takeIf { code -> code.isNotBlank() } }
+                .distinct()
+                .joinToString("/")
+                .ifBlank { "未知" }
             val itemSummary = goodsList.joinToString(" | ") {
                 "itemId=${it.id}, productId=${it.productId}, tasteCode=${it.tasteCode}, quantity=${it.quantity}"
             }
+            LogUtils.i("【订单】接单：订单号=$orderNo，数量=$totalQuantity，口味=$tasteSummary")
             LogUtils.d(
                 "【订单防漏跟踪】接单成功：orderNo=$orderNo, deviceId=${AppConfig.getDeviceId()}, " +
                     "itemCount=${goodsList.size}, totalQuantity=$totalQuantity, items=[$itemSummary]"

@@ -73,15 +73,16 @@ object VMMqttHelper : VMMqtt() {
                     "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
                     "source=${ackResult.snapshot?.source ?: "unknown"}"
             )
+            if (ackResult.freshAck) {
+                LogUtils.i("【云端同步】云端已确认设备状态：${onlineStatusLabel(onlineStatus)}")
+            }
         } else {
-            LogUtils.w(
-                "【MQTT运行态】服务端未应用运行时状态：" +
-                    "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "status=$status，onlineStatus=$onlineStatus，supplyStatus=$supplyStatus，isEnable=$isEnable，" +
-                    "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
-                    "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
-                    "source=${ackResult.snapshot?.source ?: "unknown"}"
-            )
+            val summary = "状态=${onlineStatusLabel(onlineStatus)}，原因=${reason.ifBlank { "未知" }}"
+            if (reason == "duplicate_runtime_seq") {
+                LogUtils.d("【MQTT运行态】服务端忽略重复运行时状态回执：runtimeSeq=$runtimeSeq，$summary")
+            } else {
+                LogUtils.w("【云端同步】云端未应用设备状态：$summary")
+            }
         }
         return true
     }
@@ -178,6 +179,15 @@ object VMMqttHelper : VMMqtt() {
         } catch (_: Exception) {
             "收到下发消息：action=$action，payloadLength=${payload.length}"
         }
+    }
+
+    private fun onlineStatusLabel(value: Int): String = when (value) {
+        0 -> "未启用/离线"
+        1 -> "运营中"
+        2 -> "休息中"
+        3 -> "维护中"
+        4 -> "工作中/正在出餐"
+        else -> "$value（未知）"
     }
 
     /**

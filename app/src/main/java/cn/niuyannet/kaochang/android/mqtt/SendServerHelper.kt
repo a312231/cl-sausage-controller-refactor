@@ -184,13 +184,12 @@ object SendServerHelper {
                     "moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}，" +
                     "restStatusSource=${config.restStatusSource}"
             )
+            if (!reusedSeq) {
+                LogUtils.i("【云端同步】设备状态已上报：${onlineStatusLabel(config.onlineStatus)}")
+            }
         } else {
             LogUtils.w(
-                "【MQTT运行态】运行时状态上报失败：" +
-                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，onlineStatus=${config.onlineStatus}，" +
-                    "supplyStatus=${config.supplyStatus}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
-                    "isEnable=${AppConfig.getAlgorithmEnableFlag()}，modeType=${config.modeType}，" +
-                    "transitionMode=${config.transitionMode}，moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}"
+                "【云端同步】设备状态上报失败：状态=${onlineStatusLabel(config.onlineStatus)}，将等待下一次重试"
             )
         }
         return ok
@@ -343,13 +342,8 @@ object SendServerHelper {
             }
             val ageMs = System.currentTimeMillis() - pending.publishedAt
             LogUtils.w(
-                "【MQTT运行态】运行时状态上报后仍未收到服务端确认：" +
-                    "runtimeSeq=${pending.runtimeSeq}，source=${pending.source}，" +
-                    "status=${pending.status}，onlineStatus=${pending.onlineStatus}，" +
-                    "supplyStatus=${pending.supplyStatus}，scanBlockStatus=${pending.scanBlockStatus}，inspectionMode=${pending.inspectionMode}，" +
-                    "isEnable=${pending.isEnable}，modeType=${pending.modeType}，" +
-                    "transitionMode=${pending.transitionMode}，moveStatus=${pending.moveStatus}，" +
-                    "errorStatus=${pending.errorStatus}，ageMs=$ageMs"
+                "【云端同步】设备状态上报后仍未收到云端确认：状态=${onlineStatusLabel(pending.onlineStatus)}，" +
+                    "等待=${ageMs}ms，将继续保留本地状态"
             )
         }, RUNTIME_STATE_ACK_TIMEOUT_MS)
     }
@@ -446,4 +440,13 @@ object SendServerHelper {
 
     fun lastPublishedRuntimeStateSeq(): Long = lastPublishedRuntimeStateSeq
     fun lastPublishedAvailableStateSeq(): Long = lastPublishedAvailableStateSeq
+
+    private fun onlineStatusLabel(value: Int): String = when (value) {
+        0 -> "未启用/离线"
+        1 -> "运营中"
+        2 -> "休息中"
+        3 -> "维护中"
+        4 -> "工作中/正在出餐"
+        else -> "$value（未知）"
+    }
 }

@@ -15,35 +15,52 @@ import java.util.concurrent.Executors
 object LogUtils {
     private const val TAG = "KaoChang"
     private val FILE_LOG_KEYWORDS = listOf(
-        "【订单防漏跟踪】",
-        "【订单流转】",
+        "【订单】",
+        "【出餐】",
+        "【动作组】",
+        "【补肠】",
+        "【搬盘】",
+        "【失败原因】",
+        "【状态切换】",
+        "【云端同步】",
         "【履约完结】",
         "【维护操作】",
-        "【云端同步】",
         "【丢弃流程】",
         "【并发切换】",
-        "【动作执行】",
-        "【售卖口监控】",
-        "【窗口收尾】",
-        "【补肠流程】",
-        "【烤盘搬移】",
-        "【设备状态】",
         "【自清洁】"
     )
-    private val FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG = listOf(
-        "【首页展示】",
-        "【MQTT运行态】",
-        "更新二维码预计时间",
-        "【MQTT展示态】",
-        "算法开关已开启",
-        "算法开关已关闭",
-        "智能烤肠算法服务启动",
-        "算法状态变化",
-        "手动开启烤肠算法时检测到轮询未运行",
-        "【MQTT业务】收到下发订单",
-        "【MQTT业务】收到设备状态下发",
+    private val FILE_LOG_NOISE_KEYWORDS = listOf(
+        "轮询原子动作",
+        "准备下发原子动作",
+        "写入信息寄存器成功",
+        "写入信息寄存器失败",
+        "写入命令寄存器成功",
+        "写入命令寄存器失败",
+        "等待动作启动确认",
+        "动作启动确认成功",
+        "接管原子动作轮询",
+        "原子动作完成",
+        "已上报结构化动作日志",
+        "[300/400动作组] 动作组计划",
+        "[300/400动作组] 动作组步骤开始",
+        "[300/400动作组] 动作组步骤结束",
+        "[300/400动作组] 重试原子动作",
+        "[300/400动作组] 动作未确认启动",
+        "sessionId=in_pipeline",
+        "串口探测失败",
+        "串口已打开，但未收到有效的下位机响应",
+        "【首页展示】刷新首页文案",
+        "【MQTT运行态】已上报运行时状态",
+        "【MQTT运行态】服务端已确认运行时状态",
         "【MQTT业务】收到运行时状态回执",
-        "【MQTT业务】收到首页展示态回执"
+        "【MQTT展示态】已上报首页展示态",
+        "【MQTT展示态】服务端已确认首页展示态",
+        "【MQTT业务】收到首页展示态回执",
+        "【MQTT发布】投递完成",
+        "【设备状态】触发补发",
+        "【设备状态】触发 MQTT 上报",
+        "【设备状态】开始同步设备营业状态",
+        "【设备状态】MQTT 上报成功"
     )
 
     const val LEVEL_VERBOSE = 1
@@ -159,14 +176,17 @@ object LogUtils {
     }
 
     private fun shouldWriteToFile(level: String, msg: String, tr: Throwable?): Boolean {
+        if (FILE_LOG_NOISE_KEYWORDS.any { keyword -> msg.contains(keyword) }) {
+            return false
+        }
         if (tr != null) {
             return true
         }
-        if (level == "W" || level == "E") {
-            return true
-        }
-        return FILE_LOG_KEYWORDS.any { keyword -> msg.contains(keyword) } ||
-            FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG.any { keyword -> msg.contains(keyword) }
+        return FILE_LOG_KEYWORDS.any { keyword -> msg.contains(keyword) }
+    }
+
+    fun shouldWriteToFileForTest(level: String, msg: String, hasThrowable: Boolean = false): Boolean {
+        return shouldWriteToFile(level, msg, if (hasThrowable) RuntimeException("test") else null)
     }
 
     fun getLogDirectory(context: Context): File = getLogDir(context)

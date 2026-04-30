@@ -32,7 +32,7 @@
                     android:textStyle="bold"
                     android:layout_marginBottom="16dp"/>
 
-                <!-- 执行动作组 -->
+                <!-- 300/400 原子动作协议 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -43,38 +43,56 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="执行动作组 (200)"/>
+                        android:text="原子动作"/>
+
+                    <Spinner
+                        android:id="@+id/spinnerAtomicAction"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="3" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="信息参数"/>
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_weight="2"
+                        android:layout_weight="3"
                         style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
                         <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etActionGroup"
+                            android:id="@+id/etAtomicInfoValue"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-
+                            android:hint="写入信息寄存器的参数值"
                             android:inputType="number"/>
                     </com.google.android.material.textfield.TextInputLayout>
-
-                    <Button
-                        android:id="@+id/btnWriteActionGroup"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
-
-                    <Button
-                        android:id="@+id/btnReadActionGroup"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
                 </LinearLayout>
 
-                <!-- 动作组执行结果 -->
+                <TextView
+                    android:id="@+id/tvAtomicActionDescription"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="未选择"
+                    android:layout_marginBottom="8dp"/>
+
+                <TextView
+                    android:id="@+id/tvAtomicActionRegisters"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="命令寄存器=--，结果寄存器=--，信息寄存器=--"
+                    android:layout_marginBottom="8dp"/>
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -85,81 +103,30 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="执行结果 (201)"/>
-
-                    <TextView
-                        android:id="@+id/tvActionGroupResult"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:text="未读取"/>
+                        android:text="动作操作"/>
 
                     <Button
-                        android:id="@+id/btnReadActionGroupResult"
+                        android:id="@+id/btnRunAtomicAction"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="读"/>
-                </LinearLayout>
-
-                <!-- 烤盘搬移 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="烤盘搬移 (202)"/>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etStartPosition"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:hint="起始位置"
-                            android:layout_marginLeft="5dp"
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etEndPosition"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginLeft="5dp"
-                            android:hint="结束位置"
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
+                        android:text="执行选中动作"/>
 
                     <Button
-                        android:id="@+id/btnWriteMovePlate"
+                        android:id="@+id/btnReadAtomicRegisters"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
-
-                    <Button
-                        android:id="@+id/btnReadMovePlate"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
+                        android:text="读寄存器"
                         android:layout_marginStart="8dp"/>
                 </LinearLayout>
 
-                <!-- 烤盘搬移执行结果 -->
+                <TextView
+                    android:id="@+id/tvAtomicActionResult"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="未执行"
+                    android:layout_marginBottom="16dp"/>
+
+                <!-- 基础 IO 诊断 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -170,34 +137,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="搬移结果 (203)"/>
-
-                    <TextView
-                        android:id="@+id/tvMovePlateResult"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:text="未读取"/>
-
-                    <Button
-                        android:id="@+id/btnReadMovePlateResult"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"/>
-                </LinearLayout>
-
-                <!-- 开关量控制 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="开关控制 (204)"/>
+                        android:text="基础 IO 控制 (204)"/>
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:layout_width="0dp"
