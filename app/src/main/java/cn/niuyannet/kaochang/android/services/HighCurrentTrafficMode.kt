@@ -161,7 +161,9 @@ object HighCurrentTrafficMode {
                         }
                     } else {
                         checkHighHeatEnd(list25_33, 3)
-                        checkHighHeatSausage(list)
+                        if (schedulingEnabled) {
+                            checkHighHeatSausage(list)
+                        }
                     }
                 }
 
@@ -169,7 +171,9 @@ object HighCurrentTrafficMode {
                 val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
                 checkHighHeatEnd(list1_9, 1)
                 checkHighHeatEnd(list10_21, 2)
-                checkHighHeatDiscard(list1_21)
+                if (schedulingEnabled) {
+                    checkHighHeatDiscard(list1_21)
+                }
                 if (schedulingEnabled && boxSupplyAvailable) {
                     checkSwitchToLow()
                 }
@@ -186,7 +190,7 @@ object HighCurrentTrafficMode {
             }
 
             2 -> {
-                highTrafficModeTransition(config, list, listBox)
+                highTrafficModeTransition(config, list, listBox, schedulingEnabled)
             }
         }
     }
@@ -250,16 +254,16 @@ object HighCurrentTrafficMode {
             val neededTastes = emptyPositions1_21.take(9).map { it.taste.tasteCode }
 
             KaoChangOperate.heating(3)
-            var movedCount = 0
-            neededTastes.forEachIndexed { index, tasteCode ->
+            val targets = neededTastes.mapIndexedNotNull { index, tasteCode ->
                 if (index < emptyPositions25_33.size) {
                     val targetPosition = emptyPositions25_33[index]
                     targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                    if (KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)) {
-                        movedCount += 1
-                    }
+                    KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
+                } else {
+                    null
                 }
             }
+            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
             if (movedCount > 0) {
                 recordSupplementLaunch(
                     filledCount = movedCount,
@@ -345,7 +349,8 @@ object HighCurrentTrafficMode {
     private suspend fun highTrafficModeTransition(
         config: AppConfigBean,
         list: List<KaoPan>,
-        listBox: List<KaoPanBox>
+        listBox: List<KaoPanBox>,
+        schedulingEnabled: Boolean
     ) {
         if (AppConfig.getAppConfig().onlineStatus == 4 || AppConfig.getAppConfig().moveStatus != 0) {
             LogUtils.i(
@@ -356,6 +361,10 @@ object HighCurrentTrafficMode {
         }
 
         checkHighHeatEnd(list, 3)
+        if (!schedulingEnabled) {
+            LogUtils.i(TAG, "【并发切换】高转低过渡暂停自动搬盘：schedulingEnabled=false")
+            return
+        }
         checkHighHeatSausage(list)
 
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
@@ -417,7 +426,9 @@ object HighCurrentTrafficMode {
             )
         }
 
-        checkHighHeatDiscard(list1_21)
+        if (schedulingEnabled) {
+            checkHighHeatDiscard(list1_21)
+        }
     }
 
     /**
@@ -451,9 +462,11 @@ object HighCurrentTrafficMode {
             }
         }
 
-        list1_21.forEach { kaoPan ->
-            KaoChangOperate.moveSausageToKaoPanByTaste(kaoPan, kaoPan.taste?.tasteCode)
-        }
+        KaoChangOperate.moveSausagesToKaoPansByTaste(
+            list1_21.map { kaoPan ->
+                KaoChangOperate.SupplementTarget(kaoPan, kaoPan.taste?.tasteCode)
+            }
+        )
     }
 
     /**
@@ -481,17 +494,18 @@ object HighCurrentTrafficMode {
                 )
                 return 0
             }
-            var movedCount = 0
-            neededTastes.forEachIndexed { index, tasteCode ->
+            val targets = neededTastes.mapIndexedNotNull { index, tasteCode ->
                 if (index < emptyPositions25_33.size) {
                     val targetPosition = emptyPositions25_33[index]
                     targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                    val moved = KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)
-                    if (moved) {
-                        movedCount += 1
-                        SelfCleanManager.markZone3Dirty()
-                    }
+                    KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
+                } else {
+                    null
                 }
+            }
+            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
+            repeat(movedCount) {
+                SelfCleanManager.markZone3Dirty()
             }
             return movedCount
         }
@@ -572,7 +586,7 @@ object HighCurrentTrafficMode {
      * 检查高并发前区可售烤肠是否保温到期。
      */
     private suspend fun checkHighHeatDiscard(list: List<KaoPan>) {
-        list.forEach { kaoPan ->
+        for (kaoPan in list) {
             if (kaoPan.isHasSausage && kaoPan.holdingTime > 0) {
                 val holdTime = System.currentTimeMillis() - kaoPan.holdingTime
                 if (holdTime > kaoPan.closeTime) {
@@ -580,11 +594,20 @@ object HighCurrentTrafficMode {
                         TAG,
                         "【丢弃流程】检测到过保烤肠：来源=过保到期，烤盘=${kaoPan.positionSn}，已保温=${holdTime}ms，阈值=${kaoPan.closeTime}ms"
                     )
-                    KaoChangOperate.discardSausage(
+                    val discardSuccess = KaoChangOperate.discardSausage(
                         kaoPan,
                         source = "过保到期",
                         detail = "已保温=${holdTime}ms，阈值=${kaoPan.closeTime}ms"
                     )
+                    val config = AppConfig.getAppConfig()
+                    if (DiscardLoopPolicy.shouldStopAfterDiscard(discardSuccess, config.onlineStatus, config.errorStatus)) {
+                        LogUtils.w(
+                            TAG,
+                            "【丢弃流程】停止继续处理后续过保烤肠：mode=高并发，lastPan=${kaoPan.positionSn}，" +
+                                "discardSuccess=$discardSuccess，reason=${DiscardLoopPolicy.stopReason(discardSuccess, config.onlineStatus, config.errorStatus)}"
+                        )
+                        return
+                    }
                 }
             }
         }

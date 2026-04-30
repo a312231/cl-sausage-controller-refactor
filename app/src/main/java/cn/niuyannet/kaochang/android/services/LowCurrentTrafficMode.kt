@@ -96,11 +96,11 @@ object LowCurrentTrafficMode {
                 initLowTrafficMode(kaoPanList, listBox)
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
-            if (p16_18 < list16_18.size) {
+            if (schedulingEnabled && p16_18 < list16_18.size) {
                 checkLowHeatSausage16_18(kaoPanList)
             }
 
-            if (p13_15 < list13_15.size) {
+            if (schedulingEnabled && p13_15 < list13_15.size) {
                 checkLowHeatSausage(kaoPanList)
             }
 
@@ -122,7 +122,9 @@ object LowCurrentTrafficMode {
         }
 
         checkLowHeatEnd(list1_9)
-        checkLowHeatDiscard(list1_9)
+        if (schedulingEnabled) {
+            checkLowHeatDiscard(list1_9)
+        }
 
         if (schedulingEnabled && boxSupplyAvailable && config.modeType == 1 && config.transitionMode == 0 && p1_9 >= 7 && p13_18 == 0) {
             LogUtils.w(
@@ -199,9 +201,11 @@ object LowCurrentTrafficMode {
             }
         }
 
-        list1_9.forEach { kaoPan ->
-            KaoChangOperate.moveSausageToKaoPanByTaste(kaoPan, kaoPan.taste?.tasteCode)
-        }
+        KaoChangOperate.moveSausagesToKaoPansByTaste(
+            list1_9.map { kaoPan ->
+                KaoChangOperate.SupplementTarget(kaoPan, kaoPan.taste?.tasteCode)
+            }
+        )
     }
 
     /**
@@ -334,11 +338,12 @@ object LowCurrentTrafficMode {
                 LogUtils.w(TAG, "【低并发补肠】跳过 13~15 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
                 return
             }
-            neededTastes.forEachIndexed { index, tasteCode ->
+            val targets = neededTastes.mapIndexed { index, tasteCode ->
                 val targetPosition = emptyPositions13_15[index]
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)
+                KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
             }
+            KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
             emptyPositions.forEach { it.isHasGrilling = true }
         }
     }
@@ -368,11 +373,12 @@ object LowCurrentTrafficMode {
                 LogUtils.w(TAG, "【低并发补肠】跳过 16~18 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
                 return
             }
-            neededTastes.forEachIndexed { index, tasteCode ->
+            val targets = neededTastes.mapIndexed { index, tasteCode ->
                 val targetPosition = emptyPositions16_18[index]
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                KaoChangOperate.moveSausageToKaoPanByTaste(targetPosition, tasteCode)
+                KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
             }
+            KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
             emptyPositions.forEach { it.isHasGrilling = true }
         }
     }
@@ -412,7 +418,7 @@ object LowCurrentTrafficMode {
      * 仅当 holdingTime 超过 closeTime 时才触发自动丢弃。
      */
     private suspend fun checkLowHeatDiscard(list: List<KaoPan>) {
-        list.forEach { kaoPan ->
+        for (kaoPan in list) {
             if (kaoPan.isHasSausage && kaoPan.holdingTime > 0) {
                 val holdTime = System.currentTimeMillis() - kaoPan.holdingTime
                 if (holdTime > kaoPan.closeTime) {
@@ -420,11 +426,20 @@ object LowCurrentTrafficMode {
                         TAG,
                         "【丢弃流程】检测到过保烤肠：来源=过保到期，烤盘=${kaoPan.positionSn}，已保温=${holdTime}ms，阈值=${kaoPan.closeTime}ms"
                     )
-                    KaoChangOperate.discardSausage(
+                    val discardSuccess = KaoChangOperate.discardSausage(
                         kaoPan,
                         source = "过保到期",
                         detail = "已保温=${holdTime}ms，阈值=${kaoPan.closeTime}ms"
                     )
+                    val config = AppConfig.getAppConfig()
+                    if (DiscardLoopPolicy.shouldStopAfterDiscard(discardSuccess, config.onlineStatus, config.errorStatus)) {
+                        LogUtils.w(
+                            TAG,
+                            "【丢弃流程】停止继续处理后续过保烤肠：mode=低并发，lastPan=${kaoPan.positionSn}，" +
+                                "discardSuccess=$discardSuccess，reason=${DiscardLoopPolicy.stopReason(discardSuccess, config.onlineStatus, config.errorStatus)}"
+                        )
+                        return
+                    }
                 }
             }
         }

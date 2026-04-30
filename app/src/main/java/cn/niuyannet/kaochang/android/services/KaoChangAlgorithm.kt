@@ -71,6 +71,7 @@ object KaoChangAlgorithm {
     private var inspectionDisconnectSuppressedLogged = false
     private var actionGroupRecoveredAfterModbusConnect = false
     private var lastPollStateSnapshot: String? = null
+    private var lastAutoDispatchBlockSnapshot: String? = null
     var isEnabled = false
 
     private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
@@ -621,7 +622,14 @@ object KaoChangAlgorithm {
         }
 
         val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
-        val schedulingEnabled = isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus)
+        val autoDispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
+            onlineStatus = onlineStatus,
+            errorStatus = config.errorStatus,
+            inspectionMode = config.inspectionMode,
+            moveStatus = config.moveStatus
+        )
+        val schedulingEnabled =
+            isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus) && autoDispatchDecision.canStart
 
         val pollStateSnapshot =
             "mode=${config.modeType},transition=${config.transitionMode},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},scanBlock=${config.scanBlockStatus},inspection=${config.inspectionMode},enable=$schedulingEnabled"
@@ -637,6 +645,19 @@ object KaoChangAlgorithm {
         if (config.supplyStatus == AppConfigBean.SUPPLY_STATUS_SOLD_OUT) {
             return
         }
+        if (isEnabled && config.isEnable == 1 && !autoDispatchDecision.canStart) {
+            val blockSnapshot =
+                "online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},inspection=${config.inspectionMode},reason=${autoDispatchDecision.reason}"
+            if (blockSnapshot != lastAutoDispatchBlockSnapshot) {
+                logI(
+                    LOG_ALGORITHM,
+                    "【调度保护】${autoDispatchDecision.reason}"
+                )
+                lastAutoDispatchBlockSnapshot = blockSnapshot
+            }
+            return
+        }
+        lastAutoDispatchBlockSnapshot = null
 
         when {
             config.transitionMode != 0 -> {
@@ -681,7 +702,9 @@ object KaoChangAlgorithm {
     suspend fun purchase(
         tasteCode: String,
         productId: Int,
-        orderContext: ActionGroupOrderContext? = null
+        orderContext: ActionGroupOrderContext? = null,
+        deliveryIndex: Int? = null,
+        deliveryTotal: Int? = null
     ): KaoChangOperate.TakeSausageResult {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
@@ -704,7 +727,7 @@ object KaoChangAlgorithm {
                 LOG_ALGORITHM,
                 "收到出货订单：口味=$tasteCode，商品=$productId，已调度托盘 ID=${targetKaoPan.id}，烤盘位=${targetKaoPan.positionSn}，holdingTime=${targetKaoPan.holdingTime}"
             )
-            return KaoChangOperate.takeSausageResult(targetKaoPan, orderContext)
+            return KaoChangOperate.takeSausageResult(targetKaoPan, orderContext, deliveryIndex, deliveryTotal)
         } else {
             logW(LOG_DEVICE, "收到出货订单失败：当前没有找到可售烤肠 [口味=$tasteCode, 商品=$productId]")
         }

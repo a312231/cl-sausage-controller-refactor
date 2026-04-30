@@ -88,13 +88,27 @@ object AppConfig {
         }
 
         val config = appConfigBean!!
+        val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         normalizeConcurrencyState(config, "配置加载")
-        if (oldModeType != config.modeType || oldTransitionMode != config.transitionMode) {
+        if (actionGroupPrefetchMigrated || oldModeType != config.modeType || oldTransitionMode != config.transitionMode) {
             saveAppConfig(config)
         }
         return appConfigBean!!
+    }
+
+    private fun migrateActionGroupPrefetchDefault(config: AppConfigBean): Boolean {
+        if (config.actionGroupPrefetchRemoteConfigured == 1 || config.enableActionGroupPrefetch == 1) {
+            return false
+        }
+        config.enableActionGroupPrefetch = 1
+        LogUtils.i(
+            "[配置迁移] 检测到旧版本动作组补肠预取默认值，已自动开启：" +
+                "enableActionGroupPrefetch（动作组补肠预取开关）=0（关闭）->1（开启），" +
+                "actionGroupPrefetchRemoteConfigured（后台是否明确配置预取）=0（未明确配置）"
+        )
+        return true
     }
 
     fun saveAppConfig(appConfigBean: AppConfigBean) {
@@ -304,6 +318,9 @@ object AppConfig {
         }
         if (jsonData.containsKey("enableActionGroupPrefetch")) {
             config.enableActionGroupPrefetch = if (jsonData.getIntValue("enableActionGroupPrefetch") == 1) 1 else 0
+            config.actionGroupPrefetchRemoteConfigured = 1
+        } else if (config.actionGroupPrefetchRemoteConfigured != 1) {
+            config.enableActionGroupPrefetch = 1
         }
         if (jsonData.containsKey("enableVisionShadowMode")) {
             config.enableVisionShadowMode = if (jsonData.getIntValue("enableVisionShadowMode") == 1) 1 else 0

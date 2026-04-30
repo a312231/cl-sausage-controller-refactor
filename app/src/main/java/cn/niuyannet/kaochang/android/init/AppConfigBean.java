@@ -108,8 +108,11 @@ public class AppConfigBean implements Serializable {
     // 300/400 动作组协议开关：1=允许运行新动作组，0=进入维护/暂停新单，不回退旧视觉链路
     public int useActionGroupV2 = 1;
 
-    // 动作组补肠预取开关：0=关闭，1=允许按资源锁提前预取
-    public int enableActionGroupPrefetch = 0;
+    // 动作组补肠预取开关：0=关闭，1=允许按资源锁提前预取。默认开启，后台明确下发 0 时才关闭。
+    public int enableActionGroupPrefetch = 1;
+
+    // 动作组补肠预取开关是否由后台明确配置过：0=未明确配置，1=后台已明确配置
+    public int actionGroupPrefetchRemoteConfigured = 0;
 
     // 视觉影子模式：0=关闭，1=仅记录视觉对账结果，不参与动作决策
     public int enableVisionShadowMode = 0;
