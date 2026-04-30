@@ -21,7 +21,7 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 55
-        versionName = "1.2.79"
+        versionName = "2.0.01"
         ndk {
             moduleName = "jssc"
             abiFilters.add("armeabi-v7a")
