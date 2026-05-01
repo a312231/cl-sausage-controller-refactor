@@ -223,7 +223,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             AppConfig.getAppConfig().onlineStatus = 4
                             AppConfig.saveAppConfig(AppConfig.getAppConfig())
                             syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
-                            showProcessingDialog()
+                            showProcessingDialog(
+                                OrderProcessingProgressPolicy.INITIAL_CURRENT_COUNT,
+                                OrderProcessingProgressPolicy.initialTotalCount(orderMessage)
+                            )
                             setDataToView()
                             purchaseOrder(orderMessage)
                         }

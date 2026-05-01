@@ -116,7 +116,8 @@ abstract class OrderActivity: BaseSauceDetection() {
     /**
      * 显示正在出烤肠对话框
      */
-     fun showProcessingDialog() {
+     fun showProcessingDialog(current: Int = 1, total: Int = 1) {
+        updateProcessingDialog(current, total.coerceAtLeast(1))
         processingDialog?.show()
     }
 
@@ -320,8 +321,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         while (deliveredCount < item.quantity && attemptCount < maxAttempts) {
             attemptCount++
             withContext(Dispatchers.Main) {
-                showProcessingDialog()
-                updateProcessingDialog(deliveredBase + deliveredCount + 1, totalCount)
+                showProcessingDialog(deliveredBase + deliveredCount + 1, totalCount)
             }
             val currentIndex = deliveredBase + deliveredCount + 1
             LogUtils.d(
