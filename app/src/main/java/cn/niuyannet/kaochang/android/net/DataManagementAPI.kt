@@ -65,6 +65,7 @@ object DataManagementAPI {
     private fun logD(message: String) = LogUtils.d("[$LOG_SYNC] $message")
     private fun logW(message: String) = LogUtils.w("[$LOG_SYNC] $message")
     private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
+    private fun logCloudSyncFile(message: String) = LogUtils.i("【$LOG_SYNC】$message")
 
     private fun reconcileDiscardCloseTime(
         logPrefix: String,
@@ -640,13 +641,21 @@ object DataManagementAPI {
             logD("上传前已统一烤盘口味元数据")
         }
         val kaoPanList = KaoPanHelper.getKaoPanList()
+        val kaoPanPayload = JSON.toJSONString(kaoPanList)
         val kaoPanCount = kaoPanList.size
         val warmingCount = kaoPanList.count { it.isHasSausage && it.status == 2 }
         val bakingCount = kaoPanList.count { it.isHasSausage && it.status == 1 }
-        NetApi.updateKaoPanList(JSON.toJSONString(kaoPanList)) { code, content ->
+        logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
+        NetApi.updateKaoPanList(kaoPanPayload) { code, content ->
             if (code != 0) {
+                recordCloudSyncFailure(
+                    type = CloudSyncRetryStore.Type.KAO_PAN,
+                    payload = kaoPanPayload,
+                    error = "code=$code, content=$content"
+                )
                 logE("烤盘同步失败：code=$code, content=$content")
             } else {
+                clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
                 logD("烤盘状态已同步：烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount")
             }
         }
@@ -655,15 +664,56 @@ object DataManagementAPI {
         val stockPayload = JSON.toJSONString(kaoPanBoxList)
         val stockItemCount = kaoPanBoxList.size
         val stockTotalCount = kaoPanBoxList.sumOf { box -> box.num }
+        logPendingRetryIfNeeded(CloudSyncRetryStore.Type.STOCK)
         NetApi.updateStock(stockPayload) { code, content ->
             if (code != 0) {
+                recordCloudSyncFailure(
+                    type = CloudSyncRetryStore.Type.STOCK,
+                    payload = stockPayload,
+                    error = "code=$code, content=$content"
+                )
                 logE(
                     "库存同步失败：明细数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content"
                 )
             } else {
+                clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.STOCK)
                 logD("库存已同步：箱位数=$stockItemCount, 总库存=$stockTotalCount")
             }
         }
+    }
+
+    private fun logPendingRetryIfNeeded(type: CloudSyncRetryStore.Type) {
+        val pending = CloudSyncRetryStore.getPending(type) ?: return
+        logD(
+            "检测到待补传，正在用最新快照补传：" +
+                "type=${CloudSyncRetryStore.typeText(type)}，" +
+                "savedAt=${pending.savedAtMillis}，failureCount=${pending.failureCount}"
+        )
+    }
+
+    private fun recordCloudSyncFailure(
+        type: CloudSyncRetryStore.Type,
+        payload: String,
+        error: String
+    ) {
+        val pending = CloudSyncRetryStore.recordFailure(type, payload, error)
+        logCloudSyncFile(
+            "HTTP上传失败，已持久化待补传：" +
+                "type=${CloudSyncRetryStore.typeText(type)}，" +
+                "failureCount=${pending.failureCount}，" +
+                "lastFailureAt=${pending.lastFailureAtMillis}，" +
+                "lastError=${pending.lastError}"
+        )
+    }
+
+    private fun clearCloudSyncFailureIfNeeded(type: CloudSyncRetryStore.Type) {
+        val cleared = CloudSyncRetryStore.markSucceeded(type) ?: return
+        logCloudSyncFile(
+            "HTTP待补传已成功清除：" +
+                "type=${CloudSyncRetryStore.typeText(type)}，" +
+                "failureCount=${cleared.failureCount}，" +
+                "savedAt=${cleared.savedAtMillis}"
+        )
     }
 
     fun getDeviceInfo() {
