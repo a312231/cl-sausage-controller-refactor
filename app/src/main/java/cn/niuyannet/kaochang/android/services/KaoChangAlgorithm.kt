@@ -65,6 +65,7 @@ object KaoChangAlgorithm {
     private var loggedManualRecoveryRequiredAfterReconnect = false
     private var inspectionDisconnectSuppressedLogged = false
     private var actionGroupRecoveredAfterModbusConnect = false
+    private var startupHeatingStateRestored = false
     private var lastPollStateSnapshot: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
     var isEnabled = false
@@ -216,6 +217,7 @@ object KaoChangAlgorithm {
         AppConfig.saveAppConfig(config)
         logD(LOG_ALGORITHM, "算法准备1：moveStatus=${config.moveStatus}")
         serviceStartTime = System.currentTimeMillis()
+        startupHeatingStateRestored = false
         logD(LOG_ALGORITHM, "智能烤肠算法服务启动")
         startModbusStateMonitor()
         algorithmScope.launch {
@@ -579,6 +581,11 @@ object KaoChangAlgorithm {
             logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
             return
         }
+        if (TemperatureControlPolicy.shouldRestoreHeatingAfterStartup(startupHeatingStateRestored, modbusConnected = true)) {
+            KaoChangOperate.restoreHeatingStateFromCurrentPans("App启动后首次检测到Modbus已连接，按当前烤盘状态恢复温度")
+            startupHeatingStateRestored = true
+        }
+        KaoChangOperate.stopAllHeatingIfNoSausage("全盘无肠兜底检测")
 
         val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
         val autoDispatchDecision = AutoMechanicalDispatchPolicy.evaluate(

@@ -73,6 +73,8 @@ object KaoChangOperate {
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
     private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
+    private var lastTemperatureApplyLogSignature: String? = null
+    private var lastPhysicalPanHasAnySausage: Boolean? = null
 
     data class SupplementTarget(
         val kaoPan: KaoPan,
@@ -2181,38 +2183,104 @@ object KaoChangOperate {
     }
 
     /**
-     * 按当前烤盘实际状态重建 1/2/3 区温度。
+     * 全盘无肠时关闭 1/2/3 区目标温度。
      *
-     * 规则：
-     * - 该区存在 status=1 的烤肠：恢复加热
-     * - 否则该区存在 status=2 或 holdingTime>0 的烤肠：恢复保温
-     * - 否则：关闭该区加热
+     * 这里只看烤盘实际是否有肠，不依赖 isEnable（烤肠算法开关：0关闭，1开启），
+     * 避免把“是否自动调度”和“是否需要控温”混在一起。
+     *
+     * @return true 表示已确认全盘无肠并写入 503/504/505=0；false 表示仍有烤肠，未清零。
      */
-    fun restoreHeatingStateFromCurrentPans(reason: String) {
+    fun stopAllHeatingIfNoSausage(reason: String, force: Boolean = false): Boolean {
         val list = KaoPanHelper.getKaoPanList()
-        restoreAreaHeatingState(1, list.filter { it.positionSn in 1..9 }, reason)
-        restoreAreaHeatingState(2, list.filter { it.positionSn in 10..21 }, reason)
-        restoreAreaHeatingState(3, list.filter { it.positionSn in 25..33 }, reason)
+        val decision = TemperatureControlPolicy.decideEmptyPanStop(
+            hasAnySausage = TemperatureControlPolicy.hasAnySausageInPhysicalPans(list),
+            previousHasAnySausage = lastPhysicalPanHasAnySausage,
+            force = force
+        )
+        lastPhysicalPanHasAnySausage = decision.nextHasAnySausage
+        if (!decision.shouldStopAllHeating) {
+            if (!decision.nextHasAnySausage) {
+                logTemperatureApplyOnce(
+                    signature = "skipStopAll:$reason",
+                    message = "全盘持续无肠，本轮不重复写入 503/504/505=0，保留测试页或人工临时温度：reason=$reason"
+                )
+            }
+            return false
+        }
+
+        writeAreaTargetTemperature(1, 0)
+        writeAreaTargetTemperature(2, 0)
+        writeAreaTargetTemperature(3, 0)
+        logTemperatureApplyOnce(
+            signature = "stopAll:$reason:$force:0,0,0",
+            message = "全盘无肠，已关闭一/二/三区目标温度：reason=$reason，force（是否强制清零）=$force，寄存器503=0，寄存器504=0，寄存器505=0"
+        )
+        return true
     }
 
-    private fun restoreAreaHeatingState(area: Int, pans: List<KaoPan>, reason: String) {
-        val hasHeating = pans.any { it.isHasSausage && it.status == 1 }
-        val hasKeepWarm = pans.any { it.isHasSausage && (it.status == 2 || it.holdingTime > 0L) }
-
-        when {
-            hasHeating -> {
-                logD(LOG_HEAT, "按当前烤盘状态恢复${area}区加热：reason=$reason")
-                heating(area)
-            }
-            hasKeepWarm -> {
-                logD(LOG_HEAT, "按当前烤盘状态恢复${area}区保温：reason=$reason")
-                keepWarm(area)
-            }
-            else -> {
-                logD(LOG_HEAT, "按当前烤盘状态关闭${area}区加热：reason=$reason")
-                stopHeating(area)
-            }
+    /**
+     * 按当前烤盘实际状态刷新 1/2/3 区目标温度。
+     *
+     * 物理区域口径：
+     * - 一区：1~9
+     * - 二区：13~21
+     * - 三区：25~33
+     *
+     * 规则：
+     * - 区域内存在 status=1（烤制中）的烤肠：写 heatingTemperature（加热温度）
+     * - 否则区域内存在 status=2（保温可售）或 holdingTime>0 的烤肠：写 keepWarmTemperature（保温温度）
+     * - 否则：写 0，关闭该区加热和保温
+     */
+    fun applyConfiguredTemperatureByPanState(reason: String) {
+        val config = AppConfig.getAppConfig()
+        val decisions = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = KaoPanHelper.getKaoPanList(),
+            keepWarmTemperature = config.keepWarmTemperature,
+            heatingTemperature = config.heatingTemperature
+        )
+        decisions.forEach { decision ->
+            writeAreaTargetTemperature(decision.area, decision.targetTemperature)
         }
+        val detail = decisions.joinToString("，") { decision ->
+            "${decision.area}区(${decision.positions.first}~${decision.positions.last})=${decision.targetTemperature}℃/${temperatureModeText(decision.mode)}"
+        }
+        logTemperatureApplyOnce(
+            signature = "apply:$reason:$detail",
+            message = "按当前烤盘状态刷新目标温度：reason=$reason，$detail，" +
+                "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
+                "heatingTemperature（加热温度）=${config.heatingTemperature}℃"
+        )
+    }
+
+    /**
+     * 按当前烤盘实际状态重建 1/2/3 区温度。
+     */
+    fun restoreHeatingStateFromCurrentPans(reason: String) {
+        applyConfiguredTemperatureByPanState(reason)
+    }
+
+    private fun writeAreaTargetTemperature(area: Int, temperature: Int) {
+        when (area) {
+            1 -> writeSingleRegister(action_address_1_temperature_write, temperature)
+            2 -> writeSingleRegister(action_address_2_temperature_write, temperature)
+            3 -> writeSingleRegister(action_address_3_temperature_write, temperature)
+        }
+    }
+
+    private fun temperatureModeText(mode: TemperatureControlPolicy.ZoneMode): String {
+        return when (mode) {
+            TemperatureControlPolicy.ZoneMode.HEATING -> "烤制中"
+            TemperatureControlPolicy.ZoneMode.KEEP_WARM -> "保温可售"
+            TemperatureControlPolicy.ZoneMode.STOP -> "无肠停止"
+        }
+    }
+
+    private fun logTemperatureApplyOnce(signature: String, message: String) {
+        if (lastTemperatureApplyLogSignature == signature) {
+            return
+        }
+        lastTemperatureApplyLogSignature = signature
+        logD(LOG_HEAT, message)
     }
     /**
      * 暂停营业时间

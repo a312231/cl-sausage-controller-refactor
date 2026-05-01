@@ -366,6 +366,7 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
+                KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
                 clearRuntimeStateAfterManualPanReset("点击清空烤盘")
                 LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
                 finishMaintenanceAction()
@@ -629,6 +630,7 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
+                KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
                 clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
                 LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
                 finishMaintenanceAction()

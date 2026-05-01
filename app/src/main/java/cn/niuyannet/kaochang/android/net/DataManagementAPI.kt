@@ -748,6 +748,9 @@ object DataManagementAPI {
             }
 
             val mergedConfig = AppConfig.getAppConfig()
+            val temperatureConfigChanged =
+                oldKeepWarmTemperature != mergedConfig.keepWarmTemperature ||
+                    oldHeatingTemperature != mergedConfig.heatingTemperature
             val changes = mutableListOf<String>()
             appendBusinessTimeDiff(changes, oldBusinessTime, mergedConfig.businessTime)
             appendDiff(changes, "status", oldStatus, mergedConfig.status)
@@ -813,6 +816,9 @@ object DataManagementAPI {
                 mergedConfig,
                 "getDeviceInfo"
             )
+            if (temperatureConfigChanged) {
+                KaoChangOperate.applyConfiguredTemperatureByPanState("getDeviceInfo 后台温度配置变化")
+            }
             refreshStockData(logPrefix = "$LOG_SYNC-stock-after-config")
         }
     }
@@ -831,6 +837,8 @@ object DataManagementAPI {
         val oldAvailable = appConfigBean.available
         val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
         val oldDiscardTime = appConfigBean.discardTime
+        val oldKeepWarmTemperature = appConfigBean.keepWarmTemperature
+        val oldHeatingTemperature = appConfigBean.heatingTemperature
         val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
         val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
@@ -906,6 +914,9 @@ object DataManagementAPI {
             }
 
             val mergedConfig = AppConfig.getAppConfig()
+            val temperatureConfigChanged =
+                oldKeepWarmTemperature != mergedConfig.keepWarmTemperature ||
+                    oldHeatingTemperature != mergedConfig.heatingTemperature
             reconcileDiscardCloseTime(logPrefix, oldDiscardTime, mergedConfig)
             handleRemoteOnlineStatusTransition(
                 oldOnlineStatus,
@@ -922,7 +933,8 @@ object DataManagementAPI {
                     oldInspectionMode != mergedConfig.inspectionMode ||
                     oldQcodeUrl != mergedConfig.qcodeURL ||
                     oldAvailable != mergedConfig.available ||
-                    oldAvailableCountdownLatched != mergedConfig.availableCountdownLatched
+                    oldAvailableCountdownLatched != mergedConfig.availableCountdownLatched ||
+                    temperatureConfigChanged
 
             if (changed) {
                 logD(
@@ -934,8 +946,13 @@ object DataManagementAPI {
                         "inspectionMode（检修模式）=${inspectionModeText(oldInspectionMode)}->${inspectionModeText(mergedConfig.inspectionMode)}，" +
                         "qrcodeChanged（二维码地址是否变化）=${oldQcodeUrl != mergedConfig.qcodeURL}，" +
                         "available（二维码页预计时间）=${oldAvailable}->${mergedConfig.available}，" +
-                        "availableCountdownLatched（二维码页预计时间锁存标记）=${oldAvailableCountdownLatched}->${mergedConfig.availableCountdownLatched}"
+                        "availableCountdownLatched（二维码页预计时间锁存标记）=${oldAvailableCountdownLatched}->${mergedConfig.availableCountdownLatched}，" +
+                        "keepWarmTemperature（保温温度）=${oldKeepWarmTemperature}℃->${mergedConfig.keepWarmTemperature}℃，" +
+                        "heatingTemperature（加热温度）=${oldHeatingTemperature}℃->${mergedConfig.heatingTemperature}℃"
                 )
+            }
+            if (temperatureConfigChanged) {
+                KaoChangOperate.applyConfiguredTemperatureByPanState("$logPrefix 后台温度配置变化")
             }
 
             onResult?.invoke(
