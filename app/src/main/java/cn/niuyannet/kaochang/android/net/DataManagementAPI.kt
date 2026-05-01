@@ -14,6 +14,7 @@ import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
+import com.alibaba.fastjson.JSONObject
 import com.blankj.utilcode.util.ToastUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -645,39 +646,48 @@ object DataManagementAPI {
         val kaoPanCount = kaoPanList.size
         val warmingCount = kaoPanList.count { it.isHasSausage && it.status == 2 }
         val bakingCount = kaoPanList.count { it.isHasSausage && it.status == 1 }
-        logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
-        NetApi.updateKaoPanList(kaoPanPayload) { code, content ->
-            if (code != 0) {
-                recordCloudSyncFailure(
-                    type = CloudSyncRetryStore.Type.KAO_PAN,
-                    payload = kaoPanPayload,
-                    error = "code=$code, content=$content"
-                )
-                logE("烤盘同步失败：code=$code, content=$content")
-            } else {
-                clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
-                logD("烤盘状态已同步：烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount")
-            }
-        }
 
         val kaoPanBoxList = KaoPanHelper.getKaoPanBoxList()
         val stockPayload = JSON.toJSONString(kaoPanBoxList)
         val stockItemCount = kaoPanBoxList.size
         val stockTotalCount = kaoPanBoxList.sumOf { box -> box.num }
+        val sequence = CloudSnapshotSequenceStore.nextSequence()
+        val reportTime = System.currentTimeMillis()
+        val snapshotPayload = JSONObject()
+        snapshotPayload["sequence"] = sequence
+        snapshotPayload["reportTime"] = reportTime
+        snapshotPayload["kaoPanList"] = kaoPanPayload
+        snapshotPayload["stockList"] = stockPayload
+
+        logPendingRetryIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
+        logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.STOCK)
-        NetApi.updateStock(stockPayload) { code, content ->
+        NetApi.reportSnapshot(
+            kaoPanList = kaoPanPayload,
+            stockList = stockPayload,
+            sequence = sequence,
+            reportTime = reportTime
+        ) { code, content ->
             if (code != 0) {
                 recordCloudSyncFailure(
-                    type = CloudSyncRetryStore.Type.STOCK,
-                    payload = stockPayload,
+                    type = CloudSyncRetryStore.Type.SNAPSHOT,
+                    payload = snapshotPayload.toJSONString(),
                     error = "code=$code, content=$content"
                 )
                 logE(
-                    "库存同步失败：明细数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content"
+                    "设备数据快照同步失败：" +
+                        "sequence=$sequence, 烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
+                        "箱位数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content"
                 )
             } else {
+                clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
+                clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.STOCK)
-                logD("库存已同步：箱位数=$stockItemCount, 总库存=$stockTotalCount")
+                logD(
+                    "设备数据快照已同步：" +
+                        "sequence=$sequence, 烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
+                        "箱位数=$stockItemCount, 总库存=$stockTotalCount"
+                )
             }
         }
     }

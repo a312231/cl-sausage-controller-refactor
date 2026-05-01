@@ -8,10 +8,12 @@ object CloudSyncRetryStore {
     private const val FILE_NAME = "file_cloud_sync_retry"
     private const val KEY_KAO_PAN = "key_pending_kao_pan"
     private const val KEY_STOCK = "key_pending_stock"
+    private const val KEY_SNAPSHOT = "key_pending_snapshot"
 
     enum class Type(val label: String) {
         KAO_PAN("烤盘状态"),
-        STOCK("烤肠箱库存")
+        STOCK("烤肠箱库存"),
+        SNAPSHOT("设备数据快照")
     }
 
     data class PendingPayload(
@@ -98,6 +100,7 @@ object CloudSyncRetryStore {
     private fun keyFor(type: Type): String = when (type) {
         Type.KAO_PAN -> KEY_KAO_PAN
         Type.STOCK -> KEY_STOCK
+        Type.SNAPSHOT -> KEY_SNAPSHOT
     }
 
     private fun serialize(pending: PendingPayload): String {

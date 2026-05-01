@@ -33,6 +33,7 @@ object NetApi {
 
     // 上传烤盘状态
     var updateKaoPanList_url = "$API_URL_START/updateKaoPanList"
+    var reportSnapshot_url = "$API_URL_START/reportSnapshot"
     var updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
 
     // 广告与设备信息
@@ -219,6 +220,46 @@ object NetApi {
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
                     LogUtils.e("【网络请求】上传烤盘状态失败：deviceCode=$deviceCode, error=${response?.exception?.message}")
+                    callback?.invoke(1, response?.body())
+                }
+            })
+    }
+
+    /**
+     * 上报设备数据快照。
+     *
+     * sequence（设备快照版本号）由上位机本机递增，用于云端拒绝旧请求覆盖新状态。
+     * reportTime（设备本机上报时间）是毫秒时间戳，作为缺少 sequence 时的兜底排序依据。
+     */
+    fun reportSnapshot(
+        kaoPanList: String,
+        stockList: String,
+        sequence: Long,
+        reportTime: Long,
+        callback: ((code: Int, content: String?) -> Unit)? = null
+    ) {
+        val deviceCode = AppConfig.getDeviceId()
+        val json = JSONObject()
+        json["deviceCode"] = deviceCode
+        json["sequence"] = sequence
+        json["reportTime"] = reportTime
+        json["kaoPanList"] = kaoPanList
+        json["stockList"] = stockList
+        LogUtils.d("【网络请求】开始上报设备数据快照：deviceCode=$deviceCode, sequence=$sequence")
+        OkGo.post<String>(reportSnapshot_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.d("【网络请求】上报设备数据快照成功：deviceCode=$deviceCode, sequence=$sequence")
+                    callback?.invoke(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【网络请求】上报设备数据快照失败：" +
+                            "deviceCode=$deviceCode, sequence=$sequence, error=${response?.exception?.message}"
+                    )
                     callback?.invoke(1, response?.body())
                 }
             })
