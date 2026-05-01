@@ -96,6 +96,17 @@ object LowCurrentTrafficMode {
                 initLowTrafficMode(kaoPanList, listBox)
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
+            if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                if (resumeLowHeatSupplementGroup(kaoPanList, list13_15, "13~15")) {
+                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    return totalEmpty
+                }
+                if (resumeLowHeatSupplementGroup(kaoPanList, list16_18, "16~18")) {
+                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    return totalEmpty
+                }
+            }
+
             if (schedulingEnabled && p16_18 < list16_18.size) {
                 checkLowHeatSausage16_18(kaoPanList)
             }
@@ -141,6 +152,33 @@ object LowCurrentTrafficMode {
         // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         return totalEmpty
+    }
+
+    private suspend fun resumeLowHeatSupplementGroup(
+        list: List<KaoPan>,
+        supplementGroup: List<KaoPan>,
+        groupName: String
+    ): Boolean {
+        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
+        val resumeTargets = LowHeatSupplementResumePlanner.planResumeTargets(list1_9, supplementGroup)
+        if (resumeTargets.isEmpty()) {
+            return false
+        }
+
+        TEMPERATURE_OFF = 0
+        KaoChangOperate.heating(2)
+        LogUtils.i(
+            TAG,
+            "【低并发补肠】续补 $groupName 未完成批次：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}"
+        )
+        val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
+        )
+        LogUtils.i(
+            TAG,
+            "【低并发补肠】续补 $groupName 未完成批次结束：目标数=${resumeTargets.size}，完成数=$movedCount"
+        )
+        return true
     }
 
     /**
@@ -338,13 +376,14 @@ object LowCurrentTrafficMode {
                 LogUtils.w(TAG, "【低并发补肠】跳过 13~15 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
                 return
             }
+            val selectedFrontPositions = emptyPositions.take(pNum)
             val targets = neededTastes.mapIndexed { index, tasteCode ->
                 val targetPosition = emptyPositions13_15[index]
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
                 KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
             }
             KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
-            emptyPositions.forEach { it.isHasGrilling = true }
+            selectedFrontPositions.forEach { it.isHasGrilling = true }
         }
     }
 
@@ -373,13 +412,14 @@ object LowCurrentTrafficMode {
                 LogUtils.w(TAG, "【低并发补肠】跳过 16~18 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
                 return
             }
+            val selectedFrontPositions = emptyPositions.take(pNum)
             val targets = neededTastes.mapIndexed { index, tasteCode ->
                 val targetPosition = emptyPositions16_18[index]
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
                 KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
             }
             KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
-            emptyPositions.forEach { it.isHasGrilling = true }
+            selectedFrontPositions.forEach { it.isHasGrilling = true }
         }
     }
 

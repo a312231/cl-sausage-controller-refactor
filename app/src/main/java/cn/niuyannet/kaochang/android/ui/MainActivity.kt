@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
+import cn.niuyannet.kaochang.android.services.SupplementPauseController
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -209,6 +210,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                                 return@runOnUiThread
                             }
 
+                            SupplementPauseController.requestPauseForOrder(orderNo)
                             LogUtils.d(
                                 "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
                                     "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +

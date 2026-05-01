@@ -15,6 +15,7 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.SupplementPauseController
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -196,6 +197,7 @@ abstract class OrderActivity: BaseSauceDetection() {
      */
     fun purchaseOrder(orderMessage:String) {
         val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
+        SupplementPauseController.requestPauseForOrder(safeOrderNo)
         cn.niuyannet.kaochang.android.services.SelfCleanManager.beginOrderTracking(safeOrderNo)
 
             lifecycleScope.launch(Dispatchers.IO) {
@@ -292,6 +294,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                 }
             } finally {
                 cn.niuyannet.kaochang.android.services.SelfCleanManager.clearOrderTrackingIfMatches(safeOrderNo)
+                SupplementPauseController.clearOrderPause(safeOrderNo)
                 cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
             }
         }

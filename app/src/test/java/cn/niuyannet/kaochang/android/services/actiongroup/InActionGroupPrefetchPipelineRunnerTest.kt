@@ -80,6 +80,33 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldPauseAfterCurrentTaskWithoutStartingNextPrefetchWhenOrderIsWaiting() = runBlocking {
+        val client = FakeClient()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            shouldPauseAfterCurrentTask = { true }
+        )
+
+        val result = runner.run(
+            listOf(
+                InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                InActionGroupPipelineTask(listOf(18), targetPanNo = 14),
+                InActionGroupPipelineTask(listOf(19), targetPanNo = 15)
+            )
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        val paused = result as InActionGroupPipelineResult.Paused
+        assertEquals(listOf(13), paused.completed.map { it.targetPanNo })
+        assertEquals(
+            listOf(
+                "in1:17", "in2:17", "in3:0", "in4:0", "in5:0", "in6:0", "dispatch:in6", "in7:13"
+            ),
+            client.calls
+        )
+    }
+
+    @Test
     fun pipeline_shouldNotNotifyTaskCompletedWhenIn7Fails() = runBlocking {
         val client = FakeClient(
             results = queueOf(

@@ -1,4 +1,4 @@
-﻿package cn.niuyannet.kaochang.android.services
+package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
@@ -1087,13 +1087,44 @@ object KaoChangOperate {
         return false
     }
 
+    private fun shouldPauseSupplementForOrder(stage: String): Boolean {
+        val orderNo = SupplementPauseController.currentOrderNo()
+        if (orderNo.isNullOrBlank()) {
+            return false
+        }
+        logI(
+            LOG_SUPPLEMENT,
+            "$stage：检测到订单待出餐，暂停当前补肠批次后续任务，orderNo=$orderNo"
+        )
+        return true
+    }
+
+    private suspend fun moveSausagesToKaoPansByTasteSerial(
+        validTargets: List<SupplementTarget>,
+        stage: String
+    ): Int {
+        var movedCount = 0
+        for (target in validTargets) {
+            if (shouldPauseSupplementForOrder("$stage-单根开始前")) {
+                break
+            }
+            if (moveSausageToKaoPanByTaste(target.kaoPan, target.tasteCode)) {
+                movedCount += 1
+            }
+            if (shouldPauseSupplementForOrder("$stage-单根完成后")) {
+                break
+            }
+        }
+        return movedCount
+    }
+
     suspend fun moveSausagesToKaoPansByTaste(targets: List<SupplementTarget>): Int {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
             return 0
         }
         if (AppConfig.getAppConfig().enableActionGroupPrefetch != 1 || validTargets.size <= 1) {
-            return validTargets.count { moveSausageToKaoPanByTaste(it.kaoPan, it.tasteCode) }
+            return moveSausagesToKaoPansByTasteSerial(validTargets, "补肠串行动作")
         }
         if (AppConfig.getAppConfig().errorStatus > 0) {
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠预取流水线")
@@ -1111,9 +1142,12 @@ object KaoChangOperate {
                 LOG_SUPPLEMENT,
                 "补肠预取流水线降级串行：有效计划数=${plannedMoves.size}，请求数=${validTargets.size}"
             )
-            return validTargets.count { moveSausageToKaoPanByTaste(it.kaoPan, it.tasteCode) }
+            return moveSausagesToKaoPansByTasteSerial(validTargets, "补肠预取流水线降级串行")
         }
 
+        if (shouldPauseSupplementForOrder("补肠预取流水线启动前")) {
+            return 0
+        }
         var appState = AppConfig.getAppConfig().moveStatus
         while (appState != 0) {
             delay(2000)
@@ -1121,6 +1155,9 @@ object KaoChangOperate {
             logD(LOG_SUPPLEMENT, "补肠预取流水线前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
         }
         waitForPostSellSupplementGuardIfNeeded()
+        if (shouldPauseSupplementForOrder("补肠预取流水线占用机械臂前")) {
+            return 0
+        }
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
@@ -1211,7 +1248,8 @@ object KaoChangOperate {
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogger = { message -> LogUtils.i(message) },
                 failureLogger = { message -> LogUtils.e(message) },
-                onTaskCompleted = { completedTask -> applyCompletedPipelineTask(completedTask) }
+                onTaskCompleted = { completedTask -> applyCompletedPipelineTask(completedTask) },
+                shouldPauseAfterCurrentTask = { SupplementPauseController.shouldPauseForOrder() }
             )
                 .run(plannedMoves.map { it.task })
                 .also { actionGroupCompleted = true }
@@ -1224,6 +1262,7 @@ object KaoChangOperate {
 
         val completed = when (result) {
             is InActionGroupPipelineResult.Success -> result.completed
+            is InActionGroupPipelineResult.Paused -> result.completed
             is InActionGroupPipelineResult.Failed -> result.completed
         }
         completed.forEach { completedTask ->
@@ -1233,6 +1272,13 @@ object KaoChangOperate {
         when (result) {
             is InActionGroupPipelineResult.Success -> {
                 logD(LOG_SUPPLEMENT, "补肠预取流水线结束：successCount=$completedCount，targetCount=${plannedMoves.size}")
+            }
+            is InActionGroupPipelineResult.Paused -> {
+                logI(
+                    LOG_SUPPLEMENT,
+                    "补肠预取流水线因订单优先暂停：successCount=$completedCount，" +
+                        "targetCount=${plannedMoves.size}，orderNo=${SupplementPauseController.currentOrderNo() ?: "未知"}"
+                )
             }
             is InActionGroupPipelineResult.Failed -> {
                 handlePipelineSupplementFailure(result, taskByPanNo)

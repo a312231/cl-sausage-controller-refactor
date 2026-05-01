@@ -21,6 +21,10 @@ sealed class InActionGroupPipelineResult {
         val completed: List<CompletedInActionGroupPipelineTask>
     ) : InActionGroupPipelineResult()
 
+    data class Paused(
+        val completed: List<CompletedInActionGroupPipelineTask>
+    ) : InActionGroupPipelineResult()
+
     data class Failed(
         val completed: List<CompletedInActionGroupPipelineTask>,
         val task: InActionGroupPipelineTask?,
@@ -36,7 +40,8 @@ class InActionGroupPrefetchPipelineRunner(
     private val logger: (String) -> Unit = {},
     private val operationLogger: (String) -> Unit = {},
     private val failureLogger: (String) -> Unit = operationLogger,
-    private val onTaskCompleted: (CompletedInActionGroupPipelineTask) -> Unit = {}
+    private val onTaskCompleted: (CompletedInActionGroupPipelineTask) -> Unit = {},
+    private val shouldPauseAfterCurrentTask: () -> Boolean = { false }
 ) {
     suspend fun run(tasks: List<InActionGroupPipelineTask>): InActionGroupPipelineResult = coroutineScope {
         if (tasks.isEmpty()) {
@@ -55,13 +60,22 @@ class InActionGroupPrefetchPipelineRunner(
             }
 
             var nextPrefetch: Deferred<PrefetchResult>? = null
+            var pauseRequestedAfterCurrent = false
             val startNextPrefetchIfNeeded = {
                 if (nextPrefetch == null && index + 1 < tasks.size) {
-                    logger(
-                        "in6 命令已下发，启动下一根预取：currentTargetPan=${task.targetPanNo}，" +
-                            "nextTargetPan=${tasks[index + 1].targetPanNo}"
-                    )
-                    nextPrefetch = startPrefetch(tasks[index + 1])
+                    if (shouldPauseAfterCurrentTask()) {
+                        pauseRequestedAfterCurrent = true
+                        logger(
+                            "in6 命令已下发，检测到订单待出餐，当前根安全完成后暂停补肠批次：" +
+                                "currentTargetPan=${task.targetPanNo}，nextTargetPan=${tasks[index + 1].targetPanNo}"
+                        )
+                    } else {
+                        logger(
+                            "in6 命令已下发，启动下一根预取：currentTargetPan=${task.targetPanNo}，" +
+                                "nextTargetPan=${tasks[index + 1].targetPanNo}"
+                        )
+                        nextPrefetch = startPrefetch(tasks[index + 1])
+                    }
                 }
             }
 
@@ -103,6 +117,14 @@ class InActionGroupPrefetchPipelineRunner(
             )
             completed += completedTask
             onTaskCompleted(completedTask)
+
+            if (pauseRequestedAfterCurrent && index + 1 < tasks.size) {
+                logger(
+                    "补肠预取流水线已暂停：completedCount=${completed.size}，" +
+                        "remainingCount=${tasks.size - index - 1}"
+                )
+                return@coroutineScope InActionGroupPipelineResult.Paused(completed)
+            }
 
             val next = nextPrefetch ?: break
             index += 1
