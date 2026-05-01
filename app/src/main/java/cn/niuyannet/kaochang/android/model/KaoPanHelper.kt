@@ -37,6 +37,8 @@ object KaoPanHelper {
     private const val KEY_KAO_PAN_BOX_LIST = "key_kao_pan_box_list"
     private const val KEY_KAO_PAN_CONFIG = "key_kao_pan_config"
     private const val KEY_TASTE_LIST = "key_taste_list" // 添加口味列表的键
+    private const val DEFAULT_BAKING_TIME_MINUTES = 40
+    private const val DEFAULT_DISCARD_TIME_HOURS = 6
     /** 默认烤制时长，40 分钟。 */
     val bakingTime = 40 * 60 * 1000L
 
@@ -65,59 +67,65 @@ object KaoPanHelper {
         if (!savedKaoPanList.isNullOrEmpty()) {
             kaoPanList = savedKaoPanList.toMutableList()
         } else {
-            kaoPanList = mutableListOf<KaoPan>().apply {
-                val positions = mutableListOf<Int>()
-                for (i in 1..31 step 3) {
-                    positions.add(i)
-                }
-
-                for (i in 2..32 step 3) {
-                    positions.add(i)
-                }
-
-                for (i in 3..33 step 3) {
-                    positions.add(i)
-                }
-
-                for (i in 0 until 33) {
-                    val positionSn = positions[i]
-                    val region = when (positionSn) {
-                        in 1..9 -> 1
-                        in 10..12 -> 4
-                        in 13..21 -> 2
-                        in 22..24 -> 4
-                        else -> 3
-                    }
-                    val cmdValueMove = positionSn
-                    val cmdValueTake = positionSn + 100
-                    val cmdValueDiscard = positionSn + 300
-                    val config = getAppConfig()
-                    val bakingTimeMinutes = config.bakingTime
-                    val discardTimeHours = config.discardTime
-
-                    val kaoPan = KaoPan()
-                    kaoPan.id = i
-                    kaoPan.positionSn = positionSn
-                    kaoPan.positionRegion = region
-                    kaoPan.startTime = 0L
-                    kaoPan.bakingTime = bakingTimeMinutes * 60L * 1000L
-                    kaoPan.holdingTime = holdingTime
-                    kaoPan.closeTime = discardTimeHours * 60L * 60L * 1000L
-                    kaoPan.taste = null
-                    kaoPan.temperature = 0
-                    kaoPan.status = 0
-                    kaoPan.isHasSausage = false
-                    kaoPan.isHasGrilling = false
-                    kaoPan.cmdValueMove = cmdValueMove
-                    kaoPan.cmdValueTake = cmdValueTake
-                    kaoPan.cmdStatusMove = 0
-                    kaoPan.cmdStatusTake = 0
-                    kaoPan.cmdValueDiscard = cmdValueDiscard
-                    kaoPan.cmdStatusDiscard = 0
-                    add(kaoPan)
-                }
-            }
+            val config = getAppConfig()
+            val bakingTimeMinutes = config.bakingTime.takeIf { it > 0 } ?: DEFAULT_BAKING_TIME_MINUTES
+            val discardTimeHours = config.discardTime.takeIf { it > 0 } ?: DEFAULT_DISCARD_TIME_HOURS
+            kaoPanList = createDefaultKaoPanList(bakingTimeMinutes, discardTimeHours)
             saveKaoPanList(kaoPanList)
+        }
+    }
+
+    internal fun createDefaultKaoPanList(
+        bakingTimeMinutes: Int = DEFAULT_BAKING_TIME_MINUTES,
+        discardTimeHours: Int = DEFAULT_DISCARD_TIME_HOURS
+    ): MutableList<KaoPan> {
+        val normalizedBakingTimeMinutes = bakingTimeMinutes.coerceAtLeast(0)
+        val normalizedDiscardTimeHours = discardTimeHours.coerceAtLeast(0)
+        val positions = mutableListOf<Int>()
+        for (i in 1..31 step 3) {
+            positions.add(i)
+        }
+
+        for (i in 2..32 step 3) {
+            positions.add(i)
+        }
+
+        for (i in 3..33 step 3) {
+            positions.add(i)
+        }
+
+        return mutableListOf<KaoPan>().apply {
+            for (i in 0 until 33) {
+                val positionSn = positions[i]
+                val region = when (positionSn) {
+                    in 1..9 -> 1
+                    in 10..12 -> 4
+                    in 13..21 -> 2
+                    in 22..24 -> 4
+                    else -> 3
+                }
+
+                val kaoPan = KaoPan()
+                kaoPan.id = i
+                kaoPan.positionSn = positionSn
+                kaoPan.positionRegion = region
+                kaoPan.startTime = 0L
+                kaoPan.bakingTime = normalizedBakingTimeMinutes * 60L * 1000L
+                kaoPan.holdingTime = holdingTime
+                kaoPan.closeTime = normalizedDiscardTimeHours * 60L * 60L * 1000L
+                kaoPan.taste = null
+                kaoPan.temperature = 0
+                kaoPan.status = 0
+                kaoPan.isHasSausage = false
+                kaoPan.isHasGrilling = false
+                kaoPan.cmdValueMove = positionSn
+                kaoPan.cmdValueTake = positionSn + 100
+                kaoPan.cmdStatusMove = 0
+                kaoPan.cmdStatusTake = 0
+                kaoPan.cmdValueDiscard = positionSn + 300
+                kaoPan.cmdStatusDiscard = 0
+                add(kaoPan)
+            }
         }
     }
     /**
@@ -152,7 +160,12 @@ object KaoPanHelper {
         if (kaoPanList.size>0){
             return kaoPanList
         }
-        this.kaoPanList= PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java).toMutableList()
+        val savedKaoPanList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java)
+        this.kaoPanList = if (!savedKaoPanList.isNullOrEmpty()) {
+            savedKaoPanList.toMutableList()
+        } else {
+            createDefaultKaoPanList()
+        }
         return kaoPanList
     }
 
@@ -418,7 +431,7 @@ object KaoPanHelper {
     fun computeKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { it.num > 0 && it.tasteCode != null }
+            .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 
@@ -426,8 +439,14 @@ object KaoPanHelper {
         if (flavorTypes2.size > list_size) {
             LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
         }
+        if (list_size <= 0 || flavorTypes2.isEmpty()) {
+            return mutableMapOf()
+        }
         //烤箱库存总数
         val totalCount = flavorTypes2.values.sum().toFloat()
+        if (totalCount <= 0f) {
+            return mutableMapOf()
+        }
 
         // 3. 计算比例并排序
         val sortedFlavors = flavorTypes2.map { (flavor, count) ->
@@ -494,7 +513,7 @@ object KaoPanHelper {
     fun computeKaoPamRatio_old(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { it.num > 0 && it.tasteCode != null }
+            .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 
@@ -502,8 +521,14 @@ object KaoPanHelper {
         if (flavorTypes2.size > list_size) {
             LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
         }
+        if (list_size <= 0 || flavorTypes2.isEmpty()) {
+            return mutableMapOf()
+        }
         //烤箱库存总数
         val totalCount = flavorTypes2.values.sum().toFloat()
+        if (totalCount <= 0f) {
+            return mutableMapOf()
+        }
 
         // 3. 计算比例并排序
         val sortedFlavors = flavorTypes2.map { (flavor, count) ->
@@ -555,7 +580,7 @@ object KaoPanHelper {
     fun computeHighKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { it.num > 0 && it.tasteCode != null }
+            .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 
@@ -563,8 +588,14 @@ object KaoPanHelper {
         if (flavorTypes2.size > list_size) {
             LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
         }
+        if (list_size <= 0 || flavorTypes2.isEmpty()) {
+            return mutableMapOf()
+        }
         //烤箱库存总数
         val totalCount = flavorTypes2.values.sum().toFloat()
+        if (totalCount <= 0f) {
+            return mutableMapOf()
+        }
 
         // 3. 计算比例并排序
         val sortedFlavors = flavorTypes2.map { (flavor, count) ->
