@@ -14,7 +14,7 @@ class HighCurrentTrafficModeStateHelperTest {
             currentModeType = 2,
             schedulingEnabled = false,
             boxSupplyAvailable = true,
-            hasActiveHeatingIn13_15 = false,
+            hasActiveHeatingIn13_18 = false,
             hasStartedHighHeatSupplyNow = false
         )
 
@@ -29,11 +29,46 @@ class HighCurrentTrafficModeStateHelperTest {
             currentModeType = 2,
             schedulingEnabled = false,
             boxSupplyAvailable = true,
-            hasActiveHeatingIn13_15 = true,
+            hasActiveHeatingIn13_18 = true,
             hasStartedHighHeatSupplyNow = false
         )
 
         assertEquals(null, resolved)
+    }
+
+    @Test
+    fun resolveLowToHighTransitionCompletionState_shouldWaitUntilOldLowHeatAreaIsCleared() {
+        val resolved = resolveLowToHighTransitionCompletionState(
+            currentModeType = 2,
+            hasOldLowHeatAreaSausage = true,
+            hasFullHighHeatSupplyBatchNow = true
+        )
+
+        assertEquals(null, resolved)
+    }
+
+    @Test
+    fun resolveLowToHighTransitionCompletionState_shouldWaitUntilHighHeatBatchIsFull() {
+        val resolved = resolveLowToHighTransitionCompletionState(
+            currentModeType = 2,
+            hasOldLowHeatAreaSausage = false,
+            hasFullHighHeatSupplyBatchNow = false
+        )
+
+        assertEquals(null, resolved)
+    }
+
+    @Test
+    fun resolveLowToHighTransitionCompletionState_shouldCompleteAfterOldLowHeatAreaIsCleared() {
+        val resolved = resolveLowToHighTransitionCompletionState(
+            currentModeType = 2,
+            hasOldLowHeatAreaSausage = false,
+            hasFullHighHeatSupplyBatchNow = true
+        )
+
+        assertNotNull(resolved)
+        assertEquals(2, resolved!!.modeType)
+        assertEquals(0, resolved.transitionMode)
     }
 
     @Test

@@ -27,11 +27,6 @@ import java.util.Locale
  * 检测烤盘状态、库存并自动管理烤肠烤制流程
  */
 object KaoChangAlgorithm {
-    private data class HeatBatch(
-        val name: String,
-        val pans: List<KaoPan>
-    )
-
     data class SupplyRuntimeContext(
         val hasSupplyBoxesAvailable: Boolean,
         val hasSellableSausage: Boolean,
@@ -290,36 +285,6 @@ object KaoChangAlgorithm {
         return kaoPan.isHasSausage && kaoPan.holdingTime > 0L
     }
 
-    private fun calcPanRemainHeatTime(kaoPan: KaoPan, now: Long): Long? {
-        if (!isHeatingPan(kaoPan)) {
-            return null
-        }
-        val heatTime = now - kaoPan.startTime
-        val remain = kaoPan.bakingTime - heatTime
-        return remain.takeIf { it > 0L }
-    }
-
-    private fun calcBatchRemainHeatTime(list: List<KaoPan>, now: Long): Long? {
-        return list
-            .asSequence()
-            .mapNotNull { calcPanRemainHeatTime(it, now) }
-            .maxOrNull()
-    }
-
-    private fun buildSupplementHeatBatches(
-        isLowOrTransition: Boolean,
-        heatArea: List<KaoPan>
-    ): List<HeatBatch> {
-        return if (isLowOrTransition) {
-            listOf(
-                HeatBatch("13~15补肠批次", heatArea.filter { it.positionSn in 13..15 }),
-                HeatBatch("16~18补肠批次", heatArea.filter { it.positionSn in 16..18 })
-            )
-        } else {
-            listOf(HeatBatch("25~33补肠批次", heatArea))
-        }
-    }
-
     private fun buildAvailableDecisionContext(
         config: AppConfigBean,
         sellArea: List<KaoPan>,
@@ -430,26 +395,20 @@ object KaoChangAlgorithm {
             return
         }
 
-        val nextSupplementBatch = buildSupplementHeatBatches(isLowOrTransition, heatArea)
-            .mapNotNull { batch ->
-                calcBatchRemainHeatTime(batch.pans, now)?.let { remain ->
-                    batch.name to remain
-                }
-            }
-            .minByOrNull { it.second }
+        val nextSupplementBatch = findNextSupplementHeatBatch(isLowOrTransition, heatArea, now)
 
         if (nextSupplementBatch != null) {
             logAvailableDecision(
-                "前区已售空，显示${nextSupplementBatch.first}恢复可售前的预计时间：remainingMs=${nextSupplementBatch.second}",
+                "前区已售空，显示${nextSupplementBatch.name}恢复可售前的预计时间：remainingMs=${nextSupplementBatch.remainHeatTimeMs}",
                 config,
                 sellArea,
                 heatArea
             )
             updateAvailableState(
                 config,
-                nextSupplementBatch.second,
+                nextSupplementBatch.remainHeatTimeMs,
                 0,
-                "前区已售空，显示${nextSupplementBatch.first}恢复可售前的预计时间"
+                "前区已售空，显示${nextSupplementBatch.name}恢复可售前的预计时间"
             )
             return
         }

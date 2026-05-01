@@ -131,7 +131,20 @@ object HighCurrentTrafficMode {
                 val isBeforeCloseWindow =
                     KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
-                if (totalEmpty == 30) {
+                if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
+                    if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                        resumeIncompleteHighHeatSupplement(
+                            list = list,
+                            listBox = listBox,
+                            reason = "高并发正常态续补25~33未完成批次"
+                        )
+                    } else {
+                        LogUtils.i(
+                            TAG,
+                            "【高并发补肠】25~33 补热区未补满，等待续补，不执行回补：boxSupplyAvailable=$boxSupplyAvailable，schedulingEnabled=$schedulingEnabled，errorStatus=${config.errorStatus}，处于停业前收口窗口=$isBeforeCloseWindow"
+                        )
+                    }
+                } else if (totalEmpty == 30) {
                     if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                         initHighTrafficMode(list, listBox)
                         resetSupplementTracking("高并发初始化重新开盘")
@@ -211,23 +224,17 @@ object HighCurrentTrafficMode {
         schedulingEnabled: Boolean
     ) {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
-        val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
+        val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, list)
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
 
-        var allFinished = true
-        var heatingCount = 0
-        list13_15.forEach { kaoPan ->
-            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                heatingCount += 1
-                val heatTime = System.currentTimeMillis() - kaoPan.startTime
-                if (heatTime < kaoPan.bakingTime) {
-                    allFinished = false
-                }
-            }
-        }
-
         val hasStartedHighHeatSupply = list25_33.any { it.isHasSausage }
-        if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled) {
+        if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33) && boxSupplyAvailable && schedulingEnabled) {
+            resumeIncompleteHighHeatSupplement(
+                list = list,
+                listBox = listBox,
+                reason = "低转高过渡续补25~33未完成批次"
+            )
+        } else if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
             val flavorAllocation = KaoPanHelper.computeHighKaoPamRatio(listBox, frontEmptyCount)
             var currentPosition = 0
@@ -279,26 +286,22 @@ object HighCurrentTrafficMode {
             }
         }
 
-        if (allFinished && heatingCount > 0) {
-            KaoChangOperate.stopHeating(2)
-            KaoChangOperate.keepWarm(2)
-            list13_15.forEach { kaoPan ->
-                if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                    kaoPan.startTime = 0
-                    kaoPan.holdingTime = 0L
-                    kaoPan.status = 2
-                }
-            }
-            LogUtils.i(TAG, "【并发切换】低转高过渡：13~15 旧补热区已烤熟，进入过渡保温")
+        if (schedulingEnabled) {
+            moveFinishedOldLowHeatGroupToFront(list, 13, 15, "13~15")
+            moveFinishedOldLowHeatGroupToFront(list, 16, 18, "16~18")
         }
 
-        val hasActiveHeatingIn13_15 = list13_15.any { it.isHasSausage && it.startTime > 0 }
+        val hasOldLowHeatAreaSausage = list13_18.any { it.isHasSausage }
+        if (!hasOldLowHeatAreaSausage) {
+            KaoChangOperate.stopHeating(2)
+        }
         val hasStartedHighHeatSupplyNow = list25_33.any { it.isHasSausage }
+        val hasFullHighHeatSupplyBatchNow = HighHeatSupplementResumePlanner.hasFullBatchStarted(list25_33)
         val idleResolvedState = resolveLowToHighTransitionIdleState(
             currentModeType = config.modeType,
             schedulingEnabled = schedulingEnabled,
             boxSupplyAvailable = boxSupplyAvailable,
-            hasActiveHeatingIn13_15 = hasActiveHeatingIn13_15,
+            hasActiveHeatingIn13_18 = hasOldLowHeatAreaSausage,
             hasStartedHighHeatSupplyNow = hasStartedHighHeatSupplyNow
         )
         if (idleResolvedState != null) {
@@ -313,7 +316,18 @@ object HighCurrentTrafficMode {
             )
             return
         }
-        if (hasActiveHeatingIn13_15 || !hasStartedHighHeatSupplyNow) {
+        val completionState = resolveLowToHighTransitionCompletionState(
+            currentModeType = config.modeType,
+            hasOldLowHeatAreaSausage = hasOldLowHeatAreaSausage,
+            hasFullHighHeatSupplyBatchNow = hasFullHighHeatSupplyBatchNow
+        )
+        if (completionState == null) {
+            if (!hasOldLowHeatAreaSausage && hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow) {
+                LogUtils.i(
+                    TAG,
+                    "【并发切换】低转高继续等待 25~33 补满：当前有肠数=${list25_33.count { it.isHasSausage }}，目标=9"
+                )
+            }
             return
         }
 
@@ -322,22 +336,78 @@ object HighCurrentTrafficMode {
         val highSupplyOccupiedCount = list25_33.count { it.isHasSausage }
         LogUtils.i(
             TAG,
-            "【并发切换】低转高完成条件满足：13~15 仍有在烤旧批次=$hasActiveHeatingIn13_15，25~33 已启动新补热=$hasStartedHighHeatSupplyNow，1~21 当前有肠数=$frontOccupiedCount，25~33 当前有肠数=$highSupplyOccupiedCount"
+            "【并发切换】低转高完成条件满足：13~18 旧低并发补热区仍有烤肠=$hasOldLowHeatAreaSausage，25~33 完整补热批次已启动=$hasFullHighHeatSupplyBatchNow，1~21 当前有肠数=$frontOccupiedCount，25~33 当前有肠数=$highSupplyOccupiedCount"
         )
 
-        val now = System.currentTimeMillis()
-        list13_15.forEach { kaoPan ->
-            if (kaoPan.isHasSausage && kaoPan.startTime == 0L && kaoPan.holdingTime <= 0L) {
-                kaoPan.holdingTime = now
-                kaoPan.status = 2
-            }
-        }
-        config.transitionMode = 0
+        config.modeType = completionState.modeType
+        config.transitionMode = completionState.transitionMode
         AppConfig.saveAppConfig(config)
         SendServerHelper.publishServiceUpdateStatus()
         LogUtils.i(
             TAG,
             "【并发切换】低转高过渡完成：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}"
+        )
+    }
+
+    /**
+     * 低转高期间，13~18 仍按低并发旧补热区处理。
+     * 烤熟后必须搬回 1~9 的同口味预留空位，不能在 2 区原地进入保温可售。
+     */
+    private suspend fun moveFinishedOldLowHeatGroupToFront(
+        list: List<KaoPan>,
+        start: Int,
+        end: Int,
+        groupName: String
+    ) {
+        val group = TrafficModeHelper.getTrafficModePositions(start, end, list)
+        val sourcePans = group.filter { it.isHasSausage }
+        if (sourcePans.isEmpty()) {
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val hasUnfinished = sourcePans.any { kaoPan ->
+            kaoPan.startTime > 0 && now - kaoPan.startTime < kaoPan.bakingTime
+        }
+        if (hasUnfinished) {
+            return
+        }
+
+        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        KaoChangOperate.keepWarm(1)
+        LogUtils.i(TAG, "【并发切换】低转高过渡：$groupName 旧补热区已烤熟，开始搬回 1~9 前区保温可售")
+        sourcePans.forEach { kaoPan ->
+            val tasteCode = kaoPan.taste?.tasteCode
+            val targetPan = TrafficModeHelper.selectFrontTargetPan(
+                TrafficModeHelper.getTrafficModePositions(1, 9, list),
+                tasteCode,
+                requireReserved = true
+            )
+            if (targetPan == null) {
+                LogUtils.w(
+                    TAG,
+                    "【并发切换】低转高过渡：$groupName 旧补热区搬回失败，未找到 1~9 同口味预留空位，" +
+                        "sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，sourceStartTime=${kaoPan.startTime}"
+                )
+                return@forEach
+            }
+            val moved = KaoChangOperate.moveKaoPanToKaoPan(
+                kaoPan,
+                targetPan,
+                targetHoldingTime = now
+            )
+            if (!moved) {
+                LogUtils.w(
+                    TAG,
+                    "【并发切换】低转高过渡：$groupName 旧补热区搬回失败，" +
+                        "sourcePan=${kaoPan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode"
+                )
+            }
+        }
+        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+            beforeSellable,
+            KaoPanHelper.getKaoPanList(),
+            "低转高过渡${groupName}旧补热区烤熟搬回1~9"
         )
     }
 
@@ -377,6 +447,7 @@ object HighCurrentTrafficMode {
             val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
             val alreadySausages1_9 = list1_9.filter { it.isHasSausage }
             if (alreadySausages1_9.size < sausageCount) {
+                val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
                 val remainingSausages = TrafficModeHelper.sortByHoldingAgeThenPosition(
                     list10_21.filter { it.isHasSausage }
                 )
@@ -390,6 +461,11 @@ object HighCurrentTrafficMode {
                         KaoChangOperate.moveKaoPanToKaoPan(kaoPan, remainingPositions1_9[index])
                     }
                 }
+                KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                    beforeSellable,
+                    KaoPanHelper.getKaoPanList(),
+                    "高转低收拢10~21剩余可售肠回1~9"
+                )
             }
 
             val existingCountMap = list1_9
@@ -512,25 +588,66 @@ object HighCurrentTrafficMode {
         return 0
     }
 
+    private suspend fun resumeIncompleteHighHeatSupplement(
+        list: List<KaoPan>,
+        listBox: List<KaoPanBox>,
+        reason: String
+    ): Int {
+        val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
+        val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
+        TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
+        val resumeTargets = HighHeatSupplementResumePlanner.planResumeTargets(list1_21, list25_33)
+        if (resumeTargets.isEmpty()) {
+            LogUtils.w(
+                TAG,
+                "【高并发补肠】检测到 25~33 未完成批次但无法续补：reason=$reason，" +
+                    "occupied=${list25_33.filter { it.isHasSausage }.map { it.positionSn }}，" +
+                    "empty=${list25_33.filter { !it.isHasSausage }.map { it.positionSn }}"
+            )
+            return 0
+        }
+
+        KaoChangOperate.heating(3)
+        LogUtils.i(
+            TAG,
+            "【高并发补肠】续补 25~33 未完成批次：reason=$reason，目标烤盘=${resumeTargets.map { it.positionSn }}"
+        )
+        val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+            resumeTargets.map { target ->
+                KaoChangOperate.SupplementTarget(target.kaoPan, target.tasteCode)
+            }
+        )
+        if (movedCount > 0) {
+            recordSupplementLaunch(
+                filledCount = movedCount,
+                now = System.currentTimeMillis(),
+                reason = reason
+            )
+            repeat(movedCount) {
+                SelfCleanManager.markZone3Dirty()
+            }
+            LogUtils.i(
+                TAG,
+                "【高并发补肠】25~33 未完成批次续补完成：movedCount=$movedCount，lastFillPitTime=$lastFillPitTime"
+            )
+        } else {
+            LogUtils.w(TAG, "【高并发补肠】25~33 未完成批次本轮续补未移动烤肠：reason=$reason")
+        }
+        return movedCount
+    }
+
     /**
      * 检查 25~33 补热区是否已经烤熟。
      * 烤熟后搬回 1~21 同口味空位。
      */
     private suspend fun checkHighHeatSausage(list: List<KaoPan>) {
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
-        var allFinished = true
-        var heatingCount = 0
-
-        list25_33.forEach { kaoPan ->
-            if (kaoPan.isHasSausage) {
-                heatingCount += 1
-                if (kaoPan.status == 1) {
-                    allFinished = false
-                }
-            }
+        if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
+            LogUtils.i(TAG, "【高并发补肠】25~33 补热区未补满，等待续补，不执行回补")
+            return
         }
-
-        if (allFinished && heatingCount > 0) {
+        if (HighHeatSupplementResumePlanner.isCompleteFinishedBatch(list25_33)) {
+            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             LogUtils.i(TAG, "【高并发补肠】25~33 补热区已烤熟，开始回补 1~21")
             KaoChangOperate.keepWarm(3)
             KaoChangOperate.keepWarm(2)
@@ -549,6 +666,11 @@ object HighCurrentTrafficMode {
             KaoChangOperate.stopHeating(3)
             clearPitCountAfterBatch("25~33 补热区回补完成")
             SelfCleanManager.markZone3CleanPendingIfNeeded(list)
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "高并发25~33补热区烤熟搬回1~21"
+            )
         }
     }
 
@@ -557,6 +679,16 @@ object HighCurrentTrafficMode {
      * 烤熟后关闭对应加热区并进入保温状态。
      */
     private fun checkHighHeatEnd(list: List<KaoPan>, area: Int) {
+        if (area == 3) {
+            val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
+            if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
+                LogUtils.i(
+                    TAG,
+                    "【高并发补肠】25~33 补热区未补满，不切换 3 区保温：当前有肠数=${list25_33.count { it.isHasSausage }}，目标=9"
+                )
+                return
+            }
+        }
         var allFinished = true
         var heatingCount = 0
         list.forEach { kaoPan ->
@@ -569,6 +701,7 @@ object HighCurrentTrafficMode {
             }
         }
         if (allFinished && heatingCount > 0) {
+            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             KaoChangOperate.stopHeating(area)
             KaoChangOperate.keepWarm(area)
             list.forEach { kaoPan ->
@@ -579,6 +712,11 @@ object HighCurrentTrafficMode {
                 }
             }
             LogUtils.i(TAG, "【加热控制】${area} 区烤肠已全部烤熟，切换为保温状态")
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "高并发${area}区切换保温可售"
+            )
         }
     }
 

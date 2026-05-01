@@ -14,14 +14,28 @@ internal fun resolveLowToHighTransitionIdleState(
     currentModeType: Int,
     schedulingEnabled: Boolean,
     boxSupplyAvailable: Boolean,
-    hasActiveHeatingIn13_15: Boolean,
+    hasActiveHeatingIn13_18: Boolean,
     hasStartedHighHeatSupplyNow: Boolean
 ): HighTrafficModeState? {
     val shouldExitTransitionWithoutNewBatch =
         (!boxSupplyAvailable || !schedulingEnabled) &&
-            !hasActiveHeatingIn13_15 &&
+            !hasActiveHeatingIn13_18 &&
             !hasStartedHighHeatSupplyNow
     if (!shouldExitTransitionWithoutNewBatch) {
+        return null
+    }
+    return HighTrafficModeState(
+        modeType = currentModeType.takeIf { it == 2 } ?: 2,
+        transitionMode = 0
+    )
+}
+
+internal fun resolveLowToHighTransitionCompletionState(
+    currentModeType: Int,
+    hasOldLowHeatAreaSausage: Boolean,
+    hasFullHighHeatSupplyBatchNow: Boolean
+): HighTrafficModeState? {
+    if (hasOldLowHeatAreaSausage || !hasFullHighHeatSupplyBatchNow) {
         return null
     }
     return HighTrafficModeState(

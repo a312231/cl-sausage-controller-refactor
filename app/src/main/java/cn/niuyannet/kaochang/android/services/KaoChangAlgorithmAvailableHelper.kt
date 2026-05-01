@@ -29,6 +29,28 @@ internal fun findNextOpeningSellBatch(
         .minByOrNull { it.remainHeatTimeMs }
 }
 
+internal fun findNextSupplementHeatBatch(
+    isLowOrTransition: Boolean,
+    heatArea: List<KaoPan>,
+    now: Long
+): AvailableHeatBatch? {
+    val supplementBatches = if (isLowOrTransition) {
+        listOf(
+            "13~15补肠批次" to heatArea.filter { it.positionSn in 13..15 },
+            "16~18补肠批次" to heatArea.filter { it.positionSn in 16..18 }
+        )
+    } else {
+        listOf("25~33补肠批次" to heatArea.filter { it.positionSn in 25..33 })
+    }
+    return supplementBatches
+        .mapNotNull { (name, pans) ->
+            calcAvailableBatchRemainHeatTime(pans, now)?.let { remain ->
+                AvailableHeatBatch(name = name, remainHeatTimeMs = remain)
+            }
+        }
+        .minByOrNull { it.remainHeatTimeMs }
+}
+
 private fun calcAvailableBatchRemainHeatTime(
     pans: List<KaoPan>,
     now: Long

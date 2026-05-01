@@ -60,6 +60,75 @@ class KaoChangAlgorithmAvailableHelperTest {
         assertEquals(45_000L, batch.remainHeatTimeMs)
     }
 
+    @Test
+    fun findNextSupplementHeatBatch_shouldUseLowHeatGroupsDuringLowToHighTransition() {
+        val now = 1_000_000L
+        val heatArea = buildList {
+            addAll((13..15).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 30_000L,
+                    bakingTime = 120_000L
+                )
+            })
+            addAll((16..18).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 80_000L,
+                    bakingTime = 120_000L
+                )
+            })
+            addAll((25..33).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 110_000L,
+                    bakingTime = 120_000L
+                )
+            })
+        }
+
+        val batch = findNextSupplementHeatBatch(
+            isLowOrTransition = true,
+            heatArea = heatArea,
+            now = now
+        )
+
+        assertNotNull(batch)
+        assertEquals("16~18补肠批次", batch!!.name)
+        assertEquals(40_000L, batch.remainHeatTimeMs)
+    }
+
+    @Test
+    fun findNextSupplementHeatBatch_shouldUseHighHeatGroupDuringHighConcurrency() {
+        val now = 1_000_000L
+        val heatArea = buildList {
+            addAll((13..18).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 110_000L,
+                    bakingTime = 120_000L
+                )
+            })
+            addAll((25..33).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 60_000L,
+                    bakingTime = 120_000L
+                )
+            })
+        }
+
+        val batch = findNextSupplementHeatBatch(
+            isLowOrTransition = false,
+            heatArea = heatArea,
+            now = now
+        )
+
+        assertNotNull(batch)
+        assertEquals("25~33补肠批次", batch!!.name)
+        assertEquals(60_000L, batch.remainHeatTimeMs)
+    }
+
     private fun heatingPan(
         positionSn: Int,
         startTime: Long,
