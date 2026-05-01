@@ -21,6 +21,7 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.TemperatureControlPolicy
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
@@ -302,6 +303,59 @@ class MaintenanceFragment : Fragment() {
             return true
         }
         return false
+    }
+
+    private suspend fun evaluateManualRecoveryHeating(
+        targetOnlineStatus: Int
+    ): TemperatureControlPolicy.ManualRecoveryHeatingDecision {
+        if (!VMModbusHelper.connectStatus()) {
+            return TemperatureControlPolicy.decideManualRecoveryHeating(
+                modbusConnected = false,
+                actionGroupReady = false,
+                legacyActionStatus201 = -1,
+                moveStatus = AppConfig.getAppConfig().moveStatus,
+                panMoveResult203 = null,
+                targetOnlineStatus = targetOnlineStatus
+            )
+        }
+
+        val actionGroupReady = KaoChangOperate.recoverActionGroupStateAfterModbusReady("维护页恢复正常状态前检查")
+        val currentConfig = AppConfig.getAppConfig()
+        val legacyActionStatus201 = VMModbusHelper.readHoldingRegisters(
+            KaoChangOperate.modbus_address,
+            KaoChangOperate.action_address_status
+        )
+        val panMoveResult203 = if (currentConfig.moveStatus == 3) {
+            VMModbusHelper.readHoldingRegisters(
+                KaoChangOperate.modbus_address,
+                KaoChangOperate.action_address_move_result
+            )
+        } else {
+            null
+        }
+
+        return TemperatureControlPolicy.decideManualRecoveryHeating(
+            modbusConnected = true,
+            actionGroupReady = actionGroupReady,
+            legacyActionStatus201 = legacyActionStatus201,
+            moveStatus = currentConfig.moveStatus,
+            panMoveResult203 = panMoveResult203,
+            targetOnlineStatus = targetOnlineStatus
+        )
+    }
+
+    private fun clearIdleMoveStatusAfterManualRecovery(reason: String) {
+        val config = AppConfig.getAppConfig()
+        if (config.moveStatus == 0) {
+            return
+        }
+        val oldMoveStatus = config.moveStatus
+        config.moveStatus = 0
+        AppConfig.saveAppConfig(config)
+        LogUtils.w(
+            "【维护操作】$reason，已清理本地机械状态残留：" +
+                "moveStatus（机械动作状态）=$oldMoveStatus->0（空闲）"
+        )
     }
 
     private suspend fun waitUntilMachineIdleOrTimeout(
@@ -663,13 +717,39 @@ class MaintenanceFragment : Fragment() {
                 val config = AppConfig.getAppConfig()
                 val targetOnlineStatus =
                     if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
+                val recoveryDecision = evaluateManualRecoveryHeating(targetOnlineStatus)
+                if (!recoveryDecision.canRecoverDeviceStatus) {
+                    ToastUtils.showLong("下位机动作未空闲，请确认动作结束后再恢复")
+                    LogUtils.w(
+                        "【维护操作】拒绝恢复正常状态：${recoveryDecision.reason}，" +
+                            "targetOnlineStatus（目标设备营业状态）=${onlineStatusText(targetOnlineStatus)}，" +
+                            "currentOnlineStatus（当前设备营业状态）=${onlineStatusText(AppConfig.getAppConfig().onlineStatus)}，" +
+                            "errorStatus（设备故障状态）=${AppConfig.getAppConfig().errorStatus}"
+                    )
+                    return@launch
+                }
                 LogUtils.d(
-                    "【维护操作】点击恢复正常状态，errorStatus: ${config.errorStatus}->0, " +
-                        "onlineStatus: ${config.onlineStatus}->$targetOnlineStatus"
+                    "【维护操作】点击恢复正常状态，errorStatus（设备故障状态）=${config.errorStatus}->0（正常）, " +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}->${onlineStatusText(targetOnlineStatus)}，" +
+                        "temperatureRecovery（温度恢复策略）=${recoveryDecision.reason}"
                 )
                 config.errorStatus = 0
                 config.onlineStatus = targetOnlineStatus
                 AppConfig.saveAppConfig(config)
+                clearIdleMoveStatusAfterManualRecovery("恢复正常状态前已确认下位机动作空闲")
+                if (recoveryDecision.shouldRestoreTemperature) {
+                    KaoChangOperate.restoreHeatingStateFromCurrentPans("维护页手动恢复正常状态")
+                    LogUtils.w(
+                        "【维护操作】恢复正常状态后已按当前烤盘状态重刷温度设置寄存器：" +
+                            "寄存器503（一区1~9目标温度）、寄存器504（二区13~21目标温度）、寄存器505（三区25~33目标温度），" +
+                            "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
+                            "heatingTemperature（加热温度）=${config.heatingTemperature}℃"
+                    )
+                } else {
+                    LogUtils.d(
+                        "【维护操作】恢复正常状态后跳过温度重刷：${recoveryDecision.reason}"
+                    )
+                }
                 val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
                 if (!runtimePublishOk) {
                     LogUtils.w("【维护操作】恢复正常状态时 MQTT 主上报失败，回退 HTTP 补偿：" +
