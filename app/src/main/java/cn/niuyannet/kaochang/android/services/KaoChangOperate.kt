@@ -1992,6 +1992,7 @@ object KaoChangOperate {
                 )
             }
             SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
+            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             kaoPan.cmdStatusTake = 0
             kaoPan.isHasSausage = false
             kaoPan.holdingTime = 0L
@@ -2007,6 +2008,11 @@ object KaoChangOperate {
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "单根出餐完成后清空可售烤盘"
+            )
             actionGroupSessionStore.clear()
 
             return takeResult
@@ -2060,6 +2066,11 @@ object KaoChangOperate {
             markActionFailure("烤盘${kaoPan.positionSn}${source}丢弃", result)
         }
         kaoPan.cmdStatusDiscard=if (result == ActionExecutionResult.SUCCESS) 0 else 2
+        val beforeSellable = if (result == ActionExecutionResult.SUCCESS) {
+            KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        } else {
+            null
+        }
         if (result==ActionExecutionResult.SUCCESS){
             kaoPan.isHasSausage=false
             kaoPan.holdingTime=0
@@ -2074,6 +2085,13 @@ object KaoChangOperate {
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
         operateScope.launch {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        }
+        if (beforeSellable != null) {
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "过保丢弃完成后清空可售烤盘"
+            )
         }
         while (AppConfig.getAppConfig().onlineStatus == 4) {
             delay(5000L)

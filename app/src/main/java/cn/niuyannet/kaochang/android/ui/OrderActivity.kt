@@ -618,7 +618,7 @@ abstract class OrderActivity: BaseSauceDetection() {
     /**
      * 同步设备运行时状态。
      * MQTT 是主通道，retryDelaysMs 仅用于 MQTT 轻量补发；
-     * HTTP 不再作为默认双写链路。
+     * onlineStatus（设备营业状态）同时镜像到 HTTP，避免后台设备表和小程序状态源停留在旧值。
      */
     protected fun syncDeviceStatusToServer(retryDelaysMs: List<Long> = emptyList()) {
         val expectedStatus = AppConfig.getAppConfig().onlineStatus
@@ -634,6 +634,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         } else {
             LogUtils.e("【设备状态】MQTT 上报失败：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         }
+        mirrorDeviceStatusToHttp(expectedStatus, attempt = 0)
 
         retryDelaysMs.forEachIndexed { index, delayMs ->
             lifecycleScope.launch(Dispatchers.IO) {
@@ -649,6 +650,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     } else {
                         LogUtils.e("【设备状态】MQTT 上报失败：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     }
+                    mirrorDeviceStatusToHttp(currentStatus, attempt = attempt)
                 } else {
                     LogUtils.d(
                         "【设备状态】取消补发：" +
@@ -657,6 +659,33 @@ abstract class OrderActivity: BaseSauceDetection() {
                             "currentOnlineStatus（当前设备营业状态）=${onlineStatusText(currentStatus)}"
                     )
                 }
+            }
+        }
+    }
+
+    private fun mirrorDeviceStatusToHttp(expectedStatus: Int, attempt: Int) {
+        if (!DeviceStatusSyncPolicy.shouldMirrorOnlineStatusToHttp(expectedStatus)) {
+            LogUtils.w(
+                "【设备状态】跳过 HTTP 镜像设备营业状态：attempt=$attempt，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}"
+            )
+            return
+        }
+        LogUtils.i(
+            "【设备状态】HTTP 镜像设备营业状态：attempt=$attempt，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}"
+        )
+        DataManagementAPI.uploadDeviceInfo { code, content ->
+            if (code == 0) {
+                LogUtils.i(
+                    "【设备状态】HTTP 镜像设备营业状态成功：attempt=$attempt，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}"
+                )
+            } else {
+                LogUtils.e(
+                    "【设备状态】HTTP 镜像设备营业状态失败：attempt=$attempt，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}，code=$code，content=$content"
+                )
             }
         }
     }

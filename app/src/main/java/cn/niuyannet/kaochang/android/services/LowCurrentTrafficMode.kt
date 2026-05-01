@@ -267,6 +267,7 @@ object LowCurrentTrafficMode {
         }
 
         if (allFinished && heatingCount > 0) {
+            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             KaoChangOperate.keepWarm(1)
             LogUtils.i(TAG, "【低并发补肠】13~15 补热区已烤熟，开始回补前区")
             list13_15.forEach { kaoPan ->
@@ -295,6 +296,11 @@ object LowCurrentTrafficMode {
                 LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
                 KaoChangOperate.stopHeating(2)
             }
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "低并发13~15补热区烤熟搬回前区"
+            )
         }
     }
 
@@ -319,6 +325,7 @@ object LowCurrentTrafficMode {
         }
 
         if (allFinished && heatingCount > 0) {
+            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             KaoChangOperate.keepWarm(1)
             LogUtils.i(TAG, "【低并发补肠】16~18 补热区已烤熟，开始回补前区")
             list16_18.forEach { kaoPan ->
@@ -347,6 +354,11 @@ object LowCurrentTrafficMode {
                 LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
                 KaoChangOperate.stopHeating(2)
             }
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "低并发16~18补热区烤熟搬回前区"
+            )
         }
     }
 
@@ -440,6 +452,7 @@ object LowCurrentTrafficMode {
             }
         }
         if (allFinished && heatingCount > 0) {
+            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             KaoChangOperate.stopHeating(1)
             KaoChangOperate.keepWarm(1)
             list.forEach { kaoPan ->
@@ -450,6 +463,11 @@ object LowCurrentTrafficMode {
                 }
             }
             LogUtils.i(TAG, "【加热控制】前区 1~9 已全部烤熟，切换为保温状态")
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "低并发前区1~9切换保温可售"
+            )
         }
     }
 
