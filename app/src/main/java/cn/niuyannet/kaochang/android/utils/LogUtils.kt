@@ -27,7 +27,8 @@ object LogUtils {
         "【维护操作】",
         "【丢弃流程】",
         "【并发切换】",
-        "【自清洁】"
+        "【自清洁】",
+        "【下位机测试】"
     )
     private val FILE_LOG_NOISE_KEYWORDS = listOf(
         "轮询原子动作",

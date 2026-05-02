@@ -35,6 +35,11 @@ class TestFragment : Fragment() {
     private var _binding: FragmentTestBinding? = null
     private val binding: FragmentTestBinding
         get() = _binding!!
+    private val temperatureTargetRegisters = listOf(
+        TemperatureTargetInput(area = 1, register = 503, label = "一区1~9目标温度", textProvider = { binding.etTempSet0.text?.toString()?.trim().orEmpty() }),
+        TemperatureTargetInput(area = 2, register = 504, label = "二区13~21目标温度", textProvider = { binding.etTempSet1.text?.toString()?.trim().orEmpty() }),
+        TemperatureTargetInput(area = 3, register = 505, label = "三区25~33目标温度", textProvider = { binding.etTempSet2.text?.toString()?.trim().orEmpty() })
+    )
     private val atomicActionItems = listOf(
         TestAtomicActionItem("in1：移动到肠箱预推送位置", AtomicActions.in1, 1),
         TestAtomicActionItem("in2：取肠、分料、避让", AtomicActions.in2, 1),
@@ -48,6 +53,13 @@ class TestFragment : Fragment() {
         TestAtomicActionItem("out3：从穿签位放到预推送位置", AtomicActions.out3, 0),
         TestAtomicActionItem("out4：开窗并推送", AtomicActions.out4, 0),
         TestAtomicActionItem("out5：光电检查顾客是否取走", AtomicActions.out5, 0)
+    )
+
+    private data class TemperatureTargetInput(
+        val area: Int,
+        val register: Int,
+        val label: String,
+        val textProvider: () -> String
     )
 
     override fun onCreateView(
@@ -100,37 +112,6 @@ class TestFragment : Fragment() {
             readAtomicActionRegisters(item)
         }
 
-        binding.btnReadSwitchControl.setOnClickListener {
-            readSwitchControl()
-        }
-        binding.btnReadSwitchControlcheck.setOnClickListener {
-            readSwitchControl()
-        }
-        binding.btnWriteSwitchControlcheck.setOnClickListener {
-            var value = 0
-            if (binding.cbHeater0.isChecked) value = value or 0x01
-            if (binding.cbHeater1.isChecked) value = value or 0x02
-            if (binding.cbHeater2.isChecked) value = value or 0x04
-            if (binding.cbFridge.isChecked) value = value or 0x08
-            if (binding.cbLight.isChecked) value = value or 0x10
-            writeRegister(204, value, "开关量控制寄存器(204)")
-        }
-        binding.btnWriteSwitchControl.setOnClickListener {
-            val value = binding.etSwitchControl.text?.toString()?.trim().orEmpty()
-            if (value.isEmpty()) {
-                showToast("请输入开关量控制值")
-            } else {
-                writeRegister(204, value.toInt(), "开关量控制寄存器(204)")
-            }
-        }
-
-        binding.btnReadLimitSwitchStatus.setOnClickListener {
-            readRegister(205, 1, "行程开关状态寄存器(205)") { value ->
-                val intValue = value[0]
-                val binaryString = Integer.toBinaryString(intValue).padStart(16, '0')
-                binding.tvLimitSwitchStatus.text = "二进制: $binaryString (十进制: $intValue)"
-            }
-        }
     }
 
     private fun selectedAtomicActionItem(): TestAtomicActionItem? {
@@ -153,6 +134,14 @@ class TestFragment : Fragment() {
             }
             val sessionId = "test_${item.spec.name}_${System.currentTimeMillis()}"
             binding.tvAtomicActionResult.text = "执行中：sessionId=$sessionId"
+            LogUtils.i(
+                "【下位机测试】300/400原子动作开始：" +
+                    "action（动作名）=${item.spec.name}，" +
+                    "commandRegister（命令寄存器）=${item.spec.commandRegister}，" +
+                    "resultRegister（结果寄存器）=${item.spec.resultRegister}，" +
+                    "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
+                    "infoValue（信息参数）=$infoValue，sessionId=$sessionId"
+            )
             val result = withContext(Dispatchers.IO) {
                 AtomicActionExecutor(
                     gateway = VmAtomicModbusGateway(KaoChangOperate.modbus_address),
@@ -164,6 +153,12 @@ class TestFragment : Fragment() {
                 ).execute(item.spec, infoValue)
             }
             binding.tvAtomicActionResult.text = describeAtomicActionResult(result)
+            LogUtils.i(
+                "【下位机测试】300/400原子动作结束：" +
+                    "action（动作名）=${item.spec.name}，" +
+                    "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
+                    "infoValue（信息参数）=$infoValue，result=$result，sessionId=$sessionId"
+            )
         }
     }
 
@@ -253,31 +248,19 @@ class TestFragment : Fragment() {
 
     private fun setupTemperatureControlListeners() {
         binding.btnReadTemps.setOnClickListener {
-            readRegister(500, 3, "烤盘温度寄存器(500~502)") { value ->
-                binding.tvPlateTemp0.text = "温度0: ${value[0]}°C"
-                binding.tvPlateTemp1.text = "温度1: ${value[1]}°C"
-                binding.tvPlateTemp2.text = "温度2: ${value[2]}°C"
-            }
+            readTemperatureDiagnostics()
         }
 
         binding.btnWriteTemps.setOnClickListener {
-            val temp0 = binding.etTempSet0.text?.toString()?.trim().orEmpty()
-            val temp1 = binding.etTempSet1.text?.toString()?.trim().orEmpty()
-            val temp2 = binding.etTempSet2.text?.toString()?.trim().orEmpty()
-            if (temp0.isEmpty() || temp1.isEmpty() || temp2.isEmpty()) {
-                showToast("请输入全部温度值")
-                return@setOnClickListener
-            }
-            writeRegister(503, temp0.toInt(), "温度写寄存器(503)")
-            writeRegister(504, temp1.toInt(), "温度写寄存器(504)")
-            writeRegister(505, temp2.toInt(), "温度写寄存器(505)")
+            writeTemperatureTargetsWithConfirmation()
         }
 
         binding.btnReadTemps2.setOnClickListener {
-            readRegister(503, 3, "温度写寄存器(503~505)") { value ->
+            readRegister(503, 3, "目标温度寄存器(503~505)") { value ->
                 binding.etTempSet0.setText(value[0].toString())
                 binding.etTempSet1.setText(value[1].toString())
                 binding.etTempSet2.setText(value[2].toString())
+                binding.tvTemperatureWriteResult.text = "已读取目标温度：503=${value[0]}℃，504=${value[1]}℃，505=${value[2]}℃"
             }
         }
     }
@@ -306,18 +289,6 @@ class TestFragment : Fragment() {
         }
     }
 
-    private fun readSwitchControl() {
-        readRegister(204, 1, "开关量控制寄存器(204)") { value ->
-            val intValue = value[0]
-            binding.etSwitchControl.setText(intValue.toString())
-            binding.cbHeater0.isChecked = (intValue and 0x01) != 0
-            binding.cbHeater1.isChecked = (intValue and 0x02) != 0
-            binding.cbHeater2.isChecked = (intValue and 0x04) != 0
-            binding.cbFridge.isChecked = (intValue and 0x08) != 0
-            binding.cbLight.isChecked = (intValue and 0x10) != 0
-        }
-    }
-
     private fun readRegister(
         register: Int,
         quantity: Int,
@@ -327,36 +298,136 @@ class TestFragment : Fragment() {
         lifecycleScope.launch {
             showToast("正在读取$description...")
             try {
-                val values = withContext(Dispatchers.IO) {
-                    KaoChangOperate.readHoldingRegisters(register, quantity)
+                val (values, elapsedMs) = withContext(Dispatchers.IO) {
+                    val startMs = System.currentTimeMillis()
+                    val readValues = KaoChangOperate.readHoldingRegisters(register, quantity)
+                    readValues to (System.currentTimeMillis() - startMs)
                 }
                 if (values != null) {
+                    LogUtils.i(
+                        "【下位机测试】读寄存器成功：" +
+                            "description（说明）=$description，" +
+                            "startRegister（起始寄存器）=$register，quantity（数量）=$quantity，" +
+                            "values（返回值）=${values.joinToString()}，elapsedMs（耗时毫秒）=$elapsedMs"
+                    )
                     callback.invoke(values)
                 } else {
+                    LogUtils.w(
+                        "【下位机测试】读寄存器失败：返回为空，" +
+                            "description（说明）=$description，" +
+                            "startRegister（起始寄存器）=$register，quantity（数量）=$quantity，elapsedMs（耗时毫秒）=$elapsedMs"
+                    )
                     showToast("读取${description}失败：返回为空")
                 }
             } catch (e: Exception) {
+                LogUtils.e(
+                    "【下位机测试】读寄存器异常：" +
+                        "description（说明）=$description，" +
+                        "startRegister（起始寄存器）=$register，quantity（数量）=$quantity，error=${e.message}"
+                )
                 showToast("读取${description}失败: ${e.message}")
             }
         }
     }
 
-    private fun writeRegister(register: Int, value: Int, description: String) {
+    private fun readTemperatureDiagnostics() {
+        readRegister(500, 7, "温控诊断寄存器(500~506)") { value ->
+            binding.tvTemperatureDiagnostic.text =
+                "500（第1路平滑实时温度）=${value[0]}℃\n" +
+                "501（第2路平滑实时温度）=${value[1]}℃\n" +
+                "502（第3路平滑实时温度）=${value[2]}℃\n" +
+                "503（第1路目标温度）=${value[3]}℃\n" +
+                "504（第2路目标温度）=${value[4]}℃\n" +
+                "505（第3路目标温度）=${value[5]}℃\n" +
+                "506（功率或预留状态量）=${value[6]}（暂不解释具体含义）"
+        }
+    }
+
+    private fun writeTemperatureTargetsWithConfirmation() {
+        val parsedTargets = mutableListOf<Pair<TemperatureTargetInput, Int>>()
+        temperatureTargetRegisters.forEach { input ->
+            val text = input.textProvider()
+            if (text.isBlank()) {
+                return@forEach
+            }
+            val value = text.toIntOrNull()
+            if (value == null) {
+                showToast("${input.label} 必须是整数")
+                binding.tvTemperatureWriteResult.text = "${input.label} 输入非法：$text"
+                LogUtils.w(
+                    "【下位机测试】目标温度输入非法：" +
+                        "area（区域）=${input.area}，register（寄存器）=${input.register}，input=$text"
+                )
+                return
+            }
+            parsedTargets += input to value
+        }
+
+        if (parsedTargets.isEmpty()) {
+            showToast("请输入至少一路目标温度")
+            binding.tvTemperatureWriteResult.text = "未写入：请输入至少一路目标温度"
+            return
+        }
+
         lifecycleScope.launch {
             if (AppConfig.getAppConfig().moveStatus == 5) {
                 showToast("当前正在自清洁，测试下位机写操作已禁用")
                 return@launch
             }
-            showToast("正在写入$description...")
-            try {
-                withContext(Dispatchers.IO) {
-                    KaoChangOperate.writeSingleRegister(register, value)
+            binding.tvTemperatureWriteResult.text = "正在写入并回读确认..."
+            val results = withContext(Dispatchers.IO) {
+                parsedTargets.map { (input, value) ->
+                    writeRegisterAndReadBack(input.register, value, input.label)
                 }
-            } catch (e: Exception) {
-                showToast("写入${description}失败: ${e.message}")
             }
+            binding.tvTemperatureWriteResult.text = results.joinToString("\n") { result ->
+                val statusText = if (result.confirmed) "一致" else "不一致/失败"
+                "${result.description}：写入=${result.writeValue}，回读=${result.readBackValue ?: "失败"}，确认=$statusText"
+            }
+            readTemperatureDiagnostics()
         }
     }
+
+    private fun writeRegisterAndReadBack(
+        register: Int,
+        value: Int,
+        description: String
+    ): RegisterWriteConfirmation {
+        val startMs = System.currentTimeMillis()
+        LogUtils.i(
+            "【下位机测试】写寄存器开始：" +
+                "description（说明）=$description，register（寄存器）=$register，value（写入值）=$value"
+        )
+        val writeResult = KaoChangOperate.writeSingleRegister(register, value)
+        val readBack = KaoChangOperate.readHoldingRegisters(register, 1)?.firstOrNull()
+        val elapsedMs = System.currentTimeMillis() - startMs
+        val confirmed = writeResult.isSuccess && readBack == value
+        val logMessage =
+            "【下位机测试】写寄存器回读确认：" +
+                "description（说明）=$description，register（寄存器）=$register，" +
+                "writeValue（写入值）=$value，writeStatus（写入状态）=${writeResult.status}，" +
+                "writeMessage（写入消息）=${writeResult.message ?: "无"}，" +
+                "readBackValue（回读值）=${readBack ?: "读取失败"}，confirmed（一致）=$confirmed，" +
+                "elapsedMs（耗时毫秒）=$elapsedMs"
+        if (confirmed) {
+            LogUtils.i(logMessage)
+        } else {
+            LogUtils.w(logMessage)
+        }
+        return RegisterWriteConfirmation(
+            description = description,
+            writeValue = value,
+            readBackValue = readBack,
+            confirmed = confirmed
+        )
+    }
+
+    private data class RegisterWriteConfirmation(
+        val description: String,
+        val writeValue: Int,
+        val readBackValue: Int?,
+        val confirmed: Boolean
+    )
 
     private fun showToast(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()

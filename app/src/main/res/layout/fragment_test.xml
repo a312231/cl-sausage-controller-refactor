@@ -126,143 +126,6 @@
                     android:text="未执行"
                     android:layout_marginBottom="16dp"/>
 
-                <!-- 基础 IO 诊断 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="基础 IO 控制 (204)"/>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etSwitchControl"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:hint="16位开关状态"
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
-
-                    <Button
-                        android:id="@+id/btnWriteSwitchControl"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
-
-                    <Button
-                        android:id="@+id/btnReadSwitchControl"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
-                </LinearLayout>
-                <!-- 开关控制6	5	4	3	2	1	0
-                    3.3V预留	12V预留	照明	冰箱	加热管2	加热管1	加热管0
-                    -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="开关状态:"
-                        android:layout_marginEnd="8dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbHeater0"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="加热管0"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbHeater1"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="加热管1"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbHeater2"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="加热管2"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbFridge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="冰箱"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbLight"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="照明"
-                        android:layout_marginEnd="4dp"/>
-                    <View
-                        android:layout_weight="1"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content">
-
-                    </View>
-                    <Button
-                        android:id="@+id/btnWriteSwitchControlcheck"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
-
-
-                    <Button
-                        android:id="@+id/btnReadSwitchControlcheck"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
-                </LinearLayout>
-                <!-- 行程开关状态 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="行程开关 (205)"/>
-
-                    <TextView
-                        android:id="@+id/tvLimitSwitchStatus"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:text="未读取"/>
-
-                    <Button
-                        android:id="@+id/btnReadLimitSwitchStatus"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"/>
-                </LinearLayout>
-
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
@@ -288,7 +151,7 @@
                     android:textStyle="bold"
                     android:layout_marginBottom="16dp"/>
 
-                <!-- 烤盘温度读取 -->
+                <!-- 温控诊断 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -299,37 +162,24 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="烤盘温度"/>
-
-                    <TextView
-                        android:id="@+id/tvPlateTemp0"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="温度0: --"/>
-
-                    <TextView
-                        android:id="@+id/tvPlateTemp1"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="温度1: --"/>
-
-                    <TextView
-                        android:id="@+id/tvPlateTemp2"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="温度2: --"/>
+                        android:text="温控状态"/>
 
                     <Button
                         android:id="@+id/btnReadTemps"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="读"/>
+                        android:text="一键读取温控状态"/>
                 </LinearLayout>
 
-                <!-- 烤盘温度设置 -->
+                <TextView
+                    android:id="@+id/tvTemperatureDiagnostic"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:text="未读取温控状态"
+                    android:textSize="14sp"/>
+
+                <!-- 目标温度设置 -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -340,7 +190,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="温度设置"/>
+                        android:text="目标温度"/>
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:layout_width="0dp"
@@ -352,7 +202,7 @@
                             android:id="@+id/etTempSet0"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:hint="温度0"
+                            android:hint="503 一区"
                             android:inputType="number"/>
                     </com.google.android.material.textfield.TextInputLayout>
 
@@ -367,7 +217,7 @@
                             android:layout_marginLeft="5dp"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:hint="温度1"
+                            android:hint="504 二区"
                             android:inputType="number"/>
                     </com.google.android.material.textfield.TextInputLayout>
 
@@ -383,7 +233,7 @@
                             android:id="@+id/etTempSet2"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:hint="温度2"
+                            android:hint="505 三区"
                             android:inputType="number"/>
                     </com.google.android.material.textfield.TextInputLayout>
 
@@ -391,14 +241,21 @@
                         android:id="@+id/btnWriteTemps"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="写"/>
+                        android:text="写并确认"/>
                     <Button
                         android:id="@+id/btnReadTemps2"
                         android:layout_width="wrap_content"
                         android:layout_marginLeft="5dp"
                         android:layout_height="wrap_content"
-                        android:text="读"/>
+                        android:text="读目标"/>
                 </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvTemperatureWriteResult"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="未写入目标温度"
+                    android:textSize="14sp"/>
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
