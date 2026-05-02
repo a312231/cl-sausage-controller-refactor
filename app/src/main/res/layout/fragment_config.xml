@@ -96,13 +96,6 @@
                     android:textColor="#757575"
                     android:layout_marginBottom="16dp"/>
 
-                <androidx.appcompat.widget.SwitchCompat
-                    android:id="@+id/swForceVisionSuccess"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp"
-                    android:text="联调模式：视觉识别固定返回成功" />
-
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnSaveModbusConfig"
                     android:layout_width="match_parent"

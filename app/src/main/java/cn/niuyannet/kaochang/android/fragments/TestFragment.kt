@@ -145,7 +145,7 @@ class TestFragment : Fragment() {
             val result = withContext(Dispatchers.IO) {
                 AtomicActionExecutor(
                     gateway = VmAtomicModbusGateway(KaoChangOperate.modbus_address),
-                    logger = { message -> LogUtils.d("[300/400动作组] [测试下位机] $message") },
+                    logger = { message -> logTestAtomicActionDetail(message) },
                     telemetryContext = ActionGroupTelemetryContext(
                         sessionId = sessionId,
                         resourceLocks = "TEST_PAGE"
@@ -160,6 +160,32 @@ class TestFragment : Fragment() {
                     "infoValue（信息参数）=$infoValue，result=$result，sessionId=$sessionId"
             )
         }
+    }
+
+    private fun logTestAtomicActionDetail(message: String) {
+        LogUtils.d("[300/400动作组] [测试下位机] $message")
+        val fileLogMessage = when {
+            message.startsWith("写入信息寄存器成功") ->
+                message.replaceFirst("写入信息寄存器成功", "信息寄存器写入完成")
+            message.startsWith("写入信息寄存器失败") ->
+                message.replaceFirst("写入信息寄存器失败", "信息寄存器写入失败")
+            message.startsWith("写入命令寄存器成功") ->
+                message.replaceFirst("写入命令寄存器成功", "命令寄存器写入完成")
+            message.startsWith("写入命令寄存器失败") ->
+                message.replaceFirst("写入命令寄存器失败", "命令寄存器写入失败")
+            message.startsWith("动作启动确认成功") ->
+                message.replaceFirst("动作启动确认成功", "动作已确认启动")
+            message.startsWith("动作未确认启动") ->
+                message.replaceFirst("动作未确认启动", "动作启动确认超时")
+            message.startsWith("动作启动失败") ->
+                message.replaceFirst("动作启动失败", "动作启动确认失败")
+            message.startsWith("接管原子动作轮询") ->
+                message.replaceFirst("接管原子动作轮询", "动作已在执行中，接管结果寄存器等待")
+            message.startsWith("原子动作完成") ->
+                message.replaceFirst("原子动作完成", "原子动作最终结果")
+            else -> null
+        } ?: return
+        LogUtils.i("【下位机测试】300/400原子动作明细：$fileLogMessage")
     }
 
     private fun readAtomicActionRegisters(item: TestAtomicActionItem) {
@@ -207,43 +233,80 @@ class TestFragment : Fragment() {
             }
             lifecycleScope.launch {
                 binding.tvSelfCleanResult.text = "正在执行烤盘 ${positionSn} 自清洁..."
+                val source = "测试下位机页面手动触发"
+                LogUtils.i(
+                    "【下位机测试】自清洁开始：target（目标）=烤盘$positionSn，" +
+                        "source（来源）=$source"
+                )
+                val startedAtMs = System.currentTimeMillis()
                 val report = withContext(Dispatchers.IO) {
                     KaoChangOperate.cleanPanPosition(
                         positionSn = positionSn,
-                        source = "测试下位机页面手动触发",
+                        source = source,
                         busyDuringClean = true
                     )
                 }
                 binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
+                logTestSelfCleanFinished(report, startedAtMs)
             }
         }
 
         binding.btnRunSellPlatformSelfClean.setOnClickListener {
             lifecycleScope.launch {
                 binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
+                val source = "测试下位机页面手动触发"
+                LogUtils.i(
+                    "【下位机测试】自清洁开始：target（目标）=出肠台，" +
+                        "source（来源）=$source"
+                )
+                val startedAtMs = System.currentTimeMillis()
                 val report = withContext(Dispatchers.IO) {
                     KaoChangOperate.cleanSellPlatform(
-                        source = "测试下位机页面手动触发",
+                        source = source,
                         busyDuringClean = true
                     )
                 }
                 binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
+                logTestSelfCleanFinished(report, startedAtMs)
             }
         }
     }
 
-    private fun buildSelfCleanReportText(report: KaoChangOperate.SelfCleanExecutionReport): String {
-        val status201Text = when (report.status201) {
-            0 -> "0（空闲/完成）"
-            1 -> "1（执行中超时）"
-            2 -> "2（设备忙）"
-            else -> "${report.status201}（通信失败/未知）"
+    private fun logTestSelfCleanFinished(
+        report: KaoChangOperate.SelfCleanExecutionReport,
+        startedAtMs: Long
+    ) {
+        val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
+        val logMessage =
+            "【下位机测试】自清洁结束：" +
+                "target（目标）=${report.targetLabel}，" +
+                "command（下位机自清洁指令）=${report.command}，" +
+                "success（是否成功）=${report.success}，" +
+                "status201（动作状态寄存器）=${formatSelfCleanStatus201(report.status201)}，" +
+                "message（结果消息）=${report.message}，elapsedMs（耗时毫秒）=$elapsedMs"
+        if (report.success) {
+            LogUtils.i(logMessage)
+        } else {
+            LogUtils.w(logMessage)
         }
+    }
+
+    private fun buildSelfCleanReportText(report: KaoChangOperate.SelfCleanExecutionReport): String {
+        val status201Text = formatSelfCleanStatus201(report.status201)
         return "目标=${report.targetLabel}\n" +
             "command（下位机自清洁指令）=${report.command}\n" +
             "status201（动作状态寄存器）=$status201Text\n" +
             "success=${report.success}\n" +
             "message=${report.message}"
+    }
+
+    private fun formatSelfCleanStatus201(status201: Int): String {
+        return when (status201) {
+            0 -> "0（空闲/完成）"
+            1 -> "1（执行中超时）"
+            2 -> "2（设备忙）"
+            else -> "$status201（通信失败/未知）"
+        }
     }
 
     private fun setupTemperatureControlListeners() {
@@ -255,14 +318,6 @@ class TestFragment : Fragment() {
             writeTemperatureTargetsWithConfirmation()
         }
 
-        binding.btnReadTemps2.setOnClickListener {
-            readRegister(503, 3, "目标温度寄存器(503~505)") { value ->
-                binding.etTempSet0.setText(value[0].toString())
-                binding.etTempSet1.setText(value[1].toString())
-                binding.etTempSet2.setText(value[2].toString())
-                binding.tvTemperatureWriteResult.text = "已读取目标温度：503=${value[0]}℃，504=${value[1]}℃，505=${value[2]}℃"
-            }
-        }
     }
 
     private fun setupSystemInfoListeners() {
@@ -336,10 +391,10 @@ class TestFragment : Fragment() {
                 "500（第1路平滑实时温度）=${value[0]}℃\n" +
                 "501（第2路平滑实时温度）=${value[1]}℃\n" +
                 "502（第3路平滑实时温度）=${value[2]}℃\n" +
-                "503（第1路目标温度）=${value[3]}℃\n" +
-                "504（第2路目标温度）=${value[4]}℃\n" +
-                "505（第3路目标温度）=${value[5]}℃\n" +
                 "506（功率或预留状态量）=${value[6]}（暂不解释具体含义）"
+            binding.etTempSet0.setText(value[3].toString())
+            binding.etTempSet1.setText(value[4].toString())
+            binding.etTempSet2.setText(value[5].toString())
         }
     }
 

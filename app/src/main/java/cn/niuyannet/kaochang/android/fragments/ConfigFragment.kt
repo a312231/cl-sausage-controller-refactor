@@ -101,18 +101,6 @@ class ConfigFragment : Fragment() {
             }
         }
 
-        binding.swForceVisionSuccess.setOnCheckedChangeListener { _, isChecked ->
-            configBean.forceVisionSuccess = if (isChecked) 1 else 0
-            AppConfig.saveAppConfig(configBean)
-            val msg = if (isChecked) {
-                "已开启联调模式：视觉识别固定返回成功"
-            } else {
-                "已关闭联调模式"
-            }
-            ToastUtils.showShort(msg)
-            LogUtils.w("【配置页】联调模式状态变更：$msg")
-        }
-
         binding.btndisModbusConfig.setOnClickListener {
             viewLifecycleOwner.lifecycleScope.launch {
                 withContext(Dispatchers.IO) {
@@ -146,7 +134,6 @@ class ConfigFragment : Fragment() {
         binding.etMqttUsername.setText(configBean.mqttUsername)
         binding.etMqttPassword.setText(configBean.mqttPassword)
         binding.etModbusBaudRate.setText(configBean.modbusBaudRate.toString())
-        binding.swForceVisionSuccess.isChecked = configBean.forceVisionSuccess == 1
         initSpinner()
     }
 

@@ -242,12 +242,6 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="写并确认"/>
-                    <Button
-                        android:id="@+id/btnReadTemps2"
-                        android:layout_width="wrap_content"
-                        android:layout_marginLeft="5dp"
-                        android:layout_height="wrap_content"
-                        android:text="读目标"/>
                 </LinearLayout>
 
                 <TextView

@@ -89,13 +89,31 @@ object AppConfig {
 
         val config = appConfigBean!!
         val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
+        val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         normalizeConcurrencyState(config, "配置加载")
-        if (actionGroupPrefetchMigrated || oldModeType != config.modeType || oldTransitionMode != config.transitionMode) {
+        if (actionGroupPrefetchMigrated ||
+            forceVisionSuccessMigrated ||
+            oldModeType != config.modeType ||
+            oldTransitionMode != config.transitionMode
+        ) {
             saveAppConfig(config)
         }
         return appConfigBean!!
+    }
+
+    private fun migrateForceVisionSuccessDefault(config: AppConfigBean): Boolean {
+        if (config.forceVisionSuccess != 1) {
+            return false
+        }
+        config.forceVisionSuccess = 0
+        LogUtils.i(
+            "【配置迁移】检测到旧视觉联调开关历史开启，已自动关闭：" +
+                "forceVisionSuccess（视觉识别固定返回成功开关）=1（开启）->0（关闭），" +
+                "当前主出餐链路使用 out5（光电检查顾客是否取走），不再依赖售卖口视觉识别"
+        )
+        return true
     }
 
     private fun migrateActionGroupPrefetchDefault(config: AppConfigBean): Boolean {
@@ -104,7 +122,7 @@ object AppConfig {
         }
         config.enableActionGroupPrefetch = 1
         LogUtils.i(
-            "[配置迁移] 检测到旧版本动作组补肠预取默认值，已自动开启：" +
+            "【配置迁移】检测到旧版本动作组补肠预取默认值，已自动开启：" +
                 "enableActionGroupPrefetch（动作组补肠预取开关）=0（关闭）->1（开启），" +
                 "actionGroupPrefetchRemoteConfigured（后台是否明确配置预取）=0（未明确配置）"
         )
@@ -142,7 +160,7 @@ object AppConfig {
                         pan.status != 0)
             }
         } catch (e: Exception) {
-            LogUtils.w("[配置迁移] 判断高并发区域烤盘状态失败，保守保持高转低收口", e)
+            LogUtils.w("【配置迁移】判断高并发区域烤盘状态失败，保守保持高转低收口", e)
             true
         }
     }
