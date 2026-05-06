@@ -88,6 +88,9 @@ public class AppConfigBean implements Serializable {
     public int timeThresholdLow;
     public int timeBeforeClose;
 
+    // 烤肠箱点击“加满”时写入的目标库存数，允许范围 1..15
+    public int boxRefillTargetNum = 10;
+
     // “烤肠箱 -> 平台”动作超时时间（秒）
     public int boxToPlatformTimeoutSeconds = 90;
 

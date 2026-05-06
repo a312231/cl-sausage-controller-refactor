@@ -11,6 +11,9 @@ import com.alibaba.fastjson.JSONObject
 
 object AppConfig {
     const val Sp_File_URL = "KAOCHANG_APP_CONFIG"
+    const val DEFAULT_BOX_REFILL_TARGET_NUM = 10
+    const val MIN_BOX_REFILL_TARGET_NUM = 1
+    const val MAX_BOX_REFILL_TARGET_NUM = 15
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
     private const val KEY_INSPECTION_SNAPSHOT_JSON = "sp_inspection_snapshot_json"
@@ -61,6 +64,33 @@ object AppConfig {
         return url.replace("{device_id}", getDeviceId())
     }
 
+    fun normalizeBoxRefillTargetNum(value: Int): Int {
+        return if (value in MIN_BOX_REFILL_TARGET_NUM..MAX_BOX_REFILL_TARGET_NUM) {
+            value
+        } else {
+            DEFAULT_BOX_REFILL_TARGET_NUM
+        }
+    }
+
+    fun isValidBoxRefillTargetNum(value: Int): Boolean {
+        return value in MIN_BOX_REFILL_TARGET_NUM..MAX_BOX_REFILL_TARGET_NUM
+    }
+
+    fun getBoxRefillTargetNum(): Int {
+        val config = getAppConfig()
+        val normalized = normalizeBoxRefillTargetNum(config.boxRefillTargetNum)
+        if (normalized != config.boxRefillTargetNum) {
+            LogUtils.w(
+                "【配置校验】boxRefillTargetNum（烤肠箱加满目标库存）非法，" +
+                    "当前值=${config.boxRefillTargetNum}，允许范围=${MIN_BOX_REFILL_TARGET_NUM}..${MAX_BOX_REFILL_TARGET_NUM}，" +
+                    "已回退为默认值=$normalized"
+            )
+            config.boxRefillTargetNum = normalized
+            saveAppConfig(config)
+        }
+        return normalized
+    }
+
     fun getAppConfig(): AppConfigBean {
         if (appConfigBean != null) {
             return appConfigBean!!
@@ -90,17 +120,33 @@ object AppConfig {
         val config = appConfigBean!!
         val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
+        val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         normalizeConcurrencyState(config, "配置加载")
         if (actionGroupPrefetchMigrated ||
             forceVisionSuccessMigrated ||
+            boxRefillTargetNumMigrated ||
             oldModeType != config.modeType ||
             oldTransitionMode != config.transitionMode
         ) {
             saveAppConfig(config)
         }
         return appConfigBean!!
+    }
+
+    private fun migrateBoxRefillTargetNumDefault(config: AppConfigBean): Boolean {
+        if (isValidBoxRefillTargetNum(config.boxRefillTargetNum)) {
+            return false
+        }
+        val oldValue = config.boxRefillTargetNum
+        config.boxRefillTargetNum = DEFAULT_BOX_REFILL_TARGET_NUM
+        LogUtils.w(
+            "【配置迁移】boxRefillTargetNum（烤肠箱加满目标库存）非法，" +
+                "原值=$oldValue，允许范围=${MIN_BOX_REFILL_TARGET_NUM}..${MAX_BOX_REFILL_TARGET_NUM}，" +
+                "已使用默认值=${config.boxRefillTargetNum}"
+        )
+        return true
     }
 
     private fun migrateForceVisionSuccessDefault(config: AppConfigBean): Boolean {
@@ -299,6 +345,22 @@ object AppConfig {
         mergeInt("discardTime", "discardTime") { config.discardTime = it }
         mergeInt("timeThresholdLow", "timeThresholdLow") { config.timeThresholdLow = it }
         mergeInt("timeBeforeClose", "timeBeforeClose") { config.timeBeforeClose = it }
+        if (jsonData.containsKey("boxRefillTargetNum")) {
+            val remoteBoxRefillTargetNum = jsonData.getIntValue("boxRefillTargetNum")
+            if (isValidBoxRefillTargetNum(remoteBoxRefillTargetNum)) {
+                config.boxRefillTargetNum = remoteBoxRefillTargetNum
+                LogUtils.i(
+                    "[$logPrefix] 远端配置已更新：boxRefillTargetNum（烤肠箱加满目标库存）=$remoteBoxRefillTargetNum"
+                )
+            } else {
+                preservedFields.add("boxRefillTargetNum(invalid_preserved_local)")
+                LogUtils.w(
+                    "[$logPrefix] 远端配置 boxRefillTargetNum（烤肠箱加满目标库存）非法，" +
+                        "remoteValue=$remoteBoxRefillTargetNum，允许范围=${MIN_BOX_REFILL_TARGET_NUM}..${MAX_BOX_REFILL_TARGET_NUM}，" +
+                        "继续使用本地值=${config.boxRefillTargetNum}"
+                )
+            }
+        }
 
         if (jsonData.containsKey("boxToPlatformTimeoutSeconds")) {
             config.boxToPlatformTimeoutSeconds = jsonData.getIntValue("boxToPlatformTimeoutSeconds")

@@ -7,119 +7,205 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:padding="16dp">
 
-        <!-- 左侧 Modbus 配置 -->
-        <androidx.cardview.widget.CardView
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginEnd="8dp"
-            app:cardCornerRadius="8dp"
-            app:cardElevation="4dp">
+            android:orientation="horizontal">
 
-            <LinearLayout
-                android:layout_width="match_parent"
+            <!-- 左侧 Modbus 配置 -->
+            <androidx.cardview.widget.CardView
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                app:cardCornerRadius="8dp"
+                app:cardElevation="4dp">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Modbus配置"
-                    android:textSize="18sp"
-                    android:textStyle="bold"
-                    android:textColor="@android:color/black"
-                    android:layout_marginBottom="16dp"/>
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:padding="16dp">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="选择串口"
-                        android:textSize="16sp"
-                        android:textColor="#666666"/>
+                        android:layout_marginBottom="16dp"
+                        android:text="Modbus配置"
+                        android:textColor="@android:color/black"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
 
-                    <Spinner
-                        android:id="@+id/spinner"
-                        android:layout_width="match_parent"
-                        android:layout_height="48dp"
-                        android:layout_marginTop="8dp"
-
-                        android:padding="8dp"/>
-
-
-                </LinearLayout>
-<!--                <com.google.android.material.textfield.TextInputLayout-->
-<!--                    android:layout_width="match_parent"-->
-<!--                    android:layout_height="wrap_content"-->
-<!--                    android:layout_marginBottom="8dp"-->
-<!--                    android:hint="串口地址"-->
-<!--                    app:hintTextColor="@android:color/black"-->
-<!--                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">-->
-<!--                  -->
-<!--                    <com.google.android.material.textfield.TextInputEditText-->
-<!--                        android:id="@+id/etModbusPort"-->
-<!--                        android:layout_width="match_parent"-->
-<!--                        android:layout_height="wrap_content"-->
-<!--                        android:inputType="text"/>-->
-
-<!--                </com.google.android.material.textfield.TextInputLayout>-->
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp"
-                    android:hint="波特率"
-                    app:hintTextColor="@android:color/black"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etModbusBaudRate"
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:enabled="false"
-                        android:inputType="number"/>
+                        android:orientation="vertical">
 
-                </com.google.android.material.textfield.TextInputLayout>
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="选择串口"
+                            android:textColor="#666666"
+                            android:textSize="16sp" />
 
-                <TextView
-                    android:id="@+id/tvModbusStatus"
+                        <Spinner
+                            android:id="@+id/spinner"
+                            android:layout_width="match_parent"
+                            android:layout_height="48dp"
+                            android:layout_marginTop="8dp"
+                            android:padding="8dp" />
+                    </LinearLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="16dp"
+                        android:hint="波特率"
+                        app:hintTextColor="@android:color/black">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etModbusBaudRate"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:enabled="false"
+                            android:inputType="number" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <TextView
+                        android:id="@+id/tvModbusStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="16dp"
+                        android:text="Modbus状态：未连接"
+                        android:textColor="#757575" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnSaveModbusConfig"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="连接modbus"
+                        android:textColor="@android:color/white" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btndisModbusConfig"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="断开modbus"
+                        android:textColor="@android:color/white" />
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+            <!-- 右侧 MQTT 配置 -->
+            <androidx.cardview.widget.CardView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                app:cardCornerRadius="8dp"
+                app:cardElevation="4dp">
+
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Modbus状态：未连接"
-                    android:textColor="#757575"
-                    android:layout_marginBottom="16dp"/>
+                    android:orientation="vertical"
+                    android:padding="16dp">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnSaveModbusConfig"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="连接modbus"
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="16dp"
+                        android:text="MQTT配置"
+                        android:textColor="@android:color/black"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
 
-                    android:textColor="@android:color/white"/>
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btndisModbusConfig"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="断开modbus"
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:hint="IP地址"
+                        app:hintTextColor="@android:color/black">
 
-                    android:textColor="@android:color/white"/>
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etMqttIp"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="text" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-            </LinearLayout>
-        </androidx.cardview.widget.CardView>
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:hint="端口号"
+                        app:hintTextColor="@android:color/black">
 
-        <!-- 右侧 MQTT 配置 -->
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etMqttPort"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="number" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:hint="用户名"
+                        app:hintTextColor="@android:color/black">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etMqttUsername"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="text" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="16dp"
+                        android:hint="密码"
+                        app:hintTextColor="@android:color/black"
+                        app:passwordToggleEnabled="true">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etMqttPassword"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="textPassword" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <TextView
+                        android:id="@+id/tvMqttStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="16dp"
+                        android:text="MQTT状态：未连接"
+                        android:textColor="#757575" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnSaveMqttConfig"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="保存MQTT配置"
+                        android:textColor="@android:color/white" />
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+        </LinearLayout>
+
         <androidx.cardview.widget.CardView
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
+            android:layout_marginTop="16dp"
             app:cardCornerRadius="8dp"
             app:cardElevation="4dp">
 
@@ -132,93 +218,33 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="MQTT配置"
-                    android:textSize="18sp"
-                    android:textStyle="bold"
+                    android:layout_marginBottom="16dp"
+                    android:text="库存配置"
                     android:textColor="@android:color/black"
-                    android:layout_marginBottom="16dp"/>
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
 
                 <com.google.android.material.textfield.TextInputLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="8dp"
-                    android:hint="IP地址"
-                    app:hintTextColor="@android:color/black"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etMqttIp"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text"/>
-
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="8dp"
-                    android:hint="端口号"
-                    app:hintTextColor="@android:color/black"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etMqttPort"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="number"/>
-
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="8dp"
-                    android:hint="用户名"
-                    app:hintTextColor="@android:color/black"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etMqttUsername"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text"/>
-
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="16dp"
-                    android:hint="密码"
-                    app:hintTextColor="@android:color/black"
-                    app:passwordToggleEnabled="true"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                    android:hint="烤肠箱加满数量（1-15）"
+                    app:hintTextColor="@android:color/black">
 
                     <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etMqttPassword"
+                        android:id="@+id/etBoxRefillTargetNum"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="textPassword"/>
-
+                        android:inputType="number" />
                 </com.google.android.material.textfield.TextInputLayout>
 
-                <TextView
-                    android:id="@+id/tvMqttStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="MQTT状态：未连接"
-                    android:textColor="#757575"
-                    android:layout_marginBottom="16dp"/>
-
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnSaveMqttConfig"
+                    android:id="@+id/btnSaveStockConfig"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="保存MQTT配置"
-
-                    android:textColor="@android:color/white"/>
-
+                    android:text="保存库存配置"
+                    android:textColor="@android:color/white" />
             </LinearLayout>
         </androidx.cardview.widget.CardView>
     </LinearLayout>

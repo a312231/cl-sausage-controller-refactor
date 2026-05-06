@@ -114,6 +114,31 @@ class ConfigFragment : Fragment() {
                 LogUtils.d("【配置页】MODBUS 已手动断开")
             }
         }
+
+        binding.btnSaveStockConfig.setOnClickListener {
+            saveStockConfig()
+        }
+    }
+
+    private fun saveStockConfig() {
+        val input = binding.etBoxRefillTargetNum.text?.toString()?.trim()
+        val boxRefillTargetNum = input?.toIntOrNull()
+        if (boxRefillTargetNum == null || !AppConfig.isValidBoxRefillTargetNum(boxRefillTargetNum)) {
+            ToastUtils.showShort(
+                "烤肠箱加满数量必须是 ${AppConfig.MIN_BOX_REFILL_TARGET_NUM}-${AppConfig.MAX_BOX_REFILL_TARGET_NUM}"
+            )
+            LogUtils.w(
+                "【配置页】保存 boxRefillTargetNum（烤肠箱加满目标库存）失败：" +
+                    "input=$input，允许范围=${AppConfig.MIN_BOX_REFILL_TARGET_NUM}..${AppConfig.MAX_BOX_REFILL_TARGET_NUM}"
+            )
+            return
+        }
+
+        configBean.boxRefillTargetNum = boxRefillTargetNum
+        AppConfig.saveAppConfig(configBean)
+        binding.etBoxRefillTargetNum.setText(boxRefillTargetNum.toString())
+        ToastUtils.showShort("烤肠箱加满数量已保存")
+        LogUtils.i("【配置页】已保存 boxRefillTargetNum（烤肠箱加满目标库存）=$boxRefillTargetNum")
     }
 
     private fun updateModbusStatus(connected: Boolean) {
@@ -134,6 +159,7 @@ class ConfigFragment : Fragment() {
         binding.etMqttUsername.setText(configBean.mqttUsername)
         binding.etMqttPassword.setText(configBean.mqttPassword)
         binding.etModbusBaudRate.setText(configBean.modbusBaudRate.toString())
+        binding.etBoxRefillTargetNum.setText(AppConfig.getBoxRefillTargetNum().toString())
         initSpinner()
     }
 

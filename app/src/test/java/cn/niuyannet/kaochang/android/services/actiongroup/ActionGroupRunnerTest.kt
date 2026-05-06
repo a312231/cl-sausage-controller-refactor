@@ -93,7 +93,10 @@ class ActionGroupRunnerTest {
             results = queueOf(
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
-                AtomicActionResult.Timeout("out3 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：resultRegister=431")
+                AtomicActionResult.Timeout(
+                    "out3 动作未确认启动，疑似下位机复位/命令丢失：" +
+                        "resultRegister=431，commandRegister=430，currentCommand=0x0000，elapsedMs=3229"
+                )
             )
         )
         val failureLogs = mutableListOf<String>()
@@ -112,7 +115,8 @@ class ActionGroupRunnerTest {
         assertTrue(
             failureLogs.any {
                 it.contains("【失败原因】第2/3根 out3（从穿签位放到预推送位置）启动失败") &&
-                    it.contains("结果寄存器431一直为0x0000（旧成功/空闲）")
+                    it.contains("疑似下位机复位/命令丢失") &&
+                    it.contains("命令寄存器430当前=0x0000（空闲/已清零）")
             }
         )
     }

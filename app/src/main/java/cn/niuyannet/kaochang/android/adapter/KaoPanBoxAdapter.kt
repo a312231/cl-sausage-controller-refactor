@@ -10,16 +10,12 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.databinding.ItemKaopanBoxBinding
+import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
-import com.blankj.utilcode.util.ToastUtils
 import java.util.Random
 
 class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) : 
     RecyclerView.Adapter<KaoPanBoxAdapter.ViewHolder>() {
-    private companion object {
-        const val BOX_FULL_CAPACITY = 15
-    }
-
     private var dataList = mutableListOf<KaoPanBox>()
 
     @SuppressLint("NotifyDataSetChanged")
@@ -80,7 +76,8 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                 tvNum.text = "${kaoPanBox.num}"
                 
                 // 根据加满状态设置不同样式
-                if (kaoPanBox.num >= BOX_FULL_CAPACITY) {
+                val boxFullCapacity = AppConfig.getBoxRefillTargetNum()
+                if (kaoPanBox.num >= boxFullCapacity) {
                     // 已加满状态
                     tvNum.setTextColor(ContextCompat.getColor(root.context, R.color.primary))
                     tvNum.textSize = 26f

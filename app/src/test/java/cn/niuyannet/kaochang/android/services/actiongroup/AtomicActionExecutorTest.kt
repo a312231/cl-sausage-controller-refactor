@@ -44,6 +44,35 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldDiagnosePossibleControllerResetWhenCommandRegisterClearsBeforeStartupConfirmed() = runBlocking {
+        val spec = AtomicActionSpec("in4-test", 340, 341, 342, 80L, 10L, "in4：升降台下降")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                341 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IDLE, AtomicActionCodes.IDLE),
+                340 to queueOf(AtomicActionCodes.IDLE)
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        val timeout = result as AtomicActionResult.Timeout
+        assertTrue(timeout.message.contains("疑似下位机复位/命令丢失"))
+        assertTrue(timeout.message.contains("commandRegister=340"))
+        assertTrue(timeout.message.contains("currentCommand=0x0000"))
+        assertTrue(
+            logs.any {
+                it.contains("启动确认失败诊断") &&
+                    it.contains("commandRegister（命令寄存器）=340") &&
+                    it.contains("当前命令=0x0000（空闲/已清零）")
+            }
+        )
+        assertEquals(listOf(Write(342, 0), Write(340, 1)), gateway.writes)
+    }
+
+    @Test
     fun execute_shouldSucceedOnlyAfterRunningThenIdle() = runBlocking {
         val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
         val gateway = FakeGateway(

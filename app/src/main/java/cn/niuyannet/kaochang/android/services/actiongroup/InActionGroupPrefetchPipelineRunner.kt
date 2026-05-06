@@ -327,7 +327,7 @@ class InActionGroupPrefetchPipelineRunner(
 
     private fun failureText(spec: AtomicActionSpec, result: AtomicActionResult): String {
         return if (result is AtomicActionResult.Timeout && result.message.contains("未确认启动")) {
-            "${actionLabel(spec)}启动失败：下位机未确认执行，结果寄存器${spec.resultRegister}一直为0x0000（旧成功/空闲）"
+            AtomicActionFailureFormatter.startupNotConfirmedText(actionLabel(spec), spec.resultRegister, result.message)
         } else {
             "${actionLabel(spec)}失败：${describe(result)}"
         }

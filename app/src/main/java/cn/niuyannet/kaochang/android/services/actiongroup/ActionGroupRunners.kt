@@ -252,7 +252,7 @@ private fun formatOperationStepFailed(
     val reason = if (atomicResult is AtomicActionResult.Timeout &&
         atomicResult.message.contains("未确认启动")
     ) {
-        "${actionText}启动失败：下位机未确认执行，结果寄存器${spec.resultRegister}一直为0x0000（旧成功/空闲）"
+        AtomicActionFailureFormatter.startupNotConfirmedText(actionText, spec.resultRegister, atomicResult.message)
     } else {
         "${actionText}失败：${describe(atomicResult)}"
     }

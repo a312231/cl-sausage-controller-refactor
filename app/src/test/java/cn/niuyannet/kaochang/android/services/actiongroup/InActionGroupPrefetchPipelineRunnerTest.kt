@@ -221,6 +221,37 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldExposePossibleControllerResetInStartupFailureLog() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Timeout(
+                    "in4 动作未确认启动，疑似下位机复位/命令丢失：" +
+                        "resultRegister=341，commandRegister=340，currentCommand=0x0000，elapsedMs=3229"
+                )
+            )
+        )
+        val failureLogs = mutableListOf<String>()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            failureLogger = { failureLogs += it }
+        )
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(18), targetPanNo = 16)))
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        assertTrue(
+            failureLogs.any {
+                it.contains("【失败原因】补肠烤盘16 in4（升降台下降）启动失败") &&
+                    it.contains("疑似下位机复位/命令丢失") &&
+                    it.contains("命令寄存器340当前=0x0000（空闲/已清零）")
+            }
+        )
+    }
+
+    @Test
     fun pipeline_shouldReportPrefetchedNextWhenCurrentDeliveryFailsAfterStartingNextPrefetch() = runBlocking {
         val client = FakeClient(
             results = queueOf(

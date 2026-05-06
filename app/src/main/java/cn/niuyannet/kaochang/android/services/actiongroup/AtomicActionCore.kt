@@ -59,6 +59,38 @@ sealed class AtomicActionResult {
     data class ModbusError(val message: String) : AtomicActionResult()
 }
 
+object AtomicActionFailureFormatter {
+    fun startupNotConfirmedText(actionText: String, resultRegister: Int, message: String): String {
+        val resetHint = if (message.contains("疑似下位机复位/命令丢失")) {
+            "，疑似下位机复位/命令丢失"
+        } else {
+            ""
+        }
+        val commandDiagnostic = commandDiagnosticText(message)
+        return "${actionText}启动失败：下位机未确认执行，" +
+            "结果寄存器${resultRegister}一直为0x0000（旧成功/空闲）" +
+            resetHint +
+            commandDiagnostic
+    }
+
+    private fun commandDiagnosticText(message: String): String {
+        val commandRegister = Regex("commandRegister=(\\d+)").find(message)?.groupValues?.getOrNull(1)
+        val currentCommand = Regex("currentCommand=(0x[0-9A-Fa-f]{4})").find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.uppercase()
+        if (commandRegister == null || currentCommand == null) {
+            return ""
+        }
+        val valueText = if (currentCommand == "0X0000") {
+            "0x0000（空闲/已清零）"
+        } else {
+            currentCommand.lowercase()
+        }
+        return "，命令寄存器${commandRegister}当前=$valueText"
+    }
+}
+
 interface AtomicModbusGateway {
     suspend fun writeRegister(address: Int, value: Int): AtomicIoResult
     suspend fun readRegister(address: Int): AtomicReadResult
@@ -232,8 +264,7 @@ class AtomicActionExecutor(
                                 )
                             }
                             if (elapsedMs >= startupConfirmTimeoutMs) {
-                                val message = "${spec.name} 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：" +
-                                    "resultRegister=${spec.resultRegister}，elapsedMs=$elapsedMs"
+                                val message = buildStartupNotConfirmedMessage(spec, elapsedMs)
                                 logStartupNotConfirmedFailure(spec, elapsedMs)
                                 return finishWithTelemetry(
                                     spec,
@@ -269,8 +300,7 @@ class AtomicActionExecutor(
         }
         val elapsedMs = System.currentTimeMillis() - startedAtMs
         if (requireRunningBeforeSuccess && !hasObservedRunning) {
-            val message = "${spec.name} 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：" +
-                "resultRegister=${spec.resultRegister}，elapsedMs=$elapsedMs"
+            val message = buildStartupNotConfirmedMessage(spec, elapsedMs)
             logStartupNotConfirmedFailure(spec, elapsedMs)
             return finishWithTelemetry(
                 spec,
@@ -283,6 +313,39 @@ class AtomicActionExecutor(
             AtomicActionResult.Timeout("${spec.name} 执行超时：timeoutMs=${spec.timeoutMs}"),
             startedAtMs
         )
+    }
+
+    private suspend fun buildStartupNotConfirmedMessage(spec: AtomicActionSpec, elapsedMs: Long): String {
+        val commandRead = gateway.readRegister(spec.commandRegister)
+        return when (commandRead) {
+            is AtomicReadResult.Success -> {
+                val currentCommand = formatCode(commandRead.value)
+                logger(
+                    "启动确认失败诊断：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                        "commandRegister（命令寄存器）=${spec.commandRegister}，当前命令=${commandValueDesc(commandRead.value)}，" +
+                        "resultRegister（结果寄存器）=${spec.resultRegister}，当前结果=0x0000（成功/空闲），elapsedMs=$elapsedMs"
+                )
+                if (commandRead.value == AtomicActionCodes.IDLE) {
+                    "${spec.name} 动作未确认启动，疑似下位机复位/命令丢失：" +
+                        "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}，" +
+                        "currentCommand=$currentCommand，elapsedMs=$elapsedMs"
+                } else {
+                    "${spec.name} 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：" +
+                        "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}，" +
+                        "currentCommand=$currentCommand，elapsedMs=$elapsedMs"
+                }
+            }
+            is AtomicReadResult.Failure -> {
+                logger(
+                    "启动确认失败诊断：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                        "commandRegister（命令寄存器）=${spec.commandRegister}读取失败，" +
+                        "resultRegister（结果寄存器）=${spec.resultRegister}，当前结果=0x0000（成功/空闲），" +
+                        "message=${commandRead.message}，elapsedMs=$elapsedMs"
+                )
+                "${spec.name} 动作未确认启动，疑似读取到旧 0x0000（成功/空闲）：" +
+                    "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}读取失败，elapsedMs=$elapsedMs"
+            }
+        }
     }
 
     private fun logStartupNotConfirmedFailure(spec: AtomicActionSpec, elapsedMs: Long) {
@@ -344,6 +407,14 @@ class AtomicActionExecutor(
         private const val STARTUP_CONFIRM_TIMEOUT_MS = 3_000L
 
         fun formatCode(code: Int): String = "0x${code.toString(16).uppercase().padStart(4, '0')}"
+
+        fun commandValueDesc(code: Int): String {
+            return if (code == AtomicActionCodes.IDLE) {
+                "0x0000（空闲/已清零）"
+            } else {
+                "${formatCode(code)}（当前值）"
+            }
+        }
 
         fun messageOf(code: Int): String = when (code) {
             AtomicActionCodes.PARAM_ERROR -> "参数错误"
