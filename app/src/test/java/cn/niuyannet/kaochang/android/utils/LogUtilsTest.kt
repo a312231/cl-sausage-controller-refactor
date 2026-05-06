@@ -31,6 +31,11 @@ class LogUtilsTest {
     }
 
     @Test
+    fun shouldWriteToFileForTest_shouldKeepThrowableLogs() {
+        assertTrue(LogUtils.shouldWriteToFileForTest("E", "普通异常日志", hasThrowable = true))
+    }
+
+    @Test
     fun shouldWriteToFileForTest_shouldFilterHighFrequencyHomepageEstimateDebugLogs() {
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "【MQTT展示态】已上报首页展示态：available=1174380"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "【MQTT业务】收到首页展示态回执：action=2（设备状态同步）"))

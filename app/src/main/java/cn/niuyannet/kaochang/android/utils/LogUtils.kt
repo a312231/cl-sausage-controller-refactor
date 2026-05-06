@@ -3,6 +3,7 @@
 import android.content.Context
 import android.util.Log
 import cn.niuyannet.kaochang.android.MyApp
+import cn.niuyannet.kaochang.android.mqtt.AppLogCloudReporter
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
@@ -171,12 +172,14 @@ object LogUtils {
                 FileWriter(logFile, true).use { writer ->
                     writer.append(logMessage).append("\n")
                 }
+                AppLogCloudReporter.report(level, tag, logMessage.toString())
             } catch (e: IOException) {
                 Log.e(TAG, "写入日志文件失败", e)
             }
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun shouldWriteToFile(level: String, msg: String, tr: Throwable?): Boolean {
         if (FILE_LOG_NOISE_KEYWORDS.any { keyword -> msg.contains(keyword) }) {
             return false
