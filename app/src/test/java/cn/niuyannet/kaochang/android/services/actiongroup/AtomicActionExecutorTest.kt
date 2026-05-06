@@ -73,6 +73,69 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldKeepWaitingWhenCommandStillPendingAfterStartupConfirmWindow() = runBlocking {
+        val spec = AtomicActionSpec("in4-test", 340, 341, 342, 5_000L, 100L, "in4：升降台下降")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                341 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IDLE
+                ),
+                340 to repeatedQueue(AtomicActionCodes.RUNNING, 40)
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertTrue(
+            logs.any {
+                it.contains("命令仍在等待下位机接收") &&
+                    it.contains("commandRegister（命令寄存器）=340") &&
+                    it.contains("当前命令=0x0001（请求执行）")
+            }
+        )
+    }
+
+    @Test
     fun execute_shouldSucceedOnlyAfterRunningThenIdle() = runBlocking {
         val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
         val gateway = FakeGateway(
@@ -177,5 +240,7 @@ class AtomicActionExecutorTest {
 
     companion object {
         fun queueOf(vararg values: Int): ArrayDeque<Int> = ArrayDeque<Int>().apply { addAll(values.toList()) }
+        fun repeatedQueue(value: Int, count: Int): ArrayDeque<Int> =
+            ArrayDeque<Int>().apply { repeat(count) { add(value) } }
     }
 }
