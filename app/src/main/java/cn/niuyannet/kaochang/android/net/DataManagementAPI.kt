@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -202,23 +203,6 @@ object DataManagementAPI {
         return config.onlineStatus in listOf(1, 4) &&
             config.inspectionMode == AppConfigBean.INSPECTION_MODE_NORMAL &&
             config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
-    }
-
-    private fun hasHighConcurrencyAreaActive(): Boolean {
-        return try {
-            KaoPanHelper.getKaoPanList().any { pan ->
-                val inHighConcurrencyArea = pan.positionSn in 10..21 || pan.positionSn in 25..33
-                inHighConcurrencyArea &&
-                    (pan.isHasSausage ||
-                        pan.isHasGrilling ||
-                        pan.startTime > 0L ||
-                        pan.holdingTime > 0L ||
-                        pan.status != 0)
-            }
-        } catch (e: Exception) {
-            logW("判断高并发区域烤盘状态失败，保守保持高转低收口：error=${e.message}")
-            true
-        }
     }
 
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
@@ -533,13 +517,26 @@ object DataManagementAPI {
         val requestedModeType = json.getInteger("modeType") ?: previousModeType
         val requestedTransitionMode = json.getInteger("transitionMode")
         val operator = json.getString("operator").orEmpty()
-        val highConcurrencyAreaActive = hasHighConcurrencyAreaActive()
+        val hasSupplyBoxesAvailable = KaoPanHelper.getKaoPanBoxList().any { it.num > 0 }
+        val highToLowResidualDecision = HighToLowEmptyResidualHelper.evaluate(
+            transitionMode = previousTransitionMode,
+            onlineStatus = currentConfigBeforeApply.onlineStatus,
+            errorStatus = currentConfigBeforeApply.errorStatus,
+            moveStatus = currentConfigBeforeApply.moveStatus,
+            hasSupplyBoxesAvailable = hasSupplyBoxesAvailable,
+            kaoPanList = KaoPanHelper.getKaoPanList()
+        )
+        val highConcurrencyAreaActive = !highToLowResidualDecision.highConcurrencyAreaIdle
         val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
             currentModeType = previousModeType,
             currentTransitionMode = previousTransitionMode,
             requestedModeType = requestedModeType,
             requestedTransitionMode = requestedTransitionMode,
-            highConcurrencyAreaActive = highConcurrencyAreaActive
+            highConcurrencyAreaActive = highConcurrencyAreaActive,
+            highToLowEmptyResidualCanClear = highToLowResidualDecision.canClear,
+            preserveHighToLowTransition =
+                highToLowResidualDecision.isHighToLowTransition &&
+                    (!highToLowResidualDecision.runtimeStateReliable || highConcurrencyAreaActive)
         )
 
         currentConfigBeforeApply.modeType = resolvedTarget.modeType
@@ -569,6 +566,8 @@ object DataManagementAPI {
                     "请求 modeType（并发模式）=${formatDiffValue("modeType", requestedModeType)}，" +
                     "请求 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", requestedTransitionMode ?: previousTransitionMode)}，" +
                     "高并发区域是否仍有烤肠或动作=$highConcurrencyAreaActive，" +
+                    "高转低空残留是否可清理=${highToLowResidualDecision.canClear}，" +
+                    "runtimeStateReliable（运行态是否可信）=${highToLowResidualDecision.runtimeStateReliable}，" +
                     "落地 modeType（并发模式）=${formatDiffValue("modeType", resolvedTarget.modeType)}，" +
                     "落地 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", resolvedTarget.transitionMode)}"
             )

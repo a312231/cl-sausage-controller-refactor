@@ -188,7 +188,6 @@ class MaintenanceFragment : Fragment() {
         val config = AppConfig.getAppConfig()
         val oldAvailable = config.available
         val oldAvailableCountdownLatched = config.availableCountdownLatched
-        val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         val needReset =
             oldAvailable != 0L ||

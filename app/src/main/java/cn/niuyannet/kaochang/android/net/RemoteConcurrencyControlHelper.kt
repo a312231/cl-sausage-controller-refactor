@@ -18,7 +18,9 @@ object RemoteConcurrencyControlHelper {
         currentTransitionMode: Int,
         requestedModeType: Int,
         requestedTransitionMode: Int?,
-        highConcurrencyAreaActive: Boolean = false
+        highConcurrencyAreaActive: Boolean = false,
+        highToLowEmptyResidualCanClear: Boolean = false,
+        preserveHighToLowTransition: Boolean = false
     ): ResolvedConcurrencyTarget {
         val requestedMode = requestedModeType.takeIf { it == MODE_LOW || it == MODE_HIGH }
             ?: currentModeType.takeIf { it == MODE_LOW || it == MODE_HIGH }
@@ -41,7 +43,9 @@ object RemoteConcurrencyControlHelper {
             requestedMode == MODE_LOW && resolvedTransitionMode == TRANSITION_LOW_TO_HIGH ->
                 MODE_HIGH to TRANSITION_LOW_TO_HIGH
             requestedMode == MODE_LOW && resolvedTransitionMode == TRANSITION_HIGH_TO_LOW ->
-                if (backendOnlySwitchesHighToLow || highConcurrencyAreaActive) {
+                if (highToLowEmptyResidualCanClear) {
+                    MODE_LOW to TRANSITION_NONE
+                } else if (preserveHighToLowTransition || backendOnlySwitchesHighToLow || highConcurrencyAreaActive) {
                     MODE_HIGH to TRANSITION_HIGH_TO_LOW
                 } else {
                     MODE_LOW to TRANSITION_NONE

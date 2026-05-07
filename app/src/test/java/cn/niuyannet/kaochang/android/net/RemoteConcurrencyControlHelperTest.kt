@@ -75,6 +75,36 @@ class RemoteConcurrencyControlHelperTest {
     }
 
     @Test
+    fun resolveTarget_shouldClearHighToLowWhenBackendRequestsLowAndEmptyResidualCanClear() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 2,
+            currentTransitionMode = 2,
+            requestedModeType = 1,
+            requestedTransitionMode = null,
+            highConcurrencyAreaActive = false,
+            highToLowEmptyResidualCanClear = true
+        )
+
+        assertEquals(1, resolved.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveTarget_shouldKeepHighToLowWhenBackendRequestsLowButRuntimeIsUnsafeToClear() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 2,
+            currentTransitionMode = 2,
+            requestedModeType = 1,
+            requestedTransitionMode = null,
+            highConcurrencyAreaActive = false,
+            preserveHighToLowTransition = true
+        )
+
+        assertEquals(2, resolved.modeType)
+        assertEquals(2, resolved.transitionMode)
+    }
+
+    @Test
     fun resolveTarget_shouldUseBackendLatestTargetWhenHighToLowNeedsOverride() {
         val resolved = RemoteConcurrencyControlHelper.resolveTarget(
             currentModeType = 1,

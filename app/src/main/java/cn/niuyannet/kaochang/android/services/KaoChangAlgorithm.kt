@@ -17,10 +17,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 
 /**
  * 智能烤肠算法
@@ -476,6 +472,45 @@ object KaoChangAlgorithm {
         KaoChangOperate.stopHeating(3)
     }
 
+    private fun selfHealHighToLowEmptyResidual(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>,
+        kaoPanBoxList: List<cn.niuyannet.kaochang.android.model.bean.KaoPanBox>
+    ): Boolean {
+        val hasSupplyBoxesAvailable = kaoPanBoxList.any { it.num > 0 }
+        val decision = HighToLowEmptyResidualHelper.evaluate(
+            transitionMode = config.transitionMode,
+            onlineStatus = config.onlineStatus,
+            errorStatus = config.errorStatus,
+            moveStatus = config.moveStatus,
+            hasSupplyBoxesAvailable = hasSupplyBoxesAvailable,
+            kaoPanList = kaoPanList
+        )
+        if (!decision.canClear) {
+            return false
+        }
+
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        val oldSupplyStatus = config.supplyStatus
+        config.modeType = 1
+        config.transitionMode = 0
+        AppConfig.saveAppConfig(config)
+        logW(
+            LOG_ALGORITHM,
+            "【并发切换】高转低空残留自愈：清理残留过渡态并回落低并发，" +
+                "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "箱空=${!decision.hasSupplyBoxesAvailable}，前区无保温可售肠=${!decision.hasFrontSellableSausage}，" +
+                "高并发区域10~21/25~33空闲=${decision.highConcurrencyAreaIdle}，" +
+                "moveStatus（机械动作状态）=${moveStatusText(config.moveStatus)}，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                "supplyStatus（补货状态）清理前=${supplyStatusText(oldSupplyStatus)}，随后重新计算"
+        )
+        publishRuntimeStateOrFallback("runtime_state:high_to_low_empty_residual_healed")
+        return true
+    }
+
     private fun refreshSupplyStatus(
         config: AppConfigBean,
         kaoPanList: List<KaoPan>,
@@ -587,6 +622,7 @@ object KaoChangAlgorithm {
         }
         KaoChangOperate.stopAllHeatingIfNoSausage("全盘无肠兜底检测")
 
+        selfHealHighToLowEmptyResidual(config, kaoPanList, kaoPanBoxList)
         val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
         val autoDispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
             onlineStatus = onlineStatus,
@@ -865,74 +901,26 @@ object KaoChangAlgorithm {
     }
     /**
      * 判断当前时间是否在营业时间内
-     * @param currentTimeStr 当前时间字符串，格式为"HH:mm"
+     * @param currentTimeStr 当前时间字符串，格式为"HH:mm:ss"，兼容旧格式"HH:mm"
      * @param businessTime 营业时间配置
      * @return 是否在营业时间内
      */
     private fun isWithinBusinessHours(currentTimeStr: String, businessTime: BusinessTime?): Boolean {
-        try {
-            if (businessTime == null) return false
-            
-            val format = SimpleDateFormat("HH:mm", Locale.getDefault())
-            val current = format.parse(currentTimeStr)
-            
-            // 获取当前是星期几（1-7，对应周一到周日）
-            val calendar = Calendar.getInstance()
-            // Calendar.DAY_OF_WEEK 返回 1-7，对应周日到周六，需要转换为 1-7 对应周一到周日
-            val dayOfWeek = if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) 7 else calendar.get(Calendar.DAY_OF_WEEK) - 1
-            
-            // 根据营业时间模式判断
-            if ("everyday".equals(businessTime.mode, ignoreCase = true) && businessTime.defaultTime != null && businessTime.defaultTime.size >= 2) {
-                // 默认模式：所有天使用相同的时间范围
-                val start = format.parse(businessTime.defaultTime[0])
-                val end = format.parse(businessTime.defaultTime[1])
-                
-                return isTimeInRange(current, start, end)
-            } else if ("custom".equals(businessTime.mode, ignoreCase = true) && businessTime.customTimes != null) {
-                // 自定义模式：每天可以有不同的时间范围
-                for (timeItem in businessTime.customTimes) {
-                    // 检查是否是当前日期且已启用
-                    if (timeItem.day == dayOfWeek && timeItem.enabled && timeItem.timeRange != null && timeItem.timeRange.size >= 2) {
-                        val start = format.parse(timeItem.timeRange[0])
-                        val end = format.parse(timeItem.timeRange[1])
-                        
-                        return isTimeInRange(current, start, end)
-                    }
-                }
-            }
-            
-            // 如果没有匹配的时间范围，则不在营业时间内
-            return false
-            
+        return try {
+            BusinessTimeWindowHelper.isWithinBusinessHours(currentTimeStr, businessTime)
         } catch (e: Exception) {
             logW(LOG_ALGORITHM, "营业时间解析失败：$e")
-            return false
-        }
-    }
-    
-    /**
-     * 判断时间是否在范围内，处理跨天的情况
-     */
-    private fun isTimeInRange(current: Date, start: Date, end: Date): Boolean {
-        // 判断是否跨天营业
-        return if (start.before(end) || start == end) {
-            // 不跨天：当前时间在开始和结束时间之间
-            (current.after(start) || current == start) && (current.before(end) || current == end)
-        } else {
-            // 跨天：当前时间在开始时间之后或结束时间之前
-            (current.after(start) || current == start) || (current.before(end) || current == end)
+            false
         }
     }
  
 
     /**
      * 获取当前时间
-     * @return 当前时间字符串，格式为"HH:mm"
+     * @return 当前时间字符串，格式为"HH:mm:ss"
      */
     private fun getCurrentTime(): String {
-        val currentTime = Calendar.getInstance()
-        val dateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-        return dateFormat.format(currentTime.time)
+        return BusinessTimeWindowHelper.currentTimeString()
     }
 
     fun enableRoastAlgorithm(
