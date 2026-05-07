@@ -131,7 +131,16 @@ object HighCurrentTrafficMode {
                 val isBeforeCloseWindow =
                     KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
-                if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
+                if (
+                    schedulingEnabled &&
+                    boxSupplyAvailable &&
+                    config.errorStatus == 0 &&
+                    !isBeforeCloseWindow &&
+                    resumeHighInitialization(listBox, list1_21, list25_33)
+                ) {
+                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    return
+                } else if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
                     if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                         resumeIncompleteHighHeatSupplement(
                             list = list,
@@ -206,6 +215,33 @@ object HighCurrentTrafficMode {
                 highTrafficModeTransition(config, list, listBox, schedulingEnabled)
             }
         }
+    }
+
+    private suspend fun resumeHighInitialization(
+        listBox: List<KaoPanBox>,
+        list1_21: List<KaoPan>,
+        list25_33: List<KaoPan>
+    ): Boolean {
+        TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
+        val resumeTargets = TrafficInitializationResumePlanner.planFrontInitResumeTargets(list1_21, list25_33)
+        if (resumeTargets.isEmpty()) {
+            return false
+        }
+
+        KaoChangOperate.heating(1)
+        KaoChangOperate.heating(2)
+        LogUtils.i(
+            TAG,
+            "【高并发初始化】检测到 1~21 初始化未完成，续补剩余空位：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}"
+        )
+        val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
+        )
+        LogUtils.i(
+            TAG,
+            "【高并发初始化】1~21 初始化续补结束：目标数=${resumeTargets.size}，完成数=$movedCount"
+        )
+        return true
     }
 
     /**

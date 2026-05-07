@@ -97,6 +97,10 @@ object LowCurrentTrafficMode {
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
             if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                if (resumeLowInitialization(listBox, list1_9, list13_18)) {
+                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    return totalEmpty
+                }
                 if (resumeLowHeatSupplementGroup(kaoPanList, list13_15, "13~15")) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     return totalEmpty
@@ -152,6 +156,32 @@ object LowCurrentTrafficMode {
         // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         return totalEmpty
+    }
+
+    private suspend fun resumeLowInitialization(
+        listBox: List<KaoPanBox>,
+        list1_9: List<KaoPan>,
+        list13_18: List<KaoPan>
+    ): Boolean {
+        TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
+        val resumeTargets = TrafficInitializationResumePlanner.planFrontInitResumeTargets(list1_9, list13_18)
+        if (resumeTargets.isEmpty()) {
+            return false
+        }
+
+        KaoChangOperate.heating(1)
+        LogUtils.i(
+            TAG,
+            "【低并发初始化】检测到 1~9 初始化未完成，续补剩余空位：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}"
+        )
+        val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
+        )
+        LogUtils.i(
+            TAG,
+            "【低并发初始化】1~9 初始化续补结束：目标数=${resumeTargets.size}，完成数=$movedCount"
+        )
+        return true
     }
 
     private suspend fun resumeLowHeatSupplementGroup(

@@ -8,7 +8,7 @@ import org.junit.Test
 class ActionGroupRecoveryBootstrapTest {
 
     @Test
-    fun recover_shouldClearSessionAndLocksWhenAllRegistersIdle() = runBlocking {
+    fun recover_shouldEnterMaintenanceWhenSessionExistsButAllRegistersIdle() = runBlocking {
         val store = MemorySessionStore(
             ActionGroupSession(
                 sessionId = "old",
@@ -20,6 +20,20 @@ class ActionGroupRecoveryBootstrapTest {
         )
         val locks = ResourceLocks()
         locks.tryAcquire(ResourceMask.bottom, "old")
+
+        val result = ActionGroupRecoveryBootstrap(FakeClient(), store, locks).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("疑似下位机复位"))
+        assertEquals("old", store.session?.sessionId)
+        assertTrue(!locks.isIdle())
+    }
+
+    @Test
+    fun recover_shouldReturnIdleWhenAllRegistersIdleAndNoSessionExists() = runBlocking {
+        val store = MemorySessionStore(null)
+        val locks = ResourceLocks()
+        locks.tryAcquire(ResourceMask.bottom, "stale-lock")
 
         val result = ActionGroupRecoveryBootstrap(FakeClient(), store, locks).recover()
 

@@ -49,6 +49,13 @@ class ActionGroupRecoveryBootstrap(
             (state.value as AtomicReadResult.Success).value == AtomicActionCodes.RUNNING
         }
         if (runningStates.isEmpty()) {
+            val session = sessionStore.load()
+            if (session != null) {
+                return ActionGroupRecoveryResult.MaintenanceRequired(
+                    "动作组恢复失败：本地仍存在动作会话但下位机结果寄存器全部空闲，疑似下位机复位/动作结果丢失，" +
+                        "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}，需人工确认物理位置"
+                )
+            }
             sessionStore.clear()
             resourceLocks.clear()
             return ActionGroupRecoveryResult.Idle
