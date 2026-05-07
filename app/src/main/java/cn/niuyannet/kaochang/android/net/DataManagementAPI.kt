@@ -657,6 +657,11 @@ object DataManagementAPI {
         snapshotPayload["reportTime"] = reportTime
         snapshotPayload["kaoPanList"] = kaoPanPayload
         snapshotPayload["stockList"] = stockPayload
+        val snapshotSummary =
+            "sequence（设备快照版本号）=$sequence, " +
+                "reportTime（设备本机上报时间）=$reportTime, " +
+                "烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
+                "箱位数=$stockItemCount, 总库存=$stockTotalCount"
 
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
@@ -675,8 +680,7 @@ object DataManagementAPI {
                 )
                 logE(
                     "设备数据快照同步失败：" +
-                        "sequence=$sequence, 烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
-                        "箱位数=$stockItemCount, 总库存=$stockTotalCount, code=$code, content=$content"
+                        "$snapshotSummary, code=$code, cloudResponse（云端原始响应）=$content"
                 )
             } else {
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
@@ -684,8 +688,7 @@ object DataManagementAPI {
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.STOCK)
                 logD(
                     "设备数据快照已同步：" +
-                        "sequence=$sequence, 烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
-                        "箱位数=$stockItemCount, 总库存=$stockTotalCount"
+                        "$snapshotSummary, cloudResponse（云端原始响应）=$content"
                 )
             }
         }

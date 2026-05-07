@@ -6,9 +6,17 @@ object CloudSnapshotSequenceStore {
     private const val FILE_NAME = "file_cloud_snapshot_sequence"
     private const val KEY_SEQUENCE = "key_snapshot_sequence"
 
+    interface Clock {
+        fun nowMillis(): Long
+    }
+
     interface Storage {
         fun getLong(key: String): Long
         fun putLong(key: String, value: Long)
+    }
+
+    private object SystemClock : Clock {
+        override fun nowMillis(): Long = System.currentTimeMillis()
     }
 
     class InMemoryStorage : Storage {
@@ -32,10 +40,12 @@ object CloudSnapshotSequenceStore {
 
     @Volatile
     private var storage: Storage = PreferenceStorage
+    @Volatile
+    private var clock: Clock = SystemClock
 
     @Synchronized
     fun nextSequence(): Long {
-        val next = currentSequence() + 1L
+        val next = maxOf(currentSequence() + 1L, clock.nowMillis())
         storage.putLong(KEY_SEQUENCE, next)
         return next
     }
@@ -49,6 +59,19 @@ object CloudSnapshotSequenceStore {
             block()
         } finally {
             storage = previous
+        }
+    }
+
+    fun withStorageAndClockForTest(testStorage: Storage, testClock: Clock, block: () -> Unit) {
+        val previousStorage = storage
+        val previousClock = clock
+        storage = testStorage
+        clock = testClock
+        try {
+            block()
+        } finally {
+            storage = previousStorage
+            clock = previousClock
         }
     }
 }

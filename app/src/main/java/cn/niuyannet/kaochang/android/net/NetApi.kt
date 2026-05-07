@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 import com.lzy.okgo.OkGo
 import com.lzy.okgo.callback.StringCallback
@@ -245,24 +246,65 @@ object NetApi {
         json["reportTime"] = reportTime
         json["kaoPanList"] = kaoPanList
         json["stockList"] = stockList
-        LogUtils.d("【网络请求】开始上报设备数据快照：deviceCode=$deviceCode, sequence=$sequence")
+        val snapshotContext = buildSnapshotContext(deviceCode, sequence, reportTime, kaoPanList, stockList)
+        LogUtils.d("【网络请求】开始上报设备数据快照：$snapshotContext")
         OkGo.post<String>(reportSnapshot_url)
             .upJson(json.toJSONString())
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
-                    LogUtils.d("【网络请求】上报设备数据快照成功：deviceCode=$deviceCode, sequence=$sequence")
-                    callback?.invoke(0, response?.body())
+                    val body = response?.body()
+                    val result = CloudSnapshotReportResponseParser.parse(body)
+                    if (result.accepted) {
+                        LogUtils.d(
+                            "【网络请求】上报设备数据快照成功：" +
+                                "$snapshotContext, ${result.reason}, raw=$body"
+                        )
+                        callback?.invoke(0, body)
+                    } else {
+                        val errorMessage =
+                            "云端未接收设备数据快照：$snapshotContext, reason=${result.reason}, raw=$body"
+                        LogUtils.e("【网络请求】$errorMessage")
+                        callback?.invoke(1, errorMessage)
+                    }
                 }
 
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
                     LogUtils.e(
                         "【网络请求】上报设备数据快照失败：" +
-                            "deviceCode=$deviceCode, sequence=$sequence, error=${response?.exception?.message}"
+                            "$snapshotContext, error=${response?.exception?.message}"
                     )
                     callback?.invoke(1, response?.body())
                 }
             })
+    }
+
+    private fun buildSnapshotContext(
+        deviceCode: String,
+        sequence: Long,
+        reportTime: Long,
+        kaoPanList: String,
+        stockList: String
+    ): String {
+        return "deviceCode=$deviceCode, " +
+            "sequence（设备快照版本号）=$sequence, " +
+            "reportTime（设备本机上报时间）=$reportTime, " +
+            "kaoPanList（烤盘快照）=${payloadSummary(kaoPanList)}, " +
+            "stockList（库存快照）=${payloadSummary(stockList)}"
+    }
+
+    private fun payloadSummary(payload: String): String {
+        val itemCount = try {
+            JSON.parseArray(payload).size
+        } catch (_: Exception) {
+            -1
+        }
+        val countText = if (itemCount >= 0) {
+            "条目数=$itemCount"
+        } else {
+            "条目数=解析失败"
+        }
+        return "$countText，jsonLength=${payload.length}"
     }
 
     /**

@@ -6,22 +6,42 @@ import org.junit.Test
 class CloudSnapshotSequenceStoreTest {
 
     @Test
-    fun nextSequence_shouldStartFromOneWhenNoPreviousSequenceExists() {
+    fun nextSequence_shouldUseCurrentTimeWhenNoPreviousSequenceExists() {
         val storage = CloudSnapshotSequenceStore.InMemoryStorage()
 
-        CloudSnapshotSequenceStore.withStorageForTest(storage) {
-            assertEquals(1L, CloudSnapshotSequenceStore.nextSequence())
+        CloudSnapshotSequenceStore.withStorageAndClockForTest(storage, FixedClock(1778159017108L)) {
+            assertEquals(1778159017108L, CloudSnapshotSequenceStore.nextSequence())
         }
     }
 
     @Test
-    fun nextSequence_shouldPersistAndIncrementSequence() {
+    fun nextSequence_shouldIncrementPreviousWhenPreviousIsGreaterThanCurrentTime() {
         val storage = CloudSnapshotSequenceStore.InMemoryStorage()
 
-        CloudSnapshotSequenceStore.withStorageForTest(storage) {
-            assertEquals(1L, CloudSnapshotSequenceStore.nextSequence())
-            assertEquals(2L, CloudSnapshotSequenceStore.nextSequence())
-            assertEquals(2L, CloudSnapshotSequenceStore.currentSequence())
+        CloudSnapshotSequenceStore.withStorageAndClockForTest(storage, FixedClock(1000L)) {
+            assertEquals(1000L, CloudSnapshotSequenceStore.nextSequence())
+            assertEquals(1001L, CloudSnapshotSequenceStore.nextSequence())
+            assertEquals(1001L, CloudSnapshotSequenceStore.currentSequence())
         }
+    }
+
+    @Test
+    fun nextSequence_shouldRemainMonotonicWhenClockMovesBackward() {
+        val storage = CloudSnapshotSequenceStore.InMemoryStorage()
+        val clock = MutableClock(2000L)
+
+        CloudSnapshotSequenceStore.withStorageAndClockForTest(storage, clock) {
+            assertEquals(2000L, CloudSnapshotSequenceStore.nextSequence())
+            clock.nowMillis = 1500L
+            assertEquals(2001L, CloudSnapshotSequenceStore.nextSequence())
+        }
+    }
+
+    private class FixedClock(private val nowMillis: Long) : CloudSnapshotSequenceStore.Clock {
+        override fun nowMillis(): Long = nowMillis
+    }
+
+    private class MutableClock(var nowMillis: Long) : CloudSnapshotSequenceStore.Clock {
+        override fun nowMillis(): Long = nowMillis
     }
 }
