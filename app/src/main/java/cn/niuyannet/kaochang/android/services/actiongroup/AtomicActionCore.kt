@@ -13,7 +13,21 @@ object AtomicActionCodes {
     const val IR_THROW_FAILED = 0x00E6
     const val STICK_FAILED = 0x00E7
     const val CLIENT_TAKE_TIMEOUT_DISCARDED = 0x00E8
-    const val BUSY = 0x00E9
+    const val STICK_EMPTY = 0x00E9
+    const val BUSY = 0x00EA
+    const val IN_SOURCE_SLOT_PARAM = 0x00EB
+    const val IN7_TARGET_SLOT_PARAM = 0x00EC
+    const val OUT_SLOT_PARAM = 0x00ED
+    const val IN1_X_RESET_FAILED = 0x00EE
+    const val IN1_Y_RESET_FAILED = 0x00EF
+    const val IN3_X_RESET_FAILED = 0x00F0
+    const val IN3_Y_RESET_FAILED = 0x00F1
+    const val LIFT_DOWN_LOCKED_ROTOR = 0x00F2
+    const val LIFT_UP_LOCKED_ROTOR = 0x00F3
+    const val LIFT_NOT_BOTTOM = 0x00F4
+    const val IN7_SAU_ADD_BUSY = 0x00F5
+    const val OUT_UNSUPPORTED_ACTION = 0x00F6
+    const val BOTTOM_UNSUPPORTED_ACTION = 0x00F7
 }
 
 data class AtomicActionSpec(
@@ -57,6 +71,11 @@ sealed class AtomicActionResult {
     data class Failed(val errorCode: Int, val message: String) : AtomicActionResult()
     data class Timeout(val message: String) : AtomicActionResult()
     data class ModbusError(val message: String) : AtomicActionResult()
+}
+
+enum class AtomicStartupConfirmPolicy {
+    STRICT,
+    SOFT_SUCCESS_WHEN_COMMAND_STILL_PENDING
 }
 
 object AtomicActionFailureFormatter {
@@ -112,7 +131,10 @@ class AtomicActionExecutor(
     private val gateway: AtomicModbusGateway,
     private val logger: (String) -> Unit,
     private val telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext(),
-    private val telemetrySink: (ActionGroupTelemetry) -> Unit = {}
+    private val telemetrySink: (ActionGroupTelemetry) -> Unit = {},
+    private val startupConfirmTimeoutMs: Long = STARTUP_CONFIRM_TIMEOUT_MS,
+    private val commandPendingConfirmTimeoutMs: Long = COMMAND_PENDING_CONFIRM_TIMEOUT_MS,
+    private val startupConfirmPolicy: AtomicStartupConfirmPolicy = AtomicStartupConfirmPolicy.STRICT
 ) : AtomicActionClient, AtomicActionStateReader {
 
     override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
@@ -224,8 +246,8 @@ class AtomicActionExecutor(
         var hasObservedRunning = !requireRunningBeforeSuccess
         var hasLoggedStartupWait = false
         var hasLoggedCommandPendingWait = false
-        val startupConfirmTimeoutMs = minOf(STARTUP_CONFIRM_TIMEOUT_MS, spec.timeoutMs)
-        val commandPendingTimeoutMs = minOf(COMMAND_PENDING_CONFIRM_TIMEOUT_MS, spec.timeoutMs)
+        val startupConfirmWindowMs = minOf(startupConfirmTimeoutMs, spec.timeoutMs)
+        val commandPendingTimeoutMs = minOf(commandPendingConfirmTimeoutMs, spec.timeoutMs)
         while (System.currentTimeMillis() - startedAtMs <= spec.timeoutMs) {
             when (val read = gateway.readRegister(spec.resultRegister)) {
                 is AtomicReadResult.Failure -> return AtomicActionResult.ModbusError(
@@ -262,10 +284,10 @@ class AtomicActionExecutor(
                                 logger(
                                     "等待动作启动确认：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                                         "resultRegister（结果寄存器）=${spec.resultRegister}，当前结果=${formatCode(code)}，" +
-                                        "startupConfirmTimeoutMs=$startupConfirmTimeoutMs"
+                                        "startupConfirmTimeoutMs=$startupConfirmWindowMs"
                                 )
                             }
-                            if (elapsedMs >= startupConfirmTimeoutMs) {
+                            if (elapsedMs >= startupConfirmWindowMs) {
                                 when (val commandRead = gateway.readRegister(spec.commandRegister)) {
                                     is AtomicReadResult.Failure -> {
                                         val message = buildStartupNotConfirmedMessage(spec, elapsedMs, commandRead)
@@ -292,6 +314,24 @@ class AtomicActionExecutor(
                                             }
                                             delay(spec.pollDelayMs)
                                             continue
+                                        }
+                                        if (commandRead.value == AtomicActionCodes.RUNNING &&
+                                            startupConfirmPolicy == AtomicStartupConfirmPolicy.SOFT_SUCCESS_WHEN_COMMAND_STILL_PENDING
+                                        ) {
+                                            logger(
+                                                "启动确认软放行：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                                                    "commandRegister（命令寄存器）=${spec.commandRegister}，" +
+                                                    "currentCommand=${commandValueDesc(commandRead.value)}，" +
+                                                    "resultRegister（结果寄存器）=${spec.resultRegister}，" +
+                                                    "当前结果=0x0000（空闲/未启动），elapsedMs=$elapsedMs，" +
+                                                    "commandPendingTimeoutMs=$commandPendingTimeoutMs，" +
+                                                    "policy=${startupConfirmPolicy.name}（补肠动作组软放行：继续执行下一步，仅记录风险日志）"
+                                            )
+                                            return finishWithTelemetry(
+                                                spec,
+                                                AtomicActionResult.Success,
+                                                startedAtMs
+                                            )
                                         }
                                         val message = buildStartupNotConfirmedMessage(spec, elapsedMs, commandRead)
                                         logStartupNotConfirmedFailure(spec, elapsedMs)
@@ -451,7 +491,7 @@ class AtomicActionExecutor(
     companion object {
         private const val RUNNING_PROGRESS_LOG_INTERVAL_MS = 5_000L
         private const val STARTUP_CONFIRM_TIMEOUT_MS = 3_000L
-        private const val COMMAND_PENDING_CONFIRM_TIMEOUT_MS = 15_000L
+        private const val COMMAND_PENDING_CONFIRM_TIMEOUT_MS = 40_000L
 
         fun formatCode(code: Int): String = "0x${code.toString(16).uppercase().padStart(4, '0')}"
 
@@ -471,8 +511,22 @@ class AtomicActionExecutor(
             AtomicActionCodes.IR_PICK_FAILED -> "取肠红外未确认有肠"
             AtomicActionCodes.IR_THROW_FAILED -> "抛肠红外未确认抛出成功"
             AtomicActionCodes.STICK_FAILED -> "穿签失败"
-            AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED -> "顾客超时未取，已自动丢弃"
+            AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED -> "顾客取走相关错误"
+            AtomicActionCodes.STICK_EMPTY -> "穿签插空，签杆推出但疑似未穿到肠"
             AtomicActionCodes.BUSY -> "忙/资源不可用"
+            AtomicActionCodes.IN_SOURCE_SLOT_PARAM -> "in1/in2 源肠箱编号参数非法"
+            AtomicActionCodes.IN7_TARGET_SLOT_PARAM -> "in7 目标烤位参数非法"
+            AtomicActionCodes.OUT_SLOT_PARAM -> "out1 目标烤位参数非法"
+            AtomicActionCodes.IN1_X_RESET_FAILED -> "in1 的 X 复位失败"
+            AtomicActionCodes.IN1_Y_RESET_FAILED -> "in1 的 Y 复位失败"
+            AtomicActionCodes.IN3_X_RESET_FAILED -> "in3 的 X 复位失败"
+            AtomicActionCodes.IN3_Y_RESET_FAILED -> "in3 的 Y 复位失败"
+            AtomicActionCodes.LIFT_DOWN_LOCKED_ROTOR -> "升降台下降堵转"
+            AtomicActionCodes.LIFT_UP_LOCKED_ROTOR -> "升降台上升堵转"
+            AtomicActionCodes.LIFT_NOT_BOTTOM -> "需要抛肠时升降台不在底位"
+            AtomicActionCodes.IN7_SAU_ADD_BUSY -> "in7 调上平台放肠流程时上平台忙或状态异常"
+            AtomicActionCodes.OUT_UNSUPPORTED_ACTION -> "不支持的 400 动作"
+            AtomicActionCodes.BOTTOM_UNSUPPORTED_ACTION -> "不支持的下平台 300 动作"
             else -> "未知错误码 ${formatCode(code)}"
         }
     }

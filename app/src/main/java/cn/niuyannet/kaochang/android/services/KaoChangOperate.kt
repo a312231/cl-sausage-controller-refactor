@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicStartupConfirmPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.CompletedInActionGroupPipelineTask
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineTask
@@ -222,6 +223,12 @@ object KaoChangOperate {
         val previousErrorStatus = config.errorStatus
         config.errorStatus = 2
         config.onlineStatus = 3
+        LogUtils.e(
+            "【动作组故障锁存】已锁存设备故障，禁止自动补肠/续补继续启动：" +
+                "onlineStatus（设备营业状态）=${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
+                "errorStatus（设备故障状态）=$previousErrorStatus(0=正常, 非0=故障)->${config.errorStatus}(2=通信/硬件级故障)，" +
+                "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，reason=$logMessage"
+        )
         operateScope.launch {
             AppConfig.saveAppConfig(config)
             publishRuntimeStateWithHttpFallback("设备故障状态上报")
@@ -505,6 +512,7 @@ object KaoChangOperate {
 
     private fun createAtomicActionClient(
         telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext(),
+        startupConfirmPolicy: AtomicStartupConfirmPolicy = AtomicStartupConfirmPolicy.STRICT,
         onTelemetry: (ActionGroupTelemetry) -> Unit = {}
     ): AtomicActionClient {
         return AtomicActionExecutor(
@@ -514,7 +522,8 @@ object KaoChangOperate {
             telemetrySink = { telemetry ->
                 publishActionGroupTelemetry(telemetry)
                 onTelemetry(telemetry)
-            }
+            },
+            startupConfirmPolicy = startupConfirmPolicy
         )
     }
 
@@ -589,6 +598,12 @@ object KaoChangOperate {
         config.onlineStatus = 3
         config.isEnable = 0
         AppConfig.saveAppConfig(config)
+        LogUtils.e(
+            "【动作组故障锁存】动作组进入维护收口完成：onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}，" +
+                "errorStatus（设备故障状态）=${config.errorStatus}(2=通信/硬件级故障)，" +
+                "isEnable（烤肠算法开关）=${config.isEnable}(0=关闭)，moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，" +
+                "reason=$reason"
+        )
     }
 
     private fun orderEventStatusDesc(status: Int): String = when (status) {
@@ -1101,6 +1116,26 @@ object KaoChangOperate {
         return true
     }
 
+    private fun ensureSupplementBatchStartAllowed(stage: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        val decision = SupplementStartGate.evaluate(
+            onlineStatus = config.onlineStatus,
+            errorStatus = config.errorStatus,
+            isEnable = config.isEnable
+        )
+        if (decision.canStart) {
+            return true
+        }
+        logW(
+            LOG_SUPPLEMENT,
+            "【动作组故障锁存】$stage 硬门禁拒绝启动补肠流水线：${decision.reason}，" +
+                "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，" +
+                "useActionGroupV2（300/400动作组开关）=${config.useActionGroupV2}，" +
+                "pendingDisableActionGroupV2（待关闭动作组标记）=${config.pendingDisableActionGroupV2}"
+        )
+        return false
+    }
+
     private suspend fun moveSausagesToKaoPansByTasteSerial(
         validTargets: List<SupplementTarget>,
         stage: String
@@ -1108,6 +1143,9 @@ object KaoChangOperate {
         var movedCount = 0
         for (target in validTargets) {
             if (shouldPauseSupplementForOrder("$stage-单根开始前")) {
+                break
+            }
+            if (!ensureSupplementBatchStartAllowed("$stage-单根下发前")) {
                 break
             }
             if (moveSausageToKaoPanByTaste(target.kaoPan, target.tasteCode)) {
@@ -1123,6 +1161,9 @@ object KaoChangOperate {
     suspend fun moveSausagesToKaoPansByTaste(targets: List<SupplementTarget>): Int {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
+            return 0
+        }
+        if (!ensureSupplementBatchStartAllowed("补肠批次入口")) {
             return 0
         }
         if (AppConfig.getAppConfig().enableActionGroupPrefetch != 1 || validTargets.size <= 1) {
@@ -1158,6 +1199,9 @@ object KaoChangOperate {
         }
         waitForPostSellSupplementGuardIfNeeded()
         if (shouldPauseSupplementForOrder("补肠预取流水线占用机械臂前")) {
+            return 0
+        }
+        if (!ensureSupplementBatchStartAllowed("补肠预取流水线下发前")) {
             return 0
         }
         AppConfig.getAppConfig().moveStatus = 1
@@ -1245,13 +1289,21 @@ object KaoChangOperate {
                     ActionGroupTelemetryContext(
                         sessionId = owner,
                         resourceLocks = actionGroupLocks.snapshot()
-                    )
+                    ),
+                    startupConfirmPolicy = AtomicStartupConfirmPolicy.SOFT_SUCCESS_WHEN_COMMAND_STILL_PENDING
                 ),
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogger = { message -> LogUtils.i(message) },
                 failureLogger = { message -> LogUtils.e(message) },
                 onTaskCompleted = { completedTask -> applyCompletedPipelineTask(completedTask) },
-                shouldPauseAfterCurrentTask = { SupplementPauseController.shouldPauseForOrder() }
+                pauseReasonAfterCurrentTask = {
+                    when {
+                        SupplementPauseController.shouldPauseForOrder() -> "检测到订单待出餐"
+                        !ensureSupplementBatchStartAllowed("补肠预取流水线启动下一根预取前") ->
+                            "动作组故障锁存门禁拒绝启动下一根预取"
+                        else -> null
+                    }
+                }
             )
                 .run(plannedMoves.map { it.task })
                 .also { actionGroupCompleted = true }
@@ -1435,6 +1487,9 @@ object KaoChangOperate {
             logD(LOG_SUPPLEMENT, "补肠前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
         }
         waitForPostSellSupplementGuardIfNeeded()
+        if (!ensureSupplementBatchStartAllowed("补肠单根动作组下发前")) {
+            return false
+        }
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 

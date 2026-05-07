@@ -41,7 +41,10 @@ class InActionGroupPrefetchPipelineRunner(
     private val operationLogger: (String) -> Unit = {},
     private val failureLogger: (String) -> Unit = operationLogger,
     private val onTaskCompleted: (CompletedInActionGroupPipelineTask) -> Unit = {},
-    private val shouldPauseAfterCurrentTask: () -> Boolean = { false }
+    private val shouldPauseAfterCurrentTask: () -> Boolean = { false },
+    private val pauseReasonAfterCurrentTask: () -> String? = {
+        if (shouldPauseAfterCurrentTask()) "检测到订单待出餐" else null
+    }
 ) {
     suspend fun run(tasks: List<InActionGroupPipelineTask>): InActionGroupPipelineResult = coroutineScope {
         if (tasks.isEmpty()) {
@@ -63,10 +66,11 @@ class InActionGroupPrefetchPipelineRunner(
             var pauseRequestedAfterCurrent = false
             val startNextPrefetchIfNeeded = {
                 if (nextPrefetch == null && index + 1 < tasks.size) {
-                    if (shouldPauseAfterCurrentTask()) {
+                    val pauseReason = pauseReasonAfterCurrentTask()
+                    if (pauseReason != null) {
                         pauseRequestedAfterCurrent = true
                         logger(
-                            "in6 命令已下发，检测到订单待出餐，当前根安全完成后暂停补肠批次：" +
+                            "in6 命令已下发，$pauseReason，当前根安全完成后暂停补肠批次：" +
                                 "currentTargetPan=${task.targetPanNo}，nextTargetPan=${tasks[index + 1].targetPanNo}"
                         )
                     } else {

@@ -136,6 +136,58 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldSoftSucceedWhenStartupConfirmMissingAndSoftPolicyEnabled() = runBlocking {
+        val spec = AtomicActionSpec("in3-test", 330, 331, 332, 120L, 10L, "in3：回到抛肠点")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                331 to repeatedQueue(AtomicActionCodes.IDLE, 30),
+                330 to repeatedQueue(AtomicActionCodes.RUNNING, 30)
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = { logs += it },
+            startupConfirmTimeoutMs = 30L,
+            commandPendingConfirmTimeoutMs = 80L,
+            startupConfirmPolicy = AtomicStartupConfirmPolicy.SOFT_SUCCESS_WHEN_COMMAND_STILL_PENDING
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertTrue(
+            logs.any {
+                it.contains("启动确认软放行") &&
+                    it.contains("action=in3-test") &&
+                    it.contains("commandRegister（命令寄存器）=330") &&
+                    it.contains("currentCommand=0x0001（请求执行）")
+            }
+        )
+    }
+
+    @Test
+    fun execute_shouldTimeoutWhenStartupConfirmMissingAndStrictPolicyEnabled() = runBlocking {
+        val spec = AtomicActionSpec("in3-test", 330, 331, 332, 120L, 10L, "in3：回到抛肠点")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                331 to repeatedQueue(AtomicActionCodes.IDLE, 30),
+                330 to repeatedQueue(AtomicActionCodes.RUNNING, 30)
+            )
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            startupConfirmTimeoutMs = 30L,
+            commandPendingConfirmTimeoutMs = 80L
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+    }
+
+    @Test
     fun execute_shouldSucceedOnlyAfterRunningThenIdle() = runBlocking {
         val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
         val gateway = FakeGateway(
@@ -176,6 +228,30 @@ class AtomicActionExecutorTest {
         val failed = result as AtomicActionResult.Failed
         assertEquals(0x00E6, failed.errorCode)
         assertEquals("抛肠红外未确认抛出成功", failed.message)
+    }
+
+    @Test
+    fun execute_shouldMapIn3XResetErrorCodeToChineseMessage() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(331 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IN3_X_RESET_FAILED))
+        )
+        val executor = AtomicActionExecutor(gateway, logger = {})
+
+        val result = executor.execute(AtomicActions.in3, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Failed)
+        val failed = result as AtomicActionResult.Failed
+        assertEquals(0x00F0, failed.errorCode)
+        assertEquals("in3 的 X 复位失败", failed.message)
+    }
+
+    @Test
+    fun messageOf_shouldMapStickEmptyAndBusySeparately() {
+        assertEquals(
+            "穿签插空，签杆推出但疑似未穿到肠",
+            AtomicActionExecutor.messageOf(AtomicActionCodes.STICK_EMPTY)
+        )
+        assertEquals("忙/资源不可用", AtomicActionExecutor.messageOf(AtomicActionCodes.BUSY))
     }
 
     @Test
