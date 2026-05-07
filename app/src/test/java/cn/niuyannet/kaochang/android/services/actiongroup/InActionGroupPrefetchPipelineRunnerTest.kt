@@ -221,6 +221,28 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldNotRetryIn3YResetFailure() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IN3_Y_RESET_FAILED, "in3 的 Y 复位失败")
+            )
+        )
+        val runner = InActionGroupPrefetchPipelineRunner(client)
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals("in3", failed.actionName)
+        assertEquals(
+            listOf("in1:17", "in2:17", "in3:0"),
+            client.calls
+        )
+    }
+
+    @Test
     fun pipeline_shouldExposePossibleControllerResetInStartupFailureLog() = runBlocking {
         val client = FakeClient(
             results = queueOf(

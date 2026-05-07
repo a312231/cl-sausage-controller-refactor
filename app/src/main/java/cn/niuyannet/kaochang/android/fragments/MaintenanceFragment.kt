@@ -419,6 +419,7 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
+                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
                 clearRuntimeStateAfterManualPanReset("点击清空烤盘")
                 LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
@@ -683,6 +684,7 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
+                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
                 clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
                 LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
@@ -711,6 +713,40 @@ class MaintenanceFragment : Fragment() {
                 if (!VMModbusHelper.connectStatus()) {
                     ToastUtils.showLong("下位机串口仍未连接，请确认通信恢复后再操作")
                     LogUtils.w("【维护操作】拒绝恢复正常状态：下位机串口仍未连接 | modbusAddress=${AppConfig.getAppConfig().modbusAddress}")
+                    return@launch
+                }
+                val pendingSupplementBatch = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+                if (pendingSupplementBatch != null) {
+                    AlertDialog.Builder(requireContext())
+                        .setTitle("确认补肠故障已处理")
+                        .setMessage(
+                            "检测到补肠批次在未落盘前失败，需要确认半路烤肠和机械位置已清理安全后才能续补。\n\n" +
+                                "批次：${pendingSupplementBatch.targets.joinToString(",") { it.positionSn.toString() }}\n" +
+                                "失败目标：${pendingSupplementBatch.failedTargetPanNo ?: "未知"}\n" +
+                                "失败动作：${pendingSupplementBatch.failedActionName ?: "未知"}\n" +
+                                "失败原因：${pendingSupplementBatch.failureMessage ?: "未知"}"
+                        )
+                        .setNegativeButton("取消") { dialog, _ ->
+                            LogUtils.w(
+                                "【维护操作】取消恢复正常状态：未确认补肠批次半路烤肠/机械位置安全，" +
+                                    "batchId=${pendingSupplementBatch.batchId}"
+                            )
+                            dialog.dismiss()
+                        }
+                        .setPositiveButton("已清理，继续恢复") { dialog, _ ->
+                            dialog.dismiss()
+                            lifecycleScope.launch {
+                                val confirmed = KaoChangOperate.confirmPendingSupplementBatchSafety(
+                                    "维护页点击恢复正常状态前人工确认"
+                                )
+                                if (confirmed) {
+                                    binding.btnErroStatus.performClick()
+                                } else {
+                                    ToastUtils.showLong("未找到待确认补肠批次，请重新点击恢复正常状态")
+                                }
+                            }
+                        }
+                        .show()
                     return@launch
                 }
                 val config = AppConfig.getAppConfig()

@@ -92,6 +92,8 @@ object KaoChangOperate {
     private val actionGroupLocks = ResourceLocks()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
     private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
+    private val supplementBatchIntentRepository =
+        SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
 
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
@@ -1136,9 +1138,129 @@ object KaoChangOperate {
         return false
     }
 
+    enum class PendingSupplementBatchHandling {
+        NONE,
+        WAITING_MANUAL_CONFIRMATION,
+        BLOCKED,
+        RESUMED
+    }
+
+    fun pendingSupplementBatchRequiresManualConfirm(): SupplementBatchIntent? {
+        val intent = supplementBatchIntentRepository.loadActive() ?: return null
+        return if (intent.requiresManualConfirm) intent else null
+    }
+
+    fun confirmPendingSupplementBatchSafety(reason: String): Boolean {
+        val confirmed = supplementBatchIntentRepository.confirmManualSafety(reason) ?: return false
+        actionGroupSessionStore.clear()
+        actionGroupLocks.clear()
+        val config = AppConfig.getAppConfig()
+        if (config.moveStatus != 0) {
+            val oldMoveStatus = config.moveStatus
+            config.moveStatus = 0
+            AppConfig.saveAppConfig(config)
+            logW(
+                LOG_SUPPLEMENT,
+                "人工确认补肠批次现场安全后清理本地机械状态：moveStatus=$oldMoveStatus->0，batchId=${confirmed.batchId}"
+            )
+        }
+        return true
+    }
+
+    fun clearPendingSupplementBatchIntent(reason: String) {
+        supplementBatchIntentRepository.clear(reason)
+    }
+
+    suspend fun handlePendingSupplementBatchIfAny(
+        allowedTypes: Set<SupplementBatchType>,
+        reason: String,
+        boxSupplyAvailable: Boolean,
+        schedulingEnabled: Boolean,
+        isBeforeCloseWindow: Boolean
+    ): PendingSupplementBatchHandling {
+        val intent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
+        if (intent.type !in allowedTypes) {
+            logW(
+                LOG_SUPPLEMENT,
+                "检测到未完成补肠批次，但当前调度阶段不匹配，暂不启动新补肠：reason=$reason，" +
+                    "batchType=${SupplementBatchIntentRepository.typeText(intent.type)}，allowed=${allowedTypes.map { SupplementBatchIntentRepository.typeText(it) }}"
+            )
+            return PendingSupplementBatchHandling.BLOCKED
+        }
+        if (intent.requiresManualConfirm) {
+            logW(
+                LOG_SUPPLEMENT,
+                "检测到未完成补肠批次仍需人工确认，暂不自动续补：reason=$reason，" +
+                    "batchId=${intent.batchId}，targetPan=${intent.failedTargetPanNo}，action=${intent.failedActionName}，" +
+                    "failure=${intent.failureMessage}"
+            )
+            return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
+        }
+        if (!schedulingEnabled || !boxSupplyAvailable || AppConfig.getAppConfig().errorStatus != 0 || isBeforeCloseWindow) {
+            logW(
+                LOG_SUPPLEMENT,
+                "检测到未完成补肠批次但当前不允许续补：reason=$reason，batchId=${intent.batchId}，" +
+                    "schedulingEnabled=$schedulingEnabled，boxSupplyAvailable=$boxSupplyAvailable，" +
+                    "errorStatus=${AppConfig.getAppConfig().errorStatus}，isBeforeCloseWindow=$isBeforeCloseWindow"
+            )
+            return PendingSupplementBatchHandling.BLOCKED
+        }
+
+        val pans = KaoPanHelper.getKaoPanList()
+        val targets = intent.remainingTargets().mapNotNull { target ->
+            val pan = pans.firstOrNull { it.positionSn == target.positionSn }
+            if (pan == null) {
+                logW(LOG_SUPPLEMENT, "未完成补肠批次找不到目标烤盘，跳过：batchId=${intent.batchId}，targetPan=${target.positionSn}")
+                null
+            } else if (pan.isHasSausage) {
+                supplementBatchIntentRepository.markCompleted(intent.batchId, target.positionSn)
+                null
+            } else {
+                pan.applySupplementIntentTaste(target.tasteCode)
+                SupplementTarget(pan, target.tasteCode ?: pan.taste?.tasteCode)
+            }
+        }
+        if (targets.isEmpty()) {
+            supplementBatchIntentRepository.clear("未完成批次已无剩余目标:$reason")
+            return PendingSupplementBatchHandling.NONE
+        }
+
+        applyHeatingForSupplementBatch(intent.type)
+        LogUtils.i(
+            "【补肠批次恢复】检测到未完成补肠批次，人工确认后续补：reason=$reason，" +
+                "batchId=${intent.batchId}，type=${SupplementBatchIntentRepository.typeText(intent.type)}，" +
+                "目标烤盘=${targets.joinToString(",") { it.kaoPan.positionSn.toString() }}"
+        )
+        val movedCount = moveSausagesToKaoPansByTasteInternal(
+            targets = targets,
+            existingBatchId = intent.batchId,
+            createIntent = false,
+            stageForSerial = "补肠批次恢复"
+        )
+        LogUtils.i(
+            "【补肠批次恢复】未完成补肠批次续补结束：batchId=${intent.batchId}，目标数=${targets.size}，完成数=$movedCount"
+        )
+        return PendingSupplementBatchHandling.RESUMED
+    }
+
+    private fun applyHeatingForSupplementBatch(type: SupplementBatchType) {
+        when (type) {
+            SupplementBatchType.LOW_INITIALIZATION_1_9 -> heating(1)
+            SupplementBatchType.LOW_HEAT_13_15,
+            SupplementBatchType.LOW_HEAT_16_18 -> heating(2)
+            SupplementBatchType.HIGH_INITIALIZATION_1_21 -> {
+                heating(1)
+                heating(2)
+            }
+            SupplementBatchType.HIGH_HEAT_25_33 -> heating(3)
+            SupplementBatchType.UNKNOWN -> Unit
+        }
+    }
+
     private suspend fun moveSausagesToKaoPansByTasteSerial(
         validTargets: List<SupplementTarget>,
-        stage: String
+        stage: String,
+        batchId: String?
     ): Int {
         var movedCount = 0
         for (target in validTargets) {
@@ -1150,6 +1272,17 @@ object KaoChangOperate {
             }
             if (moveSausageToKaoPanByTaste(target.kaoPan, target.tasteCode)) {
                 movedCount += 1
+                supplementBatchIntentRepository.markCompleted(batchId, target.kaoPan.positionSn)
+            } else {
+                val failureCode = target.kaoPan.cmdStatusMove.takeIf { it != 0 } ?: target.kaoPan.cmdStatusTake
+                supplementBatchIntentRepository.markFailure(
+                    batchId = batchId,
+                    targetPanNo = target.kaoPan.positionSn,
+                    actionName = "in",
+                    failureMessage = "串行补肠失败：${AtomicActionExecutor.formatCode(failureCode)}（${AtomicActionExecutor.messageOf(failureCode)}）",
+                    requiresManualConfirm = true
+                )
+                break
             }
             if (shouldPauseSupplementForOrder("$stage-单根完成后")) {
                 break
@@ -1159,6 +1292,20 @@ object KaoChangOperate {
     }
 
     suspend fun moveSausagesToKaoPansByTaste(targets: List<SupplementTarget>): Int {
+        return moveSausagesToKaoPansByTasteInternal(
+            targets = targets,
+            existingBatchId = null,
+            createIntent = targets.size > 1,
+            stageForSerial = "补肠串行动作"
+        )
+    }
+
+    private suspend fun moveSausagesToKaoPansByTasteInternal(
+        targets: List<SupplementTarget>,
+        existingBatchId: String?,
+        createIntent: Boolean,
+        stageForSerial: String
+    ): Int {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
             return 0
@@ -1166,8 +1313,23 @@ object KaoChangOperate {
         if (!ensureSupplementBatchStartAllowed("补肠批次入口")) {
             return 0
         }
+        val activeIntent = supplementBatchIntentRepository.loadActive()
+        if (createIntent && activeIntent != null) {
+            logW(
+                LOG_SUPPLEMENT,
+                "存在未完成补肠批次，拒绝启动新补肠批次：activeBatchId=${activeIntent.batchId}，" +
+                    "activeType=${SupplementBatchIntentRepository.typeText(activeIntent.type)}，" +
+                    "newTargets=${validTargets.map { it.kaoPan.positionSn }}"
+            )
+            return 0
+        }
         if (AppConfig.getAppConfig().enableActionGroupPrefetch != 1 || validTargets.size <= 1) {
-            return moveSausagesToKaoPansByTasteSerial(validTargets, "补肠串行动作")
+            val batchId = existingBatchId ?: if (createIntent) {
+                supplementBatchIntentRepository.begin(validTargets)?.batchId ?: return 0
+            } else {
+                null
+            }
+            return moveSausagesToKaoPansByTasteSerial(validTargets, stageForSerial, batchId)
         }
         if (AppConfig.getAppConfig().errorStatus > 0) {
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠预取流水线")
@@ -1185,7 +1347,23 @@ object KaoChangOperate {
                 LOG_SUPPLEMENT,
                 "补肠预取流水线降级串行：有效计划数=${plannedMoves.size}，请求数=${validTargets.size}"
             )
-            return moveSausagesToKaoPansByTasteSerial(validTargets, "补肠预取流水线降级串行")
+            val batchId = existingBatchId ?: if (createIntent && plannedMoves.isNotEmpty()) {
+                supplementBatchIntentRepository.begin(plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) })?.batchId
+                    ?: return 0
+            } else {
+                existingBatchId
+            }
+            return moveSausagesToKaoPansByTasteSerial(
+                plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) },
+                "补肠预取流水线降级串行",
+                batchId
+            )
+        }
+        val batchId = existingBatchId ?: if (createIntent) {
+            supplementBatchIntentRepository.begin(plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) })?.batchId
+                ?: return 0
+        } else {
+            existingBatchId
         }
 
         if (shouldPauseSupplementForOrder("补肠预取流水线启动前")) {
@@ -1254,6 +1432,7 @@ object KaoChangOperate {
             applySuccessfulSupplementMove(move.kaoPan, box)
             appliedCompletedPanNos += completedTask.targetPanNo
             completedCount += 1
+            supplementBatchIntentRepository.markCompleted(batchId, completedTask.targetPanNo)
             KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             logD(
@@ -1335,7 +1514,7 @@ object KaoChangOperate {
                 )
             }
             is InActionGroupPipelineResult.Failed -> {
-                handlePipelineSupplementFailure(result, taskByPanNo)
+                handlePipelineSupplementFailure(result, taskByPanNo, batchId)
             }
         }
 
@@ -1410,7 +1589,8 @@ object KaoChangOperate {
 
     private fun handlePipelineSupplementFailure(
         result: InActionGroupPipelineResult.Failed,
-        taskByPanNo: Map<Int, PlannedPipelineSupplementMove>
+        taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
+        batchId: String?
     ) {
         val targetPanNo = result.task?.targetPanNo
         val plannedMove = targetPanNo?.let { taskByPanNo[it] }
@@ -1432,6 +1612,13 @@ object KaoChangOperate {
             "补肠预取流水线失败：targetPan=$targetPanNo，sourceBox=$sourceBoxNo，" +
                 "action=${result.actionName}，result=${describeAtomicActionResult(result.result)}，" +
                 "hasPrefetchedNext=${result.hasPrefetchedNext}"
+        )
+        supplementBatchIntentRepository.markFailure(
+            batchId = batchId,
+            targetPanNo = targetPanNo,
+            actionName = result.actionName,
+            failureMessage = describeAtomicActionResult(result.result),
+            requiresManualConfirm = true
         )
         if (result.hasPrefetchedNext) {
             enterActionGroupMaintenance(

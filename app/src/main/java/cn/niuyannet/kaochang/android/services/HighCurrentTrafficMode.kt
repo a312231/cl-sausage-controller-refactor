@@ -131,6 +131,21 @@ object HighCurrentTrafficMode {
                 val isBeforeCloseWindow =
                     KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
+                val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
+                    allowedTypes = setOf(
+                        SupplementBatchType.HIGH_INITIALIZATION_1_21,
+                        SupplementBatchType.HIGH_HEAT_25_33
+                    ),
+                    reason = "高并发正常态调度入口",
+                    boxSupplyAvailable = boxSupplyAvailable,
+                    schedulingEnabled = schedulingEnabled,
+                    isBeforeCloseWindow = isBeforeCloseWindow
+                )
+                if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    return
+                }
+
                 if (
                     schedulingEnabled &&
                     boxSupplyAvailable &&
@@ -212,7 +227,7 @@ object HighCurrentTrafficMode {
             }
 
             2 -> {
-                highTrafficModeTransition(config, list, listBox, schedulingEnabled)
+                highTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
             }
         }
     }
@@ -262,15 +277,30 @@ object HighCurrentTrafficMode {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, list)
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
+        val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
+        val isBeforeCloseWindow =
+            KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
         val hasStartedHighHeatSupply = list25_33.any { it.isHasSausage }
-        if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33) && boxSupplyAvailable && schedulingEnabled) {
+        val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
+            allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+            reason = "低转高过渡调度入口",
+            boxSupplyAvailable = boxSupplyAvailable,
+            schedulingEnabled = schedulingEnabled,
+            isBeforeCloseWindow = isBeforeCloseWindow
+        )
+        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            return
+        }
+
+        if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33) && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
             resumeIncompleteHighHeatSupplement(
                 list = list,
                 listBox = listBox,
                 reason = "低转高过渡续补25~33未完成批次"
             )
-        } else if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled) {
+        } else if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
             val flavorAllocation = KaoPanHelper.computeHighKaoPamRatio(listBox, frontEmptyCount)
             var currentPosition = 0
@@ -456,8 +486,24 @@ object HighCurrentTrafficMode {
         config: AppConfigBean,
         list: List<KaoPan>,
         listBox: List<KaoPanBox>,
+        boxSupplyAvailable: Boolean,
         schedulingEnabled: Boolean
     ) {
+        val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
+        val isBeforeCloseWindow =
+            KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
+        val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
+            allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+            reason = "高转低过渡调度入口",
+            boxSupplyAvailable = boxSupplyAvailable,
+            schedulingEnabled = schedulingEnabled,
+            isBeforeCloseWindow = isBeforeCloseWindow
+        )
+        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            return
+        }
+
         if (AppConfig.getAppConfig().onlineStatus == 4 || AppConfig.getAppConfig().moveStatus != 0) {
             LogUtils.i(
                 TAG,

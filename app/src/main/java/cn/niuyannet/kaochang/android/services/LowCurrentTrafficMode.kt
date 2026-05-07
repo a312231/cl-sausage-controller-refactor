@@ -91,6 +91,22 @@ object LowCurrentTrafficMode {
         val isBeforeCloseWindow =
             KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
+        val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
+            allowedTypes = setOf(
+                SupplementBatchType.LOW_INITIALIZATION_1_9,
+                SupplementBatchType.LOW_HEAT_13_15,
+                SupplementBatchType.LOW_HEAT_16_18
+            ),
+            reason = "低并发调度入口",
+            boxSupplyAvailable = boxSupplyAvailable,
+            schedulingEnabled = schedulingEnabled,
+            isBeforeCloseWindow = isBeforeCloseWindow
+        )
+        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            return totalEmpty
+        }
+
         if (totalEmpty == list1_9.size + list13_18.size) {
             if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 initLowTrafficMode(kaoPanList, listBox)

@@ -227,7 +227,7 @@ class AtomicActionExecutorTest {
         assertTrue(result is AtomicActionResult.Failed)
         val failed = result as AtomicActionResult.Failed
         assertEquals(0x00E6, failed.errorCode)
-        assertEquals("抛肠红外未确认抛出成功", failed.message)
+        assertEquals("下平台抛肠后残肠红外失败", failed.message)
     }
 
     @Test
@@ -251,7 +251,7 @@ class AtomicActionExecutorTest {
             "穿签插空，签杆推出但疑似未穿到肠",
             AtomicActionExecutor.messageOf(AtomicActionCodes.STICK_EMPTY)
         )
-        assertEquals("忙/资源不可用", AtomicActionExecutor.messageOf(AtomicActionCodes.BUSY))
+        assertEquals("忙碌错误", AtomicActionExecutor.messageOf(AtomicActionCodes.BUSY))
     }
 
     @Test
