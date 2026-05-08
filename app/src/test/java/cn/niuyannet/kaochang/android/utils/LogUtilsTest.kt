@@ -17,8 +17,12 @@ class LogUtilsTest {
     @Test
     fun shouldWriteToFileForTest_shouldKeepOperationMainlineLogs() {
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【订单】接单：订单号=CL1，数量=3，口味=A"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("W", "【订单流转】Modbus 重连失败，放弃本次出餐：orderNo=CL1"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【出餐】第2/3根开始：来源烤盘=9"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【动作组】第2/3根 out3（从穿签位放到预推送位置）开始"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("E", "【动作组故障锁存】已锁存设备故障，禁止自动补肠/续补继续启动"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("E", "动作组恢复失败：读取 out1 结果寄存器 411 失败"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("D", "【Modbus】串口连接成功：port=/dev/ttyS7"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【搬盘】开始搬移：来源烤盘=14，目标烤盘=5"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【失败原因】out3（从穿签位放到预推送位置）启动失败：下位机未确认执行"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【状态切换】设备进入维护：工作中/正在出餐 -> 维护中"))

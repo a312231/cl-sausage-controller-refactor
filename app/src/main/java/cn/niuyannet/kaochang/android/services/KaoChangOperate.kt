@@ -96,6 +96,9 @@ object KaoChangOperate {
         SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
 
     @Volatile
+    private var lastActionGroupRecoveryFailureReason: String? = null
+
+    @Volatile
     private var supplementBlockedUntilMs: Long = 0L
 
     private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
@@ -720,7 +723,9 @@ object KaoChangOperate {
 
     suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
         if (!VMModbusHelper.connectStatus()) {
-            logW(LOG_ACTION_GROUP, "跳过动作组恢复：Modbus 未连接，reason=$reason")
+            val detail = "跳过动作组恢复：Modbus 未连接，reason=$reason"
+            lastActionGroupRecoveryFailureReason = detail
+            logW(LOG_ACTION_GROUP, detail)
             return false
         }
         val client = createAtomicActionClient()
@@ -732,6 +737,7 @@ object KaoChangOperate {
         ).recover()
         return when (result) {
             ActionGroupRecoveryResult.Idle -> {
+                lastActionGroupRecoveryFailureReason = null
                 val config = AppConfig.getAppConfig()
                 if (config.moveStatus in listOf(1, 2)) {
                     if (AutoMechanicalDispatchPolicy.shouldPreserveDeliveringMoveStatusDuringRecovery(config.onlineStatus, config.moveStatus)) {
@@ -749,14 +755,25 @@ object KaoChangOperate {
                 true
             }
             is ActionGroupRecoveryResult.MaintenanceRequired -> {
-                enterActionGroupMaintenance("动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}")
+                val detail = "动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}"
+                lastActionGroupRecoveryFailureReason = detail
+                enterActionGroupMaintenance(detail)
                 false
             }
             is ActionGroupRecoveryResult.TakeoverFinished -> {
-                handleRecoveredActionGroupSession(result.session, result.actionResult, reason)
+                val handled = handleRecoveredActionGroupSession(result.session, result.actionResult, reason)
+                if (handled) {
+                    lastActionGroupRecoveryFailureReason = null
+                } else if (lastActionGroupRecoveryFailureReason == null) {
+                    lastActionGroupRecoveryFailureReason =
+                        "动作组恢复接管失败：reason=$reason，sessionId=${result.session.sessionId}，result=${result.actionResult}"
+                }
+                handled
             }
         }
     }
+
+    fun getLastActionGroupRecoveryFailureReason(): String? = lastActionGroupRecoveryFailureReason
 
     private fun handleRecoveredActionGroupSession(
         session: ActionGroupSession,

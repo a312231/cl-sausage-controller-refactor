@@ -17,8 +17,11 @@ object LogUtils {
     private const val TAG = "KaoChang"
     private val FILE_LOG_KEYWORDS = listOf(
         "【订单】",
+        "【订单流转】",
         "【出餐】",
         "【动作组】",
+        "【动作组故障锁存】",
+        "【Modbus】",
         "【补肠】",
         "【搬盘】",
         "【失败原因】",
@@ -30,7 +33,9 @@ object LogUtils {
         "【并发切换】",
         "【自清洁】",
         "【配置迁移】",
-        "【下位机测试】"
+        "【下位机测试】",
+        "动作组恢复失败",
+        "Modbus 重连"
     )
     private val FILE_LOG_NOISE_KEYWORDS = listOf(
         "轮询原子动作",

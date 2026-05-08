@@ -366,8 +366,19 @@ abstract class OrderActivity: BaseSauceDetection() {
             }
 
             try {
-                if (!ensureModbusReadyForDelivery(orderNo, item.id)) {
-                    throw IllegalStateException("下位机通信未恢复，无法开始本次出餐：orderNo=$orderNo, itemId=${item.id}")
+                val modbusReadyResult = ensureModbusReadyForDelivery(orderNo, item.id)
+                if (!modbusReadyResult.canStartDelivery) {
+                    val config = AppConfig.getAppConfig()
+                    val diagnosticMessage = modbusReadyResult.toDiagnosticMessage(
+                        orderNo = orderNo,
+                        itemId = item.id,
+                        onlineStatusText = onlineStatusText(config.onlineStatus),
+                        errorStatus = config.errorStatus,
+                        moveStatus = config.moveStatus,
+                        modbusAddress = config.modbusAddress
+                    )
+                    LogUtils.e("【订单流转】禁止下发 out1：$diagnosticMessage")
+                    throw IllegalStateException("出餐前检查未通过：$diagnosticMessage")
                 }
                 val readinessAfterModbus = evaluateSingleDeliveryReadiness(
                     orderNo = orderNo,
@@ -593,9 +604,19 @@ abstract class OrderActivity: BaseSauceDetection() {
         itemId: Int,
         maxRetryCount: Int = 3,
         retryDelayMs: Long = 1500L
-    ): Boolean {
+    ): OrderModbusReadyForDeliveryResult {
         if (VMModbusHelper.connectStatus()) {
-            return KaoChangOperate.recoverActionGroupStateAfterModbusReady("订单出餐前通信已连接：orderNo=$orderNo,itemId=$itemId")
+            val recovered = KaoChangOperate.recoverActionGroupStateAfterModbusReady(
+                "订单出餐前通信已连接：orderNo=$orderNo,itemId=$itemId"
+            )
+            return if (recovered) {
+                OrderModbusReadyForDeliveryResult.alreadyConnected()
+            } else {
+                OrderModbusReadyForDeliveryResult.actionGroupRecoveryFailed(
+                    KaoChangOperate.getLastActionGroupRecoveryFailureReason()
+                        ?: "Modbus 已连接，但动作组恢复检查未通过"
+                )
+            }
         }
 
         LogUtils.w("【订单流转】检测到 Modbus 未连接，开始出餐前通信重试：orderNo=$orderNo, itemId=$itemId")
@@ -607,12 +628,24 @@ abstract class OrderActivity: BaseSauceDetection() {
             delay(retryDelayMs)
             if (VMModbusHelper.connectStatus()) {
                 LogUtils.d("【订单流转】Modbus 重连成功：attempt=$attempt/$maxRetryCount, orderNo=$orderNo, itemId=$itemId")
-                return KaoChangOperate.recoverActionGroupStateAfterModbusReady("订单出餐前 Modbus 重连成功：orderNo=$orderNo,itemId=$itemId")
+                val recovered = KaoChangOperate.recoverActionGroupStateAfterModbusReady(
+                    "订单出餐前 Modbus 重连成功：orderNo=$orderNo,itemId=$itemId"
+                )
+                return if (recovered) {
+                    OrderModbusReadyForDeliveryResult.reconnected(attempt)
+                } else {
+                    OrderModbusReadyForDeliveryResult.actionGroupRecoveryFailed(
+                        KaoChangOperate.getLastActionGroupRecoveryFailureReason()
+                            ?: "Modbus 重连成功，但动作组恢复检查未通过"
+                    )
+                }
             }
         }
 
         LogUtils.e("【订单流转】Modbus 重连失败，放弃本次出餐：orderNo=$orderNo, itemId=$itemId")
-        return false
+        return OrderModbusReadyForDeliveryResult.reconnectFailed(
+            "连续${maxRetryCount}次重连后仍未连通"
+        )
     }
 
     /**

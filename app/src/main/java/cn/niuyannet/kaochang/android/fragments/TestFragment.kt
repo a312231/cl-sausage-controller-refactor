@@ -13,6 +13,7 @@ import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetryContext
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionSpec
@@ -112,6 +113,9 @@ class TestFragment : Fragment() {
             readAtomicActionRegisters(item)
         }
 
+        binding.btnBusinessActionSelfCheck.setOnClickListener {
+            readBusinessActionProtocolStatus()
+        }
     }
 
     private fun selectedAtomicActionItem(): TestAtomicActionItem? {
@@ -203,6 +207,73 @@ class TestFragment : Fragment() {
                 }
             }
             binding.tvAtomicActionResult.text = text
+        }
+    }
+
+    private fun readBusinessActionProtocolStatus() {
+        lifecycleScope.launch {
+            binding.btnBusinessActionSelfCheck.isEnabled = false
+            binding.tvAtomicActionResult.text = "业务动作协议自检中..."
+            try {
+                val results = withContext(Dispatchers.IO) {
+                    buildList {
+                        add(
+                            BusinessActionRegisterRead(
+                                label = "201（机械动作状态）",
+                                value = KaoChangOperate.readHoldingRegisters(201, 1)?.firstOrNull(),
+                                isMoveStatusRegister = true
+                            )
+                        )
+                        atomicActionItems.forEach { item ->
+                            add(
+                                BusinessActionRegisterRead(
+                                    label = "${item.spec.name} 结果寄存器 ${item.spec.resultRegister}",
+                                    value = KaoChangOperate.readHoldingRegisters(item.spec.resultRegister, 1)?.firstOrNull(),
+                                    isMoveStatusRegister = false
+                                )
+                            )
+                        }
+                    }
+                }
+                val summary = results.joinToString(separator = "\n") { read ->
+                    "${read.label}=${formatBusinessActionRegisterValue(read)}"
+                }
+                binding.tvAtomicActionResult.text = summary
+                LogUtils.i(
+                    "【下位机测试】业务动作协议自检完成：" +
+                        "modbusAddress（Modbus串口地址）=${AppConfig.getAppConfig().modbusAddress}，" +
+                        "results（自检结果）=${results.joinToString("；") { read -> "${read.label}=${formatBusinessActionRegisterValue(read)}" }}"
+                )
+            } catch (e: Exception) {
+                binding.tvAtomicActionResult.text = "业务动作协议自检异常：${e.message}"
+                LogUtils.e("【下位机测试】业务动作协议自检异常：error=${e.message}", e)
+            } finally {
+                binding.btnBusinessActionSelfCheck.isEnabled = true
+            }
+        }
+    }
+
+    private data class BusinessActionRegisterRead(
+        val label: String,
+        val value: Int?,
+        val isMoveStatusRegister: Boolean
+    )
+
+    private fun formatBusinessActionRegisterValue(read: BusinessActionRegisterRead): String {
+        val value = read.value ?: return "读取失败"
+        if (read.isMoveStatusRegister) {
+            return when (value) {
+                0 -> "0（机械动作空闲）"
+                1 -> "1（机械动作执行中）"
+                2 -> "2（设备忙）"
+                else -> "$value（未知机械动作状态）"
+            }
+        }
+        return when {
+            value == AtomicActionCodes.IDLE -> "0x0000（空闲/成功）"
+            value == AtomicActionCodes.RUNNING -> "0x0001（执行中）"
+            value >= AtomicActionCodes.PARAM_ERROR -> "0x${value.toString(16).uppercase().padStart(4, '0')}（${AtomicActionExecutor.messageOf(value)}）"
+            else -> "0x${value.toString(16).uppercase().padStart(4, '0')}（未知结果码）"
         }
     }
 
