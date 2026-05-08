@@ -1,21 +1,17 @@
 package cn.niuyannet.kaochang.android.model
 
-import android.util.Log
-
 import cn.niuyannet.kaochang.android.init.AppConfig.getAppConfig
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 
@@ -636,71 +632,14 @@ object KaoPanHelper {
 
 
     /**
-     * 是否距离烤制时间还要前半小时
-     * @param currentTimeStr 当前时间字符串，格式为"HH:mm"
-     * @param businessTime 营业时间配置
-     * @return 是否距离烤制时间还要前半小时
+     * 判断当前是否已进入营业结束前 minute 分钟的收口窗口。
      */
-
-     fun isBeforeBusinessHours( businessTime: BusinessTime,minute : Int): Boolean {
-        try {
-            val currentTimeStr = getCurrentTime()
-
-            val format = SimpleDateFormat("HH:mm", Locale.getDefault())
-            val current = format.parse(currentTimeStr) ?: return false
-
-            // 获取当前是星期几（1-7，对应周一到周日）
-            val calendar = Calendar.getInstance()
-            // Calendar.DAY_OF_WEEK 返回 1-7，对应周日到周六，需要转换为 1-7 对应周一到周日
-            val dayOfWeek = if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) 7 else calendar.get(Calendar.DAY_OF_WEEK) - 1
-
-            // 根据营业时间模式判断
-            if ("everyday".equals(businessTime.mode, ignoreCase = true) && businessTime.defaultTime != null && businessTime.defaultTime.size >= 2) {
-                // 默认模式：所有天使用相同的时间范围
-                val end = format.parse(businessTime.defaultTime[1]) ?: return false
-
-                return isTimeInRange(current, end, minute)
-            } else if ("custom".equals(businessTime.mode, ignoreCase = true) && businessTime.customTimes != null) {
-                // 自定义模式：每天可以有不同的时间范围
-                for (timeItem in businessTime.customTimes) {
-                    // 检查是否是当前日期且已启用
-                    if (timeItem.day == dayOfWeek && timeItem.enabled && timeItem.timeRange != null && timeItem.timeRange.size >= 2) {
-                        val end = format.parse(timeItem.timeRange[1]) ?: return false
-                        return isTimeInRange(current, end, minute)
-                    }
-                }
-            }
-            // 如果没有匹配的时间范围，则不在营业时间内
-            return false
-
-        } catch (e: Exception) {
-            Log.e("KaoPanHeper", "时间格式解析错误: $e")
-            return false
-        }
-    }
-
-    private fun isTimeInRange(current: Date, end: Date, minute: Int): Boolean {
-
-        if (current.after(end)) {
-            // 当前时间已经超过结束时间，直接返回true
-            return true
-        }
-        // 计算距离营业结束的时间差（毫秒）
-        val diffInMillis = end.time - current.time
-        val beforeCloseMinutesInMillis = minute.coerceAtLeast(0) * 60 * 1000L
-
-        // 判断当前时间是否已经进入“距离营业结束 minute 分钟内”的区间
-        return diffInMillis <= beforeCloseMinutesInMillis
-    }
-
-    /**
-     * 获取当前时间
-     * @return 当前时间字符串，格式为"HH:mm"
-     */
-    private fun getCurrentTime(): String {
-        val currentTime = Calendar.getInstance()
-        val dateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-        return dateFormat.format(currentTime.time)
+    fun isBeforeBusinessHours(businessTime: BusinessTime, minute: Int): Boolean {
+        return BusinessTimeWindowHelper.isBeforeCloseWindow(
+            BusinessTimeWindowHelper.currentTimeString(),
+            businessTime,
+            minute
+        )
     }
 
 

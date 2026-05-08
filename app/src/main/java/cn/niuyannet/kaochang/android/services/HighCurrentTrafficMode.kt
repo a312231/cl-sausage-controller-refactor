@@ -9,9 +9,6 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Locale
 
 /**
  * 高并发模式控制器。
@@ -870,55 +867,10 @@ object HighCurrentTrafficMode {
      * 返回值为毫秒；无法计算时返回 -1。
      */
     private fun getRemainingTimeUntilClose(businessTime: BusinessTime): Long {
-        return try {
-            val format = SimpleDateFormat("HH:mm", Locale.getDefault())
-            val calendar = Calendar.getInstance()
-            val currentTimeMillis = calendar.timeInMillis
-            val dayOfWeek =
-                if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) 7 else calendar.get(
-                    Calendar.DAY_OF_WEEK
-                ) - 1
-
-            val endTimeStr = when {
-                "everyday".equals(businessTime.mode, ignoreCase = true) &&
-                    businessTime.defaultTime != null &&
-                    businessTime.defaultTime.size >= 2 -> {
-                    businessTime.defaultTime[1]
-                }
-
-                "custom".equals(businessTime.mode, ignoreCase = true) &&
-                    businessTime.customTimes != null -> {
-                    val todayTime =
-                        businessTime.customTimes.find { it.day == dayOfWeek && it.enabled }
-                    if (todayTime != null && todayTime.timeRange != null && todayTime.timeRange.size >= 2) {
-                        todayTime.timeRange[1]
-                    } else {
-                        return -1
-                    }
-                }
-
-                else -> return -1
-            }
-
-            val endTime = format.parse(endTimeStr) ?: return -1
-            val endCalendar = Calendar.getInstance()
-            endCalendar.time = endTime
-            val hour = endCalendar.get(Calendar.HOUR_OF_DAY)
-            val minute = endCalendar.get(Calendar.MINUTE)
-            endCalendar.timeInMillis = calendar.timeInMillis
-            endCalendar.set(Calendar.HOUR_OF_DAY, hour)
-            endCalendar.set(Calendar.MINUTE, minute)
-            endCalendar.set(Calendar.SECOND, 0)
-            endCalendar.set(Calendar.MILLISECOND, 0)
-
-            if (endCalendar.timeInMillis < currentTimeMillis) {
-                endCalendar.add(Calendar.DAY_OF_MONTH, 1)
-            }
-            endCalendar.timeInMillis - currentTimeMillis
-        } catch (e: Exception) {
-            LogUtils.e(TAG, "计算营业结束时间失败：${e.message}")
-            -1
-        }
+        return BusinessTimeWindowHelper.remainingMillisUntilClose(
+            BusinessTimeWindowHelper.currentTimeString(),
+            businessTime
+        )
     }
 
     /**
