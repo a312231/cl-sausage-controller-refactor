@@ -20,6 +20,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
+import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.TemperatureControlPolicy
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
@@ -27,10 +28,12 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import com.blankj.utilcode.util.ToastUtils
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -46,6 +49,7 @@ class MaintenanceFragment : Fragment() {
     private var refreshJob: Job? = null
 
     private val status = AtomicBoolean(true)
+    private val manualRecoveryInProgress = AtomicBoolean(false)
 
     private var isAlgorithmCoolingDown = false
     private var ignoreAlgorithmSwitchChange = false
@@ -279,18 +283,21 @@ class MaintenanceFragment : Fragment() {
         )
     }
 
-    private fun tryRecoverIdleMoveStatus(reason: String): Boolean {
+    private suspend fun tryRecoverIdleMoveStatus(reason: String): Boolean {
         val config = AppConfig.getAppConfig()
         if (config.moveStatus == 0) {
             return true
         }
-        if (!VMModbusHelper.connectStatus()) {
-            return false
+        val status201 = withContext(Dispatchers.IO) {
+            if (!VMModbusHelper.connectStatus()) {
+                -1
+            } else {
+                VMModbusHelper.readHoldingRegisters(
+                    KaoChangOperate.modbus_address,
+                    KaoChangOperate.action_address_status
+                )
+            }
         }
-        val status201 = VMModbusHelper.readHoldingRegisters(
-            KaoChangOperate.modbus_address,
-            KaoChangOperate.action_address_status
-        )
         if (status201 == 0) {
             val oldMoveStatus = config.moveStatus
             config.moveStatus = 0
@@ -307,40 +314,42 @@ class MaintenanceFragment : Fragment() {
     private suspend fun evaluateManualRecoveryHeating(
         targetOnlineStatus: Int
     ): TemperatureControlPolicy.ManualRecoveryHeatingDecision {
-        if (!VMModbusHelper.connectStatus()) {
-            return TemperatureControlPolicy.decideManualRecoveryHeating(
-                modbusConnected = false,
-                actionGroupReady = false,
-                legacyActionStatus201 = -1,
-                moveStatus = AppConfig.getAppConfig().moveStatus,
-                panMoveResult203 = null,
+        return withContext(Dispatchers.IO) {
+            if (!VMModbusHelper.connectStatus()) {
+                return@withContext TemperatureControlPolicy.decideManualRecoveryHeating(
+                    modbusConnected = false,
+                    actionGroupReady = false,
+                    legacyActionStatus201 = -1,
+                    moveStatus = AppConfig.getAppConfig().moveStatus,
+                    panMoveResult203 = null,
+                    targetOnlineStatus = targetOnlineStatus
+                )
+            }
+
+            val actionGroupReady = KaoChangOperate.recoverActionGroupStateAfterModbusReady("维护页恢复正常状态前检查")
+            val currentConfig = AppConfig.getAppConfig()
+            val legacyActionStatus201 = VMModbusHelper.readHoldingRegisters(
+                KaoChangOperate.modbus_address,
+                KaoChangOperate.action_address_status
+            )
+            val panMoveResult203 = if (currentConfig.moveStatus == 3) {
+                VMModbusHelper.readHoldingRegisters(
+                    KaoChangOperate.modbus_address,
+                    KaoChangOperate.action_address_move_result
+                )
+            } else {
+                null
+            }
+
+            TemperatureControlPolicy.decideManualRecoveryHeating(
+                modbusConnected = true,
+                actionGroupReady = actionGroupReady,
+                legacyActionStatus201 = legacyActionStatus201,
+                moveStatus = currentConfig.moveStatus,
+                panMoveResult203 = panMoveResult203,
                 targetOnlineStatus = targetOnlineStatus
             )
         }
-
-        val actionGroupReady = KaoChangOperate.recoverActionGroupStateAfterModbusReady("维护页恢复正常状态前检查")
-        val currentConfig = AppConfig.getAppConfig()
-        val legacyActionStatus201 = VMModbusHelper.readHoldingRegisters(
-            KaoChangOperate.modbus_address,
-            KaoChangOperate.action_address_status
-        )
-        val panMoveResult203 = if (currentConfig.moveStatus == 3) {
-            VMModbusHelper.readHoldingRegisters(
-                KaoChangOperate.modbus_address,
-                KaoChangOperate.action_address_move_result
-            )
-        } else {
-            null
-        }
-
-        return TemperatureControlPolicy.decideManualRecoveryHeating(
-            modbusConnected = true,
-            actionGroupReady = actionGroupReady,
-            legacyActionStatus201 = legacyActionStatus201,
-            moveStatus = currentConfig.moveStatus,
-            panMoveResult203 = panMoveResult203,
-            targetOnlineStatus = targetOnlineStatus
-        )
     }
 
     private fun clearIdleMoveStatusAfterManualRecovery(reason: String) {
@@ -708,88 +717,127 @@ class MaintenanceFragment : Fragment() {
         }
 
         binding.btnErroStatus.setOnClickListener {
+            if (!manualRecoveryInProgress.compareAndSet(false, true)) {
+                ToastUtils.showShort("正在恢复设备状态，请稍候")
+                return@setOnClickListener
+            }
+            binding.btnErroStatus.isEnabled = false
+            binding.tvCooldownHint.text = "正在检查下位机通信"
             lifecycleScope.launch {
-                // 方案A：下位机仍未连接时拦截，防止出现"异常状态=正常"的假阳性
-                if (!VMModbusHelper.connectStatus()) {
-                    ToastUtils.showLong("下位机串口仍未连接，请确认通信恢复后再操作")
-                    LogUtils.w("【维护操作】拒绝恢复正常状态：下位机串口仍未连接 | modbusAddress=${AppConfig.getAppConfig().modbusAddress}")
-                    return@launch
-                }
-                val pendingSupplementBatch = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
-                if (pendingSupplementBatch != null) {
-                    AlertDialog.Builder(requireContext())
-                        .setTitle("确认补肠故障已处理")
-                        .setMessage(
-                            "检测到补肠批次在未落盘前失败，需要确认半路烤肠和机械位置已清理安全后才能续补。\n\n" +
-                                "批次：${pendingSupplementBatch.targets.joinToString(",") { it.positionSn.toString() }}\n" +
-                                "失败目标：${pendingSupplementBatch.failedTargetPanNo ?: "未知"}\n" +
-                                "失败动作：${pendingSupplementBatch.failedActionName ?: "未知"}\n" +
-                                "失败原因：${pendingSupplementBatch.failureMessage ?: "未知"}"
+                try {
+                    // 下位机重新插线后，手动恢复需要主动触发一次 Modbus 候选串口探测，而不是只检查旧连接。
+                    val modbusConnected = withContext(Dispatchers.IO) {
+                        MaintenanceModbusRecoveryConnector.ensureConnected()
+                    }
+                    if (!modbusConnected) {
+                        val latestConfig = AppConfig.getAppConfig()
+                        ToastUtils.showLong("下位机串口仍未连接，请确认通信恢复后再操作")
+                        LogUtils.w(
+                            "【维护操作】拒绝恢复正常状态：下位机串口仍未连接，" +
+                                "modbusAddress（Modbus串口地址）=${latestConfig.modbusAddress}，" +
+                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                "errorStatus（设备故障状态）=${latestConfig.errorStatus}，" +
+                                "moveStatus（机械动作状态）=${latestConfig.moveStatus}"
                         )
-                        .setNegativeButton("取消") { dialog, _ ->
-                            LogUtils.w(
-                                "【维护操作】取消恢复正常状态：未确认补肠批次半路烤肠/机械位置安全，" +
-                                    "batchId=${pendingSupplementBatch.batchId}"
+                        return@launch
+                    }
+                    val pendingSupplementBatch = withContext(Dispatchers.IO) {
+                        KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+                    }
+                    if (pendingSupplementBatch != null) {
+                        AlertDialog.Builder(requireContext())
+                            .setTitle("确认补肠故障已处理")
+                            .setMessage(
+                                "检测到补肠批次在未落盘前失败，需要确认半路烤肠和机械位置已清理安全后才能续补。\n\n" +
+                                    "批次：${pendingSupplementBatch.targets.joinToString(",") { it.positionSn.toString() }}\n" +
+                                    "失败目标：${pendingSupplementBatch.failedTargetPanNo ?: "未知"}\n" +
+                                    "失败动作：${pendingSupplementBatch.failedActionName ?: "未知"}\n" +
+                                    "失败原因：${pendingSupplementBatch.failureMessage ?: "未知"}"
                             )
-                            dialog.dismiss()
-                        }
-                        .setPositiveButton("已清理，继续恢复") { dialog, _ ->
-                            dialog.dismiss()
-                            lifecycleScope.launch {
-                                val confirmed = KaoChangOperate.confirmPendingSupplementBatchSafety(
-                                    "维护页点击恢复正常状态前人工确认"
+                            .setNegativeButton("取消") { dialog, _ ->
+                                LogUtils.w(
+                                    "【维护操作】取消恢复正常状态：未确认补肠批次半路烤肠/机械位置安全，" +
+                                        "batchId=${pendingSupplementBatch.batchId}"
                                 )
-                                if (confirmed) {
-                                    binding.btnErroStatus.performClick()
-                                } else {
-                                    ToastUtils.showLong("未找到待确认补肠批次，请重新点击恢复正常状态")
+                                dialog.dismiss()
+                            }
+                            .setPositiveButton("已清理，继续恢复") { dialog, _ ->
+                                dialog.dismiss()
+                                lifecycleScope.launch {
+                                    val confirmed = withContext(Dispatchers.IO) {
+                                        KaoChangOperate.confirmPendingSupplementBatchSafety(
+                                            "维护页点击恢复正常状态前人工确认"
+                                        )
+                                    }
+                                    if (confirmed) {
+                                        binding.btnErroStatus.performClick()
+                                    } else {
+                                        ToastUtils.showLong("未找到待确认补肠批次，请重新点击恢复正常状态")
+                                    }
                                 }
                             }
-                        }
-                        .show()
-                    return@launch
-                }
-                val config = AppConfig.getAppConfig()
-                val targetOnlineStatus =
-                    if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
-                val recoveryDecision = evaluateManualRecoveryHeating(targetOnlineStatus)
-                if (!recoveryDecision.canRecoverDeviceStatus) {
-                    ToastUtils.showLong("下位机动作未空闲，请确认动作结束后再恢复")
-                    LogUtils.w(
-                        "【维护操作】拒绝恢复正常状态：${recoveryDecision.reason}，" +
-                            "targetOnlineStatus（目标设备营业状态）=${onlineStatusText(targetOnlineStatus)}，" +
-                            "currentOnlineStatus（当前设备营业状态）=${onlineStatusText(AppConfig.getAppConfig().onlineStatus)}，" +
-                            "errorStatus（设备故障状态）=${AppConfig.getAppConfig().errorStatus}"
-                    )
-                    return@launch
-                }
-                LogUtils.d(
-                    "【维护操作】点击恢复正常状态，errorStatus（设备故障状态）=${config.errorStatus}->0（正常）, " +
-                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}->${onlineStatusText(targetOnlineStatus)}，" +
-                        "temperatureRecovery（温度恢复策略）=${recoveryDecision.reason}"
-                )
-                config.errorStatus = 0
-                config.onlineStatus = targetOnlineStatus
-                AppConfig.saveAppConfig(config)
-                clearIdleMoveStatusAfterManualRecovery("恢复正常状态前已确认下位机动作空闲")
-                if (recoveryDecision.shouldRestoreTemperature) {
-                    KaoChangOperate.restoreHeatingStateFromCurrentPans("维护页手动恢复正常状态")
-                    LogUtils.w(
-                        "【维护操作】恢复正常状态后已按当前烤盘状态重刷温度设置寄存器：" +
-                            "寄存器503（一区1~9目标温度）、寄存器504（二区13~21目标温度）、寄存器505（三区25~33目标温度），" +
-                            "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
-                            "heatingTemperature（加热温度）=${config.heatingTemperature}℃"
-                    )
-                } else {
+                            .show()
+                        return@launch
+                    }
+                    binding.tvCooldownHint.text = "正在恢复设备状态"
+                    val config = AppConfig.getAppConfig()
+                    val targetOnlineStatus =
+                        if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
+                    val recoveryDecision = evaluateManualRecoveryHeating(targetOnlineStatus)
+                    if (!recoveryDecision.canRecoverDeviceStatus) {
+                        ToastUtils.showLong("下位机动作未空闲，请确认动作结束后再恢复")
+                        LogUtils.w(
+                            "【维护操作】拒绝恢复正常状态：${recoveryDecision.reason}，" +
+                                "targetOnlineStatus（目标设备营业状态）=${onlineStatusText(targetOnlineStatus)}，" +
+                                "currentOnlineStatus（当前设备营业状态）=${onlineStatusText(AppConfig.getAppConfig().onlineStatus)}，" +
+                                "errorStatus（设备故障状态）=${AppConfig.getAppConfig().errorStatus}，" +
+                                "moveStatus（机械动作状态）=${AppConfig.getAppConfig().moveStatus}"
+                        )
+                        return@launch
+                    }
                     LogUtils.d(
-                        "【维护操作】恢复正常状态后跳过温度重刷：${recoveryDecision.reason}"
+                        "【维护操作】点击恢复正常状态，errorStatus（设备故障状态）=${config.errorStatus}->0（正常）, " +
+                            "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}->${onlineStatusText(targetOnlineStatus)}，" +
+                            "temperatureRecovery（温度恢复策略）=${recoveryDecision.reason}"
                     )
-                }
-                val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
-                if (!runtimePublishOk) {
-                    LogUtils.w("【维护操作】恢复正常状态时 MQTT 主上报失败，回退 HTTP 补偿：" +
-                        "onlineStatus=${onlineStatusText(config.onlineStatus)}，errorStatus=${config.errorStatus}，targetOnlineStatus=${onlineStatusText(targetOnlineStatus)}")
-                    DataManagementAPI.uploadDeviceInfo()
+                    config.errorStatus = 0
+                    config.onlineStatus = targetOnlineStatus
+                    withContext(Dispatchers.IO) {
+                        AppConfig.saveAppConfig(config)
+                    }
+                    clearIdleMoveStatusAfterManualRecovery("恢复正常状态前已确认下位机动作空闲")
+                    if (recoveryDecision.shouldRestoreTemperature) {
+                        withContext(Dispatchers.IO) {
+                            KaoChangOperate.restoreHeatingStateFromCurrentPans("维护页手动恢复正常状态")
+                        }
+                        LogUtils.w(
+                            "【维护操作】恢复正常状态后已按当前烤盘状态重刷温度设置寄存器：" +
+                                "寄存器503（一区1~9目标温度）、寄存器504（二区13~21目标温度）、寄存器505（三区25~33目标温度），" +
+                                "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
+                                "heatingTemperature（加热温度）=${config.heatingTemperature}℃"
+                        )
+                    } else {
+                        LogUtils.d(
+                            "【维护操作】恢复正常状态后跳过温度重刷：${recoveryDecision.reason}"
+                        )
+                    }
+                    val runtimePublishOk = withContext(Dispatchers.IO) {
+                        SendServerHelper.publishServiceUpdateStatus()
+                    }
+                    if (!runtimePublishOk) {
+                        LogUtils.w("【维护操作】恢复正常状态时 MQTT 主上报失败，回退 HTTP 补偿：" +
+                            "onlineStatus=${onlineStatusText(config.onlineStatus)}，errorStatus=${config.errorStatus}，targetOnlineStatus=${onlineStatusText(targetOnlineStatus)}")
+                        withContext(Dispatchers.IO) {
+                            DataManagementAPI.uploadDeviceInfo()
+                        }
+                    }
+                } finally {
+                    manualRecoveryInProgress.set(false)
+                    binding.btnErroStatus.isEnabled = true
+                    val currentHint = binding.tvCooldownHint.text.toString()
+                    if (currentHint == "正在检查下位机通信" || currentHint == "正在恢复设备状态") {
+                        binding.tvCooldownHint.text = ""
+                    }
                 }
             }
         }
@@ -877,38 +925,43 @@ class MaintenanceFragment : Fragment() {
             .setTitle("确认")
             .setMessage("是否要取出烤肠？")
             .setPositiveButton("确定") { dialog, _ ->
-                if (!status.get()) {
+                if (!status.compareAndSet(true, false)) {
                     ToastUtils.showShort("请等待当前操作完成")
                     return@setPositiveButton
                 }
-                if (!VMModbusHelper.connectStatus()) {
-                    ToastUtils.showShort("下位机未连接，请先恢复通信")
-                    LogUtils.w("【维护操作】拒绝手动取肠：下位机当前未连接")
-                    return@setPositiveButton
-                }
-                status.set(false)
                 val tasteLabel = kaoPan.taste.productName?.takeIf { it.isNotBlank() }
                     ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
                     ?: "未知口味"
                 LogUtils.d("【维护操作】手动取肠确认：准备从烤盘${kaoPan.positionSn}取出烤肠($tasteLabel)")
 
                 lifecycleScope.launch {
-                    val idleReady = waitUntilMachineIdleOrTimeout(
-                        reason = "维护页手动取肠等待空闲",
-                        waitingText = "请等待上位机空闲"
-                    )
-                    if (!idleReady) {
-                        LogUtils.w(
-                            "【维护操作】手动取肠等待机械空闲超时：" +
-                                "moveStatus（机械动作状态）=${AppConfig.getAppConfig().moveStatus}"
-                        )
-                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                        dialog.dismiss()
-                        status.set(true)
-                        return@launch
-                    }
                     try {
-                        val result = KaoChangOperate.takeSausage(kaoPan)
+                        val modbusConnected = withContext(Dispatchers.IO) {
+                            MaintenanceModbusRecoveryConnector.ensureConnected()
+                        }
+                        if (!modbusConnected) {
+                            ToastUtils.showShort("下位机未连接，请先恢复通信")
+                            LogUtils.w(
+                                "【维护操作】拒绝手动取肠：下位机当前未连接，" +
+                                    "modbusAddress（Modbus串口地址）=${AppConfig.getAppConfig().modbusAddress}"
+                            )
+                            return@launch
+                        }
+                        val idleReady = waitUntilMachineIdleOrTimeout(
+                            reason = "维护页手动取肠等待空闲",
+                            waitingText = "请等待上位机空闲"
+                        )
+                        if (!idleReady) {
+                            LogUtils.w(
+                                "【维护操作】手动取肠等待机械空闲超时：" +
+                                    "moveStatus（机械动作状态）=${AppConfig.getAppConfig().moveStatus}"
+                            )
+                            ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                            return@launch
+                        }
+                        val result = withContext(Dispatchers.IO) {
+                            KaoChangOperate.takeSausage(kaoPan)
+                        }
                         if (!result) {
                             ToastUtils.showShort("手动取肠失败，请查看日志")
                         }

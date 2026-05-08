@@ -94,6 +94,9 @@ object VMModbusHelper {
     var isDebug = false
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lunXunJob: Job? = null
+    private const val RECENT_RECONNECT_RESULT_REUSE_MS = 2_000L
+    private var lastReconnectFinishedAtMs = 0L
+    private var lastReconnectStatus = false
 
     private fun buildSerialParameters(devicePath: String, baudRate: Int): SerialParameters {
         return SerialParameters().apply {
@@ -213,7 +216,21 @@ object VMModbusHelper {
 
         try {
             if (connectStatus()) {
+                lastReconnectFinishedAtMs = System.currentTimeMillis()
+                lastReconnectStatus = true
                 callback.invoke(true)
+                return
+            }
+
+            val now = System.currentTimeMillis()
+            if (lastReconnectFinishedAtMs > 0 &&
+                now - lastReconnectFinishedAtMs <= RECENT_RECONNECT_RESULT_REUSE_MS
+            ) {
+                LogUtils.d(
+                    "【Modbus】复用刚完成的重连结果，避免连续重复完整串口探测：" +
+                        "status=$lastReconnectStatus，elapsedMs=${now - lastReconnectFinishedAtMs}"
+                )
+                callback.invoke(lastReconnectStatus)
                 return
             }
 
@@ -226,6 +243,8 @@ object VMModbusHelper {
             if (candidatePorts.isEmpty()) {
                 LogUtils.e("没有找到可用的 Modbus 串口候选，当前配置=${appConfigBean.modbusAddress}")
                 disconnectModbusMaster()
+                lastReconnectFinishedAtMs = System.currentTimeMillis()
+                lastReconnectStatus = false
                 callback.invoke(false)
                 return
             }
@@ -236,47 +255,63 @@ object VMModbusHelper {
                     "boardFingerprint=$boardFingerprint，" +
                     "candidates=${candidatePorts.joinToString()}"
             )
-            var lastErrorMessage: String? = null
+            val probeResults = mutableListOf<String>()
 
             for (devicePath in candidatePorts) {
-                try {
-                    disconnectModbusMaster()
-                    val master = ModbusMasterFactory.createModbusMasterRTU(
-                        buildSerialParameters(devicePath, appConfigBean.modbusBaudRate)
-                    )
-                    master.connect()
-                    if (!hasModbusResponse(master)) {
-                        runCatching { master.disconnect() }
-                        lastErrorMessage = "串口 $devicePath 没有收到 Modbus 响应"
-                        continue
-                    }
-                    modbusMaster = master
-
-                    if (appConfigBean.modbusAddress != devicePath) {
-                        LogUtils.i("【Modbus】自动探测到可用串口：${appConfigBean.modbusAddress} -> $devicePath，已更新配置")
-                        appConfigBean.modbusAddress = devicePath
-                        AppConfig.saveAppConfig(appConfigBean)
+                disconnectModbusMaster()
+                val probeResult = ModbusCandidateProbeRunner.probe(
+                    devicePath = devicePath,
+                    createMaster = {
+                        ModbusMasterFactory.createModbusMasterRTU(
+                            buildSerialParameters(devicePath, appConfigBean.modbusBaudRate)
+                        )
+                    },
+                    connect = { master -> master.connect() },
+                    hasResponse = { master -> hasModbusResponse(master) },
+                    disconnect = { master -> master.disconnect() }
+                )
+                probeResults.add(probeResult.summary())
+                if (!probeResult.isSuccess) {
+                    val busyHint = if (probeResult.isPortBusy) {
+                        "，判断=串口被占用或上次失败后未释放"
                     } else {
-                        LogUtils.i("【Modbus】串口连接成功：port=$devicePath")
+                        ""
                     }
-
-                    callback.invoke(true)
-                    return
-                } catch (e: Exception) {
-                    lastErrorMessage = e.message
-                    LogUtils.w("串口探测失败：device=$devicePath, error=${e.message}")
+                    LogUtils.w("串口探测失败：${probeResult.summary()}$busyHint")
+                    continue
                 }
+
+                val master = probeResult.master!!
+                modbusMaster = master
+
+                if (appConfigBean.modbusAddress != devicePath) {
+                    LogUtils.i("【Modbus】自动探测到可用串口：${appConfigBean.modbusAddress} -> $devicePath，已更新配置")
+                    appConfigBean.modbusAddress = devicePath
+                    AppConfig.saveAppConfig(appConfigBean)
+                } else {
+                    LogUtils.i("【Modbus】串口连接成功：port=$devicePath")
+                }
+
+                lastReconnectFinishedAtMs = System.currentTimeMillis()
+                lastReconnectStatus = true
+                callback.invoke(true)
+                return
             }
 
             LogUtils.e(
                 "所有 Modbus 串口探测均失败：当前配置=${appConfigBean.modbusAddress}，" +
-                    "candidates=${candidatePorts.joinToString()}, lastError=$lastErrorMessage"
+                    "candidates=${candidatePorts.joinToString()}，" +
+                    "probeResults=${probeResults.joinToString("；")}"
             )
             disconnectModbusMaster()
+            lastReconnectFinishedAtMs = System.currentTimeMillis()
+            lastReconnectStatus = false
             callback.invoke(false)
         } catch (e: Exception) {
             e.printStackTrace()
             disconnectModbusMaster()
+            lastReconnectFinishedAtMs = System.currentTimeMillis()
+            lastReconnectStatus = false
             callback.invoke(false)
         }
     }
