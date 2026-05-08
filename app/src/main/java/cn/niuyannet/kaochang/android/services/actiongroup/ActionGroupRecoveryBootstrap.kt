@@ -13,6 +13,11 @@ sealed class ActionGroupRecoveryResult {
         val actionResult: ActionGroupResult
     ) : ActionGroupRecoveryResult()
 
+    data class StaleSessionCleared(
+        val session: ActionGroupSession,
+        val reason: String
+    ) : ActionGroupRecoveryResult()
+
     data class MaintenanceRequired(val reason: String) : ActionGroupRecoveryResult()
 }
 
@@ -51,6 +56,15 @@ class ActionGroupRecoveryBootstrap(
         if (runningStates.isEmpty()) {
             val session = sessionStore.load()
             if (session != null) {
+                if (session.type == ActionGroupSessionType.OUT_SELL || session.type == ActionGroupSessionType.OUT_MANUAL) {
+                    sessionStore.clear()
+                    resourceLocks.clear()
+                    val reason = "出餐动作组旧会话已收口：本地仍存在动作会话但下位机结果寄存器全部空闲，" +
+                        "按下位机空闲状态解除本地会话锁，sessionId=${session.sessionId}，type=${session.type}，" +
+                        "sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
+                    logger(reason)
+                    return ActionGroupRecoveryResult.StaleSessionCleared(session, reason)
+                }
                 return ActionGroupRecoveryResult.MaintenanceRequired(
                     "动作组恢复失败：本地仍存在动作会话但下位机结果寄存器全部空闲，疑似下位机复位/动作结果丢失，" +
                         "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}，需人工确认物理位置"

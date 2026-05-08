@@ -754,6 +754,33 @@ object KaoChangOperate {
                 flushPendingActionGroupOrderEvent(reason)
                 true
             }
+            is ActionGroupRecoveryResult.StaleSessionCleared -> {
+                lastActionGroupRecoveryFailureReason = null
+                val session = result.session
+                val config = AppConfig.getAppConfig()
+                config.moveStatus = 0
+                AppConfig.saveAppConfig(config)
+                if (session.type == ActionGroupSessionType.OUT_SELL) {
+                    val orderContext = session.orderContext
+                    if (orderContext != null && orderContext.isValid()) {
+                        savePendingActionGroupOrderEvent(
+                            orderContext = orderContext,
+                            status = ActionGroupOrderStatus.ERROR,
+                            panNo = session.sourceNo,
+                            discarded = false
+                        )
+                        flushPendingActionGroupOrderEvent("出餐动作组旧会话收口:$reason")
+                    } else {
+                        logW(
+                            LOG_ACTION_GROUP,
+                            "出餐动作组旧会话已清理但缺少有效订单上下文，无法补偿订单终态：" +
+                                "reason=$reason，session=$session"
+                        )
+                    }
+                }
+                logW(LOG_ACTION_GROUP, "${result.reason}，reason=$reason")
+                true
+            }
             is ActionGroupRecoveryResult.MaintenanceRequired -> {
                 val detail = "动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}"
                 lastActionGroupRecoveryFailureReason = detail

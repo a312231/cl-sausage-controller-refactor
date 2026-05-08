@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services.actiongroup
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,6 +28,54 @@ class ActionGroupRecoveryBootstrapTest {
         assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("疑似下位机复位"))
         assertEquals("old", store.session?.sessionId)
         assertTrue(!locks.isIdle())
+    }
+
+    @Test
+    fun recover_shouldClearStaleOutSellSessionWhenAllRegistersIdle() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "stale-out",
+            type = ActionGroupSessionType.OUT_SELL,
+            sourceNo = 1,
+            resourceMask = ResourceMask.above or ResourceMask.gate or ResourceMask.stick or ResourceMask.lift,
+            orderContext = ActionGroupOrderContext(
+                orderNo = "CL1",
+                itemId = 1886,
+                productId = 101,
+                tasteCode = "B"
+            )
+        )
+        val store = MemorySessionStore(session)
+        val locks = ResourceLocks()
+        locks.tryAcquire(ResourceMask.above, "stale-out")
+
+        val result = ActionGroupRecoveryBootstrap(FakeClient(), store, locks).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.StaleSessionCleared)
+        assertEquals(session, (result as ActionGroupRecoveryResult.StaleSessionCleared).session)
+        assertNull(store.session)
+        assertTrue(locks.isIdle())
+        assertTrue(result.reason.contains("出餐动作组旧会话"))
+    }
+
+    @Test
+    fun recover_shouldClearStaleManualOutSessionWhenAllRegistersIdle() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "stale-manual-out",
+            type = ActionGroupSessionType.OUT_MANUAL,
+            sourceNo = 3,
+            resourceMask = ResourceMask.above or ResourceMask.gate or ResourceMask.stick or ResourceMask.lift
+        )
+        val store = MemorySessionStore(session)
+        val locks = ResourceLocks()
+        locks.tryAcquire(ResourceMask.gate, "stale-manual-out")
+
+        val result = ActionGroupRecoveryBootstrap(FakeClient(), store, locks).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.StaleSessionCleared)
+        assertEquals(session, (result as ActionGroupRecoveryResult.StaleSessionCleared).session)
+        assertNull(store.session)
+        assertTrue(locks.isIdle())
+        assertTrue(result.reason.contains("出餐动作组旧会话"))
     }
 
     @Test
