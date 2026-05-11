@@ -270,24 +270,34 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     scanBlockStatus = result.scanBlockStatus,
                     inspectionMode = result.inspectionMode,
                     isEnable = result.isEnable,
-                    restStatusSource = result.restStatusSource
+                    restStatusSource = result.restStatusSource,
+                    configVersion = result.configVersion,
+                    appliedFields = result.appliedFields,
+                    rejectedFields = result.rejectedFields,
+                    normalizedFields = result.normalizedFields
                 )
             )
             if (ackOk) {
                 LogUtils.d(
                     "【MQTT运行时控制】Ack 已发送：" +
-                        "controlSeq=${result.controlSeq}，applied=${result.applied}，reason=${result.reason}"
+                        "controlSeq=${result.controlSeq}，applied=${result.applied}，reason=${result.reason}，" +
+                        "configVersion（配置版本）=${result.configVersion ?: "null"}"
                 )
             } else {
                 LogUtils.w(
                     "【MQTT运行时控制】Ack 发送失败：" +
-                        "controlSeq=${result.controlSeq}，applied=${result.applied}，reason=${result.reason}"
+                        "controlSeq=${result.controlSeq}，applied=${result.applied}，reason=${result.reason}，" +
+                        "configVersion（配置版本）=${result.configVersion ?: "null"}"
                 )
             }
         }
         LogUtils.d(
             "【MQTT运行时控制】处理完成：" +
                 "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
+                "configVersion（配置版本）=${result.configVersion ?: "null"}，" +
+                "appliedFields（已应用字段）=${result.appliedFields.joinToString(",")}，" +
+                "rejectedFields（已拒收字段）=${result.rejectedFields.joinToString(",")}，" +
+                "normalizedFields（已截断字段）=${result.normalizedFields}，" +
                 "onlineStatus（设备营业状态）=${result.onlineStatus}，" +
                 "supplyStatus（补货状态）=${result.supplyStatus}，" +
                 "scanBlockStatus（前台屏蔽状态）=${result.scanBlockStatus}，" +

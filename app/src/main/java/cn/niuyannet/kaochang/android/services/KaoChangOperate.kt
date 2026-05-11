@@ -2578,19 +2578,38 @@ object KaoChangOperate {
         val decisions = TemperatureControlPolicy.decideZoneTemperatures(
             pans = KaoPanHelper.getKaoPanList(),
             keepWarmTemperature = config.keepWarmTemperature,
-            heatingTemperature = config.heatingTemperature
+            heatingTemperature = config.heatingTemperature,
+            heatingOffsetsByArea = mapOf(
+                1 to config.zone1HeatingOffset,
+                2 to config.zone2HeatingOffset,
+                3 to config.zone3HeatingOffset
+            )
         )
         decisions.forEach { decision ->
             writeAreaTargetTemperature(decision.area, decision.targetTemperature)
         }
         val detail = decisions.joinToString("，") { decision ->
-            "${decision.area}区(${decision.positions.first}~${decision.positions.last})=${decision.targetTemperature}℃/${temperatureModeText(decision.mode)}"
+            val offset = when (decision.area) {
+                1 -> config.zone1HeatingOffset
+                2 -> config.zone2HeatingOffset
+                3 -> config.zone3HeatingOffset
+                else -> 0
+            }
+            val targetDetail = if (decision.mode == TemperatureControlPolicy.ZoneMode.HEATING) {
+                "${config.heatingTemperature}${formatHeatingOffset(offset)}=>${decision.targetTemperature}℃"
+            } else {
+                "${decision.targetTemperature}℃"
+            }
+            "${decision.area}区(${decision.positions.first}~${decision.positions.last})=$targetDetail/${temperatureModeText(decision.mode)}"
         }
         logTemperatureApplyOnce(
             signature = "apply:$reason:$detail",
             message = "按当前烤盘状态刷新目标温度：reason=$reason，$detail，" +
                 "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
-                "heatingTemperature（加热温度）=${config.heatingTemperature}℃"
+                "heatingTemperature（基础烤制温度）=${config.heatingTemperature}℃，" +
+                "zone1HeatingOffset（一区烤制补偿）=${config.zone1HeatingOffset}℃，" +
+                "zone2HeatingOffset（二区烤制补偿）=${config.zone2HeatingOffset}℃，" +
+                "zone3HeatingOffset（三区烤制补偿）=${config.zone3HeatingOffset}℃"
         )
     }
 
@@ -2632,6 +2651,14 @@ object KaoChangOperate {
             TemperatureControlPolicy.ZoneMode.HEATING -> "烤制中"
             TemperatureControlPolicy.ZoneMode.KEEP_WARM -> "保温可售"
             TemperatureControlPolicy.ZoneMode.STOP -> "无肠停止"
+        }
+    }
+
+    private fun formatHeatingOffset(offset: Int): String {
+        return if (offset >= 0) {
+            "+$offset"
+        } else {
+            offset.toString()
         }
     }
 

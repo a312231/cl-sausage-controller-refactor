@@ -35,6 +35,12 @@ public class AppConfigBean implements Serializable {
     public String deviceAddress;
     public BusinessTime businessTime;
 
+    // 云端设备配置版本：由服务端保存配置时递增，用于 MQTT 配置补丁幂等与过期拒收
+    public long configVersion = 0L;
+
+    // 最近一次已应用的 runtime_control 序号，随 AppConfig JSON 持久化
+    public long lastAppliedControlSeq = -1L;
+
     // 设备启用状态：0=未启用，1=启用
     public int status;
 
@@ -86,6 +92,9 @@ public class AppConfigBean implements Serializable {
     // 温度与时间配置
     public int keepWarmTemperature;
     public int heatingTemperature;
+    public int zone1HeatingOffset = 0;
+    public int zone2HeatingOffset = 0;
+    public int zone3HeatingOffset = 0;
     public int bakingTime;
     public int discardTime;
     public int timeThresholdLow;

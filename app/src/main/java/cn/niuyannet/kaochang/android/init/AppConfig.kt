@@ -13,6 +13,8 @@ object AppConfig {
     const val DEFAULT_BOX_REFILL_TARGET_NUM = 10
     const val MIN_BOX_REFILL_TARGET_NUM = 1
     const val MAX_BOX_REFILL_TARGET_NUM = 15
+    const val MIN_HEATING_OFFSET = -20
+    const val MAX_HEATING_OFFSET = 20
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
     private const val KEY_INSPECTION_SNAPSHOT_JSON = "sp_inspection_snapshot_json"
@@ -275,6 +277,39 @@ object AppConfig {
             setter(jsonData.getIntValue(key))
         }
 
+        fun mergeLong(
+            key: String,
+            fieldLabel: String,
+            setter: (Long) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            setter(jsonData.getLongValue(key))
+        }
+
+        fun mergeHeatingOffset(
+            key: String,
+            fieldLabel: String,
+            setter: (Int) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            val rawValue = jsonData.getIntValue(key)
+            val clampedValue = rawValue.coerceIn(MIN_HEATING_OFFSET, MAX_HEATING_OFFSET)
+            setter(clampedValue)
+            if (rawValue != clampedValue) {
+                LogUtils.w(
+                    "[$logPrefix] 远端分区烤制温度补偿超出安全范围，已截断：" +
+                        "$fieldLabel=$rawValue℃，允许范围=${MIN_HEATING_OFFSET}..${MAX_HEATING_OFFSET}℃，" +
+                        "实际使用=$clampedValue℃"
+                )
+            }
+        }
+
         mergeString("mqttUrl", "mqttUrl") { config.mqttHost = it }
         mergeString("mqttUsername", "mqttUsername") { config.mqttUsername = it }
         mergeString("mqttPassword", "mqttPassword") { config.mqttPassword = it }
@@ -283,6 +318,7 @@ object AppConfig {
         mergeString("name", "name", allowBlank = false) { config.deviceName = it }
         mergeString("address", "address") { config.deviceAddress = it }
         mergeString("qrcodeUrl", "qrcodeUrl") { config.qcodeURL = it }
+        mergeLong("configVersion", "configVersion") { config.configVersion = it }
 
         val businessHoursRaw = jsonData.getString("businessHours")
         if (businessHoursRaw.isNullOrBlank()) {
@@ -334,6 +370,9 @@ object AppConfig {
         mergeInt("availableCountdownLatched", "availableCountdownLatched") { config.availableCountdownLatched = it }
         mergeInt("keepWarmTemperature", "keepWarmTemperature") { config.keepWarmTemperature = it }
         mergeInt("heatingTemperature", "heatingTemperature") { config.heatingTemperature = it }
+        mergeHeatingOffset("zone1HeatingOffset", "zone1HeatingOffset") { config.zone1HeatingOffset = it }
+        mergeHeatingOffset("zone2HeatingOffset", "zone2HeatingOffset") { config.zone2HeatingOffset = it }
+        mergeHeatingOffset("zone3HeatingOffset", "zone3HeatingOffset") { config.zone3HeatingOffset = it }
         mergeInt("bakingTime", "bakingTime") { config.bakingTime = it }
         mergeInt("discardTime", "discardTime") { config.discardTime = it }
         mergeInt("timeThresholdLow", "timeThresholdLow") { config.timeThresholdLow = it }

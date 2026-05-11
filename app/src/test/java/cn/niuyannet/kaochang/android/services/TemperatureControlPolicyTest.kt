@@ -69,6 +69,45 @@ class TemperatureControlPolicyTest {
     }
 
     @Test
+    fun decideZoneTemperatures_shouldApplyHeatingOffsetOnlyToMatchingHeatingZone() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(
+                pan(positionSn = 3, hasSausage = true, status = 1),
+                pan(positionSn = 15, hasSausage = true, status = 1)
+            ),
+            keepWarmTemperature = 60,
+            heatingTemperature = 150,
+            heatingOffsetsByArea = mapOf(1 to 5, 2 to -3, 3 to 8)
+        )
+
+        assertEquals(listOf(155, 147, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldNotApplyHeatingOffsetToKeepWarmZone() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(pan(positionSn = 26, hasSausage = true, status = 2, holdingTime = 100L)),
+            keepWarmTemperature = 55,
+            heatingTemperature = 160,
+            heatingOffsetsByArea = mapOf(3 to 10)
+        )
+
+        assertEquals(listOf(0, 0, 55), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldKeepStopZoneAtZeroEvenWhenHeatingOffsetExists() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(),
+            keepWarmTemperature = 55,
+            heatingTemperature = 160,
+            heatingOffsetsByArea = mapOf(1 to 10, 2 to -5, 3 to 20)
+        )
+
+        assertEquals(listOf(0, 0, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
     fun decideEmptyPanStop_shouldStopOnFirstEmptySnapshot() {
         val result = TemperatureControlPolicy.decideEmptyPanStop(
             hasAnySausage = false,

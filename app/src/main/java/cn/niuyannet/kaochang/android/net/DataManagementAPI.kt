@@ -26,8 +26,6 @@ object DataManagementAPI {
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val LOG_SYNC = "云端同步"
     @Volatile
-    private var lastAppliedRuntimeControlSeq: Long = -1L
-    @Volatile
     private var lastAppliedConcurrencyControlSeq: Long = -1L
 
     data class RemoteDeviceStateRefreshResult(
@@ -51,7 +49,11 @@ object DataManagementAPI {
         val scanBlockStatus: Int,
         val inspectionMode: Int,
         val isEnable: Int,
-        val restStatusSource: String
+        val restStatusSource: String,
+        val configVersion: Long? = null,
+        val appliedFields: List<String> = emptyList(),
+        val rejectedFields: List<String> = emptyList(),
+        val normalizedFields: Map<String, Int> = emptyMap()
     )
 
     data class ConcurrencyControlApplyResult(
@@ -152,7 +154,11 @@ object DataManagementAPI {
                 else -> value.toString()
             }
 
-            "keepWarmTemperature", "heatingTemperature" -> "${value}℃"
+            "keepWarmTemperature",
+            "heatingTemperature",
+            "zone1HeatingOffset",
+            "zone2HeatingOffset",
+            "zone3HeatingOffset" -> "${value}℃"
             "bakingTime" -> "${value}分钟"
             "discardTime" -> "${value}小时"
             "timeThresholdLow", "timeBeforeClose" -> "${value}分钟"
@@ -327,14 +333,29 @@ object DataManagementAPI {
         }
 
         val controlSeq = json.getLongValue("controlSeq").takeIf { it > 0 } ?: json.getLongValue("ts")
-        val hasOnlineStatus = json.containsKey("onlineStatus")
-        val hasIsEnable = json.containsKey("isEnable")
-        val hasScanBlockStatus = json.containsKey("scanBlockStatus")
-        if (!hasOnlineStatus && !hasIsEnable && !hasScanBlockStatus) {
+        val incomingConfigVersion = json.getLong("configVersion")
+        val runtimePatch = JSONObject()
+        listOf(
+            "onlineStatus",
+            "scanBlockStatus",
+            "isEnable",
+            "modeType",
+            "concurrencyMode",
+            "transitionMode",
+            "highConcurrencyResidualDrain"
+        ).forEach { field ->
+            if (json.containsKey(field)) {
+                runtimePatch[field] = json.get(field)
+            }
+        }
+        json.getJSONObject("configPatch")?.entries?.forEach { entry ->
+            runtimePatch[entry.key] = entry.value
+        }
+        if (runtimePatch.isEmpty()) {
             val config = AppConfig.getAppConfig()
             logD(
                 "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
-                    "不包含 onlineStatus（设备营业状态）、scanBlockStatus（前台屏蔽状态）或 isEnable（烤肠算法开关）"
+                    "不包含可应用字段，reason=missing_runtime_fields"
             )
             return RuntimeControlApplyResult(
                 controlSeq = controlSeq,
@@ -346,15 +367,24 @@ object DataManagementAPI {
                 scanBlockStatus = config.scanBlockStatus,
                 inspectionMode = config.inspectionMode,
                 isEnable = config.isEnable,
-                restStatusSource = config.restStatusSource
+                restStatusSource = config.restStatusSource,
+                configVersion = config.configVersion
             )
         }
 
         val currentConfigBeforeApply = AppConfig.getAppConfig()
-        if (controlSeq > 0 && lastAppliedRuntimeControlSeq >= 0 && controlSeq <= lastAppliedRuntimeControlSeq) {
+        val rejectReason = RemoteRuntimeControlGuard.rejectReason(
+            controlSeq = controlSeq,
+            lastAppliedControlSeq = currentConfigBeforeApply.lastAppliedControlSeq,
+            incomingConfigVersion = incomingConfigVersion,
+            localConfigVersion = currentConfigBeforeApply.configVersion
+        )
+        if (rejectReason != null) {
             logW(
                 "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
-                    "lastAppliedRuntimeControlSeq=$lastAppliedRuntimeControlSeq，reason=stale_control_seq，" +
+                    "lastAppliedControlSeq=${currentConfigBeforeApply.lastAppliedControlSeq}，" +
+                    "incomingConfigVersion=${incomingConfigVersion ?: "null"}，" +
+                    "localConfigVersion=${currentConfigBeforeApply.configVersion}，reason=$rejectReason，" +
                     "onlineStatus（设备营业状态）=${onlineStatusText(currentConfigBeforeApply.onlineStatus)}，" +
                     "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", currentConfigBeforeApply.isEnable)}"
             )
@@ -362,13 +392,14 @@ object DataManagementAPI {
                 controlSeq = controlSeq,
                 applied = false,
                 changed = false,
-                reason = "stale_control_seq",
+                reason = rejectReason,
                 onlineStatus = currentConfigBeforeApply.onlineStatus,
                 supplyStatus = currentConfigBeforeApply.supplyStatus,
                 scanBlockStatus = currentConfigBeforeApply.scanBlockStatus,
                 inspectionMode = currentConfigBeforeApply.inspectionMode,
                 isEnable = currentConfigBeforeApply.isEnable,
-                restStatusSource = currentConfigBeforeApply.restStatusSource
+                restStatusSource = currentConfigBeforeApply.restStatusSource,
+                configVersion = currentConfigBeforeApply.configVersion
             )
         }
 
@@ -378,23 +409,40 @@ object DataManagementAPI {
         val previousScanBlockStatus = config.scanBlockStatus
         val previousInspectionMode = config.inspectionMode
         val previousIsEnable = config.isEnable
+        val previousModeType = config.modeType
+        val previousTransitionMode = config.transitionMode
+        val previousHighConcurrencyResidualDrain = config.highConcurrencyResidualDrain
         val previousRestStatusSource = config.restStatusSource
         val operator = json.getString("operator").orEmpty()
 
-        if (hasOnlineStatus) {
-            config.onlineStatus = json.getIntValue("onlineStatus")
+        val patchResult = RemoteRuntimeConfigPatchApplier.apply(config, runtimePatch)
+        if (!patchResult.hasApplied) {
+            val reason = if (patchResult.unknownFields.isNotEmpty()) "unknown_fields" else "invalid_value"
+            logW(
+                "远端运行时控制未应用：source=$source，controlSeq=$controlSeq，reason=$reason，" +
+                    "rejectedFields=${(patchResult.rejectedFields + patchResult.unknownFields).joinToString(",")}"
+            )
+            return RuntimeControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = reason,
+                onlineStatus = config.onlineStatus,
+                supplyStatus = config.supplyStatus,
+                scanBlockStatus = config.scanBlockStatus,
+                inspectionMode = config.inspectionMode,
+                isEnable = config.isEnable,
+                restStatusSource = config.restStatusSource,
+                configVersion = config.configVersion,
+                rejectedFields = patchResult.rejectedFields + patchResult.unknownFields,
+                normalizedFields = patchResult.normalizedFields
+            )
         }
-        if (hasScanBlockStatus) {
-            config.scanBlockStatus = if (json.getIntValue("scanBlockStatus") == AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED) {
-                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED
-            } else {
-                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
-            }
-        }
+
         AppConfig.alignRestStatusSource(config)
         AppConfig.saveAppConfig(config)
 
-        if (hasOnlineStatus) {
+        if (patchResult.appliedFields.contains("onlineStatus")) {
             handleRemoteOnlineStatusTransition(
                 previousOnlineStatus = previousOnlineStatus,
                 previousIsEnable = previousIsEnable,
@@ -410,8 +458,8 @@ object DataManagementAPI {
                 reason = "远端MQTT运行时控制要求维护中(source=$source, operator=${operator.ifBlank { "unknown" }})",
                 syncToServer = false
             )
-        } else if (hasIsEnable) {
-            when (json.getIntValue("isEnable")) {
+        } else if (patchResult.appliedFields.contains("isEnable")) {
+            when (config.isEnable) {
                 1 -> KaoChangAlgorithm.enableRoastAlgorithm(
                     reason = "远端MQTT运行时控制开启算法(source=$source, operator=${operator.ifBlank { "unknown" }})",
                     syncToServer = false
@@ -424,38 +472,69 @@ object DataManagementAPI {
         }
 
         val currentConfig = AppConfig.getAppConfig()
+        if (incomingConfigVersion != null && incomingConfigVersion >= currentConfig.configVersion) {
+            currentConfig.configVersion = incomingConfigVersion
+        }
+        if (controlSeq > 0) {
+            currentConfig.lastAppliedControlSeq = maxOf(currentConfig.lastAppliedControlSeq, controlSeq)
+        }
+        AppConfig.saveAppConfig(currentConfig)
+
+        if (patchResult.temperatureChanged && canApplyRemoteTemperatureConfig(currentConfig)) {
+            KaoChangOperate.applyConfiguredTemperatureByPanState("MQTT runtime_control 后台温度配置变化")
+        } else if (patchResult.temperatureChanged) {
+            logW(
+                "MQTT 温度配置已变化，但设备当前不可加热，跳过重刷温度寄存器：" +
+                    "source=$source，onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
+                    "errorStatus（设备故障状态）=${currentConfig.errorStatus}，" +
+                    "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(currentConfig.scanBlockStatus)}"
+            )
+        }
+
         val changed =
             previousOnlineStatus != currentConfig.onlineStatus ||
                 previousSupplyStatus != currentConfig.supplyStatus ||
                 previousScanBlockStatus != currentConfig.scanBlockStatus ||
                 previousInspectionMode != currentConfig.inspectionMode ||
-                previousIsEnable != currentConfig.isEnable
+                previousIsEnable != currentConfig.isEnable ||
+                previousModeType != currentConfig.modeType ||
+                previousTransitionMode != currentConfig.transitionMode ||
+                previousHighConcurrencyResidualDrain != currentConfig.highConcurrencyResidualDrain ||
+                patchResult.temperatureChanged
 
-        if (controlSeq > 0) {
-            lastAppliedRuntimeControlSeq = maxOf(lastAppliedRuntimeControlSeq, controlSeq)
-        }
-
+        val rejectedFields = patchResult.rejectedFields + patchResult.unknownFields
+        val reason = if (patchResult.isPartial) "partial" else "applied"
         logD(
             "远端运行时控制已应用：" +
                 "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                "configVersion（配置版本）=${incomingConfigVersion ?: "null"}->${currentConfig.configVersion}，" +
+                "reason=$reason，appliedFields=${patchResult.appliedFields.joinToString(",")}，" +
+                "rejectedFields=${rejectedFields.joinToString(",")}，normalizedFields=${patchResult.normalizedFields}，" +
                 "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
                 "supplyStatus（补货状态）=${formatDiffValue("supplyStatus", previousSupplyStatus)}->${formatDiffValue("supplyStatus", currentConfig.supplyStatus)}，" +
                 "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(previousScanBlockStatus)}->${scanBlockStatusText(currentConfig.scanBlockStatus)}，" +
                 "inspectionMode（检修模式）=${inspectionModeText(previousInspectionMode)}->${inspectionModeText(currentConfig.inspectionMode)}，" +
                 "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", previousIsEnable)}->${formatDiffValue("isEnable", currentConfig.isEnable)}，" +
+                "modeType（并发模式）=${formatDiffValue("modeType", previousModeType)}->${formatDiffValue("modeType", currentConfig.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", previousTransitionMode)}->${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
+                "highConcurrencyResidualDrain（高并发残留消化态）=${previousHighConcurrencyResidualDrain}->${currentConfig.highConcurrencyResidualDrain}，" +
                 "restStatusSource（休息中来源）=${restStatusSourceText(previousRestStatusSource)}->${restStatusSourceText(currentConfig.restStatusSource)}"
         )
         return RuntimeControlApplyResult(
             controlSeq = controlSeq,
             applied = true,
             changed = changed,
-            reason = "applied",
+            reason = reason,
             onlineStatus = currentConfig.onlineStatus,
             supplyStatus = currentConfig.supplyStatus,
             scanBlockStatus = currentConfig.scanBlockStatus,
             inspectionMode = currentConfig.inspectionMode,
             isEnable = currentConfig.isEnable,
-            restStatusSource = currentConfig.restStatusSource
+            restStatusSource = currentConfig.restStatusSource,
+            configVersion = currentConfig.configVersion,
+            appliedFields = patchResult.appliedFields,
+            rejectedFields = rejectedFields,
+            normalizedFields = patchResult.normalizedFields
         )
     }
 
@@ -791,6 +870,9 @@ object DataManagementAPI {
             val oldTransitionMode = appConfigBean.transitionMode
             val oldKeepWarmTemperature = appConfigBean.keepWarmTemperature
             val oldHeatingTemperature = appConfigBean.heatingTemperature
+            val oldZone1HeatingOffset = appConfigBean.zone1HeatingOffset
+            val oldZone2HeatingOffset = appConfigBean.zone2HeatingOffset
+            val oldZone3HeatingOffset = appConfigBean.zone3HeatingOffset
             val oldBakingTime = appConfigBean.bakingTime
             val oldDiscardTime = appConfigBean.discardTime
             val oldTimeThresholdLow = appConfigBean.timeThresholdLow
@@ -810,7 +892,10 @@ object DataManagementAPI {
             val mergedConfig = AppConfig.getAppConfig()
             val temperatureConfigChanged =
                 oldKeepWarmTemperature != mergedConfig.keepWarmTemperature ||
-                    oldHeatingTemperature != mergedConfig.heatingTemperature
+                    oldHeatingTemperature != mergedConfig.heatingTemperature ||
+                    oldZone1HeatingOffset != mergedConfig.zone1HeatingOffset ||
+                    oldZone2HeatingOffset != mergedConfig.zone2HeatingOffset ||
+                    oldZone3HeatingOffset != mergedConfig.zone3HeatingOffset
             val changes = mutableListOf<String>()
             appendBusinessTimeDiff(changes, oldBusinessTime, mergedConfig.businessTime)
             appendDiff(changes, "status", oldStatus, mergedConfig.status)
@@ -822,6 +907,9 @@ object DataManagementAPI {
             appendDiff(changes, "transitionMode", oldTransitionMode, mergedConfig.transitionMode)
             appendDiff(changes, "keepWarmTemperature", oldKeepWarmTemperature, mergedConfig.keepWarmTemperature)
             appendDiff(changes, "heatingTemperature", oldHeatingTemperature, mergedConfig.heatingTemperature)
+            appendDiff(changes, "zone1HeatingOffset", oldZone1HeatingOffset, mergedConfig.zone1HeatingOffset)
+            appendDiff(changes, "zone2HeatingOffset", oldZone2HeatingOffset, mergedConfig.zone2HeatingOffset)
+            appendDiff(changes, "zone3HeatingOffset", oldZone3HeatingOffset, mergedConfig.zone3HeatingOffset)
             appendDiff(changes, "bakingTime", oldBakingTime, mergedConfig.bakingTime)
             appendDiff(changes, "discardTime", oldDiscardTime, mergedConfig.discardTime)
             appendDiff(changes, "timeThresholdLow", oldTimeThresholdLow, mergedConfig.timeThresholdLow)
@@ -906,6 +994,9 @@ object DataManagementAPI {
         val oldDiscardTime = appConfigBean.discardTime
         val oldKeepWarmTemperature = appConfigBean.keepWarmTemperature
         val oldHeatingTemperature = appConfigBean.heatingTemperature
+        val oldZone1HeatingOffset = appConfigBean.zone1HeatingOffset
+        val oldZone2HeatingOffset = appConfigBean.zone2HeatingOffset
+        val oldZone3HeatingOffset = appConfigBean.zone3HeatingOffset
         val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
         val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
@@ -983,7 +1074,10 @@ object DataManagementAPI {
             val mergedConfig = AppConfig.getAppConfig()
             val temperatureConfigChanged =
                 oldKeepWarmTemperature != mergedConfig.keepWarmTemperature ||
-                    oldHeatingTemperature != mergedConfig.heatingTemperature
+                    oldHeatingTemperature != mergedConfig.heatingTemperature ||
+                    oldZone1HeatingOffset != mergedConfig.zone1HeatingOffset ||
+                    oldZone2HeatingOffset != mergedConfig.zone2HeatingOffset ||
+                    oldZone3HeatingOffset != mergedConfig.zone3HeatingOffset
             reconcileDiscardCloseTime(logPrefix, oldDiscardTime, mergedConfig)
             handleRemoteOnlineStatusTransition(
                 oldOnlineStatus,
@@ -1015,7 +1109,10 @@ object DataManagementAPI {
                         "available（二维码页预计时间）=${oldAvailable}->${mergedConfig.available}，" +
                         "availableCountdownLatched（二维码页预计时间锁存标记）=${oldAvailableCountdownLatched}->${mergedConfig.availableCountdownLatched}，" +
                         "keepWarmTemperature（保温温度）=${oldKeepWarmTemperature}℃->${mergedConfig.keepWarmTemperature}℃，" +
-                        "heatingTemperature（加热温度）=${oldHeatingTemperature}℃->${mergedConfig.heatingTemperature}℃"
+                        "heatingTemperature（加热温度）=${oldHeatingTemperature}℃->${mergedConfig.heatingTemperature}℃，" +
+                        "zone1HeatingOffset（一区烤制补偿）=${oldZone1HeatingOffset}℃->${mergedConfig.zone1HeatingOffset}℃，" +
+                        "zone2HeatingOffset（二区烤制补偿）=${oldZone2HeatingOffset}℃->${mergedConfig.zone2HeatingOffset}℃，" +
+                        "zone3HeatingOffset（三区烤制补偿）=${oldZone3HeatingOffset}℃->${mergedConfig.zone3HeatingOffset}℃"
                 )
             }
             if (temperatureConfigChanged && canApplyRemoteTemperatureConfig(mergedConfig)) {

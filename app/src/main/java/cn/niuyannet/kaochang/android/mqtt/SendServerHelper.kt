@@ -43,7 +43,11 @@ object SendServerHelper {
         val scanBlockStatus: Int,
         val inspectionMode: Int,
         val isEnable: Int,
-        val restStatusSource: String?
+        val restStatusSource: String?,
+        val configVersion: Long? = null,
+        val appliedFields: List<String> = emptyList(),
+        val rejectedFields: List<String> = emptyList(),
+        val normalizedFields: Map<String, Int> = emptyMap()
     )
 
     data class ConcurrencyControlAckPayload(
@@ -268,6 +272,16 @@ object SendServerHelper {
         payload["inspectionMode"] = ack.inspectionMode
         payload["isEnable"] = ack.isEnable
         payload["restStatusSource"] = ack.restStatusSource
+        ack.configVersion?.let { payload["configVersion"] = it }
+        if (ack.appliedFields.isNotEmpty()) {
+            payload["appliedFields"] = ack.appliedFields
+        }
+        if (ack.rejectedFields.isNotEmpty()) {
+            payload["rejectedFields"] = ack.rejectedFields
+        }
+        if (ack.normalizedFields.isNotEmpty()) {
+            payload["normalizedFields"] = ack.normalizedFields
+        }
         payload["ackTs"] = System.currentTimeMillis()
         return VMMqttHelper.publishService(
             TopicMessage().apply {

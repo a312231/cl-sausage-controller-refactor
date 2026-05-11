@@ -36,7 +36,8 @@ object TemperatureControlPolicy {
     fun decideZoneTemperatures(
         pans: List<KaoPan>,
         keepWarmTemperature: Int,
-        heatingTemperature: Int
+        heatingTemperature: Int,
+        heatingOffsetsByArea: Map<Int, Int> = emptyMap()
     ): List<ZoneTemperatureDecision> {
         return zoneDefinitions.map { (area, positions) ->
             val zonePans = pans.filter { it.positionSn in positions }
@@ -50,7 +51,7 @@ object TemperatureControlPolicy {
                 positions = positions,
                 mode = mode,
                 targetTemperature = when (mode) {
-                    ZoneMode.HEATING -> heatingTemperature
+                    ZoneMode.HEATING -> heatingTemperature + (heatingOffsetsByArea[area] ?: 0)
                     ZoneMode.KEEP_WARM -> keepWarmTemperature
                     ZoneMode.STOP -> 0
                 }
