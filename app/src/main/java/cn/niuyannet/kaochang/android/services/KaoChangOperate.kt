@@ -40,6 +40,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceAction
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1122,20 +1123,41 @@ object KaoChangOperate {
             logE(LOG_SUPPLEMENT, "补肠失败：找不到同口味可用烤肠箱，targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode")
             return false
         }
+        val irPickFailedBoxNos = mutableListOf<Int>()
         candidates.forEachIndexed { index, box ->
-            logD(
-                LOG_SUPPLEMENT,
-                "按口味补肠尝试：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，" +
-                    "candidate=${index + 1}/${candidates.size}，box=${box.positionSn}，stock=${box.num}"
+            LogUtils.i(
+                "【补肠】按口味补肠尝试：目标烤盘=${kaoPan.positionSn}，tasteCode（口味编码）=$tasteCode，" +
+                    "候选=${index + 1}/${candidates.size}，来源烤肠箱=${box.positionSn}，本地库存=${box.num}"
             )
             val moved = moveSausageToKaoPan(kaoPan, box, allowPickFailureFallback = true)
             if (moved) {
                 return true
             }
             if (box.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
+                irPickFailedBoxNos += box.positionSn
+                val markResult = SupplementPickFailurePolicy.markIrPickFailedBoxAsEmpty(box, candidates)
+                KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                NetApi.updateStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
+                    if (code == 0) {
+                        logD(
+                            LOG_SUPPLEMENT,
+                            "烤肠箱物理空箱库存已同步云端：box=${markResult.boxNo}，previousNum=${markResult.previousNum}->0，cloudResponse=$content"
+                        )
+                    } else {
+                        logW(
+                            LOG_SUPPLEMENT,
+                            "烤肠箱物理空箱库存同步云端失败，继续尝试同口味下一箱：box=${markResult.boxNo}，code=$code，content=$content"
+                        )
+                    }
+                }
+                val nextBoxNo = markResult.remainingCandidateBoxNos.firstOrNull()
                 logW(
                     LOG_SUPPLEMENT,
-                    "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），尝试同口味下一箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
+                    if (nextBoxNo != null) {
+                        "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），已标记为空箱并尝试同口味下一箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，nextBox=$nextBoxNo"
+                    } else {
+                        "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），已标记为空箱；当前已无同口味可用候选箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
+                    }
                 )
             } else {
                 logE(
@@ -1146,7 +1168,14 @@ object KaoChangOperate {
                 return false
             }
         }
-        logE(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，boxCount=${candidates.size}")
+        val faultReason = SupplementPickFailurePolicy.buildAllCandidatesFailedFaultReason(
+            targetPanNo = kaoPan.positionSn,
+            tasteCode = tasteCode,
+            failedBoxNos = irPickFailedBoxNos,
+            lastErrorCode = AtomicActionCodes.IR_PICK_FAILED
+        )
+        logE(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败：$faultReason，boxCount=${candidates.size}")
+        markDeviceErrorAndUpload(faultReason)
         return false
     }
 
@@ -1668,6 +1697,33 @@ object KaoChangOperate {
             enterActionGroupMaintenance(
                 "补肠预取流水线投放失败且下一根已预取，设备进入维护，等待人工确认现场：" +
                     "targetPan=$targetPanNo，action=${result.actionName}，result=${describeAtomicActionResult(result.result)}"
+            )
+            return
+        }
+        if (failureCode == AtomicActionCodes.IR_PICK_FAILED) {
+            if (sourceBox != null) {
+                val markResult = SupplementPickFailurePolicy.markIrPickFailedBoxAsEmpty(
+                    failedBox = sourceBox,
+                    allCandidates = listOf(sourceBox)
+                )
+                KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                NetApi.updateStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
+                    if (code == 0) {
+                        logD(
+                            LOG_SUPPLEMENT,
+                            "补肠预取流水线取肠失败箱位已标记为空并同步云端：box=${markResult.boxNo}，previousNum=${markResult.previousNum}->0，cloudResponse=$content"
+                        )
+                    } else {
+                        logW(
+                            LOG_SUPPLEMENT,
+                            "补肠预取流水线取肠失败箱位已标记为空，但同步云端失败：box=${markResult.boxNo}，code=$code，content=$content"
+                        )
+                    }
+                }
+            }
+            enterActionGroupMaintenance(
+                "补肠预取流水线取肠红外未检测到肠（0x00E5），当前版本不在流水线内自动切箱，设备进入维护等待人工确认：" +
+                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，result=${describeAtomicActionResult(result.result)}"
             )
             return
         }
@@ -2543,6 +2599,24 @@ object KaoChangOperate {
      */
     fun restoreHeatingStateFromCurrentPans(reason: String) {
         applyConfiguredTemperatureByPanState(reason)
+    }
+
+    /**
+     * 设备故障态停热入口。
+     *
+     * 寄存器 503/504/505 分别是一/二/三区目标温度，写 0 表示停止烤制和保温加热。
+     * 这里只停热和关闭自动调度，不改烤盘计时字段；首版故障食品由后端暂停履约/退款流程收口。
+     */
+    fun stopHeatingForFault(reason: String) {
+        writeAreaTargetTemperature(1, 0)
+        writeAreaTargetTemperature(2, 0)
+        writeAreaTargetTemperature(3, 0)
+        lastTemperatureApplyLogSignature = null
+        logW(
+            LOG_HEAT,
+            "设备故障停热：reason=$reason，" +
+                "寄存器503/504/505目标温度已写0，后续恢复加热需由现场在上位机维护页恢复正常状态后手动开启烤制算法"
+        )
     }
 
     private fun writeAreaTargetTemperature(area: Int, temperature: Int) {

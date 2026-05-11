@@ -62,6 +62,7 @@ object KaoChangAlgorithm {
     private var inspectionDisconnectSuppressedLogged = false
     private var actionGroupRecoveredAfterModbusConnect = false
     private var startupHeatingStateRestored = false
+    private var faultHeatingStopped = false
     private var lastPollStateSnapshot: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
     var isEnabled = false
@@ -697,8 +698,8 @@ object KaoChangAlgorithm {
     /**
      * 用户下单后，从可售烤盘中选择一根烤肠出餐。
      * 当前策略：
-     * 1. 低并发及低转高过渡态仅从 1~9 号前区选取；
-     * 2. 高并发从 1~21 号可售区选取；
+     * 1. 低并发稳态且无残留时仅从 1~9 号前区选取；
+     * 2. 高并发、自然过渡态或高并发残留消化态从 1~21 号可售区选取；
      * 3. 按 holdingTime 最小值优先，即“最早进入保温的先卖”。
      */
     suspend fun purchase(
@@ -965,6 +966,16 @@ object KaoChangAlgorithm {
                 "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}，" +
                 "bakingTime（烤制时长，分钟）=${config.bakingTime}"
         )
+        if (VMModbusHelper.connectStatus()) {
+            faultHeatingStopped = false
+            KaoChangOperate.restoreHeatingStateFromCurrentPans("算法开启后恢复温度：$reason")
+        } else {
+            logW(
+                LOG_ALGORITHM,
+                "算法开关已开启但下位机未连接，暂不恢复温度：" +
+                    "reason=$reason，onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}"
+            )
+        }
         if (syncToServer) {
             SendServerHelper.publishServiceUpdateStatus()
         }
