@@ -5,7 +5,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 
-internal object BusinessTimeWindowHelper {
+object BusinessTimeWindowHelper {
     private const val SECONDS_PER_DAY = 24 * 60 * 60
 
     fun currentTimeString(): String {

@@ -14,13 +14,14 @@ import androidx.recyclerview.widget.GridLayoutManager
 import cn.niuyannet.kaochang.android.adapter.KaoPanAdapter
 import cn.niuyannet.kaochang.android.databinding.FragmentMaintenanceBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
-import cn.niuyannet.kaochang.android.init.BusinessTime
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
+import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.TemperatureControlPolicy
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
@@ -35,10 +36,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MaintenanceFragment : Fragment() {
@@ -722,7 +719,7 @@ class MaintenanceFragment : Fragment() {
                 return@setOnClickListener
             }
             binding.btnErroStatus.isEnabled = false
-            binding.tvCooldownHint.text = "正在检查下位机通信"
+            binding.tvCooldownHint.text = "正在恢复设备状态"
             lifecycleScope.launch {
                 try {
                     // 下位机重新插线后，手动恢复需要主动触发一次 Modbus 候选串口探测，而不是只检查旧连接。
@@ -741,96 +738,43 @@ class MaintenanceFragment : Fragment() {
                         )
                         return@launch
                     }
-                    val pendingSupplementBatch = withContext(Dispatchers.IO) {
-                        KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
-                    }
-                    if (pendingSupplementBatch != null) {
-                        AlertDialog.Builder(requireContext())
-                            .setTitle("确认补肠故障已处理")
-                            .setMessage(
-                                "检测到补肠批次在未落盘前失败，需要确认半路烤肠和机械位置已清理安全后才能续补。\n\n" +
-                                    "批次：${pendingSupplementBatch.targets.joinToString(",") { it.positionSn.toString() }}\n" +
-                                    "失败目标：${pendingSupplementBatch.failedTargetPanNo ?: "未知"}\n" +
-                                    "失败动作：${pendingSupplementBatch.failedActionName ?: "未知"}\n" +
-                                    "失败原因：${pendingSupplementBatch.failureMessage ?: "未知"}"
-                            )
-                            .setNegativeButton("取消") { dialog, _ ->
-                                LogUtils.w(
-                                    "【维护操作】取消恢复正常状态：未确认补肠批次半路烤肠/机械位置安全，" +
-                                        "batchId=${pendingSupplementBatch.batchId}"
-                                )
-                                dialog.dismiss()
-                            }
-                            .setPositiveButton("已清理，继续恢复") { dialog, _ ->
-                                dialog.dismiss()
-                                lifecycleScope.launch {
-                                    val confirmed = withContext(Dispatchers.IO) {
-                                        KaoChangOperate.confirmPendingSupplementBatchSafety(
-                                            "维护页点击恢复正常状态前人工确认"
-                                        )
-                                    }
-                                    if (confirmed) {
-                                        binding.btnErroStatus.performClick()
-                                    } else {
-                                        ToastUtils.showLong("未找到待确认补肠批次，请重新点击恢复正常状态")
-                                    }
-                                }
-                            }
-                            .show()
-                        return@launch
-                    }
-                    binding.tvCooldownHint.text = "正在恢复设备状态"
                     val config = AppConfig.getAppConfig()
-                    val targetOnlineStatus =
-                        if (isWithinBusinessHours(getCurrentTime(), config.businessTime)) 1 else 2
-                    val recoveryDecision = evaluateManualRecoveryHeating(targetOnlineStatus)
-                    if (!recoveryDecision.canRecoverDeviceStatus) {
-                        ToastUtils.showLong("下位机动作未空闲，请确认动作结束后再恢复")
-                        LogUtils.w(
-                            "【维护操作】拒绝恢复正常状态：${recoveryDecision.reason}，" +
-                                "targetOnlineStatus（目标设备营业状态）=${onlineStatusText(targetOnlineStatus)}，" +
-                                "currentOnlineStatus（当前设备营业状态）=${onlineStatusText(AppConfig.getAppConfig().onlineStatus)}，" +
-                                "errorStatus（设备故障状态）=${AppConfig.getAppConfig().errorStatus}，" +
-                                "moveStatus（机械动作状态）=${AppConfig.getAppConfig().moveStatus}"
-                        )
-                        return@launch
-                    }
-                    LogUtils.d(
-                        "【维护操作】点击恢复正常状态，errorStatus（设备故障状态）=${config.errorStatus}->0（正常）, " +
-                            "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}->${onlineStatusText(targetOnlineStatus)}，" +
-                            "temperatureRecovery（温度恢复策略）=${recoveryDecision.reason}"
-                    )
+                    val previousOnlineStatus = config.onlineStatus
+                    val previousErrorStatus = config.errorStatus
+                    val previousScanBlockStatus = config.scanBlockStatus
+                    val previousIsEnable = config.isEnable
+                    val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
                     config.errorStatus = 0
-                    config.onlineStatus = targetOnlineStatus
+                    config.onlineStatus = recoveredOnlineStatus
+                    config.scanBlockStatus = AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
+                    config.isEnable = 0
                     withContext(Dispatchers.IO) {
                         AppConfig.saveAppConfig(config)
-                    }
-                    clearIdleMoveStatusAfterManualRecovery("恢复正常状态前已确认下位机动作空闲")
-                    if (recoveryDecision.shouldRestoreTemperature) {
-                        withContext(Dispatchers.IO) {
-                            KaoChangOperate.restoreHeatingStateFromCurrentPans("维护页手动恢复正常状态")
-                        }
-                        LogUtils.w(
-                            "【维护操作】恢复正常状态后已按当前烤盘状态重刷温度设置寄存器：" +
-                                "寄存器503（一区1~9目标温度）、寄存器504（二区13~21目标温度）、寄存器505（三区25~33目标温度），" +
-                                "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
-                                "heatingTemperature（加热温度）=${config.heatingTemperature}℃"
-                        )
-                    } else {
-                        LogUtils.d(
-                            "【维护操作】恢复正常状态后跳过温度重刷：${recoveryDecision.reason}"
-                        )
+                        KaoChangOperate.stopHeatingForFault("维护页恢复正常状态后保持算法关闭，等待现场手动开启算法")
                     }
                     val runtimePublishOk = withContext(Dispatchers.IO) {
                         SendServerHelper.publishServiceUpdateStatus()
                     }
                     if (!runtimePublishOk) {
-                        LogUtils.w("【维护操作】恢复正常状态时 MQTT 主上报失败，回退 HTTP 补偿：" +
-                            "onlineStatus=${onlineStatusText(config.onlineStatus)}，errorStatus=${config.errorStatus}，targetOnlineStatus=${onlineStatusText(targetOnlineStatus)}")
+                        LogUtils.w(
+                            "【维护操作】恢复正常状态 MQTT 上报失败，回退 HTTP 补偿：" +
+                                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                                "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(config.scanBlockStatus)}，" +
+                                "errorStatus（设备故障状态）=${config.errorStatus}"
+                        )
                         withContext(Dispatchers.IO) {
                             DataManagementAPI.uploadDeviceInfo()
                         }
                     }
+                    ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
+                    LogUtils.w(
+                        "【维护操作】上位机已完成恢复正常状态：" +
+                            "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
+                            "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(previousScanBlockStatus)}->${scanBlockStatusText(config.scanBlockStatus)}，" +
+                            "errorStatus（设备故障状态）=$previousErrorStatus->${config.errorStatus}（正常），" +
+                            "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
+                            "恢复入口=上位机维护页，后续动作=现场手动开启烤制算法"
+                    )
                 } finally {
                     manualRecoveryInProgress.set(false)
                     binding.btnErroStatus.isEnabled = true
@@ -844,72 +788,24 @@ class MaintenanceFragment : Fragment() {
     }
 
     private fun getCurrentTime(): String {
-        return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Calendar.getInstance().time)
+        return BusinessTimeWindowHelper.currentTimeString()
     }
 
-    /**
-     * 根据当前营业时间配置判断“恢复正常状态”后应该回到运营中还是休息中。
-     * 兼容 HH:mm 和 HH:mm:ss 两种时间格式。
-     */
-    private fun isWithinBusinessHours(currentTimeStr: String, businessTime: BusinessTime?): Boolean {
-        try {
-            if (businessTime == null) return false
-
-            val current = parseBusinessTime(currentTimeStr) ?: return false
-            val calendar = Calendar.getInstance()
-            val dayOfWeek = if (calendar.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) {
-                7
-            } else {
-                calendar.get(Calendar.DAY_OF_WEEK) - 1
-            }
-
-            if ("everyday".equals(businessTime.mode, ignoreCase = true) &&
-                businessTime.defaultTime != null &&
-                businessTime.defaultTime.size >= 2
-            ) {
-                val start = parseBusinessTime(businessTime.defaultTime[0]) ?: return false
-                val end = parseBusinessTime(businessTime.defaultTime[1]) ?: return false
-                return isTimeInRange(current, start, end)
-            }
-
-            if ("custom".equals(businessTime.mode, ignoreCase = true) &&
-                businessTime.customTimes != null
-            ) {
-                for (timeItem in businessTime.customTimes) {
-                    if (timeItem.day == dayOfWeek &&
-                        timeItem.enabled &&
-                        timeItem.timeRange != null &&
-                        timeItem.timeRange.size >= 2
-                    ) {
-                        val start = parseBusinessTime(timeItem.timeRange[0]) ?: return false
-                        val end = parseBusinessTime(timeItem.timeRange[1]) ?: return false
-                        return isTimeInRange(current, start, end)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            LogUtils.e("【维护操作】恢复设备状态时解析营业时间失败：${e.message}")
+    private fun resolveManualRecoveredOnlineStatus(config: AppConfigBean): Int {
+        if (config.status != 1) {
+            return 0
         }
-        return false
-    }
-
-    private fun parseBusinessTime(value: String): Date? {
-        val formats = listOf("HH:mm:ss", "HH:mm")
-        for (pattern in formats) {
-            try {
-                return SimpleDateFormat(pattern, Locale.getDefault()).parse(value)
-            } catch (_: Exception) {
-            }
-        }
-        return null
-    }
-
-    private fun isTimeInRange(current: Date, start: Date, end: Date): Boolean {
-        return if (start.before(end) || start == end) {
-            (current.after(start) || current == start) && (current.before(end) || current == end)
+        return if (BusinessTimeWindowHelper.isWithinBusinessHours(getCurrentTime(), config.businessTime)) {
+            1
         } else {
-            (current.after(start) || current == start) || (current.before(end) || current == end)
+            2
         }
+    }
+
+    private fun scanBlockStatusText(value: Int): String = when (value) {
+        AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0（不屏蔽）"
+        AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1（屏蔽）"
+        else -> "$value（未知）"
     }
 
     /**
