@@ -42,6 +42,14 @@ object TrafficModeHelper {
             .firstOrNull()
     }
 
+    fun shouldUseExpandedSellRange(
+        modeType: Int,
+        transitionMode: Int,
+        highConcurrencyResidualDrain: Int
+    ): Boolean {
+        return modeType == 2 || transitionMode != 0 || highConcurrencyResidualDrain == 1
+    }
+
     fun selectFrontTargetPan(
         list: List<KaoPan>,
         tasteCode: String?,

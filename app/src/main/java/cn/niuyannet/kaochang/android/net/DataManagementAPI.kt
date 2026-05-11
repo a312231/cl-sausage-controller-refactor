@@ -10,7 +10,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
-import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
+import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -203,6 +203,12 @@ object DataManagementAPI {
         return config.onlineStatus in listOf(1, 4) &&
             config.inspectionMode == AppConfigBean.INSPECTION_MODE_NORMAL &&
             config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
+    }
+
+    private fun canApplyRemoteTemperatureConfig(config: AppConfigBean): Boolean {
+        return config.onlineStatus in listOf(1, 4) &&
+            config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL &&
+            config.scanBlockStatus == AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
     }
 
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
@@ -514,62 +520,53 @@ object DataManagementAPI {
 
         val previousModeType = currentConfigBeforeApply.modeType
         val previousTransitionMode = currentConfigBeforeApply.transitionMode
+        val previousResidualDrain = currentConfigBeforeApply.highConcurrencyResidualDrain
         val requestedModeType = json.getInteger("modeType") ?: previousModeType
         val requestedTransitionMode = json.getInteger("transitionMode")
         val operator = json.getString("operator").orEmpty()
-        val hasSupplyBoxesAvailable = KaoPanHelper.getKaoPanBoxList().any { it.num > 0 }
-        val highToLowResidualDecision = HighToLowEmptyResidualHelper.evaluate(
-            transitionMode = previousTransitionMode,
-            onlineStatus = currentConfigBeforeApply.onlineStatus,
-            errorStatus = currentConfigBeforeApply.errorStatus,
-            moveStatus = currentConfigBeforeApply.moveStatus,
-            hasSupplyBoxesAvailable = hasSupplyBoxesAvailable,
-            kaoPanList = KaoPanHelper.getKaoPanList()
-        )
-        val highConcurrencyAreaActive = !highToLowResidualDecision.highConcurrencyAreaIdle
-        val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
-            currentModeType = previousModeType,
-            currentTransitionMode = previousTransitionMode,
-            requestedModeType = requestedModeType,
-            requestedTransitionMode = requestedTransitionMode,
-            highConcurrencyAreaActive = highConcurrencyAreaActive,
-            highToLowEmptyResidualCanClear = highToLowResidualDecision.canClear,
-            preserveHighToLowTransition =
-                highToLowResidualDecision.isHighToLowTransition &&
-                    (!highToLowResidualDecision.runtimeStateReliable || highConcurrencyAreaActive)
+        val resolvedModeType = requestedModeType.takeIf { it == 1 || it == 2 }
+            ?: previousModeType.takeIf { it == 1 || it == 2 }
+            ?: 1
+        val resolvedTransitionMode = 0
+        val resolvedResidualDrain = HighConcurrencyResidualDrainEvaluator.evaluate(
+            modeType = resolvedModeType,
+            kaoPanList = KaoPanHelper.getKaoPanList(),
+            includeLowHeatOverlapArea = resolvedModeType == 1 &&
+                (previousModeType == 2 || previousTransitionMode != 0 || previousResidualDrain == 1)
         )
 
-        currentConfigBeforeApply.modeType = resolvedTarget.modeType
-        currentConfigBeforeApply.transitionMode = resolvedTarget.transitionMode
+        currentConfigBeforeApply.modeType = resolvedModeType
+        currentConfigBeforeApply.transitionMode = resolvedTransitionMode
+        currentConfigBeforeApply.highConcurrencyResidualDrain = resolvedResidualDrain
         AppConfig.saveAppConfig(currentConfigBeforeApply)
 
         val currentConfig = AppConfig.getAppConfig()
         val changed =
             previousModeType != currentConfig.modeType ||
-                previousTransitionMode != currentConfig.transitionMode
+                previousTransitionMode != currentConfig.transitionMode ||
+                previousResidualDrain != currentConfig.highConcurrencyResidualDrain
 
         if (controlSeq > 0) {
             lastAppliedConcurrencyControlSeq = maxOf(lastAppliedConcurrencyControlSeq, controlSeq)
         }
 
-        if (resolvedTarget.overrodeConflictingTransition) {
+        val overrodeConflictingTransition = previousTransitionMode != 0 && currentConfig.transitionMode == 0
+        if (overrodeConflictingTransition) {
             logW(
-                "远端并发控制覆盖了本地高转低过渡：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
-                    "后台目标 modeType（并发模式）=${formatDiffValue("modeType", resolvedTarget.modeType)}，" +
-                    "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", resolvedTarget.transitionMode)}，" +
+                "远端并发控制覆盖了本地过渡态：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                    "后台目标 modeType（并发模式）=${formatDiffValue("modeType", currentConfig.modeType)}，" +
+                    "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
                     "策略=以后台最新目标为准"
             )
         }
-        if (requestedModeType != resolvedTarget.modeType || (requestedTransitionMode ?: previousTransitionMode) != resolvedTarget.transitionMode) {
+        if (requestedModeType != currentConfig.modeType || (requestedTransitionMode ?: 0) != currentConfig.transitionMode) {
             logW(
-                "远端并发控制已归一化并发运行态：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                "远端并发控制已按后台手动稳态语义归一化：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                     "请求 modeType（并发模式）=${formatDiffValue("modeType", requestedModeType)}，" +
-                    "请求 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", requestedTransitionMode ?: previousTransitionMode)}，" +
-                    "高并发区域是否仍有烤肠或动作=$highConcurrencyAreaActive，" +
-                    "高转低空残留是否可清理=${highToLowResidualDecision.canClear}，" +
-                    "runtimeStateReliable（运行态是否可信）=${highToLowResidualDecision.runtimeStateReliable}，" +
-                    "落地 modeType（并发模式）=${formatDiffValue("modeType", resolvedTarget.modeType)}，" +
-                    "落地 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", resolvedTarget.transitionMode)}"
+                    "请求 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", requestedTransitionMode ?: 0)}，" +
+                    "落地 modeType（并发模式）=${formatDiffValue("modeType", currentConfig.modeType)}，" +
+                    "落地 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
+                    "highConcurrencyResidualDrain（高并发残留消化态）=${currentConfig.highConcurrencyResidualDrain}"
             )
         }
 
@@ -577,7 +574,8 @@ object DataManagementAPI {
             "远端并发控制已应用：" +
                 "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                 "modeType（并发模式）=${formatDiffValue("modeType", previousModeType)}->${formatDiffValue("modeType", currentConfig.modeType)}，" +
-                "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", previousTransitionMode)}->${formatDiffValue("transitionMode", currentConfig.transitionMode)}"
+                "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", previousTransitionMode)}->${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
+                "highConcurrencyResidualDrain（高并发残留消化态）=$previousResidualDrain->${currentConfig.highConcurrencyResidualDrain}"
         )
         return ConcurrencyControlApplyResult(
             controlSeq = controlSeq,
@@ -586,7 +584,7 @@ object DataManagementAPI {
             reason = "applied",
             modeType = currentConfig.modeType,
             transitionMode = currentConfig.transitionMode,
-            overrodeConflictingTransition = resolvedTarget.overrodeConflictingTransition
+            overrodeConflictingTransition = overrodeConflictingTransition
         )
     }
 
@@ -878,8 +876,15 @@ object DataManagementAPI {
                 mergedConfig,
                 "getDeviceInfo"
             )
-            if (temperatureConfigChanged) {
+            if (temperatureConfigChanged && canApplyRemoteTemperatureConfig(mergedConfig)) {
                 KaoChangOperate.applyConfiguredTemperatureByPanState("getDeviceInfo 后台温度配置变化")
+            } else if (temperatureConfigChanged) {
+                logW(
+                    "后台温度配置已变化，但设备当前不可加热，跳过重刷温度寄存器：" +
+                        "source=getDeviceInfo，onlineStatus（设备营业状态）=${onlineStatusText(mergedConfig.onlineStatus)}，" +
+                        "errorStatus（设备故障状态）=${mergedConfig.errorStatus}，" +
+                        "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(mergedConfig.scanBlockStatus)}"
+                )
             }
             refreshStockData(logPrefix = "$LOG_SYNC-stock-after-config")
         }
@@ -1013,8 +1018,15 @@ object DataManagementAPI {
                         "heatingTemperature（加热温度）=${oldHeatingTemperature}℃->${mergedConfig.heatingTemperature}℃"
                 )
             }
-            if (temperatureConfigChanged) {
+            if (temperatureConfigChanged && canApplyRemoteTemperatureConfig(mergedConfig)) {
                 KaoChangOperate.applyConfiguredTemperatureByPanState("$logPrefix 后台温度配置变化")
+            } else if (temperatureConfigChanged) {
+                logW(
+                    "后台温度配置已变化，但设备当前不可加热，跳过重刷温度寄存器：" +
+                        "source=$logPrefix，onlineStatus（设备营业状态）=${onlineStatusText(mergedConfig.onlineStatus)}，" +
+                        "errorStatus（设备故障状态）=${mergedConfig.errorStatus}，" +
+                        "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(mergedConfig.scanBlockStatus)}"
+                )
             }
 
             onResult?.invoke(

@@ -74,6 +74,9 @@ public class AppConfigBean implements Serializable {
     // 并发切换中的过渡态：0=无过渡态，1=低转高过渡，2=高转低过渡
     public int transitionMode;
 
+    // 高并发残留消化态：0=无残留，1=低并发下 10~21 或 25~33 仍有烤肠/动作/保温状态
+    public int highConcurrencyResidualDrain = 0;
+
     // 设备故障状态：0=正常，1=识别/流程错误，2=通信/硬件级故障
     public int errorStatus;
 

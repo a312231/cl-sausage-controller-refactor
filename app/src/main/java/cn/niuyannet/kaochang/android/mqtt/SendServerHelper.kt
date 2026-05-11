@@ -66,6 +66,7 @@ object SendServerHelper {
         val isEnable: Int,
         val modeType: Int,
         val transitionMode: Int,
+        val highConcurrencyResidualDrain: Int,
         val moveStatus: Int,
         val errorStatus: Int,
         val restStatusSource: String?,
@@ -142,6 +143,7 @@ object SendServerHelper {
         payload["isEnable"] = AppConfig.getAlgorithmEnableFlag()
         payload["modeType"] = config.modeType
         payload["transitionMode"] = config.transitionMode
+        payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
         payload["restStatusSource"] = config.restStatusSource
@@ -166,6 +168,7 @@ object SendServerHelper {
                 isEnable = AppConfig.getAlgorithmEnableFlag(),
                 modeType = config.modeType,
                 transitionMode = config.transitionMode,
+                highConcurrencyResidualDrain = config.highConcurrencyResidualDrain,
                 moveStatus = config.moveStatus,
                 errorStatus = config.errorStatus,
                 restStatusSource = config.restStatusSource,
@@ -181,6 +184,7 @@ object SendServerHelper {
                     "scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
                     "isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
                     "modeType=${config.modeType}，transitionMode=${config.transitionMode}，" +
+                    "highConcurrencyResidualDrain（高并发残留消化态）=${config.highConcurrencyResidualDrain}，" +
                     "moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}，" +
                     "restStatusSource=${config.restStatusSource}"
             )
@@ -420,6 +424,7 @@ object SendServerHelper {
             append(AppConfig.getAlgorithmEnableFlag()).append('|')
             append(config.modeType).append('|')
             append(config.transitionMode).append('|')
+            append(config.highConcurrencyResidualDrain).append('|')
             append(config.moveStatus).append('|')
             append(config.errorStatus).append('|')
             append(config.restStatusSource ?: "")

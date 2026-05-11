@@ -121,6 +121,12 @@ object KaoChangAlgorithm {
         else -> "$value（未知）"
     }
 
+    private fun residualDrainText(value: Int): String = when (value) {
+        0 -> "0(无高并发残留)"
+        1 -> "1(高并发残留消化中)"
+        else -> "$value(未知)"
+    }
+
     private fun logBusinessStartSkipOnce(source: String, reason: String, config: AppConfigBean) {
         val logKey = listOf(
             source,
@@ -322,6 +328,7 @@ object KaoChangAlgorithm {
                 config.isEnable,
                 config.modeType,
                 config.transitionMode,
+                config.highConcurrencyResidualDrain,
                 frontOccupiedCount,
                 frontHoldingCount,
                 frontHeatingCount,
@@ -353,9 +360,13 @@ object KaoChangAlgorithm {
         val list_13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
         val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
 
-        val isLowOrTransition = config.modeType == 1 || config.transitionMode == 1
-        val sellArea = if (isLowOrTransition) list_1_9 else list_1_21
-        val heatArea = if (isLowOrTransition) list_13_18 else list_25_33
+        val expandedSellRange = TrafficModeHelper.shouldUseExpandedSellRange(
+            config.modeType,
+            config.transitionMode,
+            config.highConcurrencyResidualDrain
+        )
+        val sellArea = if (expandedSellRange) list_1_21 else list_1_9
+        val heatArea = if (expandedSellRange) list_25_33 else list_13_18
         val trackedArea = sellArea + heatArea
         val trackedPans = trackedArea.filter { it.isHasSausage }
         val sellableHoldingPans = sellArea.filter { isHoldingPan(it) }
@@ -374,7 +385,7 @@ object KaoChangAlgorithm {
         }
 
         val nextOpeningBatch = findNextOpeningSellBatch(
-            isLowOrTransition = isLowOrTransition,
+            isLowOrTransition = !expandedSellRange,
             sellArea = sellArea,
             now = now
         )
@@ -394,7 +405,7 @@ object KaoChangAlgorithm {
             return
         }
 
-        val nextSupplementBatch = findNextSupplementHeatBatch(isLowOrTransition, heatArea, now)
+        val nextSupplementBatch = findNextSupplementHeatBatch(!expandedSellRange, heatArea, now)
 
         if (nextSupplementBatch != null) {
             logAvailableDecision(
@@ -417,18 +428,28 @@ object KaoChangAlgorithm {
     }
 
     private fun getSellArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
-        return if (config.modeType == 1 || config.transitionMode == 1) {
-            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
-        } else {
+        return if (TrafficModeHelper.shouldUseExpandedSellRange(
+                config.modeType,
+                config.transitionMode,
+                config.highConcurrencyResidualDrain
+            )
+        ) {
             TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
+        } else {
+            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
         }
     }
 
     private fun getTrackedArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
-        return if (config.modeType == 1 || config.transitionMode == 1) {
-            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
-        } else {
+        return if (TrafficModeHelper.shouldUseExpandedSellRange(
+                config.modeType,
+                config.transitionMode,
+                config.highConcurrencyResidualDrain
+            )
+        ) {
             getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
+        } else {
+            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
         }
     }
 
@@ -570,6 +591,58 @@ object KaoChangAlgorithm {
         return config.inspectionMode == AppConfigBean.INSPECTION_MODE_ACTIVE
     }
 
+    private fun refreshHighConcurrencyResidualDrain(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>,
+        source: String
+    ): Boolean {
+        val previousResidualDrain = config.highConcurrencyResidualDrain
+        val targetResidualDrain = HighConcurrencyResidualDrainEvaluator.evaluate(
+            modeType = config.modeType,
+            kaoPanList = kaoPanList,
+            includeLowHeatOverlapArea = config.highConcurrencyResidualDrain == 1
+        )
+        if (previousResidualDrain == targetResidualDrain) {
+            return false
+        }
+        config.highConcurrencyResidualDrain = targetResidualDrain
+        AppConfig.saveAppConfig(config)
+        logI(
+            LOG_ALGORITHM,
+            "高并发残留消化态已更新：source=$source，" +
+                "highConcurrencyResidualDrain（高并发残留消化态）=${residualDrainText(previousResidualDrain)}->${residualDrainText(targetResidualDrain)}，" +
+                "modeType（并发模式）=${modeText(config.modeType)}，transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}"
+        )
+        publishRuntimeStateOrFallback("runtime_state:high_concurrency_residual_drain_changed")
+        return true
+    }
+
+    private fun stopHeatingAndDispatchForFault(
+        config: AppConfigBean,
+        reason: String,
+        forceStopHeating: Boolean = false
+    ) {
+        val previousOnlineStatus = config.onlineStatus
+        val previousIsEnable = config.isEnable
+        if (config.onlineStatus != 3) {
+            config.onlineStatus = 3
+        }
+        config.isEnable = 0
+        isEnabled = false
+        AppConfig.saveAppConfig(config)
+        if (forceStopHeating || !faultHeatingStopped) {
+            faultHeatingStopped = true
+            KaoChangOperate.stopHeatingForFault(reason)
+        }
+        logW(
+            LOG_DEVICE,
+            "设备故障态收口：reason=$reason，" +
+                "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
+                "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
+                "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}"
+        )
+    }
+
     /**
      * 轮询烤盘和设备状态，决定当前调度模式。
      */
@@ -600,6 +673,11 @@ object KaoChangAlgorithm {
             onlineStatus = AppConfig.getAppConfig().onlineStatus
         }
 
+        if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
+            stopHeatingAndDispatchForFault(config, "算法轮询检测到设备故障")
+            SendServerHelper.publishServiceUpdateStatus()
+            return
+        }
         if (!(onlineStatus == 1 || onlineStatus == 4)) {
             logD(LOG_DEVICE, "设备当前处于${onlineStatusText(onlineStatus)}，跳过算法调度")
             return
@@ -624,6 +702,7 @@ object KaoChangAlgorithm {
         KaoChangOperate.stopAllHeatingIfNoSausage("全盘无肠兜底检测")
 
         selfHealHighToLowEmptyResidual(config, kaoPanList, kaoPanBoxList)
+        refreshHighConcurrencyResidualDrain(config, kaoPanList, "pollKaoPanStatus")
         val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
         val autoDispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
             onlineStatus = onlineStatus,
@@ -635,11 +714,11 @@ object KaoChangAlgorithm {
             isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus) && autoDispatchDecision.canStart
 
         val pollStateSnapshot =
-            "mode=${config.modeType},transition=${config.transitionMode},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},scanBlock=${config.scanBlockStatus},inspection=${config.inspectionMode},enable=$schedulingEnabled"
+            "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},scanBlock=${config.scanBlockStatus},inspection=${config.inspectionMode},enable=$schedulingEnabled"
         if (pollStateSnapshot != lastPollStateSnapshot) {
             logD(
                 LOG_ALGORITHM,
-                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，onlineStatus=${onlineStatusText(onlineStatus)}，supplyStatus=${supplyStatusText(config.supplyStatus)}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}，schedulingEnabled=$schedulingEnabled"
+                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，highConcurrencyResidualDrain=${residualDrainText(config.highConcurrencyResidualDrain)}，onlineStatus=${onlineStatusText(onlineStatus)}，supplyStatus=${supplyStatusText(config.supplyStatus)}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}，schedulingEnabled=$schedulingEnabled"
             )
             lastPollStateSnapshot = pollStateSnapshot
         }
@@ -674,13 +753,25 @@ object KaoChangAlgorithm {
             }
 
             config.modeType == 1 -> {
-                LowCurrentTrafficMode.lowTrafficMode(
-                    config,
-                    kaoPanList,
-                    kaoPanBoxList,
-                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
-                    schedulingEnabled = schedulingEnabled
-                )
+                if (config.highConcurrencyResidualDrain == 1) {
+                    logI(
+                        LOG_ALGORITHM,
+                        "【调度保护】低并发高并发残留消化中，暂停新的低并发补热批次：" +
+                            "highConcurrencyResidualDrain=${residualDrainText(config.highConcurrencyResidualDrain)}"
+                    )
+                    HighCurrentTrafficMode.drainHighConcurrencyResidual(
+                        list = kaoPanList,
+                        reason = "低并发高并发残留消化态"
+                    )
+                } else {
+                    LowCurrentTrafficMode.lowTrafficMode(
+                        config,
+                        kaoPanList,
+                        kaoPanBoxList,
+                        boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                        schedulingEnabled = schedulingEnabled
+                    )
+                }
             }
 
             config.modeType == 2 -> {
@@ -859,7 +950,7 @@ object KaoChangAlgorithm {
                             rememberRecoverableOnlineStatus(config.onlineStatus)
                             config.errorStatus = 2
                             config.onlineStatus = 3
-                            AppConfig.saveAppConfig(config)
+                            stopHeatingAndDispatchForFault(config, "modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms")
                             modbusReportedUnavailable = true
                             loggedManualRecoveryRequiredOnDisconnect = false
                             uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，自动恢复原因=断连类错误，已上报维护中")

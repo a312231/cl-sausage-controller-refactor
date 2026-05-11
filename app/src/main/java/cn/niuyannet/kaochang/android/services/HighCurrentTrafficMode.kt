@@ -229,6 +229,29 @@ object HighCurrentTrafficMode {
         }
     }
 
+    /**
+     * 低并发高并发残留消化态专用收尾。
+     *
+     * 只处理 1~21 / 25~33 已存在烤肠的加热完成、保温和 1~21 过保丢弃；
+     * 不向 25~33 补新肠，也不把 25~33 回搬到 1~21。
+     */
+    suspend fun drainHighConcurrencyResidual(
+        list: List<KaoPan>,
+        reason: String
+    ) {
+        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
+        val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
+        val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
+        val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
+
+        LogUtils.i(TAG, "【并发残留】执行高并发残留消化收尾：reason=$reason，不补新肠、不回搬25~33")
+        checkHighHeatEnd(list1_9, 1)
+        checkHighHeatEnd(list10_21, 2)
+        checkHighHeatEnd(list25_33, 3, requireCompleteZone3Batch = false)
+        checkHighHeatDiscard(list1_21)
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+    }
+
     private suspend fun resumeHighInitialization(
         listBox: List<KaoPanBox>,
         list1_21: List<KaoPan>,
@@ -757,8 +780,12 @@ object HighCurrentTrafficMode {
      * 检查指定区域是否已经整体烤熟。
      * 烤熟后关闭对应加热区并进入保温状态。
      */
-    private fun checkHighHeatEnd(list: List<KaoPan>, area: Int) {
-        if (area == 3) {
+    private fun checkHighHeatEnd(
+        list: List<KaoPan>,
+        area: Int,
+        requireCompleteZone3Batch: Boolean = true
+    ) {
+        if (area == 3 && requireCompleteZone3Batch) {
             val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
             if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
                 LogUtils.i(
