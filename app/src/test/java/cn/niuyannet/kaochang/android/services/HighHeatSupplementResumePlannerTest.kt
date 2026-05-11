@@ -107,6 +107,113 @@ class HighHeatSupplementResumePlannerTest {
         assertTrue(HighHeatSupplementResumePlanner.isCompleteFinishedBatch(group))
     }
 
+    @Test
+    fun findFinishedPartialBatch_shouldReturn25To27WhenAllPartialPansReachBakingTime() {
+        val nowMs = 10_000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 1_000L
+                    bakingTime = 8_000L
+                    status = 1
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+
+        assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findFinishedPartialBatch_shouldRejectWhenAnyPartialPanStillBaking() {
+        val nowMs = 10_000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                startTime = if (position == 27) 7_000L else 1_000L
+                bakingTime = 8_000L
+                status = 1
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findFinishedPartialBatch_shouldRejectFullBatch() {
+        val nowMs = 10_000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = true).apply {
+                startTime = 1_000L
+                bakingTime = 8_000L
+                status = 1
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findFinishedPartialBatch_shouldRejectInvalidTiming() {
+        val nowMs = 10_000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                startTime = if (position == 26) 0L else 1_000L
+                bakingTime = if (position == 27) 0L else 8_000L
+                status = 1
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun markFinishedPartialBatchKeepWarm_shouldSwitchMaturedPartialPansToKeepWarm() {
+        val nowMs = 10_000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 1_000L
+                    bakingTime = 8_000L
+                    status = 1
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.markFinishedPartialBatchKeepWarm(group, nowMs)
+
+        assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
+        result.forEach { pan ->
+            assertEquals(0L, pan.startTime)
+            assertEquals(nowMs, pan.holdingTime)
+            assertEquals(2, pan.status)
+        }
+        assertEquals(0, group.first { it.positionSn == 28 }.status)
+    }
+
+    @Test
+    fun findKeepWarmPartialBatchReadyToMove_shouldReturnRetainedPartialPans() {
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 0L
+                    holdingTime = 10_000L
+                    status = 2
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findKeepWarmPartialBatchReadyToMove(group)
+
+        assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
+    }
+
     private fun frontPan(positionSn: Int, tasteCode: String, reserved: Boolean): KaoPan =
         KaoPan().apply {
             this.positionSn = positionSn

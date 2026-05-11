@@ -55,6 +55,44 @@ internal object HighHeatSupplementResumePlanner {
         return sortedGroup.all { it.status == 2 }
     }
 
+    fun findFinishedPartialBatch(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
+        val sortedGroup = supplementGroup.sortedBy { it.positionSn }
+        val occupiedPans = sortedGroup.filter { it.isHasSausage }
+        if (occupiedPans.size !in 1 until sortedGroup.size) {
+            return emptyList()
+        }
+        val allFinished = occupiedPans.all { pan ->
+            pan.startTime > 0L &&
+                pan.bakingTime > 0L &&
+                nowMs - pan.startTime >= pan.bakingTime
+        }
+        return if (allFinished) occupiedPans else emptyList()
+    }
+
+    fun markFinishedPartialBatchKeepWarm(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
+        val finishedPans = findFinishedPartialBatch(supplementGroup, nowMs)
+        finishedPans.forEach { pan ->
+            pan.startTime = 0L
+            pan.holdingTime = nowMs
+            pan.status = 2
+        }
+        return finishedPans
+    }
+
+    fun findKeepWarmPartialBatchReadyToMove(supplementGroup: List<KaoPan>): List<KaoPan> {
+        val sortedGroup = supplementGroup.sortedBy { it.positionSn }
+        val occupiedPans = sortedGroup.filter { it.isHasSausage }
+        if (occupiedPans.size !in 1 until sortedGroup.size) {
+            return emptyList()
+        }
+        val allKeepWarm = occupiedPans.all { pan ->
+            pan.startTime == 0L &&
+                pan.holdingTime > 0L &&
+                pan.status == 2
+        }
+        return if (allKeepWarm) occupiedPans else emptyList()
+    }
+
     private fun reservedTasteForGroupPosition(
         targetPan: KaoPan,
         groupStart: Int,

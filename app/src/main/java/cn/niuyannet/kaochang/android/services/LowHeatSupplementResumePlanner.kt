@@ -38,6 +38,45 @@ internal object LowHeatSupplementResumePlanner {
         }
     }
 
+    fun findFinishedPans(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
+        return supplementGroup
+            .filter { pan ->
+                pan.isHasSausage &&
+                    pan.startTime > 0L &&
+                    pan.bakingTime > 0L &&
+                    nowMs - pan.startTime >= pan.bakingTime
+            }
+            .sortedBy { it.positionSn }
+    }
+
+    fun markFinishedPansKeepWarm(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
+        val finishedPans = findFinishedPans(supplementGroup, nowMs)
+        finishedPans.forEach { pan ->
+            pan.startTime = 0L
+            pan.holdingTime = nowMs
+            pan.status = 2
+        }
+        return finishedPans
+    }
+
+    fun findKeepWarmPansReadyToMove(supplementGroup: List<KaoPan>): List<KaoPan> {
+        return supplementGroup
+            .filter { pan ->
+                pan.isHasSausage &&
+                    pan.startTime == 0L &&
+                    pan.holdingTime > 0L &&
+                    pan.status == 2
+            }
+            .sortedBy { it.positionSn }
+    }
+
+    fun longestRemainingBakingMs(supplementGroup: List<KaoPan>, nowMs: Long): Long? {
+        return supplementGroup
+            .filter { it.isHasSausage && it.startTime > 0L && it.bakingTime > 0L }
+            .map { pan -> (pan.bakingTime - (nowMs - pan.startTime)).coerceAtLeast(0L) }
+            .maxOrNull()
+    }
+
     private fun reservedTasteForGroupPosition(
         targetPan: KaoPan,
         groupStart: Int,

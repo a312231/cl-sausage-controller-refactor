@@ -112,6 +112,14 @@ object LowCurrentTrafficMode {
                 initLowTrafficMode(kaoPanList, listBox)
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
+            if (schedulingEnabled && p16_18 < list16_18.size) {
+                checkLowHeatSausage16_18(kaoPanList)
+            }
+
+            if (schedulingEnabled && p13_15 < list13_15.size) {
+                checkLowHeatSausage(kaoPanList)
+            }
+
             if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 if (resumeLowInitialization(listBox, list1_9, list13_18)) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
@@ -125,14 +133,6 @@ object LowCurrentTrafficMode {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     return totalEmpty
                 }
-            }
-
-            if (schedulingEnabled && p16_18 < list16_18.size) {
-                checkLowHeatSausage16_18(kaoPanList)
-            }
-
-            if (schedulingEnabled && p13_15 < list13_15.size) {
-                checkLowHeatSausage(kaoPanList)
             }
 
             if (schedulingEnabled && supplementDecision == 1 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
@@ -215,7 +215,8 @@ object LowCurrentTrafficMode {
         KaoChangOperate.heating(2)
         LogUtils.i(
             TAG,
-            "【低并发补肠】续补 $groupName 未完成批次：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}"
+            "【低并发补肠】续补 $groupName 未完成批次：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}，" +
+                "口味=${resumeTargets.joinToString(",") { it.tasteCode }}"
         )
         val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
             resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
@@ -297,57 +298,8 @@ object LowCurrentTrafficMode {
      * 烤熟后搬回前区同口味的待补位，并在搬运成功后才将目标位标记为可售。
      */
     private suspend fun checkLowHeatSausage(list: List<KaoPan>) {
-        val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, list)
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
-        var allFinished = true
-        var heatingCount = 0
-
-        list13_15.forEach { kaoPan ->
-            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                heatingCount += 1
-                val heatTime = System.currentTimeMillis() - kaoPan.startTime
-                if (heatTime < kaoPan.bakingTime) {
-                    allFinished = false
-                }
-            }
-        }
-
-        if (allFinished && heatingCount > 0) {
-            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
-            KaoChangOperate.keepWarm(1)
-            LogUtils.i(TAG, "【低并发补肠】13~15 补热区已烤熟，开始回补前区")
-            list13_15.forEach { kaoPan ->
-                if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                    val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-                    val targetPan = TrafficModeHelper.selectFrontTargetPan(
-                        list1_9,
-                        kaoPan.taste.tasteCode,
-                        requireReserved = true
-                    )
-                    targetPan?.let {
-                        KaoChangOperate.moveKaoPanToKaoPan(
-                            kaoPan,
-                            it,
-                            targetHoldingTime = System.currentTimeMillis()
-                        )
-                    } ?: LogUtils.w(
-                        TAG,
-                        "【低并发补肠】13~15 补热区烤熟回补失败：未找到同口味前区待补位，烤盘=${kaoPan.positionSn}，口味=${kaoPan.taste.tasteCode}"
-                    )
-                }
-            }
-
-            val remainingSupplement = list13_18.count { it.isHasSausage }
-            if (remainingSupplement == 0) {
-                LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
-                KaoChangOperate.stopHeating(2)
-            }
-            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
-                beforeSellable,
-                KaoPanHelper.getKaoPanList(),
-                "低并发13~15补热区烤熟搬回前区"
-            )
-        }
+        moveFinishedLowHeatPansToFront(list, list13_15, "13~15")
     }
 
     /**
@@ -355,57 +307,108 @@ object LowCurrentTrafficMode {
      * 烤熟后搬回前区同口味的待补位，并在搬运成功后才将目标位标记为可售。
      */
     private suspend fun checkLowHeatSausage16_18(list: List<KaoPan>) {
-        val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, list)
         val list16_18 = TrafficModeHelper.getTrafficModePositions(16, 18, list)
-        var allFinished = true
-        var heatingCount = 0
+        moveFinishedLowHeatPansToFront(list, list16_18, "16~18")
+    }
 
-        list16_18.forEach { kaoPan ->
-            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                heatingCount += 1
-                val heatTime = System.currentTimeMillis() - kaoPan.startTime
-                if (heatTime < kaoPan.bakingTime) {
-                    allFinished = false
-                }
-            }
+    private suspend fun moveFinishedLowHeatPansToFront(
+        list: List<KaoPan>,
+        supplementGroup: List<KaoPan>,
+        groupName: String
+    ): Boolean {
+        val nowMs = System.currentTimeMillis()
+        val keepWarmPans = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(supplementGroup)
+        val finishedPans = if (keepWarmPans.isEmpty()) {
+            LowHeatSupplementResumePlanner.findFinishedPans(supplementGroup, nowMs)
+        } else {
+            emptyList()
+        }
+        if (keepWarmPans.isEmpty() && finishedPans.isEmpty()) {
+            logUnfinishedLowHeatPans(supplementGroup, groupName, nowMs)
+            return false
         }
 
-        if (allFinished && heatingCount > 0) {
-            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
-            KaoChangOperate.keepWarm(1)
-            LogUtils.i(TAG, "【低并发补肠】16~18 补热区已烤熟，开始回补前区")
-            list16_18.forEach { kaoPan ->
-                if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                    val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-                    val targetPan = TrafficModeHelper.selectFrontTargetPan(
-                        list1_9,
-                        kaoPan.taste.tasteCode,
-                        requireReserved = true
-                    )
-                    targetPan?.let {
-                        KaoChangOperate.moveKaoPanToKaoPan(
-                            kaoPan,
-                            it,
-                            targetHoldingTime = System.currentTimeMillis()
-                        )
-                    } ?: LogUtils.w(
-                        TAG,
-                        "【低并发补肠】16~18 补热区烤熟回补失败：未找到同口味前区待补位，烤盘=${kaoPan.positionSn}，口味=${kaoPan.taste.tasteCode}"
-                    )
-                }
-            }
-
-            val remainingSupplement = list13_18.count { it.isHasSausage }
-            if (remainingSupplement == 0) {
-                LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
-                KaoChangOperate.stopHeating(2)
-            }
-            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
-                beforeSellable,
-                KaoPanHelper.getKaoPanList(),
-                "低并发16~18补热区烤熟搬回前区"
+        val dispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
+            onlineStatus = AppConfig.getAppConfig().onlineStatus,
+            errorStatus = AppConfig.getAppConfig().errorStatus,
+            inspectionMode = AppConfig.getAppConfig().inspectionMode,
+            moveStatus = AppConfig.getAppConfig().moveStatus
+        )
+        if (!dispatchDecision.canStart) {
+            LogUtils.i(
+                TAG,
+                "【低并发补肠】$groupName 补热区已熟烤肠暂不回搬：${dispatchDecision.reason}"
             )
+            return true
         }
+
+        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val readyPans = keepWarmPans.ifEmpty {
+            LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(supplementGroup, nowMs)
+        }
+        if (readyPans.isEmpty()) {
+            return false
+        }
+
+        LogUtils.i(
+            TAG,
+            "【低并发补肠】$groupName 补热区已熟批次开始回补 1~9：sourcePositions=${readyPans.map { it.positionSn }}，targetRange=1~9"
+        )
+        KaoChangOperate.keepWarm(1)
+        readyPans.forEach { sourcePan ->
+            val tasteCode = sourcePan.taste?.tasteCode
+            val targetPan = TrafficModeHelper.selectFrontTargetPan(
+                TrafficModeHelper.getTrafficModePositions(1, 9, list),
+                tasteCode,
+                requireReserved = true
+            )
+            if (targetPan == null) {
+                LogUtils.w(
+                    TAG,
+                    "【低并发补肠】$groupName 补热区已熟回补失败：未找到 1~9 同口味待补位，sourcePan=${sourcePan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                )
+                return@forEach
+            }
+            val moved = KaoChangOperate.moveKaoPanToKaoPan(
+                sourcePan,
+                targetPan,
+                targetHoldingTime = sourcePan.holdingTime
+            )
+            if (!moved) {
+                LogUtils.w(
+                    TAG,
+                    "【低并发补肠】$groupName 补热区已熟回补失败：机械调度未启动或搬移失败，sourcePan=${sourcePan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                )
+            }
+        }
+
+        val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, list)
+        if (list13_18.none { it.isHasSausage }) {
+            LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
+            KaoChangOperate.stopHeating(2)
+        }
+        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+            beforeSellable,
+            KaoPanHelper.getKaoPanList(),
+            "低并发补热区残缺批次烤熟搬回1~9"
+        )
+        return true
+    }
+
+    private fun logUnfinishedLowHeatPans(
+        supplementGroup: List<KaoPan>,
+        groupName: String,
+        nowMs: Long
+    ) {
+        val occupiedPans = supplementGroup.filter { it.isHasSausage }.sortedBy { it.positionSn }
+        if (occupiedPans.isEmpty()) {
+            return
+        }
+        val longestRemainingMs = LowHeatSupplementResumePlanner.longestRemainingBakingMs(supplementGroup, nowMs) ?: 0L
+        LogUtils.i(
+            TAG,
+            "【低并发补肠】$groupName 补热区仍在烤制，等待续补或下轮回搬：occupiedPositions=${occupiedPans.map { it.positionSn }}，longestRemainingMs=$longestRemainingMs"
+        )
     }
 
     /**

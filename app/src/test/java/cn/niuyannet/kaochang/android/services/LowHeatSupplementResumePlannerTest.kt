@@ -74,6 +74,162 @@ class LowHeatSupplementResumePlannerTest {
         assertEquals("C", group[2].taste.tasteCode)
     }
 
+    @Test
+    fun findFinishedPans_shouldReturn13WhenOnly13ReachedBakingTime() {
+        val nowMs = 40L * 60L * 1000L
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 1L
+                bakingTime = nowMs - 1L
+                status = 1
+            },
+            supplementPan(14, "A", hasSausage = false),
+            supplementPan(15, "A", hasSausage = false)
+        )
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+
+        assertEquals(listOf(13), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findFinishedPans_shouldReturnOnly13WhenLaterFilled14And15AreStillBaking() {
+        val nowMs = 50L * 60L * 1000L
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L + 1L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            },
+            supplementPan(15, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            }
+        )
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+
+        assertEquals(listOf(13), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findFinishedPans_shouldReturn14And15WhenLaterFilledPansReachBakingTime() {
+        val nowMs = 70L * 60L * 1000L
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = false),
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            },
+            supplementPan(15, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            }
+        )
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+
+        assertEquals(listOf(14, 15), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findFinishedPans_shouldReturnFullGroupWhenAllPansReachBakingTime() {
+        val nowMs = 10_000L
+        val group = (13..15).map { position ->
+            supplementPan(position, "A", hasSausage = true).apply {
+                startTime = 1_000L
+                bakingTime = 8_000L
+                status = 1
+            }
+        }
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+
+        assertEquals(listOf(13, 14, 15), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findFinishedPans_shouldRejectInvalidTiming() {
+        val nowMs = 10_000L
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L
+                bakingTime = 8_000L
+                status = 1
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 1_000L
+                bakingTime = 0L
+                status = 1
+            },
+            supplementPan(15, "A", hasSausage = true).apply {
+                startTime = 7_000L
+                bakingTime = 8_000L
+                status = 1
+            }
+        )
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun markFinishedPansKeepWarm_shouldSwitchOnlyFinishedPansToKeepWarm() {
+        val nowMs = 50L * 60L * 1000L
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 1L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            },
+            supplementPan(15, "A", hasSausage = false)
+        )
+
+        val result = LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(group, nowMs)
+
+        assertEquals(listOf(13), result.map { it.positionSn })
+        assertEquals(0L, group[0].startTime)
+        assertEquals(nowMs, group[0].holdingTime)
+        assertEquals(2, group[0].status)
+        assertEquals(30L * 60L * 1000L, group[1].startTime)
+        assertEquals(1, group[1].status)
+    }
+
+    @Test
+    fun findKeepWarmPansReadyToMove_shouldReturnRetainedFinishedPans() {
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 10_000L
+                status = 2
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 5_000L
+                holdingTime = 0L
+                status = 1
+            },
+            supplementPan(15, "A", hasSausage = false)
+        )
+
+        val result = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(group)
+
+        assertEquals(listOf(13), result.map { it.positionSn })
+    }
+
     private fun frontPan(positionSn: Int, tasteCode: String, reserved: Boolean): KaoPan =
         KaoPan().apply {
             this.positionSn = positionSn
