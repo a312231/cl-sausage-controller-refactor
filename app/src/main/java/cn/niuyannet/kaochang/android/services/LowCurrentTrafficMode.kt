@@ -157,12 +157,38 @@ object LowCurrentTrafficMode {
             checkLowHeatDiscard(list1_9)
         }
 
-        if (schedulingEnabled && boxSupplyAvailable && config.modeType == 1 && config.transitionMode == 0 && p1_9 >= 7 && p13_18 == 0) {
+        val effectiveFrontEmptyPositions = LowToHighDemandGate.effectiveEmptyFrontPositions(list1_9)
+        val blockedFrontPositions = LowToHighDemandGate.blockedFrontPositions()
+        if (schedulingEnabled &&
+            boxSupplyAvailable &&
+            config.modeType == 1 &&
+            config.transitionMode == 0 &&
+            LowToHighDemandGate.canTriggerLowToHigh(list1_9, p13_18)
+        ) {
             LogUtils.w(
                 TAG,
-                "【并发切换】触发低转高：1~9 空位=$p1_9，13~18 全满，modeType=${modeText(config.modeType)}->2(高并发)，transitionMode=${transitionText(config.transitionMode)}->1(低转高过渡)"
+                "【并发切换】触发低转高：1~9空位=$p1_9，" +
+                    "过保丢弃空位=$blockedFrontPositions，" +
+                    "有效空位=${effectiveFrontEmptyPositions.size}，13~18 全满，" +
+                    "modeType=${modeText(config.modeType)}->2(高并发)，" +
+                    "transitionMode=${transitionText(config.transitionMode)}->1(低转高过渡)"
             )
             switchLowToHigh()
+        } else if (schedulingEnabled &&
+            boxSupplyAvailable &&
+            config.modeType == 1 &&
+            config.transitionMode == 0 &&
+            p1_9 >= 7 &&
+            p13_18 == 0 &&
+            blockedFrontPositions.isNotEmpty()
+        ) {
+            LogUtils.i(
+                TAG,
+                "【并发切换】暂不触发低转高：1~9空位=$p1_9，" +
+                    "过保丢弃空位=$blockedFrontPositions，" +
+                    "有效空位=${effectiveFrontEmptyPositions.size}，" +
+                    "原因=过保丢弃造成的空位不计入高需求证据"
+            )
         }
 
         if (schedulingEnabled) {

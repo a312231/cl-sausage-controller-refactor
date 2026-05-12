@@ -130,6 +130,19 @@ object KaoChangOperate {
         else -> "$status(未知)"
     }
 
+    private fun modeTypeDesc(value: Int): String = when (value) {
+        1 -> "1(低并发)"
+        2 -> "2(高并发)"
+        else -> "$value(未知)"
+    }
+
+    private fun transitionModeDesc(value: Int): String = when (value) {
+        0 -> "0(无过渡态)"
+        1 -> "1(低转高过渡)"
+        2 -> "2(高转低过渡)"
+        else -> "$value(未知)"
+    }
+
     private fun actionExecutionResultDesc(result: ActionExecutionResult): String = when (result) {
         ActionExecutionResult.SUCCESS -> "SUCCESS(成功)"
         ActionExecutionResult.COMMAND_REJECTED -> "COMMAND_REJECTED(指令被拒绝)"
@@ -831,6 +844,7 @@ object KaoChangOperate {
                     return false
                 }
                 pan.isHasSausage = true
+                LowToHighDemandGate.clearPosition(pan.positionSn, "补肠动作组恢复成功")
                 box.num = maxOf(0, box.num - 1)
                 pan.taste = KaoPanHelper.buildTasteFromBox(box, pan.taste)
                 pan.status = 1
@@ -897,6 +911,9 @@ object KaoChangOperate {
         pan.holdingTime = 0L
         pan.startTime = 0
         pan.status = 0
+        if (isManualTake) {
+            LowToHighDemandGate.clearPosition(pan.positionSn, "维护手动取肠动作组恢复完成")
+        }
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -1608,6 +1625,7 @@ object KaoChangOperate {
         val sausageName = getBoxTasteLabel(kaoPanBox)
         val boxStockBefore = kaoPanBox.num
         kaoPan.isHasSausage = true
+        LowToHighDemandGate.clearPosition(kaoPan.positionSn, "补肠预取流水线完成")
         kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
         kaoPan.taste = KaoPanHelper.buildTasteFromBox(kaoPanBox, kaoPan.taste)
         kaoPan.status = 1
@@ -1865,6 +1883,7 @@ object KaoChangOperate {
 
         if (moveSuccess){
             kaoPan.isHasSausage=true
+            LowToHighDemandGate.clearPosition(kaoPan.positionSn, "补肠动作组完成")
             // 减少烤肠箱中的数量，最低只允许到 0，防止库存被写成负数
             kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
             kaoPan.taste = KaoPanHelper.buildTasteFromBox(kaoPanBox, kaoPan.taste)
@@ -2031,6 +2050,7 @@ object KaoChangOperate {
             }
             kaoPan.cmdStatusMove = result
             newKaoPan.isHasSausage = true
+            LowToHighDemandGate.clearPosition(newKaoPan.positionSn, "烤盘搬移目标位写入")
             newKaoPan.isHasGrilling = false
             newKaoPan.taste = KaoPanHelper.copyResolvedTaste(kaoPan.taste) ?: kaoPan.taste
             newKaoPan.holdingTime = targetHoldingTime
@@ -2158,6 +2178,7 @@ object KaoChangOperate {
                     kaoPan.holdingTime = 0L
                     kaoPan.startTime = 0
                     kaoPan.status = 0
+                    LowToHighDemandGate.clearPosition(kaoPan.positionSn, "维护手动取肠完成")
                     operateScope.launch {
                         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     }
@@ -2439,6 +2460,7 @@ object KaoChangOperate {
             kaoPan.holdingTime=0
             kaoPan.startTime=0
             kaoPan.status=0
+            handleSuccessfulDiscardDemandGate(kaoPan.positionSn, source)
             LogUtils.i(
                 "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail，" +
                     "panHasSausage=${kaoPan.isHasSausage}，panStatus=${kaoPan.status}"
@@ -2671,6 +2693,28 @@ object KaoChangOperate {
             TemperatureControlPolicy.ZoneMode.KEEP_WARM -> "保温可售"
             TemperatureControlPolicy.ZoneMode.STOP -> "无肠停止"
         }
+    }
+
+    private fun handleSuccessfulDiscardDemandGate(positionSn: Int, source: String) {
+        if (source != "过保到期") {
+            return
+        }
+        val config = AppConfig.getAppConfig()
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        val result = LowToHighDemandGate.markExpiredDiscardAndFoldToLow(config, positionSn)
+        if (!result.changedModeState && !result.blockedFrontPositionsChanged) {
+            return
+        }
+        AppConfig.saveAppConfig(config)
+        LogUtils.w(
+            "【并发切换】过保丢弃触发低并发收口：烤盘=$positionSn，" +
+                "modeType（并发模式）=${modeTypeDesc(oldModeType)}->${modeTypeDesc(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionModeDesc(oldTransitionMode)}->${transitionModeDesc(config.transitionMode)}，" +
+                "blockedFrontPositions（过保丢弃空位，仅1~9）=${result.blockedFrontPositions}，" +
+                "highConcurrencyResidualDrain（高并发残留消化态）不在此处写入，交由下一轮现有求值器计算"
+        )
+        SendServerHelper.publishServiceUpdateStatus("runtime_state:expired_discard_low_mode_closeout")
     }
 
     private fun formatHeatingOffset(offset: Int): String {
