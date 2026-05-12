@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.viewpager2.widget.ViewPager2
@@ -14,7 +13,7 @@ import cn.niuyannet.kaochang.android.databinding.ActivitySettingBinding
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.google.android.material.tabs.TabLayoutMediator
 
-class SettingActivity : AppCompatActivity() {
+class SettingActivity : AdminInactivityTimeoutActivity() {
     private lateinit var binding: ActivitySettingBinding
     private lateinit var viewPager: ViewPager2
     private val REQUEST_CODE_PERMISSIONS: Int = 10

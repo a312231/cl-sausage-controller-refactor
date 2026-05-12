@@ -14,6 +14,8 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
+import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
+import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import com.blankj.utilcode.util.LogUtils
 import com.blankj.utilcode.util.ToastUtils
 import com.kongqw.serialportlibrary.Device
@@ -39,6 +41,7 @@ class ConfigFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        registerAdminTextInputs(view)
         initViews()
         statusInit()
 
@@ -208,6 +211,7 @@ class ConfigFragment : Fragment() {
                 position: Int,
                 id: Long
             ) {
+                resetAdminIdleTimer("配置页选择串口")
                 val selectedItem = parent.getItemAtPosition(position).toString()
                 devices.first { it.file.absolutePath == selectedItem }.apply {
                     configBean.modbusAddress = file.absolutePath

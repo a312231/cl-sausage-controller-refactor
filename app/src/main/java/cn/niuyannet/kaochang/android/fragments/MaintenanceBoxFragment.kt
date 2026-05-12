@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.dismissLoadingExt
 import cn.niuyannet.kaochang.android.utils.showLoadingExt
@@ -102,6 +103,7 @@ class MaintenanceBoxFragment : Fragment() {
             title(text = "请选择目标烤盘位置")
             customView(R.layout.dialog_number_picker, noVerticalPadding = true)
             positiveButton(text = "确定") { dialog ->
+                resetAdminIdleTimer("烤肠箱搬运弹窗确认")
                 val numberPicker = dialog.getCustomView().findViewById<NumberPicker>(R.id.number_picker)
                 val targetPosition = KaoPanHelper.getKaoPanList().first { it.positionSn == numberPicker.value }
                 val boxPosition = selectedBoxes[0]
@@ -129,14 +131,22 @@ class MaintenanceBoxFragment : Fragment() {
                     }
                 }
             }
-            negativeButton(text = "取消")
+            negativeButton(text = "取消") {
+                resetAdminIdleTimer("烤肠箱搬运弹窗取消")
+            }
             lifecycleOwner(viewLifecycleOwner)
         }.apply {
+            setOnShowListener {
+                resetAdminIdleTimer("烤肠箱搬运弹窗显示")
+            }
             val numberPicker = getCustomView().findViewById<NumberPicker>(R.id.number_picker)
             numberPicker.minValue = 1
             numberPicker.maxValue = 33
             numberPicker.value = 1
             numberPicker.wrapSelectorWheel = false
+            numberPicker.setOnValueChangedListener { _, _, _ ->
+                resetAdminIdleTimer("烤肠箱搬运弹窗选择烤盘")
+            }
         }
     }
 
@@ -160,6 +170,7 @@ class MaintenanceBoxFragment : Fragment() {
         MaterialDialog(requireContext()).show {
             title(text = "确认清空选中的烤肠箱吗？")
             positiveButton(text = "确定") { dialog ->
+                resetAdminIdleTimer("清空烤肠箱弹窗确认")
                 dialog.dismiss()
                 for (box in selectedBoxes) {
                     box.productId = null
@@ -186,8 +197,14 @@ class MaintenanceBoxFragment : Fragment() {
                     }
                 }
             }
-            negativeButton(text = "取消")
+            negativeButton(text = "取消") {
+                resetAdminIdleTimer("清空烤肠箱弹窗取消")
+            }
             lifecycleOwner(viewLifecycleOwner)
+        }.apply {
+            setOnShowListener {
+                resetAdminIdleTimer("清空烤肠箱弹窗显示")
+            }
         }
     }
 
@@ -263,6 +280,9 @@ class MaintenanceBoxFragment : Fragment() {
         val dialog = MaterialDialog(requireContext()).apply {
             customView(R.layout.dialog_taste_select, noVerticalPadding = true)
             cancelOnTouchOutside(true)
+            setOnShowListener {
+                resetAdminIdleTimer("加满烤肠箱口味弹窗显示")
+            }
         }
 
         val customView = dialog.getCustomView()
@@ -297,12 +317,17 @@ class MaintenanceBoxFragment : Fragment() {
             }
             radioGroup.addView(radioButton)
         }
+        radioGroup.setOnCheckedChangeListener { _, _ ->
+            resetAdminIdleTimer("加满烤肠箱口味弹窗选择口味")
+        }
 
         btnCancel.setOnClickListener {
+            resetAdminIdleTimer("加满烤肠箱口味弹窗取消")
             dialog.dismiss()
         }
 
         btnConfirm.setOnClickListener {
+            resetAdminIdleTimer("加满烤肠箱口味弹窗确认")
             val selectedId = radioGroup.checkedRadioButtonId
             val selectedView = radioGroup.findViewById<RadioButton>(selectedId)
             val selectedIndex = radioGroup.indexOfChild(selectedView)

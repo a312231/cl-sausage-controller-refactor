@@ -21,7 +21,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.ImageProxy;
@@ -53,7 +52,7 @@ import kotlin.jvm.functions.Function1;
  * 这里不再维护第二套 CameraX 生命周期，统一复用 CameraService 进行按需拍照。
  * 当前页面不再提供实时预览，只保留“点击拍照 -> 显示结果图”的交互。
  */
-public class SauceDetectionActivity extends AppCompatActivity {
+public class SauceDetectionActivity extends AdminInactivityTimeoutActivity {
     private static final int REQUEST_CODE_PERMISSIONS = 10;
     private static final String[] REQUIRED_PERMISSIONS = new String[]{Manifest.permission.CAMERA};
 
@@ -73,6 +72,7 @@ public class SauceDetectionActivity extends AppCompatActivity {
     private CameraService cameraService;
     private boolean isServiceBound = false;
     private volatile boolean captureInFlight = false;
+    private AdminBusyState.Token captureBusyToken;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -245,80 +245,90 @@ public class SauceDetectionActivity extends AppCompatActivity {
     }
 
     private void captureAndDetectAruco() {
+        beginCaptureAdminBusy("ArUco拍照识别");
         Toast.makeText(this, "正在检测 ArUco 标记...", Toast.LENGTH_SHORT).show();
         LogUtils.INSTANCE.d("【ArUco检测】开始拍照执行 ArUco 检测");
         captureBitmapWithPrewarm(new BitmapCaptureCallback() {
             @Override
             public void onSuccess(Bitmap bitmap) {
                 runOnUiThread(() -> {
-                    previewView.setVisibility(View.GONE);
-                    imageView.setVisibility(View.VISIBLE);
-
-                    ArucoHelper.DetectionResult result;
                     try {
-                        result = arucoHelper.detectArucoMarkers(bitmap, 1);
-                        if (result != null && result.resultImage != null) {
-                            imageView.setImageBitmap(result.resultImage);
-                        } else {
+                        previewView.setVisibility(View.GONE);
+                        imageView.setVisibility(View.VISIBLE);
+
+                        ArucoHelper.DetectionResult result;
+                        try {
+                            result = arucoHelper.detectArucoMarkers(bitmap, 1);
+                            if (result != null && result.resultImage != null) {
+                                imageView.setImageBitmap(result.resultImage);
+                            } else {
+                                imageView.setImageBitmap(bitmap);
+                                resultTextView.setText("ArUco 标记检测失败，请重试");
+                                return;
+                            }
+                        } catch (Exception e) {
+                            LogUtils.INSTANCE.e("【ArUco检测】执行检测失败：" + e.getMessage(), e);
                             imageView.setImageBitmap(bitmap);
-                            resultTextView.setText("ArUco 标记检测失败，请重试");
+                            resultTextView.setText("ArUco 标记检测失败：" + e.getMessage());
                             return;
                         }
-                    } catch (Exception e) {
-                        LogUtils.INSTANCE.e("【ArUco检测】执行检测失败：" + e.getMessage(), e);
-                        imageView.setImageBitmap(bitmap);
-                        resultTextView.setText("ArUco 标记检测失败：" + e.getMessage());
-                        return;
-                    }
 
-                    StringBuilder resultText = new StringBuilder();
-                    if (result != null && result.markersCount > 0) {
-                        resultText.append("检测到 ").append(result.markersCount).append(" 个 ArUco 标记\n");
-                        resultText.append("标记 ID: ");
-                        for (int i = 0; i < result.markerIds.size(); i++) {
-                            resultText.append(result.markerIds.get(i));
-                            if (i < result.markerIds.size() - 1) {
-                                resultText.append(", ");
-                            }
-                        }
-
-                        if (result.targetFound) {
-                            resultText.append("\n\n目标标记(ID=1) 已找到");
-                            if (!result.targetCorners.isEmpty()) {
-                                resultText.append("\n角点坐标：");
-                                for (int i = 0; i < result.targetCorners.size() && i < 4; i++) {
-                                    List<Double> point = result.targetCorners.get(i);
-                                    if (point.size() >= 2) {
-                                        resultText.append("\n").append(i + 1).append(": (")
-                                            .append(String.format("%.1f", point.get(0))).append(", ")
-                                            .append(String.format("%.1f", point.get(1))).append(")");
-                                    }
+                        StringBuilder resultText = new StringBuilder();
+                        if (result != null && result.markersCount > 0) {
+                            resultText.append("检测到 ").append(result.markersCount).append(" 个 ArUco 标记\n");
+                            resultText.append("标记 ID: ");
+                            for (int i = 0; i < result.markerIds.size(); i++) {
+                                resultText.append(result.markerIds.get(i));
+                                if (i < result.markerIds.size() - 1) {
+                                    resultText.append(", ");
                                 }
                             }
-                        } else {
-                            resultText.append("\n\n未找到目标标记(ID=1)");
-                        }
-                    } else {
-                        resultText.append("未检测到任何 ArUco 标记");
-                    }
 
-                    resultTextView.setText(resultText.toString());
-                    LogUtils.INSTANCE.d("【ArUco检测】检测完成：" + resultText);
-                    detectButton.setText("返回待拍照");
-                    detectButton.setOnClickListener(v -> showIdleState());
+                            if (result.targetFound) {
+                                resultText.append("\n\n目标标记(ID=1) 已找到");
+                                if (!result.targetCorners.isEmpty()) {
+                                    resultText.append("\n角点坐标：");
+                                    for (int i = 0; i < result.targetCorners.size() && i < 4; i++) {
+                                        List<Double> point = result.targetCorners.get(i);
+                                        if (point.size() >= 2) {
+                                            resultText.append("\n").append(i + 1).append(": (")
+                                                .append(String.format("%.1f", point.get(0))).append(", ")
+                                                .append(String.format("%.1f", point.get(1))).append(")");
+                                        }
+                                    }
+                                }
+                            } else {
+                                resultText.append("\n\n未找到目标标记(ID=1)");
+                            }
+                        } else {
+                            resultText.append("未检测到任何 ArUco 标记");
+                        }
+
+                        resultTextView.setText(resultText.toString());
+                        LogUtils.INSTANCE.d("【ArUco检测】检测完成：" + resultText);
+                        detectButton.setText("返回待拍照");
+                        detectButton.setOnClickListener(v -> showIdleState());
+                    } finally {
+                        endCaptureAdminBusy();
+                    }
                 });
             }
 
             @Override
             public void onError(String message) {
-                runOnUiThread(() ->
-                    Toast.makeText(SauceDetectionActivity.this, "ArUco 拍照失败：" + message, Toast.LENGTH_SHORT).show()
-                );
+                runOnUiThread(() -> {
+                    try {
+                        Toast.makeText(SauceDetectionActivity.this, "ArUco 拍照失败：" + message, Toast.LENGTH_SHORT).show();
+                    } finally {
+                        endCaptureAdminBusy();
+                    }
+                });
             }
         });
     }
 
     private void captureAndDetect() {
+        beginCaptureAdminBusy((roiFlag == 0 ? "运输台" : "售卖台") + "拍照识别");
         Toast.makeText(this, "正在拍照...", Toast.LENGTH_SHORT).show();
         LogUtils.INSTANCE.d("【ArUco检测】开始拍照执行" + (roiFlag == 0 ? "运输台" : "售卖台") + "检测");
         captureBitmapWithPrewarm(new BitmapCaptureCallback() {
@@ -326,26 +336,53 @@ public class SauceDetectionActivity extends AppCompatActivity {
             public void onSuccess(Bitmap bitmap) {
                 Mat img = bitmapToBgrMat(bitmap);
                 if (img == null) {
-                    runOnUiThread(() ->
-                        Toast.makeText(SauceDetectionActivity.this, "图像处理失败", Toast.LENGTH_SHORT).show()
-                    );
+                    runOnUiThread(() -> {
+                        try {
+                            Toast.makeText(SauceDetectionActivity.this, "图像处理失败", Toast.LENGTH_SHORT).show();
+                        } finally {
+                            endCaptureAdminBusy();
+                        }
+                    });
                     return;
                 }
 
                 runOnUiThread(() -> {
-                    previewView.setVisibility(View.GONE);
-                    imageView.setVisibility(View.VISIBLE);
-                    detectSausage(bitmap, img);
+                    try {
+                        previewView.setVisibility(View.GONE);
+                        imageView.setVisibility(View.VISIBLE);
+                        detectSausage(bitmap, img);
+                    } finally {
+                        endCaptureAdminBusy();
+                    }
                 });
             }
 
             @Override
             public void onError(String message) {
-                runOnUiThread(() ->
-                    Toast.makeText(SauceDetectionActivity.this, "拍照失败：" + message, Toast.LENGTH_SHORT).show()
-                );
+                runOnUiThread(() -> {
+                    try {
+                        Toast.makeText(SauceDetectionActivity.this, "拍照失败：" + message, Toast.LENGTH_SHORT).show();
+                    } finally {
+                        endCaptureAdminBusy();
+                    }
+                });
             }
         });
+    }
+
+    private void beginCaptureAdminBusy(String reason) {
+        resetAdminIdleTimer("开始" + reason);
+        if (captureBusyToken == null) {
+            captureBusyToken = beginAdminBusy(reason);
+        }
+    }
+
+    private void endCaptureAdminBusy() {
+        if (captureBusyToken == null) {
+            return;
+        }
+        endAdminBusy(captureBusyToken);
+        captureBusyToken = null;
     }
 
     private void captureBitmap(BitmapCaptureCallback callback) {

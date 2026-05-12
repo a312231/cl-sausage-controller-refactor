@@ -19,6 +19,10 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionSpec
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActions
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
+import cn.niuyannet.kaochang.android.ui.beginAdminBusy
+import cn.niuyannet.kaochang.android.ui.endAdminBusy
+import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
+import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -79,6 +83,7 @@ class TestFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        registerAdminTextInputs(view)
         setupActionControlListeners()
         setupSelfCleanListeners()
         setupTemperatureControlListeners()
@@ -91,6 +96,7 @@ class TestFragment : Fragment() {
         binding.spinnerAtomicAction.adapter = adapter
         binding.spinnerAtomicAction.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                resetAdminIdleTimer("测试页选择原子动作")
                 refreshAtomicActionInfo(atomicActionItems[position])
             }
 
@@ -136,33 +142,38 @@ class TestFragment : Fragment() {
                 showToast("当前正在自清洁，测试下位机动作已禁用")
                 return@launch
             }
+            val adminBusy = beginAdminBusy("测试下位机原子动作:${item.spec.name}")
             val sessionId = "test_${item.spec.name}_${System.currentTimeMillis()}"
-            binding.tvAtomicActionResult.text = "执行中：sessionId=$sessionId"
-            LogUtils.i(
-                "【下位机测试】300/400原子动作开始：" +
-                    "action（动作名）=${item.spec.name}，" +
-                    "commandRegister（命令寄存器）=${item.spec.commandRegister}，" +
-                    "resultRegister（结果寄存器）=${item.spec.resultRegister}，" +
-                    "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
-                    "infoValue（信息参数）=$infoValue，sessionId=$sessionId"
-            )
-            val result = withContext(Dispatchers.IO) {
-                AtomicActionExecutor(
-                    gateway = VmAtomicModbusGateway(KaoChangOperate.modbus_address),
-                    logger = { message -> logTestAtomicActionDetail(message) },
-                    telemetryContext = ActionGroupTelemetryContext(
-                        sessionId = sessionId,
-                        resourceLocks = "TEST_PAGE"
-                    )
-                ).execute(item.spec, infoValue)
+            try {
+                binding.tvAtomicActionResult.text = "执行中：sessionId=$sessionId"
+                LogUtils.i(
+                    "【下位机测试】300/400原子动作开始：" +
+                        "action（动作名）=${item.spec.name}，" +
+                        "commandRegister（命令寄存器）=${item.spec.commandRegister}，" +
+                        "resultRegister（结果寄存器）=${item.spec.resultRegister}，" +
+                        "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
+                        "infoValue（信息参数）=$infoValue，sessionId=$sessionId"
+                )
+                val result = withContext(Dispatchers.IO) {
+                    AtomicActionExecutor(
+                        gateway = VmAtomicModbusGateway(KaoChangOperate.modbus_address),
+                        logger = { message -> logTestAtomicActionDetail(message) },
+                        telemetryContext = ActionGroupTelemetryContext(
+                            sessionId = sessionId,
+                            resourceLocks = "TEST_PAGE"
+                        )
+                    ).execute(item.spec, infoValue)
+                }
+                binding.tvAtomicActionResult.text = describeAtomicActionResult(result)
+                LogUtils.i(
+                    "【下位机测试】300/400原子动作结束：" +
+                        "action（动作名）=${item.spec.name}，" +
+                        "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
+                        "infoValue（信息参数）=$infoValue，result=$result，sessionId=$sessionId"
+                )
+            } finally {
+                endAdminBusy(adminBusy)
             }
-            binding.tvAtomicActionResult.text = describeAtomicActionResult(result)
-            LogUtils.i(
-                "【下位机测试】300/400原子动作结束：" +
-                    "action（动作名）=${item.spec.name}，" +
-                    "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
-                    "infoValue（信息参数）=$infoValue，result=$result，sessionId=$sessionId"
-            )
         }
     }
 
@@ -303,42 +314,52 @@ class TestFragment : Fragment() {
                 return@setOnClickListener
             }
             lifecycleScope.launch {
+                val adminBusy = beginAdminBusy("测试下位机烤盘自清洁")
                 binding.tvSelfCleanResult.text = "正在执行烤盘 ${positionSn} 自清洁..."
                 val source = "测试下位机页面手动触发"
-                LogUtils.i(
-                    "【下位机测试】自清洁开始：target（目标）=烤盘$positionSn，" +
-                        "source（来源）=$source"
-                )
-                val startedAtMs = System.currentTimeMillis()
-                val report = withContext(Dispatchers.IO) {
-                    KaoChangOperate.cleanPanPosition(
-                        positionSn = positionSn,
-                        source = source,
-                        busyDuringClean = true
+                try {
+                    LogUtils.i(
+                        "【下位机测试】自清洁开始：target（目标）=烤盘$positionSn，" +
+                            "source（来源）=$source"
                     )
+                    val startedAtMs = System.currentTimeMillis()
+                    val report = withContext(Dispatchers.IO) {
+                        KaoChangOperate.cleanPanPosition(
+                            positionSn = positionSn,
+                            source = source,
+                            busyDuringClean = true
+                        )
+                    }
+                    binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
+                    logTestSelfCleanFinished(report, startedAtMs)
+                } finally {
+                    endAdminBusy(adminBusy)
                 }
-                binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
-                logTestSelfCleanFinished(report, startedAtMs)
             }
         }
 
         binding.btnRunSellPlatformSelfClean.setOnClickListener {
             lifecycleScope.launch {
+                val adminBusy = beginAdminBusy("测试下位机出肠台自清洁")
                 binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
                 val source = "测试下位机页面手动触发"
-                LogUtils.i(
-                    "【下位机测试】自清洁开始：target（目标）=出肠台，" +
-                        "source（来源）=$source"
-                )
-                val startedAtMs = System.currentTimeMillis()
-                val report = withContext(Dispatchers.IO) {
-                    KaoChangOperate.cleanSellPlatform(
-                        source = source,
-                        busyDuringClean = true
+                try {
+                    LogUtils.i(
+                        "【下位机测试】自清洁开始：target（目标）=出肠台，" +
+                            "source（来源）=$source"
                     )
+                    val startedAtMs = System.currentTimeMillis()
+                    val report = withContext(Dispatchers.IO) {
+                        KaoChangOperate.cleanSellPlatform(
+                            source = source,
+                            busyDuringClean = true
+                        )
+                    }
+                    binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
+                    logTestSelfCleanFinished(report, startedAtMs)
+                } finally {
+                    endAdminBusy(adminBusy)
                 }
-                binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
-                logTestSelfCleanFinished(report, startedAtMs)
             }
         }
     }

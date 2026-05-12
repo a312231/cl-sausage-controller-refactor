@@ -6,7 +6,6 @@ import android.os.Bundle
 import android.view.MenuItem
 import android.widget.ArrayAdapter
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import cn.niuyannet.kaochang.android.databinding.ActivityLogViewBinding
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -15,7 +14,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class LogViewActivity : AppCompatActivity() {
+class LogViewActivity : AdminInactivityTimeoutActivity() {
 
     private lateinit var binding: ActivityLogViewBinding
     private lateinit var logFiles: List<File>

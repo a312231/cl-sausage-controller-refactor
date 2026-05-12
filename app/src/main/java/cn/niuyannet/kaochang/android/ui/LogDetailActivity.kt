@@ -3,12 +3,11 @@ package cn.niuyannet.kaochang.android.ui
 import android.R as AndroidR
 import android.os.Bundle
 import android.view.MenuItem
-import androidx.appcompat.app.AppCompatActivity
 import cn.niuyannet.kaochang.android.databinding.ActivityLogDetailBinding
 import java.io.File
 import java.io.RandomAccessFile
 
-class LogDetailActivity : AppCompatActivity() {
+class LogDetailActivity : AdminInactivityTimeoutActivity() {
 
     private lateinit var binding: ActivityLogDetailBinding
 

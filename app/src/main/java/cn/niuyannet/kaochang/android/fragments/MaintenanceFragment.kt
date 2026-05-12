@@ -25,6 +25,9 @@ import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.TemperatureControlPolicy
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
+import cn.niuyannet.kaochang.android.ui.beginAdminBusy
+import cn.niuyannet.kaochang.android.ui.endAdminBusy
+import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import com.blankj.utilcode.util.ToastUtils
@@ -408,33 +411,38 @@ class MaintenanceFragment : Fragment() {
             disableAlgorithmForMaintenance("点击清空烤盘")
 
             clearPanCooldownJob = lifecycleScope.launch {
-                val idleReady = waitUntilMachineIdleOrTimeout(
-                    reason = "维护页点击清空烤盘等待空闲",
-                    waitingText = "等待机械动作完成后清空烤盘",
-                    update = {
-                        binding.tvCooldownHint.text = it
+                val adminBusy = beginAdminBusy("维护页清空烤盘")
+                try {
+                    val idleReady = waitUntilMachineIdleOrTimeout(
+                        reason = "维护页点击清空烤盘等待空闲",
+                        waitingText = "等待机械动作完成后清空烤盘",
+                        update = {
+                            binding.tvCooldownHint.text = it
+                        }
+                    )
+                    if (!idleReady) {
+                        LogUtils.w("【维护操作】点击清空烤盘等待机械空闲超时，已取消本次操作")
+                        binding.tvCooldownHint.text = ""
+                        setMaintenanceActionButtonsEnabled(true)
+                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                        clearPanCooldownJob = null
+                        return@launch
                     }
-                )
-                if (!idleReady) {
-                    LogUtils.w("【维护操作】点击清空烤盘等待机械空闲超时，已取消本次操作")
-                    binding.tvCooldownHint.text = ""
-                    setMaintenanceActionButtonsEnabled(true)
-                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                    clearPanCooldownJob = null
-                    return@launch
-                }
-                KaoPanHelper.clearKaoPan()
-                KaoPanHelper.init()
-                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
-                KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
-                clearRuntimeStateAfterManualPanReset("点击清空烤盘")
-                LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
-                finishMaintenanceAction()
-                clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
-                    setMaintenanceActionButtonsEnabled(true)
-                    binding.btnClearAll.text = "清空烤盘"
-                    binding.tvCooldownHint.text = ""
-                    clearPanCooldownJob = null
+                    KaoPanHelper.clearKaoPan()
+                    KaoPanHelper.init()
+                    KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
+                    KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
+                    clearRuntimeStateAfterManualPanReset("点击清空烤盘")
+                    LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
+                    finishMaintenanceAction()
+                    clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
+                        setMaintenanceActionButtonsEnabled(true)
+                        binding.btnClearAll.text = "清空烤盘"
+                        binding.tvCooldownHint.text = ""
+                        clearPanCooldownJob = null
+                    }
+                } finally {
+                    endAdminBusy(adminBusy)
                 }
             }
         }
@@ -672,34 +680,39 @@ class MaintenanceFragment : Fragment() {
             disableAlgorithmForMaintenance("点击丢弃所有烤肠并重置烤盘")
 
             resetPanCooldownJob = lifecycleScope.launch {
-                val idleReady = waitUntilMachineIdleOrTimeout(
-                    reason = "维护页点击重置烤盘等待空闲",
-                    waitingText = "等待机械动作完成后重置烤盘",
-                    update = { binding.tvCooldownHint.text = it }
-                )
-                if (!idleReady) {
-                    LogUtils.w("【维护操作】点击重置烤盘等待机械空闲超时，已取消本次操作")
-                    binding.tvCooldownHint.text = ""
-                    setMaintenanceActionButtonsEnabled(true)
-                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                    resetPanCooldownJob = null
-                    return@launch
-                }
-                KaoChangAlgorithm.resetKaoPan { current, total, _ ->
-                    binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
-                }
-                KaoPanHelper.clearKaoPan()
-                KaoPanHelper.init()
-                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
-                KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
-                clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
-                LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
-                finishMaintenanceAction()
-                resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {
-                    setMaintenanceActionButtonsEnabled(true)
-                    binding.btnCz.text = "丢弃所有烤肠重置烤盘"
-                    binding.tvCooldownHint.text = ""
-                    resetPanCooldownJob = null
+                val adminBusy = beginAdminBusy("维护页丢弃所有烤肠并重置烤盘")
+                try {
+                    val idleReady = waitUntilMachineIdleOrTimeout(
+                        reason = "维护页点击重置烤盘等待空闲",
+                        waitingText = "等待机械动作完成后重置烤盘",
+                        update = { binding.tvCooldownHint.text = it }
+                    )
+                    if (!idleReady) {
+                        LogUtils.w("【维护操作】点击重置烤盘等待机械空闲超时，已取消本次操作")
+                        binding.tvCooldownHint.text = ""
+                        setMaintenanceActionButtonsEnabled(true)
+                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                        resetPanCooldownJob = null
+                        return@launch
+                    }
+                    KaoChangAlgorithm.resetKaoPan { current, total, _ ->
+                        binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
+                    }
+                    KaoPanHelper.clearKaoPan()
+                    KaoPanHelper.init()
+                    KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
+                    KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
+                    clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
+                    LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
+                    finishMaintenanceAction()
+                    resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {
+                        setMaintenanceActionButtonsEnabled(true)
+                        binding.btnCz.text = "丢弃所有烤肠重置烤盘"
+                        binding.tvCooldownHint.text = ""
+                        resetPanCooldownJob = null
+                    }
+                } finally {
+                    endAdminBusy(adminBusy)
                 }
             }
         }
@@ -817,14 +830,16 @@ class MaintenanceFragment : Fragment() {
             return
         }
 
-        AlertDialog.Builder(requireContext())
+        val dialog = AlertDialog.Builder(requireContext())
             .setTitle("确认")
             .setMessage("是否要取出烤肠？")
             .setPositiveButton("确定") { dialog, _ ->
+                resetAdminIdleTimer("手动取肠弹窗确认")
                 if (!status.compareAndSet(true, false)) {
                     ToastUtils.showShort("请等待当前操作完成")
                     return@setPositiveButton
                 }
+                val adminBusy = beginAdminBusy("维护页手动取肠")
                 val tasteLabel = kaoPan.taste.productName?.takeIf { it.isNotBlank() }
                     ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
                     ?: "未知口味"
@@ -864,12 +879,19 @@ class MaintenanceFragment : Fragment() {
                     } finally {
                         dialog.dismiss()
                         status.set(true)
+                        endAdminBusy(adminBusy)
                     }
                 }
             }
-            .setNegativeButton("取消") { dialog, _ -> dialog.dismiss() }
+            .setNegativeButton("取消") { dialog, _ ->
+                resetAdminIdleTimer("手动取肠弹窗取消")
+                dialog.dismiss()
+            }
             .create()
-            .show()
+        dialog.setOnShowListener {
+            resetAdminIdleTimer("手动取肠弹窗显示")
+        }
+        dialog.show()
     }
 
     /**
