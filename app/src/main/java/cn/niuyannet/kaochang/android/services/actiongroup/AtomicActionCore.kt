@@ -167,10 +167,11 @@ class AtomicActionExecutor(
                     pollUntilFinish(
                         spec = spec,
                         startedAtMs = startedAtMs,
-                        requireRunningBeforeSuccess = false
+                        requireFreshStateBeforeSuccess = false,
+                        hasAlreadyObservedRunning = true
                     )
                 } else {
-                    startAndPoll(spec, infoValue, startedAtMs, onCommandDispatched)
+                    startAndPoll(spec, infoValue, startedAtMs, current.value, onCommandDispatched)
                 }
             }
         }
@@ -180,6 +181,7 @@ class AtomicActionExecutor(
         spec: AtomicActionSpec,
         infoValue: Int,
         startedAtMs: Long,
+        startupResultCode: Int,
         onCommandDispatched: (() -> Unit)?
     ): AtomicActionResult {
         logger(
@@ -234,18 +236,21 @@ class AtomicActionExecutor(
         return pollUntilFinish(
             spec = spec,
             startedAtMs = startedAtMs,
-            requireRunningBeforeSuccess = true
+            requireFreshStateBeforeSuccess = startupResultCode == AtomicActionCodes.COMPLETED,
+            hasAlreadyObservedRunning = false
         )
     }
 
     private suspend fun pollUntilFinish(
         spec: AtomicActionSpec,
         startedAtMs: Long,
-        requireRunningBeforeSuccess: Boolean
+        requireFreshStateBeforeSuccess: Boolean,
+        hasAlreadyObservedRunning: Boolean
     ): AtomicActionResult {
         var lastRunningLogAtMs = 0L
-        var hasLoggedRunning = false
-        var hasObservedRunning = !requireRunningBeforeSuccess
+        var hasLoggedRunning = hasAlreadyObservedRunning
+        var hasObservedFreshState = !requireFreshStateBeforeSuccess
+        var hasObservedRunning = hasAlreadyObservedRunning
         var hasLoggedStartupWait = false
         var hasLoggedCommandPendingWait = false
         val startupConfirmWindowMs = minOf(startupConfirmTimeoutMs, spec.timeoutMs)
@@ -275,12 +280,12 @@ class AtomicActionExecutor(
                         }
                     }
                     when {
-                        code == AtomicActionCodes.COMPLETED && hasObservedRunning -> return finishWithTelemetry(
+                        code == AtomicActionCodes.COMPLETED && hasObservedFreshState -> return finishWithTelemetry(
                             spec,
                             AtomicActionResult.Success,
                             startedAtMs
                         )
-                        (code == AtomicActionCodes.IDLE || code == AtomicActionCodes.COMPLETED) && hasObservedRunning -> {
+                        code == AtomicActionCodes.IDLE && hasObservedRunning -> {
                             return finishWithTelemetry(
                                 spec,
                                 AtomicActionResult.Timeout(
@@ -291,6 +296,14 @@ class AtomicActionExecutor(
                             )
                         }
                         code == AtomicActionCodes.IDLE || code == AtomicActionCodes.COMPLETED -> {
+                            if (code == AtomicActionCodes.IDLE && !hasObservedFreshState) {
+                                hasObservedFreshState = true
+                                logger(
+                                    "动作写入确认成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
+                                        "resultRegister（结果寄存器）=${spec.resultRegister}，resultCode=${resultCodeDesc(code)}，" +
+                                        "说明下位机已清空旧结果并接收本轮命令，elapsedMs=$elapsedMs"
+                                )
+                            }
                             if (!hasLoggedStartupWait) {
                                 hasLoggedStartupWait = true
                                 logger(
@@ -340,6 +353,7 @@ class AtomicActionExecutor(
                             delay(spec.pollDelayMs)
                         }
                         code == AtomicActionCodes.RUNNING -> {
+                            hasObservedFreshState = true
                             if (!hasObservedRunning) {
                                 hasObservedRunning = true
                                 logger(
@@ -364,7 +378,7 @@ class AtomicActionExecutor(
             }
         }
         val elapsedMs = System.currentTimeMillis() - startedAtMs
-        if (requireRunningBeforeSuccess && !hasObservedRunning) {
+        if (requireFreshStateBeforeSuccess && !hasObservedFreshState) {
             val message = buildStartupNotConfirmedMessage(spec, elapsedMs, AtomicActionCodes.IDLE)
             logStartupNotConfirmedFailure(spec, elapsedMs, AtomicActionCodes.IDLE)
             return finishWithTelemetry(

@@ -45,25 +45,42 @@ class AtomicActionExecutorTest {
     }
 
     @Test
-    fun execute_shouldRejectStaleIdleAfterCommandUntilRunningIsObserved() = runBlocking {
-        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 80L, 10L, "out1：从烤盘取熟肠到穿签位")
+    fun execute_shouldSucceedWhenFreshIdleObservedThenCompletedEvenIfRunningIsMissed() = runBlocking {
+        val spec = AtomicActionSpec("in3-test", 330, 331, 332, 1_000L, 10L, "in3：回到抛肠点")
         val gateway = FakeGateway(
-            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IDLE, AtomicActionCodes.IDLE))
+            reads = mapOf(331 to queueOf(COMPLETED, AtomicActionCodes.IDLE, COMPLETED))
         )
         val logs = mutableListOf<String>()
         val executor = AtomicActionExecutor(gateway, logger = { logs += it })
 
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(listOf(Write(332, 0), Write(330, 1)), gateway.writes)
+        assertTrue(logs.any { it.contains("动作写入确认成功") && it.contains("0x0000") })
+    }
+
+    @Test
+    fun execute_shouldRejectStaleCompletedWhenFreshZeroOrRunningIsNeverObserved() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 80L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                411 to repeatedQueue(COMPLETED, 20),
+                410 to repeatedQueue(AtomicActionCodes.RUNNING, 20)
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = { logs += it },
+            startupConfirmTimeoutMs = 30L,
+            commandPendingConfirmTimeoutMs = 60L
+        )
+
         val result = executor.execute(spec, infoValue = 2)
 
-        assertTrue("未观察到 0x0001（执行中）时，旧 0x0000 不能被当作成功", result is AtomicActionResult.Timeout)
-        assertTrue(logs.any { it.contains("动作未确认启动") })
-        assertTrue(
-            "技术日志要说明动作编号、中文含义和结果寄存器，文件运维日志由动作组 Runner 统一补上下文",
-            logs.any {
-                it.contains("动作启动失败：out1-test（out1：从烤盘取熟肠到穿签位）下位机未确认执行") &&
-                    it.contains("未观察到0x0001（执行中）")
-            }
-        )
+        assertTrue("启动前残留 0x0002 且写命令后未看到本轮 0/1 时，不能被当作成功", result is AtomicActionResult.Timeout)
+        assertTrue(logs.any { it.contains("等待动作启动确认") && it.contains("0x0002") })
         assertEquals(listOf(Write(412, 2), Write(410, 1)), gateway.writes)
     }
 
@@ -77,7 +94,11 @@ class AtomicActionExecutorTest {
             )
         )
         val logs = mutableListOf<String>()
-        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = { logs += it },
+            startupConfirmTimeoutMs = 30L
+        )
 
         val result = executor.execute(spec, infoValue = 0)
 
@@ -180,7 +201,7 @@ class AtomicActionExecutorTest {
         val result = executor.execute(spec, infoValue = 0)
 
         assertTrue(result is AtomicActionResult.Timeout)
-        assertTrue(logs.any { it.contains("未观察到0x0001（执行中）") })
+        assertTrue(logs.any { it.contains("命令仍在等待下位机接收") })
     }
 
     @Test
