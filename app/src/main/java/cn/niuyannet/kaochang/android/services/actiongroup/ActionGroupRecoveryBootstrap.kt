@@ -141,7 +141,11 @@ class ActionGroupRecoveryBootstrap(
                 .run(session.sourceNo, session.targetNo ?: 0, resumeFromRunningState)
             ActionGroupSessionType.OUT_SELL,
             ActionGroupSessionType.OUT_MANUAL -> OutActionGroupRunner(client, logger)
-                .run(session.sourceNo, resumeFromRunningState)
+                .run(
+                    sourcePanNo = session.sourceNo,
+                    resumeFromRunningState = resumeFromRunningState,
+                    enableVoiceReminder = false
+                )
         }
     }
 

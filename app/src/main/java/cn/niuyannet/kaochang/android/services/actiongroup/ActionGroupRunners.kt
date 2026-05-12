@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import kotlinx.coroutines.delay
+
 sealed class ActionGroupResult {
     data object Success : ActionGroupResult()
     data object Discarded : ActionGroupResult()
@@ -64,7 +66,10 @@ class OutActionGroupRunner(
 ) {
     suspend fun run(
         sourcePanNo: Int,
-        resumeFromRunningState: Boolean = false
+        resumeFromRunningState: Boolean = false,
+        enableVoiceReminder: Boolean = true,
+        onWindowOpened: suspend () -> Unit = {},
+        windowOpenBufferMs: Long = 1_000L
     ): ActionGroupResult {
         if (sourcePanNo !in 1..33) {
             return ActionGroupResult.Failed(
@@ -87,7 +92,10 @@ class OutActionGroupRunner(
             logger = logger,
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,
-            failureLogger = failureLogger
+            failureLogger = failureLogger,
+            enableVoiceReminder = enableVoiceReminder,
+            onWindowOpened = onWindowOpened,
+            windowOpenBufferMs = windowOpenBufferMs
         )
     }
 }
@@ -133,7 +141,10 @@ private suspend fun executeSteps(
     logger: (String) -> Unit,
     operationLogContext: ActionGroupOperationLogContext?,
     operationLogger: (String) -> Unit,
-    failureLogger: (String) -> Unit
+    failureLogger: (String) -> Unit,
+    enableVoiceReminder: Boolean = false,
+    onWindowOpened: suspend () -> Unit = {},
+    windowOpenBufferMs: Long = 0L
 ): ActionGroupResult {
     for (step in steps.drop(startIndex)) {
         logger(
@@ -159,6 +170,19 @@ private suspend fun executeSteps(
                 ActionGroupResult.Success,
                 ActionGroupResult.Discarded -> operationLogger(formatOperationStepFinished(context, step.spec, elapsedMs))
                 is ActionGroupResult.Failed -> failureLogger(formatOperationStepFailed(context, step.spec, result))
+            }
+        }
+        if (step.spec == AtomicActions.out4 && result == ActionGroupResult.Success) {
+            if (enableVoiceReminder) {
+                try {
+                    onWindowOpened()
+                } catch (t: Throwable) {
+                    logger("【取肠语音】hook 异常：message=${t.message ?: t.javaClass.simpleName}")
+                }
+            }
+            if (windowOpenBufferMs > 0L) {
+                logger("out4 开窗并推送完成，等待 ${windowOpenBufferMs}ms 后进入 out5 顾客取走检测")
+                delay(windowOpenBufferMs)
             }
         }
         when (result) {

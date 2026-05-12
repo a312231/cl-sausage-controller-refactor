@@ -122,6 +122,98 @@ class ActionGroupRunnerTest {
     }
 
     @Test
+    fun outRunner_shouldCallWindowHookAfterOut4SuccessBeforeOut5() = runBlocking {
+        val client = FakeClient()
+        val runner = OutActionGroupRunner(client)
+
+        val result = runner.run(
+            sourcePanNo = 8,
+            onWindowOpened = { client.calls += "window-hook" },
+            windowOpenBufferMs = 0L
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "window-hook", "out5:0"), client.calls)
+    }
+
+    @Test
+    fun outRunner_shouldContinueOut5WhenWindowHookThrows() = runBlocking {
+        val client = FakeClient()
+        val logs = mutableListOf<String>()
+        val runner = OutActionGroupRunner(client, logger = { logs += it })
+
+        val result = runner.run(
+            sourcePanNo = 8,
+            onWindowOpened = { error("voice hook failed") },
+            windowOpenBufferMs = 0L
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "out5:0"), client.calls)
+        assertTrue(logs.any { it.contains("【取肠语音】hook 异常") && it.contains("voice hook failed") })
+    }
+
+    @Test
+    fun outRunner_shouldNotCallWindowHookWhenOut4Fails() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Timeout("out4 开窗并推送超时")
+            )
+        )
+        val runner = OutActionGroupRunner(client)
+        var hookCalled = false
+
+        val result = runner.run(
+            sourcePanNo = 8,
+            onWindowOpened = { hookCalled = true },
+            windowOpenBufferMs = 0L
+        )
+
+        assertTrue(result is ActionGroupResult.Failed)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0"), client.calls)
+        assertTrue(!hookCalled)
+    }
+
+    @Test
+    fun outRunner_shouldNotCallWindowHookWhenRecoveryStartsFromOut5() = runBlocking {
+        val client = FakeClient(states = mutableMapOf("out5" to AtomicActionCodes.RUNNING))
+        val runner = OutActionGroupRunner(client)
+        var hookCalled = false
+
+        val result = runner.run(
+            sourcePanNo = 8,
+            resumeFromRunningState = true,
+            onWindowOpened = { hookCalled = true },
+            windowOpenBufferMs = 0L
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("out5:0"), client.calls)
+        assertTrue(!hookCalled)
+    }
+
+    @Test
+    fun outRunner_shouldSkipVoiceHookWhenVoiceReminderDisabled() = runBlocking {
+        val client = FakeClient()
+        val runner = OutActionGroupRunner(client)
+        var hookCalled = false
+
+        val result = runner.run(
+            sourcePanNo = 8,
+            enableVoiceReminder = false,
+            onWindowOpened = { hookCalled = true },
+            windowOpenBufferMs = 0L
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "out5:0"), client.calls)
+        assertTrue(!hookCalled)
+    }
+
+    @Test
     fun inRunner_shouldResumeFromRunningActionWithoutRestartingEarlierActions() = runBlocking {
         val client = FakeClient(
             results = queueOf(

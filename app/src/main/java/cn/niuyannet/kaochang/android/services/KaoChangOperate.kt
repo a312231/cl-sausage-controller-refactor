@@ -37,6 +37,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
 import cn.niuyannet.kaochang.android.services.actiongroup.PendingActionGroupOrderEvent
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupOrderEventStore
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupSessionStore
+import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -2136,7 +2137,10 @@ object KaoChangOperate {
                         )
                     )
                 ) { message -> logD(LOG_ACTION_GROUP, message) }
-                    .run(kaoPan.positionSn)
+                    .run(
+                        sourcePanNo = kaoPan.positionSn,
+                        enableVoiceReminder = false
+                    )
             } finally {
                 actionGroupLocks.release(owner)
             }
@@ -2262,6 +2266,7 @@ object KaoChangOperate {
                     "出餐动作组开始：protocol=300_400，sourcePan=${kaoPan.positionSn}，resourceLocks=${actionGroupLocks.snapshot()}"
                 )
                 LogUtils.i("【出餐】${deliveryPrefix}开始：来源烤盘=${kaoPan.positionSn}，订单号=${orderContext?.orderNo ?: "无订单上下文"}")
+                var voiceReminderPending = TakeSausageVoiceReminderPolicy.shouldPlay(orderContext, deliveryIndex)
                 val result = OutActionGroupRunner(
                     client = createAtomicActionClient(
                         ActionGroupTelemetryContext(
@@ -2281,7 +2286,21 @@ object KaoChangOperate {
                     operationLogger = { message -> LogUtils.i(message) },
                     failureLogger = { message -> LogUtils.e(message) }
                 )
-                    .run(kaoPan.positionSn)
+                    .run(
+                        sourcePanNo = kaoPan.positionSn,
+                        enableVoiceReminder = true,
+                        onWindowOpened = {
+                            if (voiceReminderPending) {
+                                voiceReminderPending = false
+                                LogUtils.i(
+                                    "【取肠语音】正式订单开窗后触发取肠提醒：" +
+                                        "orderNo=${orderContext?.orderNo}，deliveryIndex=${deliveryIndex ?: -1}，" +
+                                        "deliveryTotal=${deliveryTotal ?: -1}"
+                                )
+                                TakeSausageVoiceReminder.play()
+                            }
+                        }
+                    )
                 result
             } finally {
                 actionGroupLocks.release(owner)

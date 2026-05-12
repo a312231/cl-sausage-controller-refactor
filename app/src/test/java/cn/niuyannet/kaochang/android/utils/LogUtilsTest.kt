@@ -27,6 +27,7 @@ class LogUtilsTest {
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【失败原因】out3（从穿签位放到预推送位置）启动失败：下位机未确认执行"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【状态切换】设备进入维护：工作中/正在出餐 -> 维护中"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【云端同步】云端已确认设备状态：工作中/正在出餐"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("W", "【取肠语音】音频焦点申请失败，继续尝试播放"))
     }
 
     @Test
