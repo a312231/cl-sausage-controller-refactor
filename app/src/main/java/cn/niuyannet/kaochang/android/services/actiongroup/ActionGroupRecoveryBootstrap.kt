@@ -56,6 +56,39 @@ class ActionGroupRecoveryBootstrap(
         if (runningStates.isEmpty()) {
             val session = sessionStore.load()
             if (session != null) {
+                val sessionSteps = stepsForSession(session)
+                val sessionValues = sessionSteps.map { step ->
+                    (states.first { state -> state.spec == step.spec }.value as AtomicReadResult.Success).value
+                }
+                if (sessionValues.all { it == AtomicActionCodes.COMPLETED }) {
+                    resourceLocks.clear()
+                    logger(
+                        "动作组恢复完成：按结果寄存器=0x0002（完成）推断本会话已完成，" +
+                            "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
+                    )
+                    return ActionGroupRecoveryResult.TakeoverFinished(session, ActionGroupResult.Success)
+                }
+                if (sessionValues.any { it == AtomicActionCodes.COMPLETED }) {
+                    if (!hasOnlyCompletedPrefixThenIdle(sessionValues)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "动作组恢复失败：本地会话存在非连续完成态，需人工确认物理位置，" +
+                                "sessionId=${session.sessionId}，type=${session.type}，" +
+                                "states=${formatSessionStates(sessionSteps, sessionValues)}"
+                        )
+                    }
+                    resourceLocks.clear()
+                    resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+                    logger(
+                        "动作组恢复接管开始：sessionId=${session.sessionId}，type=${session.type}，" +
+                            "已识别连续完成前缀，resourceLocks=${resourceLocks.snapshot()}"
+                    )
+                    val actionResult = runSession(session, resumeFromRunningState = true)
+                    resourceLocks.release(session.sessionId)
+                    logger(
+                        "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"
+                    )
+                    return ActionGroupRecoveryResult.TakeoverFinished(session, actionResult)
+                }
                 if (session.type == ActionGroupSessionType.OUT_SELL || session.type == ActionGroupSessionType.OUT_MANUAL) {
                     sessionStore.clear()
                     resourceLocks.clear()
@@ -91,13 +124,7 @@ class ActionGroupRecoveryBootstrap(
             "动作组恢复接管开始：sessionId=${session.sessionId}，type=${session.type}，" +
                 "runningAction=${runningStates.first().spec.name}，resourceLocks=${resourceLocks.snapshot()}"
         )
-        val actionResult = when (session.type) {
-            ActionGroupSessionType.IN_SUPPLEMENT -> InActionGroupRunner(client, logger)
-                .run(session.sourceNo, session.targetNo ?: 0)
-            ActionGroupSessionType.OUT_SELL,
-            ActionGroupSessionType.OUT_MANUAL -> OutActionGroupRunner(client, logger)
-                .run(session.sourceNo)
-        }
+        val actionResult = runSession(session, resumeFromRunningState = true)
         resourceLocks.release(session.sessionId)
         logger(
             "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"
@@ -105,8 +132,52 @@ class ActionGroupRecoveryBootstrap(
         return ActionGroupRecoveryResult.TakeoverFinished(session, actionResult)
     }
 
+    private suspend fun runSession(
+        session: ActionGroupSession,
+        resumeFromRunningState: Boolean
+    ): ActionGroupResult {
+        return when (session.type) {
+            ActionGroupSessionType.IN_SUPPLEMENT -> InActionGroupRunner(client, logger)
+                .run(session.sourceNo, session.targetNo ?: 0, resumeFromRunningState)
+            ActionGroupSessionType.OUT_SELL,
+            ActionGroupSessionType.OUT_MANUAL -> OutActionGroupRunner(client, logger)
+                .run(session.sourceNo, resumeFromRunningState)
+        }
+    }
+
     private suspend fun readAllStates(reader: AtomicActionStateReader): List<ActionState> {
         return allSpecs.map { spec -> ActionState(spec, reader.readResult(spec)) }
+    }
+
+    private fun stepsForSession(session: ActionGroupSession): List<ActionStep> {
+        return when (session.type) {
+            ActionGroupSessionType.IN_SUPPLEMENT -> inActionSteps(session.sourceNo, session.targetNo ?: 0)
+            ActionGroupSessionType.OUT_SELL,
+            ActionGroupSessionType.OUT_MANUAL -> outActionSteps(session.sourceNo)
+        }
+    }
+
+    private fun hasOnlyCompletedPrefixThenIdle(values: List<Int>): Boolean {
+        var hasSeenIdle = false
+        values.forEach { value ->
+            when (value) {
+                AtomicActionCodes.COMPLETED -> {
+                    if (hasSeenIdle) {
+                        return false
+                    }
+                }
+                AtomicActionCodes.IDLE -> hasSeenIdle = true
+                else -> return false
+            }
+        }
+        return true
+    }
+
+    private fun formatSessionStates(steps: List<ActionStep>, values: List<Int>): String {
+        return steps.zip(values)
+            .joinToString(",") { (step, value) ->
+                "${step.spec.name}=${AtomicActionExecutor.resultCodeDesc(value)}"
+            }
     }
 
     private data class ActionState(

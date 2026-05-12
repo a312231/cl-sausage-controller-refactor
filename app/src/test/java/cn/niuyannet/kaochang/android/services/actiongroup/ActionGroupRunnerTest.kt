@@ -129,14 +129,54 @@ class ActionGroupRunnerTest {
                 AtomicActionResult.Success,
                 AtomicActionResult.Success
             ),
-            runningAction = "in5"
+            states = mutableMapOf("in5" to AtomicActionCodes.RUNNING)
+        )
+        val runner = InActionGroupRunner(client)
+
+        val result = runner.run(sourceBoxNo = 17, targetPanNo = 2, resumeFromRunningState = true)
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("in5:0", "in6:0", "in7:2"), client.calls)
+    }
+
+    @Test
+    fun inRunner_shouldFreshStartAllStepsWhenPreviousOrderLeavesCompletedRegisters() = runBlocking {
+        val client = FakeClient(
+            states = completedStates(
+                "in1",
+                "in2",
+                "in3",
+                "in4",
+                "in5",
+                "in6",
+                "in7"
+            )
         )
         val runner = InActionGroupRunner(client)
 
         val result = runner.run(sourceBoxNo = 17, targetPanNo = 2)
 
         assertEquals(ActionGroupResult.Success, result)
-        assertEquals(listOf("in5:0", "in6:0", "in7:2"), client.calls)
+        assertEquals(
+            listOf("in1:17", "in2:17", "in3:0", "in4:0", "in5:0", "in6:0", "in7:2"),
+            client.calls
+        )
+    }
+
+    @Test
+    fun inRunner_shouldResumeFromFirstIncompleteStepWhenCompletedPrefixExistsInRecoveryMode() = runBlocking {
+        val client = FakeClient(
+            states = mutableMapOf(
+                "in1" to COMPLETED,
+                "in2" to COMPLETED
+            )
+        )
+        val runner = InActionGroupRunner(client)
+
+        val result = runner.run(sourceBoxNo = 17, targetPanNo = 2, resumeFromRunningState = true)
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("in3:0", "in4:0", "in5:0", "in6:0", "in7:2"), client.calls)
     }
 
     @Test
@@ -151,7 +191,7 @@ class ActionGroupRunnerTest {
 
     private class FakeClient(
         private val results: ArrayDeque<AtomicActionResult> = ArrayDeque(),
-        private val runningAction: String? = null
+        private val states: MutableMap<String, Int> = mutableMapOf()
     ) : AtomicActionClient, AtomicActionStateReader {
         val calls = mutableListOf<String>()
 
@@ -162,18 +202,22 @@ class ActionGroupRunnerTest {
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             onCommandDispatched?.invoke()
+            states[spec.name] = COMPLETED
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }
 
         override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
-            return AtomicReadResult.Success(
-                if (spec.name == runningAction) AtomicActionCodes.RUNNING else AtomicActionCodes.IDLE
-            )
+            return AtomicReadResult.Success(states[spec.name] ?: AtomicActionCodes.IDLE)
         }
     }
 
     companion object {
+        private const val COMPLETED = 0x0002
+
         fun queueOf(vararg values: AtomicActionResult): ArrayDeque<AtomicActionResult> =
             ArrayDeque<AtomicActionResult>().apply { addAll(values.toList()) }
+
+        fun completedStates(vararg actionNames: String): MutableMap<String, Int> =
+            actionNames.associateWith { COMPLETED }.toMutableMap()
     }
 }

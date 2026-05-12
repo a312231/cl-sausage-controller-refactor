@@ -10,7 +10,7 @@ class AtomicActionExecutorTest {
     @Test
     fun execute_shouldWriteInfoBeforeCommandAndReturnSuccess() = runBlocking {
         val gateway = FakeGateway(
-            reads = mapOf(311 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+            reads = mapOf(311 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
         )
         val executor = AtomicActionExecutor(gateway, logger = {})
 
@@ -18,6 +18,30 @@ class AtomicActionExecutorTest {
 
         assertEquals(AtomicActionResult.Success, result)
         assertEquals(listOf(Write(312, 17), Write(310, 1)), gateway.writes)
+    }
+
+    @Test
+    fun execute_shouldTreatStaleCompletedAsPendingUntilRunningThenCompleted() = runBlocking {
+        val spec = AtomicActionSpec("in1-test", 310, 311, 312, 1_000L, 10L, "in1：移动到肠箱预推送位置")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                311 to queueOf(
+                    COMPLETED,
+                    COMPLETED,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    COMPLETED
+                )
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 17)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(listOf(Write(312, 17), Write(310, 1)), gateway.writes)
+        assertTrue(logs.any { it.contains("等待动作启动确认") && it.contains("0x0002") })
     }
 
     @Test
@@ -37,7 +61,7 @@ class AtomicActionExecutorTest {
             "技术日志要说明动作编号、中文含义和结果寄存器，文件运维日志由动作组 Runner 统一补上下文",
             logs.any {
                 it.contains("动作启动失败：out1-test（out1：从烤盘取熟肠到穿签位）下位机未确认执行") &&
-                    it.contains("结果寄存器411一直为0x0000（旧成功/空闲）")
+                    it.contains("未观察到0x0001（执行中）")
             }
         )
         assertEquals(listOf(Write(412, 2), Write(410, 1)), gateway.writes)
@@ -115,7 +139,7 @@ class AtomicActionExecutorTest {
                     AtomicActionCodes.IDLE,
                     AtomicActionCodes.IDLE,
                     AtomicActionCodes.RUNNING,
-                    AtomicActionCodes.IDLE
+                    COMPLETED
                 ),
                 340 to repeatedQueue(AtomicActionCodes.RUNNING, 40)
             )
@@ -136,7 +160,7 @@ class AtomicActionExecutorTest {
     }
 
     @Test
-    fun execute_shouldSoftSucceedWhenStartupConfirmMissingAndSoftPolicyEnabled() = runBlocking {
+    fun execute_shouldNotSoftSucceedWhenStartupConfirmMissingAndSoftPolicyEnabled() = runBlocking {
         val spec = AtomicActionSpec("in3-test", 330, 331, 332, 120L, 10L, "in3：回到抛肠点")
         val gateway = FakeGateway(
             reads = mapOf(
@@ -155,15 +179,8 @@ class AtomicActionExecutorTest {
 
         val result = executor.execute(spec, infoValue = 0)
 
-        assertEquals(AtomicActionResult.Success, result)
-        assertTrue(
-            logs.any {
-                it.contains("启动确认软放行") &&
-                    it.contains("action=in3-test") &&
-                    it.contains("commandRegister（命令寄存器）=330") &&
-                    it.contains("currentCommand=0x0001（请求执行）")
-            }
-        )
+        assertTrue(result is AtomicActionResult.Timeout)
+        assertTrue(logs.any { it.contains("未观察到0x0001（执行中）") })
     }
 
     @Test
@@ -188,10 +205,10 @@ class AtomicActionExecutorTest {
     }
 
     @Test
-    fun execute_shouldSucceedOnlyAfterRunningThenIdle() = runBlocking {
+    fun execute_shouldSucceedOnlyAfterRunningThenCompleted() = runBlocking {
         val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
         val gateway = FakeGateway(
-            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
         )
         val logs = mutableListOf<String>()
         val executor = AtomicActionExecutor(gateway, logger = { logs += it })
@@ -203,9 +220,24 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldTimeoutWhenIdleAppearsAfterRunningInNewProtocol() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 80L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 2)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        assertTrue(logs.any { it.contains("执行中后返回0x0000") })
+    }
+
+    @Test
     fun execute_shouldTakeOverPollingWhenActionIsAlreadyRunning() = runBlocking {
         val gateway = FakeGateway(
-            reads = mapOf(321 to queueOf(AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+            reads = mapOf(321 to queueOf(AtomicActionCodes.RUNNING, COMPLETED))
         )
         val executor = AtomicActionExecutor(gateway, logger = {})
 
@@ -257,7 +289,7 @@ class AtomicActionExecutorTest {
     @Test
     fun execute_shouldEmitTelemetryWhenActionFinishes() = runBlocking {
         val gateway = FakeGateway(
-            reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+            reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
         )
         val telemetry = mutableListOf<ActionGroupTelemetry>()
         val executor = AtomicActionExecutor(
@@ -315,6 +347,8 @@ class AtomicActionExecutorTest {
     }
 
     companion object {
+        private const val COMPLETED = 0x0002
+
         fun queueOf(vararg values: Int): ArrayDeque<Int> = ArrayDeque<Int>().apply { addAll(values.toList()) }
         fun repeatedQueue(value: Int, count: Int): ArrayDeque<Int> =
             ArrayDeque<Int>().apply { repeat(count) { add(value) } }

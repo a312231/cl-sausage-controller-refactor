@@ -17,7 +17,11 @@ class InActionGroupRunner(
     private val operationLogger: (String) -> Unit = {},
     private val failureLogger: (String) -> Unit = operationLogger
 ) {
-    suspend fun run(sourceBoxNo: Int, targetPanNo: Int): ActionGroupResult {
+    suspend fun run(
+        sourceBoxNo: Int,
+        targetPanNo: Int,
+        resumeFromRunningState: Boolean = false
+    ): ActionGroupResult {
         if (sourceBoxNo !in 1..22) {
             return ActionGroupResult.Failed(
                 "in",
@@ -33,23 +37,16 @@ class InActionGroupRunner(
             )
         }
 
-        val steps = listOf(
-            ActionStep(AtomicActions.in1, sourceBoxNo),
-            ActionStep(AtomicActions.in2, sourceBoxNo, AtomicActionCodes.IR_PICK_FAILED),
-            ActionStep(AtomicActions.in3, 0),
-            ActionStep(AtomicActions.in4, 0),
-            ActionStep(AtomicActions.in5, 0, AtomicActionCodes.IR_THROW_FAILED),
-            ActionStep(AtomicActions.in6, 0),
-            ActionStep(AtomicActions.in7, targetPanNo)
-        )
+        val steps = inActionSteps(sourceBoxNo, targetPanNo)
         logger(
             "补肠动作组计划：sourceBox=$sourceBoxNo，targetPan=$targetPanNo，" +
+                "resumeFromRunningState（是否按恢复模式跳过已完成步骤）=$resumeFromRunningState，" +
                 "steps=${steps.joinToString(" -> ") { it.spec.description }}"
         )
         return executeSteps(
             client = client,
             steps = steps,
-            startIndex = resumeStartIndex(steps, client, logger),
+            startIndex = resumeStartIndex(steps, client, logger, resumeFromRunningState),
             logger = logger,
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,
@@ -65,7 +62,10 @@ class OutActionGroupRunner(
     private val operationLogger: (String) -> Unit = {},
     private val failureLogger: (String) -> Unit = operationLogger
 ) {
-    suspend fun run(sourcePanNo: Int): ActionGroupResult {
+    suspend fun run(
+        sourcePanNo: Int,
+        resumeFromRunningState: Boolean = false
+    ): ActionGroupResult {
         if (sourcePanNo !in 1..33) {
             return ActionGroupResult.Failed(
                 "out",
@@ -74,21 +74,16 @@ class OutActionGroupRunner(
             )
         }
 
-        val steps = listOf(
-            ActionStep(AtomicActions.out1, sourcePanNo),
-            ActionStep(AtomicActions.out2, 0, AtomicActionCodes.STICK_FAILED),
-            ActionStep(AtomicActions.out3, 0),
-            ActionStep(AtomicActions.out4, 0),
-            ActionStep(AtomicActions.out5, 0, discardedOnCustomerTimeout = true)
-        )
+        val steps = outActionSteps(sourcePanNo)
         logger(
             "出餐动作组计划：sourcePan=$sourcePanNo，检测方式=out5 光电传感器，" +
+                "resumeFromRunningState（是否按恢复模式跳过已完成步骤）=$resumeFromRunningState，" +
                 "steps=${steps.joinToString(" -> ") { it.spec.description }}"
         )
         return executeSteps(
             client = client,
             steps = steps,
-            startIndex = resumeStartIndex(steps, client, logger),
+            startIndex = resumeStartIndex(steps, client, logger, resumeFromRunningState),
             logger = logger,
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,
@@ -102,12 +97,34 @@ data class ActionGroupOperationLogContext(
     val subject: String? = null
 )
 
-private data class ActionStep(
+internal data class ActionStep(
     val spec: AtomicActionSpec,
     val infoValue: Int,
     val retryableErrorCode: Int? = null,
     val discardedOnCustomerTimeout: Boolean = false
 )
+
+internal fun inActionSteps(sourceBoxNo: Int, targetPanNo: Int): List<ActionStep> {
+    return listOf(
+        ActionStep(AtomicActions.in1, sourceBoxNo),
+        ActionStep(AtomicActions.in2, sourceBoxNo, AtomicActionCodes.IR_PICK_FAILED),
+        ActionStep(AtomicActions.in3, 0),
+        ActionStep(AtomicActions.in4, 0),
+        ActionStep(AtomicActions.in5, 0, AtomicActionCodes.IR_THROW_FAILED),
+        ActionStep(AtomicActions.in6, 0),
+        ActionStep(AtomicActions.in7, targetPanNo)
+    )
+}
+
+internal fun outActionSteps(sourcePanNo: Int): List<ActionStep> {
+    return listOf(
+        ActionStep(AtomicActions.out1, sourcePanNo),
+        ActionStep(AtomicActions.out2, 0, AtomicActionCodes.STICK_FAILED),
+        ActionStep(AtomicActions.out3, 0),
+        ActionStep(AtomicActions.out4, 0),
+        ActionStep(AtomicActions.out5, 0, discardedOnCustomerTimeout = true)
+    )
+}
 
 private suspend fun executeSteps(
     client: AtomicActionClient,
@@ -186,21 +203,35 @@ private fun mapActionResult(step: ActionStep, result: AtomicActionResult): Actio
 private suspend fun resumeStartIndex(
     steps: List<ActionStep>,
     client: AtomicActionClient,
-    logger: (String) -> Unit
+    logger: (String) -> Unit,
+    resumeFromRunningState: Boolean
 ): Int {
+    if (!resumeFromRunningState) {
+        return 0
+    }
     val reader = client as? AtomicActionStateReader ?: return 0
-    steps.forEachIndexed { index, step ->
-        when (val state = reader.readResult(step.spec)) {
+    val states = steps.map { step -> step to reader.readResult(step.spec) }
+    states.forEachIndexed { index, (step, state) ->
+        if (state is AtomicReadResult.Success && state.value == AtomicActionCodes.RUNNING) {
+            logger("动作组恢复接管：从 ${step.spec.name} 开始轮询，跳过此前已非执行中的动作")
+            return index
+        }
+    }
+    states.forEachIndexed { index, (step, state) ->
+        when (state) {
             is AtomicReadResult.Failure -> Unit
             is AtomicReadResult.Success -> {
-                if (state.value == AtomicActionCodes.RUNNING) {
-                    logger("动作组恢复接管：从 ${step.spec.name} 开始轮询，跳过此前已非执行中的动作")
+                if (state.value != AtomicActionCodes.COMPLETED) {
+                    if (index > 0) {
+                        logger("动作组恢复接管：跳过前 $index 个已完成动作，从 ${step.spec.name} 继续执行")
+                    }
                     return index
                 }
             }
         }
     }
-    return 0
+    logger("动作组恢复接管：所有步骤结果寄存器均为0x0002（完成），无需重新下发动作")
+    return steps.size
 }
 
 private fun isRetryable(result: AtomicActionResult, retryableErrorCode: Int): Boolean {

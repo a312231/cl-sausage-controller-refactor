@@ -121,6 +121,106 @@ class ActionGroupRecoveryBootstrapTest {
     }
 
     @Test
+    fun recover_shouldTreatAllSessionStepsCompletedAsRecoveredSuccess() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "in-completed-session",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 17,
+            targetNo = 2,
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+        )
+        val store = MemorySessionStore(session)
+        val locks = ResourceLocks()
+        locks.tryAcquire(session.resourceMask, session.sessionId)
+        val logs = mutableListOf<String>()
+        val client = FakeClient(
+            states = mutableMapOf(
+                "in1" to COMPLETED,
+                "in2" to COMPLETED,
+                "in3" to COMPLETED,
+                "in4" to COMPLETED,
+                "in5" to COMPLETED,
+                "in6" to COMPLETED,
+                "in7" to COMPLETED
+            )
+        )
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = client,
+            sessionStore = store,
+            resourceLocks = locks,
+            logger = { logs += it }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.TakeoverFinished)
+        assertEquals(ActionGroupResult.Success, (result as ActionGroupRecoveryResult.TakeoverFinished).actionResult)
+        assertTrue(client.calls.isEmpty())
+        assertTrue(locks.isIdle())
+        assertTrue(logs.any { it.contains("按结果寄存器=0x0002（完成）推断本会话已完成") })
+        assertEquals(session, store.session)
+    }
+
+    @Test
+    fun recover_shouldResumeFromCompletedPrefixWhenSessionExists() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "in-prefix-session",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 17,
+            targetNo = 2,
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+        )
+        val store = MemorySessionStore(session)
+        val client = FakeClient(
+            states = mutableMapOf(
+                "in1" to COMPLETED,
+                "in2" to COMPLETED
+            ),
+            results = ArrayDeque(
+                listOf(
+                    AtomicActionResult.Success,
+                    AtomicActionResult.Success,
+                    AtomicActionResult.Success,
+                    AtomicActionResult.Success,
+                    AtomicActionResult.Success
+                )
+            )
+        )
+
+        val result = ActionGroupRecoveryBootstrap(client, store, ResourceLocks()).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.TakeoverFinished)
+        assertEquals(ActionGroupResult.Success, (result as ActionGroupRecoveryResult.TakeoverFinished).actionResult)
+        assertEquals(listOf("in3:0", "in4:0", "in5:0", "in6:0", "in7:2"), client.calls)
+    }
+
+    @Test
+    fun recover_shouldEnterMaintenanceWhenCompletedStateIsNotContiguousPrefix() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "in-non-contiguous",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 17,
+            targetNo = 2,
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+        )
+        val client = FakeClient(
+            states = mutableMapOf(
+                "in1" to COMPLETED,
+                "in3" to COMPLETED
+            )
+        )
+
+        val result = ActionGroupRecoveryBootstrap(
+            client,
+            MemorySessionStore(session),
+            ResourceLocks()
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("非连续完成态"))
+        assertTrue(client.calls.isEmpty())
+    }
+
+    @Test
     fun recover_shouldTakeOverManualOutSessionWithoutOrderContext() = runBlocking {
         val session = ActionGroupSession(
             sessionId = "out-manual-session",
@@ -194,12 +294,16 @@ class ActionGroupRecoveryBootstrapTest {
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             onCommandDispatched?.invoke()
-            states[spec.name] = AtomicActionCodes.IDLE
+            states[spec.name] = COMPLETED
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }
 
         override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
             return AtomicReadResult.Success(states[spec.name] ?: AtomicActionCodes.IDLE)
         }
+    }
+
+    companion object {
+        private const val COMPLETED = 0x0002
     }
 }
