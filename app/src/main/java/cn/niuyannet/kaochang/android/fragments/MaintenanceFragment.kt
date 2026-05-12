@@ -758,6 +758,9 @@ class MaintenanceFragment : Fragment() {
                     val previousIsEnable = config.isEnable
                     val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
                     config.errorStatus = 0
+                    config.errorCode = null
+                    config.errorCategory = null
+                    config.errorReason = null
                     config.onlineStatus = recoveredOnlineStatus
                     config.scanBlockStatus = AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
                     config.isEnable = 0

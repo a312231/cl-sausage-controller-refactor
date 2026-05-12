@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.fault.FaultCode
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
@@ -237,16 +238,20 @@ object KaoChangOperate {
         }
     }
 
-    private fun markDeviceErrorAndUpload(logMessage: String) {
+    private fun markDeviceErrorAndUpload(code: FaultCode, logMessage: String) {
         val config = AppConfig.getAppConfig()
         val previousOnlineStatus = config.onlineStatus
         val previousErrorStatus = config.errorStatus
         config.errorStatus = 2
         config.onlineStatus = 3
+        config.errorCode = code.name
+        config.errorCategory = code.category.display
+        config.errorReason = logMessage.ifBlank { code.defaultReason }
         LogUtils.e(
             "【动作组故障锁存】已锁存设备故障，禁止自动补肠/续补继续启动：" +
                 "onlineStatus（设备营业状态）=${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
                 "errorStatus（设备故障状态）=$previousErrorStatus(0=正常, 非0=故障)->${config.errorStatus}(2=通信/硬件级故障)，" +
+                "errorCode=${code.name}（${code.category.display}），" +
                 "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，reason=$logMessage"
         )
         operateScope.launch {
@@ -256,7 +261,8 @@ object KaoChangOperate {
         LogUtils.e(
             "【状态切换】设备进入维护：onlineStatus（设备营业状态）=" +
                 "${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
-                "errorStatus（设备故障状态）=$previousErrorStatus(0=正常, 非0=故障)->${config.errorStatus}(2=通信/硬件级故障)"
+                "errorStatus（设备故障状态）=$previousErrorStatus(0=正常, 非0=故障)->${config.errorStatus}(2=通信/硬件级故障)，" +
+                "errorCode=${code.name}"
         )
         logE(LOG_DEVICE, logMessage)
     }
@@ -520,6 +526,13 @@ object KaoChangOperate {
     }
 
     private fun markActionFailure(actionName: String, result: ActionExecutionResult) {
+        val code = when (result) {
+            ActionExecutionResult.SUCCESS -> return
+            ActionExecutionResult.COMMAND_REJECTED -> FaultCode.MODBUS_CMD_REJECTED
+            ActionExecutionResult.BUSY_TIMEOUT -> FaultCode.ACTION_BUSY_TIMEOUT
+            ActionExecutionResult.DISCONNECTED -> FaultCode.MODBUS_COMM_DROP
+            ActionExecutionResult.RUNNING_TIMEOUT -> FaultCode.ACTION_RUNNING_TIMEOUT
+        }
         val logMessage = when (result) {
             ActionExecutionResult.SUCCESS -> return
             ActionExecutionResult.COMMAND_REJECTED -> "$actionName 下发指令失败，设备进入维护中"
@@ -527,7 +540,7 @@ object KaoChangOperate {
             ActionExecutionResult.DISCONNECTED -> "$actionName 过程中与下位机通信断开，设备进入维护中"
             ActionExecutionResult.RUNNING_TIMEOUT -> "$actionName 长时间处于执行中(201=1)，设备进入维护中"
         }
-        markDeviceErrorAndUpload(logMessage)
+        markDeviceErrorAndUpload(code, logMessage)
     }
 
     private fun createAtomicActionClient(
@@ -578,6 +591,7 @@ object KaoChangOperate {
             return true
         }
         markDeviceErrorAndUpload(
+            FaultCode.ACTION_GROUP_DISABLED,
             "$actionName 被维护开关 useActionGroupV2=0 拦截；新 Android 12 主流程不回退旧视觉链路，设备进入维护/暂停新单"
         )
         return false
@@ -606,13 +620,14 @@ object KaoChangOperate {
             LogUtils.e("【失败原因】$actionName 失败：${result.message}")
         }
         markDeviceErrorAndUpload(
+            FaultCode.ACTION_GROUP_FAILED,
             "$actionName 动作组失败：protocol=300_400，result=${actionGroupResultDesc(result)}，" +
                 "resourceLocks=${actionGroupLocks.snapshot()}"
         )
     }
 
-    private fun enterActionGroupMaintenance(reason: String) {
-        markDeviceErrorAndUpload(reason)
+    private fun enterActionGroupMaintenance(reason: String, code: FaultCode = FaultCode.ACTION_GROUP_FAILED) {
+        markDeviceErrorAndUpload(code, reason)
         val config = AppConfig.getAppConfig()
         config.moveStatus = 0
         config.onlineStatus = 3
@@ -957,6 +972,9 @@ object KaoChangOperate {
         val config = AppConfig.getAppConfig()
         config.errorStatus = 2
         config.onlineStatus = 3
+        config.errorCode = FaultCode.SELF_CLEAN_FAILED.name
+        config.errorCategory = FaultCode.SELF_CLEAN_FAILED.category.display
+        config.errorReason = "自清洁失败：target=$targetLabel，result=${actionExecutionResultDesc(result)}"
         config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
         config.zone3Dirty = 0
         config.zone3CleanPending = 0
@@ -1193,7 +1211,7 @@ object KaoChangOperate {
             lastErrorCode = AtomicActionCodes.IR_PICK_FAILED
         )
         logE(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败：$faultReason，boxCount=${candidates.size}")
-        markDeviceErrorAndUpload(faultReason)
+        markDeviceErrorAndUpload(FaultCode.ACTION_GROUP_FAILED, faultReason)
         return false
     }
 
@@ -2007,7 +2025,8 @@ object KaoChangOperate {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=下位机通信断开")
-                markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移前下位机通信断开，设备进入维护中")
+                markDeviceErrorAndUpload(FaultCode.MODBUS_COMM_DROP,
+                    "烤盘${sourcePosition}到烤盘${targetPosition}搬移前下位机通信断开，设备进入维护中")
                 return false
             }
 
@@ -2017,7 +2036,8 @@ object KaoChangOperate {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=202 指令下发失败，status=${writeMoveResult.status}")
-                markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移指令下发失败：${writeMoveResult.status}")
+                markDeviceErrorAndUpload(FaultCode.KAOPAN_MOVE_FAILED,
+                    "烤盘${sourcePosition}到烤盘${targetPosition}搬移指令下发失败：${writeMoveResult.status}")
                 return false
             }
             val moveStart = System.currentTimeMillis()
@@ -2030,14 +2050,16 @@ object KaoChangOperate {
                     AppConfig.getAppConfig().moveStatus = 0
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
                     logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=读取 203 失败")
-                    markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移时读取203失败，设备进入维护中")
+                    markDeviceErrorAndUpload(FaultCode.MODBUS_COMM_DROP,
+                        "烤盘${sourcePosition}到烤盘${targetPosition}搬移时读取203失败，设备进入维护中")
                     return false
                 }
                 if (System.currentTimeMillis() - moveStart > moveTimeoutMs) {
                     AppConfig.getAppConfig().moveStatus = 0
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
                     logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=203 长时间为 1（执行中）")
-                    markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移长时间处于执行中(203=1)，设备进入维护中")
+                    markDeviceErrorAndUpload(FaultCode.KAOPAN_MOVE_TIMEOUT,
+                        "烤盘${sourcePosition}到烤盘${targetPosition}搬移长时间处于执行中(203=1)，设备进入维护中")
                     return false
                 }
             }
@@ -2045,7 +2067,8 @@ object KaoChangOperate {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=$result")
-                markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
+                markDeviceErrorAndUpload(FaultCode.KAOPAN_MOVE_FAILED,
+                    "烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
                 return false
             }
             kaoPan.cmdStatusMove = result
@@ -2877,6 +2900,9 @@ object KaoChangOperate {
             // 这里降级为维护中并上报，等待人工排查。
             config.errorStatus = 2
             config.onlineStatus = 3
+            config.errorCode = FaultCode.KAOPAN_RESET_FAILED.name
+            config.errorCategory = FaultCode.KAOPAN_RESET_FAILED.category.display
+            config.errorReason = "营业结束重置烤盘失败：${e.javaClass.simpleName}：${e.message}"
             config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
             logE(

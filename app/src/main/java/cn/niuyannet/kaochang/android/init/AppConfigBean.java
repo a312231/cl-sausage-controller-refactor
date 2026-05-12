@@ -86,6 +86,13 @@ public class AppConfigBean implements Serializable {
     // 设备故障状态：0=正常，1=识别/流程错误，2=通信/硬件级故障
     public int errorStatus;
 
+    // 当 errorStatus != 0 时随上报的结构化故障码（FaultCode 枚举名）；恢复时清空
+    public String errorCode;
+    // 故障类别中文标签（FaultCategory.display），用于飞书告警按类别动态生成处置建议
+    public String errorCategory;
+    // 故障原因（人类可读简述），用于告警里"原因"一行
+    public String errorReason;
+
     // 烤制算法开关：0=关闭，1=开启
     public int isEnable = 0;
 

@@ -150,6 +150,11 @@ object SendServerHelper {
         payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
+        if (config.errorStatus != 0) {
+            config.errorCode?.takeIf { it.isNotBlank() }?.let { payload["errorCode"] = it }
+            config.errorCategory?.takeIf { it.isNotBlank() }?.let { payload["errorCategory"] = it }
+            config.errorReason?.takeIf { it.isNotBlank() }?.let { payload["errorReason"] = it }
+        }
         payload["restStatusSource"] = config.restStatusSource
         payload["source"] = source
         payload["reportedAt"] = now
@@ -441,6 +446,7 @@ object SendServerHelper {
             append(config.highConcurrencyResidualDrain).append('|')
             append(config.moveStatus).append('|')
             append(config.errorStatus).append('|')
+            append(config.errorCode ?: "").append('|')
             append(config.restStatusSource ?: "")
         }
     }

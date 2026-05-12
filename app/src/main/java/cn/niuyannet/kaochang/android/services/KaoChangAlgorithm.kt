@@ -1,5 +1,6 @@
 ﻿package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.fault.FaultCode
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
@@ -906,6 +907,9 @@ object KaoChangAlgorithm {
                         } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
                             val restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
                             config.errorStatus = 0
+                            config.errorCode = null
+                            config.errorCategory = null
+                            config.errorReason = null
                             config.onlineStatus = restoredOnlineStatus
                             AppConfig.saveAppConfig(config)
                             KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
@@ -951,6 +955,9 @@ object KaoChangAlgorithm {
                             rememberRecoverableOnlineStatus(config.onlineStatus)
                             config.errorStatus = 2
                             config.onlineStatus = 3
+                            config.errorCode = FaultCode.MODBUS_DISCONNECT.name
+                            config.errorCategory = FaultCode.MODBUS_DISCONNECT.category.display
+                            config.errorReason = "modbus 串口断开超过 ${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms"
                             stopHeatingAndDispatchForFault(config, "modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms")
                             modbusReportedUnavailable = true
                             loggedManualRecoveryRequiredOnDisconnect = false
