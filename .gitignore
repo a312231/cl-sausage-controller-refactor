@@ -5,8 +5,11 @@
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
+/.idea/deploymentTargetSelector.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+.claude/
+.vscode/
 .DS_Store
 /build
 /captures
@@ -16,6 +19,7 @@ local.properties
 # 忽略编译输出
 /build/
 /app/build/
+**/build/
 # 忽略所有 class 文件
 *.class
 .worktrees/
