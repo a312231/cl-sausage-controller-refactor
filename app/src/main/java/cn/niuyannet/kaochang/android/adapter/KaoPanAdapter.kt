@@ -8,7 +8,10 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import cn.niuyannet.kaochang.android.databinding.ItemKaopanBinding
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import androidx.core.graphics.toColorInt
 
 class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan, KaoPanAdapter.ViewHolder>(KaoPanDiffCallback()) {
@@ -58,16 +61,12 @@ class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan,
                         tvStatus.setBackgroundColor("#CCCCCC".toColorInt()) // 灰色背景
                     }
                     1 -> {
-                        val timeDiff = System.currentTimeMillis() - kaoPan.startTime
-                        val seconds = timeDiff / 1000
-                        tvStatus.text = "烤制中:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
+                        tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#FFFFFF".toColorInt())
                         tvStatus.setBackgroundColor("#FF0000".toColorInt()) // 红色背景
                     }
                     2 -> {
-                        val timeDiff = System.currentTimeMillis() - kaoPan.holdingTime
-                        val seconds = timeDiff / 1000
-                        tvStatus.text = "保温:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
+                        tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#FFFFFF".toColorInt())
                         tvStatus.setBackgroundColor("#00FF00".toColorInt()) // 绿色背景
                     }
@@ -92,6 +91,25 @@ class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan,
 
             }
         }
+    }
+}
+
+internal fun formatKaoPanStatusText(
+    kaoPan: KaoPan,
+    nowMs: Long = System.currentTimeMillis(),
+    config: AppConfigBean = AppConfig.getAppConfig()
+): String {
+    return when (kaoPan.status) {
+        0 -> "空缺"
+        1 -> {
+            val seconds = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, config, nowMs) / 1000L
+            "烤制中:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
+        }
+        2 -> {
+            val seconds = (nowMs - kaoPan.holdingTime).coerceAtLeast(0L) / 1000L
+            "保温:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
+        }
+        else -> "未知"
     }
 }
 

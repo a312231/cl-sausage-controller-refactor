@@ -342,6 +342,9 @@ object LowCurrentTrafficMode {
         supplementGroup: List<KaoPan>,
         groupName: String
     ): Boolean {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
+            return false
+        }
         val nowMs = System.currentTimeMillis()
         val keepWarmPans = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(supplementGroup)
         val finishedPans = if (keepWarmPans.isEmpty()) {
@@ -515,12 +518,16 @@ object LowCurrentTrafficMode {
      * 完成后关闭 1 区加热并进入保温状态。
      */
     private fun checkLowHeatEnd(list: List<KaoPan>) {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
+            return
+        }
         var allFinished = true
         var heatingCount = 0
+        val nowMs = System.currentTimeMillis()
         list.forEach { kaoPan ->
             if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                 heatingCount += 1
-                val heatTime = System.currentTimeMillis() - kaoPan.startTime
+                val heatTime = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, nowMs = nowMs)
                 if (heatTime < kaoPan.bakingTime) {
                     allFinished = false
                 }
@@ -533,7 +540,7 @@ object LowCurrentTrafficMode {
             list.forEach { kaoPan ->
                 if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                     kaoPan.startTime = 0
-                    kaoPan.holdingTime = System.currentTimeMillis()
+                    kaoPan.holdingTime = nowMs
                     kaoPan.status = 2
                 }
             }

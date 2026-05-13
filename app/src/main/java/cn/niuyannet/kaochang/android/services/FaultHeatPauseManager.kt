@@ -77,14 +77,15 @@ object FaultHeatPauseManager {
             }
 
             val nowMs = System.currentTimeMillis()
+            val pans = KaoPanHelper.getKaoPanList()
             val result = adjustPansForPause(
-                pans = KaoPanHelper.getKaoPanList(),
+                pans = pans,
                 config = config,
                 nowMs = nowMs,
                 pauseStartedAtMs = config.faultHeatPauseStartedAtMs,
                 reason = reason
             )
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            KaoPanHelper.saveKaoPanList(pans)
             config.faultHeatPauseActive = 0
             config.faultHeatPauseStartedAtMs = 0L
             config.faultHeatPauseReason = null
@@ -98,6 +99,38 @@ object FaultHeatPauseManager {
             )
             return result
         }
+    }
+
+    fun shouldSkipBakingCompletion(): Boolean {
+        synchronized(mutex) {
+            return shouldSkipBakingCompletion(AppConfig.getAppConfig())
+        }
+    }
+
+    internal fun shouldSkipBakingCompletion(config: AppConfigBean): Boolean {
+        return config.faultHeatPauseActive == 1 && config.faultHeatPauseStartedAtMs > 0L
+    }
+
+    fun effectiveBakingElapsedMs(
+        pan: KaoPan,
+        nowMs: Long = System.currentTimeMillis()
+    ): Long {
+        synchronized(mutex) {
+            return effectiveBakingElapsedMs(pan, AppConfig.getAppConfig(), nowMs)
+        }
+    }
+
+    internal fun effectiveBakingElapsedMs(
+        pan: KaoPan,
+        config: AppConfigBean,
+        nowMs: Long
+    ): Long {
+        val effectiveNowMs = if (shouldSkipBakingCompletion(config)) {
+            config.faultHeatPauseStartedAtMs
+        } else {
+            nowMs
+        }
+        return (effectiveNowMs - pan.startTime).coerceAtLeast(0L)
     }
 
     fun clearFaultHeatPauseSilently(reason: String) {

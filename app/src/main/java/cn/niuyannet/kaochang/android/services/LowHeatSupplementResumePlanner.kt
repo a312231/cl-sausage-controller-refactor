@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 
@@ -39,19 +41,30 @@ internal object LowHeatSupplementResumePlanner {
         }
     }
 
-    fun findFinishedPans(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
+    fun findFinishedPans(
+        supplementGroup: List<KaoPan>,
+        nowMs: Long,
+        config: AppConfigBean = AppConfig.getAppConfig()
+    ): List<KaoPan> {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+            return emptyList()
+        }
         return supplementGroup
             .filter { pan ->
                 pan.isHasSausage &&
                     pan.startTime > 0L &&
                     pan.bakingTime > 0L &&
-                    nowMs - pan.startTime >= pan.bakingTime
+                    FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
             }
             .sortedBy { it.positionSn }
     }
 
-    fun markFinishedPansKeepWarm(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
-        val finishedPans = findFinishedPans(supplementGroup, nowMs)
+    fun markFinishedPansKeepWarm(
+        supplementGroup: List<KaoPan>,
+        nowMs: Long,
+        config: AppConfigBean = AppConfig.getAppConfig()
+    ): List<KaoPan> {
+        val finishedPans = findFinishedPans(supplementGroup, nowMs, config)
         finishedPans.forEach { pan ->
             pan.startTime = 0L
             pan.holdingTime = nowMs
@@ -62,8 +75,12 @@ internal object LowHeatSupplementResumePlanner {
 
     fun findKeepWarmPansReadyToMove(
         supplementGroup: List<KaoPan>,
+        config: AppConfigBean = AppConfig.getAppConfig(),
         pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
     ): List<KaoPan> {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+            return emptyList()
+        }
         return supplementGroup
             .filter { pan ->
                 KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
@@ -73,10 +90,16 @@ internal object LowHeatSupplementResumePlanner {
             .sortedBy { it.positionSn }
     }
 
-    fun longestRemainingBakingMs(supplementGroup: List<KaoPan>, nowMs: Long): Long? {
+    fun longestRemainingBakingMs(
+        supplementGroup: List<KaoPan>,
+        nowMs: Long,
+        config: AppConfigBean = AppConfig.getAppConfig()
+    ): Long? {
         return supplementGroup
             .filter { it.isHasSausage && it.startTime > 0L && it.bakingTime > 0L }
-            .map { pan -> (pan.bakingTime - (nowMs - pan.startTime)).coerceAtLeast(0L) }
+            .map { pan ->
+                (pan.bakingTime - FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs)).coerceAtLeast(0L)
+            }
             .maxOrNull()
     }
 

@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -30,7 +31,8 @@ class KaoChangAlgorithmAvailableHelperTest {
         val batch = findNextOpeningSellBatch(
             isLowOrTransition = false,
             sellArea = highOpeningPans,
-            now = now
+            now = now,
+            config = inactiveFaultConfig()
         )
 
         assertNotNull(batch)
@@ -52,7 +54,8 @@ class KaoChangAlgorithmAvailableHelperTest {
         val batch = findNextOpeningSellBatch(
             isLowOrTransition = true,
             sellArea = lowOpeningPans,
-            now = now
+            now = now,
+            config = inactiveFaultConfig()
         )
 
         assertNotNull(batch)
@@ -90,7 +93,8 @@ class KaoChangAlgorithmAvailableHelperTest {
         val batch = findNextSupplementHeatBatch(
             isLowOrTransition = true,
             heatArea = heatArea,
-            now = now
+            now = now,
+            config = inactiveFaultConfig()
         )
 
         assertNotNull(batch)
@@ -121,7 +125,8 @@ class KaoChangAlgorithmAvailableHelperTest {
         val batch = findNextSupplementHeatBatch(
             isLowOrTransition = false,
             heatArea = heatArea,
-            now = now
+            now = now,
+            config = inactiveFaultConfig()
         )
 
         assertNotNull(batch)
@@ -140,4 +145,6 @@ class KaoChangAlgorithmAvailableHelperTest {
         setBakingTime(bakingTime)
         setHoldingTime(0L)
     }
+
+    private fun inactiveFaultConfig(): AppConfigBean = AppConfigBean()
 }

@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
@@ -87,7 +88,7 @@ class LowHeatSupplementResumePlannerTest {
             supplementPan(15, "A", hasSausage = false)
         )
 
-        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(13), result.map { it.positionSn })
     }
@@ -113,7 +114,7 @@ class LowHeatSupplementResumePlannerTest {
             }
         )
 
-        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(13), result.map { it.positionSn })
     }
@@ -135,7 +136,7 @@ class LowHeatSupplementResumePlannerTest {
             }
         )
 
-        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(14, 15), result.map { it.positionSn })
     }
@@ -151,9 +152,72 @@ class LowHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(13, 14, 15), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findFinishedPans_shouldNotFinishDuringFaultHeatPauseEvenWhenWallClockExceeded() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 8 * 60 * 1000L
+        }
+        val nowMs = 12L * 60L * 1000L
+        val group = (13..15).map { position ->
+            supplementPan(position, "A", hasSausage = true).apply {
+                startTime = 1L
+                bakingTime = 10L * 60L * 1000L
+                status = 1
+            }
+        }
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, config)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findFinishedPans_shouldNotFinishDuringFaultHeatPauseEvenWhenAlreadyMaturedAtPauseStart() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 12 * 60 * 1000L
+        }
+        val nowMs = 15L * 60L * 1000L
+        val group = (13..15).map { position ->
+            supplementPan(position, "A", hasSausage = true).apply {
+                startTime = 1L
+                bakingTime = 10L * 60L * 1000L
+                status = 1
+            }
+        }
+
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, config)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findKeepWarmPansReadyToMove_shouldReturnEmptyDuringFaultHeatPause() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 12 * 60 * 1000L
+        }
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 10_000L
+                status = 2
+            }
+        )
+
+        val result = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(
+            supplementGroup = group,
+            config = config,
+            pendingDiscardPositions = emptyList()
+        )
+
+        assertTrue(result.isEmpty())
     }
 
     @Test
@@ -177,7 +241,7 @@ class LowHeatSupplementResumePlannerTest {
             }
         )
 
-        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs)
+        val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, inactiveFaultConfig())
 
         assertTrue(result.isEmpty())
     }
@@ -199,7 +263,7 @@ class LowHeatSupplementResumePlannerTest {
             supplementPan(15, "A", hasSausage = false)
         )
 
-        val result = LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(group, nowMs)
+        val result = LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(13), result.map { it.positionSn })
         assertEquals(0L, group[0].startTime)
@@ -225,7 +289,11 @@ class LowHeatSupplementResumePlannerTest {
             supplementPan(15, "A", hasSausage = false)
         )
 
-        val result = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(group)
+        val result = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(
+            supplementGroup = group,
+            config = inactiveFaultConfig(),
+            pendingDiscardPositions = emptyList()
+        )
 
         assertEquals(listOf(13), result.map { it.positionSn })
     }
@@ -237,6 +305,8 @@ class LowHeatSupplementResumePlannerTest {
             this.isHasGrilling = reserved
             this.taste = Taste(tasteCode)
         }
+
+    private fun inactiveFaultConfig(): AppConfigBean = AppConfigBean()
 
     private fun supplementPan(positionSn: Int, tasteCode: String?, hasSausage: Boolean): KaoPan =
         KaoPan().apply {

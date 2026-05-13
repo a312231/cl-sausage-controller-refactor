@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 
 internal data class AvailableHeatBatch(
@@ -10,7 +12,8 @@ internal data class AvailableHeatBatch(
 internal fun findNextOpeningSellBatch(
     isLowOrTransition: Boolean,
     sellArea: List<KaoPan>,
-    now: Long
+    now: Long,
+    config: AppConfigBean = AppConfig.getAppConfig()
 ): AvailableHeatBatch? {
     val openingBatches = if (isLowOrTransition) {
         listOf("1~9开盘批次" to sellArea)
@@ -22,7 +25,7 @@ internal fun findNextOpeningSellBatch(
     }
     return openingBatches
         .mapNotNull { (name, pans) ->
-            calcAvailableBatchRemainHeatTime(pans, now)?.let { remain ->
+            calcAvailableBatchRemainHeatTime(pans, now, config)?.let { remain ->
                 AvailableHeatBatch(name = name, remainHeatTimeMs = remain)
             }
         }
@@ -32,7 +35,8 @@ internal fun findNextOpeningSellBatch(
 internal fun findNextSupplementHeatBatch(
     isLowOrTransition: Boolean,
     heatArea: List<KaoPan>,
-    now: Long
+    now: Long,
+    config: AppConfigBean = AppConfig.getAppConfig()
 ): AvailableHeatBatch? {
     val supplementBatches = if (isLowOrTransition) {
         listOf(
@@ -44,7 +48,7 @@ internal fun findNextSupplementHeatBatch(
     }
     return supplementBatches
         .mapNotNull { (name, pans) ->
-            calcAvailableBatchRemainHeatTime(pans, now)?.let { remain ->
+            calcAvailableBatchRemainHeatTime(pans, now, config)?.let { remain ->
                 AvailableHeatBatch(name = name, remainHeatTimeMs = remain)
             }
         }
@@ -53,13 +57,14 @@ internal fun findNextSupplementHeatBatch(
 
 private fun calcAvailableBatchRemainHeatTime(
     pans: List<KaoPan>,
-    now: Long
+    now: Long,
+    config: AppConfigBean
 ): Long? {
     return pans
         .asSequence()
         .filter { it.isHasSausage && it.startTime > 0L && it.holdingTime <= 0L }
         .mapNotNull { pan ->
-            val remain = pan.bakingTime - (now - pan.startTime)
+            val remain = pan.bakingTime - FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, now)
             remain.takeIf { it > 0L }
         }
         .maxOrNull()

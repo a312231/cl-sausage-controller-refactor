@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 
@@ -61,7 +63,14 @@ internal object HighHeatSupplementResumePlanner {
         }
     }
 
-    fun findFinishedPartialBatch(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
+    fun findFinishedPartialBatch(
+        supplementGroup: List<KaoPan>,
+        nowMs: Long,
+        config: AppConfigBean = AppConfig.getAppConfig()
+    ): List<KaoPan> {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+            return emptyList()
+        }
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         val occupiedPans = sortedGroup.filter { it.isHasSausage }
         if (occupiedPans.size !in 1 until sortedGroup.size) {
@@ -70,13 +79,17 @@ internal object HighHeatSupplementResumePlanner {
         val allFinished = occupiedPans.all { pan ->
             pan.startTime > 0L &&
                 pan.bakingTime > 0L &&
-                nowMs - pan.startTime >= pan.bakingTime
+                FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
         }
         return if (allFinished) occupiedPans else emptyList()
     }
 
-    fun markFinishedPartialBatchKeepWarm(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
-        val finishedPans = findFinishedPartialBatch(supplementGroup, nowMs)
+    fun markFinishedPartialBatchKeepWarm(
+        supplementGroup: List<KaoPan>,
+        nowMs: Long,
+        config: AppConfigBean = AppConfig.getAppConfig()
+    ): List<KaoPan> {
+        val finishedPans = findFinishedPartialBatch(supplementGroup, nowMs, config)
         finishedPans.forEach { pan ->
             pan.startTime = 0L
             pan.holdingTime = nowMs
@@ -87,8 +100,12 @@ internal object HighHeatSupplementResumePlanner {
 
     fun findKeepWarmPartialBatchReadyToMove(
         supplementGroup: List<KaoPan>,
+        config: AppConfigBean = AppConfig.getAppConfig(),
         pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
     ): List<KaoPan> {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+            return emptyList()
+        }
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         val occupiedPans = sortedGroup.filter { it.isHasSausage }
         if (occupiedPans.size !in 1 until sortedGroup.size) {

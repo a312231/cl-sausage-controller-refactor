@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
@@ -120,7 +121,7 @@ class HighHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
     }
@@ -136,7 +137,76 @@ class HighHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs, inactiveFaultConfig())
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findFinishedPartialBatch_shouldNotFinishDuringFaultHeatPauseEvenWhenWallClockExceeded() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 8 * 60 * 1000L
+        }
+        val nowMs = 12L * 60L * 1000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 1L
+                    bakingTime = 10L * 60L * 1000L
+                    status = 1
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs, config)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findFinishedPartialBatch_shouldNotFinishDuringFaultHeatPauseEvenWhenAlreadyMaturedAtPauseStart() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 12 * 60 * 1000L
+        }
+        val nowMs = 15L * 60L * 1000L
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 1L
+                    bakingTime = 10L * 60L * 1000L
+                    status = 1
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs, config)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findKeepWarmPartialBatchReadyToMove_shouldReturnEmptyDuringFaultHeatPause() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 12 * 60 * 1000L
+        }
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 0L
+                    holdingTime = 10_000L
+                    status = 2
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findKeepWarmPartialBatchReadyToMove(
+            supplementGroup = group,
+            config = config,
+            pendingDiscardPositions = emptyList()
+        )
 
         assertTrue(result.isEmpty())
     }
@@ -152,7 +222,7 @@ class HighHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs, inactiveFaultConfig())
 
         assertTrue(result.isEmpty())
     }
@@ -168,7 +238,7 @@ class HighHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs)
+        val result = HighHeatSupplementResumePlanner.findFinishedPartialBatch(group, nowMs, inactiveFaultConfig())
 
         assertTrue(result.isEmpty())
     }
@@ -186,7 +256,7 @@ class HighHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = HighHeatSupplementResumePlanner.markFinishedPartialBatchKeepWarm(group, nowMs)
+        val result = HighHeatSupplementResumePlanner.markFinishedPartialBatchKeepWarm(group, nowMs, inactiveFaultConfig())
 
         assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
         result.forEach { pan ->
@@ -209,7 +279,11 @@ class HighHeatSupplementResumePlannerTest {
             }
         }
 
-        val result = HighHeatSupplementResumePlanner.findKeepWarmPartialBatchReadyToMove(group)
+        val result = HighHeatSupplementResumePlanner.findKeepWarmPartialBatchReadyToMove(
+            supplementGroup = group,
+            config = inactiveFaultConfig(),
+            pendingDiscardPositions = emptyList()
+        )
 
         assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
     }
@@ -221,6 +295,8 @@ class HighHeatSupplementResumePlannerTest {
             this.isHasGrilling = reserved
             this.taste = Taste(tasteCode)
         }
+
+    private fun inactiveFaultConfig(): AppConfigBean = AppConfigBean()
 
     private fun supplementPan(positionSn: Int, tasteCode: String?, hasSausage: Boolean): KaoPan =
         KaoPan().apply {

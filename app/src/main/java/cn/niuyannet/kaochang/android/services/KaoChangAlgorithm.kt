@@ -388,7 +388,8 @@ object KaoChangAlgorithm {
         val nextOpeningBatch = findNextOpeningSellBatch(
             isLowOrTransition = !expandedSellRange,
             sellArea = sellArea,
-            now = now
+            now = now,
+            config = config
         )
         if (nextOpeningBatch != null) {
             logAvailableDecision(
@@ -406,7 +407,7 @@ object KaoChangAlgorithm {
             return
         }
 
-        val nextSupplementBatch = findNextSupplementHeatBatch(!expandedSellRange, heatArea, now)
+        val nextSupplementBatch = findNextSupplementHeatBatch(!expandedSellRange, heatArea, now, config)
 
         if (nextSupplementBatch != null) {
             logAvailableDecision(

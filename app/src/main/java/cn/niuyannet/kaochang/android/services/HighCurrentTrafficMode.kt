@@ -456,10 +456,14 @@ object HighCurrentTrafficMode {
         if (sourcePans.isEmpty()) {
             return
         }
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
+            return
+        }
 
         val now = System.currentTimeMillis()
         val hasUnfinished = sourcePans.any { kaoPan ->
-            kaoPan.startTime > 0 && now - kaoPan.startTime < kaoPan.bakingTime
+            kaoPan.startTime > 0 &&
+                FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, nowMs = now) < kaoPan.bakingTime
         }
         if (hasUnfinished) {
             return
@@ -791,6 +795,9 @@ object HighCurrentTrafficMode {
         list: List<KaoPan>,
         list25_33: List<KaoPan>
     ): Boolean {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
+            return false
+        }
         val nowMs = System.currentTimeMillis()
         val keepWarmPans = HighHeatSupplementResumePlanner.findKeepWarmPartialBatchReadyToMove(list25_33)
         val finishedPans = if (keepWarmPans.isEmpty()) {
@@ -872,7 +879,7 @@ object HighCurrentTrafficMode {
         val longestRemainingMs = occupiedPans.maxOfOrNull { pan ->
             when {
                 pan.startTime <= 0L || pan.bakingTime <= 0L -> pan.bakingTime.coerceAtLeast(0L)
-                else -> (pan.bakingTime - (nowMs - pan.startTime)).coerceAtLeast(0L)
+                else -> (pan.bakingTime - FaultHeatPauseManager.effectiveBakingElapsedMs(pan, nowMs = nowMs)).coerceAtLeast(0L)
             }
         } ?: 0L
         LogUtils.i(
@@ -890,6 +897,9 @@ object HighCurrentTrafficMode {
         area: Int,
         requireCompleteZone3Batch: Boolean = true
     ) {
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
+            return
+        }
         if (area == 3 && requireCompleteZone3Batch) {
             val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
             if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
@@ -902,10 +912,11 @@ object HighCurrentTrafficMode {
         }
         var allFinished = true
         var heatingCount = 0
+        val nowMs = System.currentTimeMillis()
         list.forEach { kaoPan ->
             if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                 heatingCount += 1
-                val heatTime = System.currentTimeMillis() - kaoPan.startTime
+                val heatTime = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, nowMs = nowMs)
                 if (heatTime < kaoPan.bakingTime) {
                     allFinished = false
                 }
@@ -918,7 +929,7 @@ object HighCurrentTrafficMode {
             list.forEach { kaoPan ->
                 if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                     kaoPan.startTime = 0
-                    kaoPan.holdingTime = System.currentTimeMillis()
+                    kaoPan.holdingTime = nowMs
                     kaoPan.status = 2
                 }
             }

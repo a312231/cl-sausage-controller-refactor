@@ -68,6 +68,50 @@ class FaultHeatPauseManagerTest {
         assertEquals(listOf(3), config.pendingDiscardPositions)
     }
 
+    @Test
+    fun effectiveBakingElapsedMs_shouldFreezeAtFaultPauseStart() {
+        val config = config().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 8 * 60 * 1000L
+        }
+        val bakingPan = bakingPan(positionSn = 1, startTime = 3 * 60 * 1000L)
+
+        val elapsedMs = FaultHeatPauseManager.effectiveBakingElapsedMs(
+            pan = bakingPan,
+            config = config,
+            nowMs = 12 * 60 * 1000L
+        )
+
+        assertEquals(5 * 60 * 1000L, elapsedMs)
+    }
+
+    @Test
+    fun effectiveBakingElapsedMs_shouldClampNegativeElapsedDuringFaultPause() {
+        val config = config().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 1_000L
+        }
+        val bakingPan = bakingPan(positionSn = 1, startTime = 2_000L)
+
+        val elapsedMs = FaultHeatPauseManager.effectiveBakingElapsedMs(
+            pan = bakingPan,
+            config = config,
+            nowMs = 10_000L
+        )
+
+        assertEquals(0L, elapsedMs)
+    }
+
+    @Test
+    fun shouldSkipBakingCompletion_shouldRemainTrueAfterRestartedPauseStateLoaded() {
+        val config = config().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 8 * 60 * 1000L
+        }
+
+        assertTrue(FaultHeatPauseManager.shouldSkipBakingCompletion(config))
+    }
+
     private fun config(): AppConfigBean =
         AppConfigBean().apply {
             faultBakingPauseAbortMs = 2 * 60 * 60 * 1000L
