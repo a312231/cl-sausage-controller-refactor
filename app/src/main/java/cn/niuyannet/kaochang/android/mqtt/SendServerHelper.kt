@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -18,6 +19,7 @@ object SendServerHelper {
     private val runtimeStateSeq = AtomicLong(System.currentTimeMillis())
     private val runtimeStateAckHandler = Handler(Looper.getMainLooper())
     private val pendingRuntimeStateAcks = ConcurrentHashMap<Long, RuntimeStatePublishSnapshot>()
+    private val runtimeStateHttpFallbackFired = ConcurrentHashMap<Long, Boolean>()
     private val availableStateSeq = AtomicLong(System.currentTimeMillis())
     private val availableStateAckHandler = Handler(Looper.getMainLooper())
     private val pendingAvailableStateAcks = ConcurrentHashMap<Long, AvailableStatePublishSnapshot>()
@@ -33,6 +35,8 @@ object SendServerHelper {
     private var activeRuntimeStateSignature: String? = null
     @Volatile
     private var activeRuntimeStateSeq: Long = -1L
+    @Volatile
+    private var lastRuntimeStateHttpFallbackAtMs: Long = 0L
 
     data class RuntimeControlAckPayload(
         val controlSeq: Long,
@@ -150,6 +154,9 @@ object SendServerHelper {
         payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
+        payload["foodSafetyAlertCode"] = config.foodSafetyAlertCode ?: ""
+        payload["foodSafetyAlertReason"] = config.foodSafetyAlertReason ?: ""
+        payload["pendingDiscardPositions"] = config.pendingDiscardPositions
         if (config.errorStatus != 0) {
             config.errorCode?.takeIf { it.isNotBlank() }?.let { payload["errorCode"] = it }
             config.errorCategory?.takeIf { it.isNotBlank() }?.let { payload["errorCategory"] = it }
@@ -368,7 +375,29 @@ object SendServerHelper {
                 "【云端同步】设备状态上报后仍未收到云端确认：状态=${onlineStatusLabel(pending.onlineStatus)}，" +
                     "等待=${ageMs}ms，将继续保留本地状态"
             )
+            triggerRuntimeStateHttpFallbackIfNeeded(pending)
         }, RUNTIME_STATE_ACK_TIMEOUT_MS)
+    }
+
+    private fun triggerRuntimeStateHttpFallbackIfNeeded(snapshot: RuntimeStatePublishSnapshot) {
+        if (runtimeStateHttpFallbackFired.putIfAbsent(snapshot.runtimeSeq, true) != null) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        val minIntervalMs = AppConfig.getAppConfig().httpFallbackMinIntervalMs.takeIf { it > 0L } ?: 30_000L
+        if (now - lastRuntimeStateHttpFallbackAtMs < minIntervalMs) {
+            LogUtils.w(
+                "【云端同步】runtime_state ACK 超时 HTTP 兜底被限频跳过：" +
+                    "runtimeSeq=${snapshot.runtimeSeq}，source=${snapshot.source}，minIntervalMs=$minIntervalMs"
+            )
+            return
+        }
+        lastRuntimeStateHttpFallbackAtMs = now
+        LogUtils.w(
+            "【云端同步】runtime_state ACK 超时，触发 HTTP 兜底上传设备快照：" +
+                "runtimeSeq=${snapshot.runtimeSeq}，source=${snapshot.source}"
+        )
+        DataManagementAPI.uploadDeviceInfo()
     }
 
     private fun scheduleAvailableStateAckTimeout(snapshot: AvailableStatePublishSnapshot) {
@@ -419,6 +448,7 @@ object SendServerHelper {
             )
         }
         val snapshot = pendingRuntimeStateAcks.remove(runtimeSeq)
+        runtimeStateHttpFallbackFired.remove(runtimeSeq)
         val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
         val freshAck = if (runtimeSeq > lastAckedRuntimeStateSeq) {
             lastAckedRuntimeStateSeq = runtimeSeq
@@ -434,21 +464,7 @@ object SendServerHelper {
     }
 
     private fun buildRuntimeStateSignature(config: AppConfigBean): String {
-        return buildString {
-            append(config.status).append('|')
-            append(config.onlineStatus).append('|')
-            append(config.supplyStatus).append('|')
-            append(config.scanBlockStatus).append('|')
-            append(config.inspectionMode).append('|')
-            append(AppConfig.getAlgorithmEnableFlag()).append('|')
-            append(config.modeType).append('|')
-            append(config.transitionMode).append('|')
-            append(config.highConcurrencyResidualDrain).append('|')
-            append(config.moveStatus).append('|')
-            append(config.errorStatus).append('|')
-            append(config.errorCode ?: "").append('|')
-            append(config.restStatusSource ?: "")
-        }
+        return RuntimeStateSignatureBuilder.build(config)
     }
 
     private fun resolveRuntimeStateSeq(stateSignature: String): Pair<Long, Boolean> {

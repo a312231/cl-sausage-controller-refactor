@@ -325,6 +325,9 @@ object NetApi {
         json["available"] = AppConfig.getAppConfig().available
         json["availableCountdownLatched"] = AppConfig.getAppConfig().availableCountdownLatched
         json["isEnable"] = AppConfig.getAlgorithmEnableFlag()
+        json["foodSafetyAlertCode"] = AppConfig.getAppConfig().foodSafetyAlertCode ?: ""
+        json["foodSafetyAlertReason"] = AppConfig.getAppConfig().foodSafetyAlertReason ?: ""
+        json["pendingDiscardPositions"] = AppConfig.getAppConfig().pendingDiscardPositions
         LogUtils.d("【网络请求】开始更新设备信息：deviceCode=$deviceCode")
         OkGo.post<String>(updateDeviceInfo_url)
             .upJson(json.toJSONString())
