@@ -34,12 +34,19 @@ object RemoteRuntimeConfigPatchApplier {
 
         for (entry in patch.entries) {
             val rawField = entry.key ?: continue
-            val field = if (rawField == "concurrencyMode") "modeType" else rawField
+            val field = when (rawField) {
+                "concurrencyMode" -> "modeType"
+                "scanBlockStatus" -> "homeQrHidden"
+                else -> rawField
+            }
             val oldTemperatureValue = if (field in TEMPERATURE_FIELDS) readIntField(config, field) else null
             val applied = when (field) {
                 "onlineStatus" -> applyIntRange(config, field, entry.value, 0, 4) { config.onlineStatus = it }
                 "isEnable" -> applyIntRange(config, field, entry.value, 0, 1) { config.isEnable = it }
-                "scanBlockStatus" -> applyIntRange(config, field, entry.value, 0, 1) { config.scanBlockStatus = it }
+                "homeQrHidden" -> applyIntRange(config, field, entry.value, 0, 1) {
+                    config.homeQrHidden = it
+                    config.scanBlockStatus = it
+                }
                 "modeType" -> applyIntRange(config, field, entry.value, 1, 2) { config.modeType = it }
                 "transitionMode" -> applyIntRange(config, field, entry.value, 0, 2) { config.transitionMode = it }
                 "highConcurrencyResidualDrain" ->
@@ -134,7 +141,7 @@ object RemoteRuntimeConfigPatchApplier {
         return when (field) {
             "onlineStatus" -> config.onlineStatus
             "isEnable" -> config.isEnable
-            "scanBlockStatus" -> config.scanBlockStatus
+            "homeQrHidden", "scanBlockStatus" -> config.homeQrHidden
             "modeType" -> config.modeType
             "transitionMode" -> config.transitionMode
             "highConcurrencyResidualDrain" -> config.highConcurrencyResidualDrain

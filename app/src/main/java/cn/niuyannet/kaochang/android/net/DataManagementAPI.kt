@@ -33,7 +33,7 @@ object DataManagementAPI {
         val changed: Boolean,
         val onlineStatus: Int,
         val supplyStatus: Int,
-        val scanBlockStatus: Int,
+        val homeQrHidden: Int,
         val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String
@@ -46,7 +46,7 @@ object DataManagementAPI {
         val reason: String,
         val onlineStatus: Int,
         val supplyStatus: Int,
-        val scanBlockStatus: Int,
+        val homeQrHidden: Int,
         val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String,
@@ -123,9 +123,9 @@ object DataManagementAPI {
                 else -> value.toString()
             }
 
-            "scanBlockStatus" -> when ((value as? Number)?.toInt()) {
-                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0(正常展示)"
-                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1(隐藏二维码并禁止下单/支付)"
+            "homeQrHidden", "scanBlockStatus" -> when ((value as? Number)?.toInt()) {
+                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0(正常显示首页二维码)"
+                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1(隐藏首页二维码)"
                 else -> value.toString()
             }
 
@@ -193,9 +193,9 @@ object DataManagementAPI {
         else -> "$value（未知）"
     }
 
-    private fun scanBlockStatusText(value: Int): String = when (value) {
-        AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0（正常展示）"
-        AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1（隐藏二维码并禁止下单/支付）"
+    private fun homeQrHiddenText(value: Int): String = when (value) {
+        AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0（正常显示首页二维码）"
+        AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1（隐藏首页二维码）"
         else -> "$value（未知）"
     }
 
@@ -213,8 +213,7 @@ object DataManagementAPI {
 
     private fun canApplyRemoteTemperatureConfig(config: AppConfigBean): Boolean {
         return config.onlineStatus in listOf(1, 4) &&
-            config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL &&
-            config.scanBlockStatus == AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
+            config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
     }
 
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
@@ -325,7 +324,7 @@ object DataManagementAPI {
                 reason = "parse_failed",
                 onlineStatus = config.onlineStatus,
                 supplyStatus = config.supplyStatus,
-                scanBlockStatus = config.scanBlockStatus,
+                homeQrHidden = config.homeQrHidden,
                 inspectionMode = config.inspectionMode,
                 isEnable = config.isEnable,
                 restStatusSource = config.restStatusSource
@@ -337,7 +336,6 @@ object DataManagementAPI {
         val runtimePatch = JSONObject()
         listOf(
             "onlineStatus",
-            "scanBlockStatus",
             "isEnable",
             "modeType",
             "concurrencyMode",
@@ -364,7 +362,7 @@ object DataManagementAPI {
                 reason = "missing_runtime_fields",
                 onlineStatus = config.onlineStatus,
                 supplyStatus = config.supplyStatus,
-                scanBlockStatus = config.scanBlockStatus,
+                homeQrHidden = config.homeQrHidden,
                 inspectionMode = config.inspectionMode,
                 isEnable = config.isEnable,
                 restStatusSource = config.restStatusSource,
@@ -395,7 +393,7 @@ object DataManagementAPI {
                 reason = rejectReason,
                 onlineStatus = currentConfigBeforeApply.onlineStatus,
                 supplyStatus = currentConfigBeforeApply.supplyStatus,
-                scanBlockStatus = currentConfigBeforeApply.scanBlockStatus,
+                homeQrHidden = currentConfigBeforeApply.homeQrHidden,
                 inspectionMode = currentConfigBeforeApply.inspectionMode,
                 isEnable = currentConfigBeforeApply.isEnable,
                 restStatusSource = currentConfigBeforeApply.restStatusSource,
@@ -406,7 +404,7 @@ object DataManagementAPI {
         val config = currentConfigBeforeApply
         val previousOnlineStatus = config.onlineStatus
         val previousSupplyStatus = config.supplyStatus
-        val previousScanBlockStatus = config.scanBlockStatus
+        val previousHomeQrHidden = config.homeQrHidden
         val previousInspectionMode = config.inspectionMode
         val previousIsEnable = config.isEnable
         val previousModeType = config.modeType
@@ -429,7 +427,7 @@ object DataManagementAPI {
                 reason = reason,
                 onlineStatus = config.onlineStatus,
                 supplyStatus = config.supplyStatus,
-                scanBlockStatus = config.scanBlockStatus,
+                homeQrHidden = config.homeQrHidden,
                 inspectionMode = config.inspectionMode,
                 isEnable = config.isEnable,
                 restStatusSource = config.restStatusSource,
@@ -487,14 +485,14 @@ object DataManagementAPI {
                 "MQTT 温度配置已变化，但设备当前不可加热，跳过重刷温度寄存器：" +
                     "source=$source，onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
                     "errorStatus（设备故障状态）=${currentConfig.errorStatus}，" +
-                    "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(currentConfig.scanBlockStatus)}"
+                    "homeQrHidden（首页二维码隐藏）=${homeQrHiddenText(currentConfig.homeQrHidden)}"
             )
         }
 
         val changed =
             previousOnlineStatus != currentConfig.onlineStatus ||
                 previousSupplyStatus != currentConfig.supplyStatus ||
-                previousScanBlockStatus != currentConfig.scanBlockStatus ||
+                previousHomeQrHidden != currentConfig.homeQrHidden ||
                 previousInspectionMode != currentConfig.inspectionMode ||
                 previousIsEnable != currentConfig.isEnable ||
                 previousModeType != currentConfig.modeType ||
@@ -512,7 +510,7 @@ object DataManagementAPI {
                 "rejectedFields=${rejectedFields.joinToString(",")}，normalizedFields=${patchResult.normalizedFields}，" +
                 "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
                 "supplyStatus（补货状态）=${formatDiffValue("supplyStatus", previousSupplyStatus)}->${formatDiffValue("supplyStatus", currentConfig.supplyStatus)}，" +
-                "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(previousScanBlockStatus)}->${scanBlockStatusText(currentConfig.scanBlockStatus)}，" +
+                "homeQrHidden（首页二维码隐藏）=${homeQrHiddenText(previousHomeQrHidden)}->${homeQrHiddenText(currentConfig.homeQrHidden)}，" +
                 "inspectionMode（检修模式）=${inspectionModeText(previousInspectionMode)}->${inspectionModeText(currentConfig.inspectionMode)}，" +
                 "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", previousIsEnable)}->${formatDiffValue("isEnable", currentConfig.isEnable)}，" +
                 "modeType（并发模式）=${formatDiffValue("modeType", previousModeType)}->${formatDiffValue("modeType", currentConfig.modeType)}，" +
@@ -527,7 +525,7 @@ object DataManagementAPI {
             reason = reason,
             onlineStatus = currentConfig.onlineStatus,
             supplyStatus = currentConfig.supplyStatus,
-            scanBlockStatus = currentConfig.scanBlockStatus,
+            homeQrHidden = currentConfig.homeQrHidden,
             inspectionMode = currentConfig.inspectionMode,
             isEnable = currentConfig.isEnable,
             restStatusSource = currentConfig.restStatusSource,
@@ -865,7 +863,7 @@ object DataManagementAPI {
             val oldStatus = appConfigBean.status
             val oldOnlineStatus = appConfigBean.onlineStatus
             val oldSupplyStatus = appConfigBean.supplyStatus
-            val oldScanBlockStatus = appConfigBean.scanBlockStatus
+            val oldHomeQrHidden = appConfigBean.homeQrHidden
             val oldInspectionMode = appConfigBean.inspectionMode
             val oldModeType = appConfigBean.modeType
             val oldTransitionMode = appConfigBean.transitionMode
@@ -902,7 +900,7 @@ object DataManagementAPI {
             appendDiff(changes, "status", oldStatus, mergedConfig.status)
             appendDiff(changes, "onlineStatus", oldOnlineStatus, mergedConfig.onlineStatus)
             appendDiff(changes, "supplyStatus", oldSupplyStatus, mergedConfig.supplyStatus)
-            appendDiff(changes, "scanBlockStatus", oldScanBlockStatus, mergedConfig.scanBlockStatus)
+            appendDiff(changes, "homeQrHidden", oldHomeQrHidden, mergedConfig.homeQrHidden)
             appendDiff(changes, "inspectionMode", oldInspectionMode, mergedConfig.inspectionMode)
             appendDiff(changes, "modeType", oldModeType, mergedConfig.modeType)
             appendDiff(changes, "transitionMode", oldTransitionMode, mergedConfig.transitionMode)
@@ -972,7 +970,7 @@ object DataManagementAPI {
                     "后台温度配置已变化，但设备当前不可加热，跳过重刷温度寄存器：" +
                         "source=getDeviceInfo，onlineStatus（设备营业状态）=${onlineStatusText(mergedConfig.onlineStatus)}，" +
                         "errorStatus（设备故障状态）=${mergedConfig.errorStatus}，" +
-                        "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(mergedConfig.scanBlockStatus)}"
+                        "homeQrHidden（首页二维码隐藏）=${homeQrHiddenText(mergedConfig.homeQrHidden)}"
                 )
             }
             refreshStockData(logPrefix = "$LOG_SYNC-stock-after-config")
@@ -987,7 +985,7 @@ object DataManagementAPI {
         val oldStatus = appConfigBean.status
         val oldOnlineStatus = appConfigBean.onlineStatus
         val oldSupplyStatus = appConfigBean.supplyStatus
-        val oldScanBlockStatus = appConfigBean.scanBlockStatus
+        val oldHomeQrHidden = appConfigBean.homeQrHidden
         val oldInspectionMode = appConfigBean.inspectionMode
         val oldQcodeUrl = appConfigBean.qcodeURL
         val oldAvailable = appConfigBean.available
@@ -1010,7 +1008,7 @@ object DataManagementAPI {
                         changed = false,
                         onlineStatus = oldOnlineStatus,
                         supplyStatus = oldSupplyStatus,
-                        scanBlockStatus = oldScanBlockStatus,
+                        homeQrHidden = oldHomeQrHidden,
                         inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
@@ -1029,7 +1027,7 @@ object DataManagementAPI {
                         changed = false,
                         onlineStatus = oldOnlineStatus,
                         supplyStatus = oldSupplyStatus,
-                        scanBlockStatus = oldScanBlockStatus,
+                        homeQrHidden = oldHomeQrHidden,
                         inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
@@ -1046,7 +1044,7 @@ object DataManagementAPI {
                         changed = false,
                         onlineStatus = oldOnlineStatus,
                         supplyStatus = oldSupplyStatus,
-                        scanBlockStatus = oldScanBlockStatus,
+                        homeQrHidden = oldHomeQrHidden,
                         inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
@@ -1063,7 +1061,7 @@ object DataManagementAPI {
                         changed = false,
                         onlineStatus = oldOnlineStatus,
                         supplyStatus = oldSupplyStatus,
-                        scanBlockStatus = oldScanBlockStatus,
+                        homeQrHidden = oldHomeQrHidden,
                         inspectionMode = oldInspectionMode,
                         isEnable = previousIsEnable,
                         restStatusSource = previousRestStatusSource
@@ -1091,7 +1089,7 @@ object DataManagementAPI {
                 oldStatus != mergedConfig.status ||
                     oldOnlineStatus != mergedConfig.onlineStatus ||
                     oldSupplyStatus != mergedConfig.supplyStatus ||
-                    oldScanBlockStatus != mergedConfig.scanBlockStatus ||
+                    oldHomeQrHidden != mergedConfig.homeQrHidden ||
                     oldInspectionMode != mergedConfig.inspectionMode ||
                     oldQcodeUrl != mergedConfig.qcodeURL ||
                     oldAvailable != mergedConfig.available ||
@@ -1104,7 +1102,7 @@ object DataManagementAPI {
                         "status（设备启用状态）=${formatDiffValue("status", oldStatus)}->${formatDiffValue("status", mergedConfig.status)}，" +
                         "onlineStatus（设备营业状态）=${onlineStatusText(oldOnlineStatus)}->${onlineStatusText(mergedConfig.onlineStatus)}，" +
                         "supplyStatus（补货状态）=${formatDiffValue("supplyStatus", oldSupplyStatus)}->${formatDiffValue("supplyStatus", mergedConfig.supplyStatus)}，" +
-                        "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(oldScanBlockStatus)}->${scanBlockStatusText(mergedConfig.scanBlockStatus)}，" +
+                        "homeQrHidden（首页二维码隐藏）=${homeQrHiddenText(oldHomeQrHidden)}->${homeQrHiddenText(mergedConfig.homeQrHidden)}，" +
                         "inspectionMode（检修模式）=${inspectionModeText(oldInspectionMode)}->${inspectionModeText(mergedConfig.inspectionMode)}，" +
                         "qrcodeChanged（二维码地址是否变化）=${oldQcodeUrl != mergedConfig.qcodeURL}，" +
                         "available（二维码页预计时间）=${oldAvailable}->${mergedConfig.available}，" +
@@ -1123,7 +1121,7 @@ object DataManagementAPI {
                     "后台温度配置已变化，但设备当前不可加热，跳过重刷温度寄存器：" +
                         "source=$logPrefix，onlineStatus（设备营业状态）=${onlineStatusText(mergedConfig.onlineStatus)}，" +
                         "errorStatus（设备故障状态）=${mergedConfig.errorStatus}，" +
-                        "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(mergedConfig.scanBlockStatus)}"
+                        "homeQrHidden（首页二维码隐藏）=${homeQrHiddenText(mergedConfig.homeQrHidden)}"
                 )
             }
 
@@ -1133,7 +1131,7 @@ object DataManagementAPI {
                     changed = changed,
                     onlineStatus = mergedConfig.onlineStatus,
                     supplyStatus = mergedConfig.supplyStatus,
-                    scanBlockStatus = mergedConfig.scanBlockStatus,
+                    homeQrHidden = mergedConfig.homeQrHidden,
                     inspectionMode = mergedConfig.inspectionMode,
                     isEnable = AppConfig.getAlgorithmEnableFlag(),
                     restStatusSource = AppConfig.normalizeRestStatusSource(mergedConfig.restStatusSource)

@@ -318,6 +318,7 @@ object NetApi {
         json["errorStatus"] = AppConfig.getAppConfig().errorStatus
         json["onlineStatus"] = AppConfig.getAppConfig().onlineStatus
         json["supplyStatus"] = AppConfig.getAppConfig().supplyStatus
+        json["homeQrHidden"] = AppConfig.getAppConfig().homeQrHidden
         json["scanBlockStatus"] = AppConfig.getAppConfig().scanBlockStatus
         json["inspectionMode"] = AppConfig.getAppConfig().inspectionMode
         json["modeType"] = AppConfig.getAppConfig().modeType

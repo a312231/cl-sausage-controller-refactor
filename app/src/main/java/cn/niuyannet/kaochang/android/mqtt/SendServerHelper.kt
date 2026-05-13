@@ -44,7 +44,6 @@ object SendServerHelper {
         val reason: String,
         val onlineStatus: Int,
         val supplyStatus: Int,
-        val scanBlockStatus: Int,
         val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String?,
@@ -69,7 +68,6 @@ object SendServerHelper {
         val status: Int,
         val onlineStatus: Int,
         val supplyStatus: Int,
-        val scanBlockStatus: Int,
         val inspectionMode: Int,
         val isEnable: Int,
         val modeType: Int,
@@ -146,7 +144,6 @@ object SendServerHelper {
         payload["status"] = config.status
         payload["onlineStatus"] = config.onlineStatus
         payload["supplyStatus"] = config.supplyStatus
-        payload["scanBlockStatus"] = config.scanBlockStatus
         payload["inspectionMode"] = config.inspectionMode
         payload["isEnable"] = AppConfig.getAlgorithmEnableFlag()
         payload["modeType"] = config.modeType
@@ -179,7 +176,6 @@ object SendServerHelper {
                 status = config.status,
                 onlineStatus = config.onlineStatus,
                 supplyStatus = config.supplyStatus,
-                scanBlockStatus = config.scanBlockStatus,
                 inspectionMode = config.inspectionMode,
                 isEnable = AppConfig.getAlgorithmEnableFlag(),
                 modeType = config.modeType,
@@ -197,7 +193,7 @@ object SendServerHelper {
                 "【MQTT运行态】已上报运行时状态：" +
                     "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，" +
                     "onlineStatus=${config.onlineStatus}，supplyStatus=${config.supplyStatus}，" +
-                    "scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
+                    "inspectionMode=${config.inspectionMode}，" +
                     "isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
                     "modeType=${config.modeType}，transitionMode=${config.transitionMode}，" +
                     "highConcurrencyResidualDrain（高并发残留消化态）=${config.highConcurrencyResidualDrain}，" +
@@ -280,7 +276,6 @@ object SendServerHelper {
         payload["reason"] = ack.reason
         payload["onlineStatus"] = ack.onlineStatus
         payload["supplyStatus"] = ack.supplyStatus
-        payload["scanBlockStatus"] = ack.scanBlockStatus
         payload["inspectionMode"] = ack.inspectionMode
         payload["isEnable"] = ack.isEnable
         payload["restStatusSource"] = ack.restStatusSource

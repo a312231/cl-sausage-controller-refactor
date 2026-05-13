@@ -721,11 +721,11 @@ object KaoChangAlgorithm {
         }
 
         val pollStateSnapshot =
-            "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},scanBlock=${config.scanBlockStatus},inspection=${config.inspectionMode},enable=$schedulingEnabled"
+            "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},homeQrHidden=${config.homeQrHidden},inspection=${config.inspectionMode},enable=$schedulingEnabled"
         if (pollStateSnapshot != lastPollStateSnapshot) {
             logD(
                 LOG_ALGORITHM,
-                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，highConcurrencyResidualDrain=${residualDrainText(config.highConcurrencyResidualDrain)}，onlineStatus=${onlineStatusText(onlineStatus)}，supplyStatus=${supplyStatusText(config.supplyStatus)}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}，schedulingEnabled=$schedulingEnabled"
+                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，highConcurrencyResidualDrain=${residualDrainText(config.highConcurrencyResidualDrain)}，onlineStatus=${onlineStatusText(onlineStatus)}，supplyStatus=${supplyStatusText(config.supplyStatus)}，homeQrHidden=${config.homeQrHidden}，inspectionMode=${config.inspectionMode}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}，schedulingEnabled=$schedulingEnabled"
             )
             lastPollStateSnapshot = pollStateSnapshot
         }

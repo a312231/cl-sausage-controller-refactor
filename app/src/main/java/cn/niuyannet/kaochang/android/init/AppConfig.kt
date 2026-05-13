@@ -135,6 +135,7 @@ object AppConfig {
         }
 
         val config = appConfigBean!!
+        syncHomeQrHiddenFields(config)
         val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
@@ -224,6 +225,7 @@ object AppConfig {
     }
 
     fun saveAppConfig(appConfigBean: AppConfigBean) {
+        syncHomeQrHiddenFields(appConfigBean)
         alignRestStatusSource(appConfigBean)
         this.appConfigBean = appConfigBean
         PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(appConfigBean))
@@ -240,6 +242,16 @@ object AppConfig {
     fun getAlgorithmEnableFlag(): Int {
         val config = getAppConfig()
         return if (config.isEnable == 1) 1 else 0
+    }
+
+    private fun syncHomeQrHiddenFields(config: AppConfigBean) {
+        val normalized = when {
+            config.homeQrHidden == AppConfigBean.HOME_QR_HIDDEN_HIDDEN -> AppConfigBean.HOME_QR_HIDDEN_HIDDEN
+            config.scanBlockStatus == AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> AppConfigBean.HOME_QR_HIDDEN_HIDDEN
+            else -> AppConfigBean.HOME_QR_HIDDEN_SHOW
+        }
+        config.homeQrHidden = normalized
+        config.scanBlockStatus = normalized
     }
 
     private fun normalizeConcurrencyState(config: AppConfigBean, logPrefix: String) {
@@ -417,13 +429,23 @@ object AppConfig {
                 AppConfigBean.SUPPLY_STATUS_NORMAL
             }
         }
-        mergeInt("scanBlockStatus", "scanBlockStatus") {
-            config.scanBlockStatus = if (it == AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED) {
-                AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED
+        val homeQrHiddenRaw: Int? = when {
+            jsonData.containsKey("homeQrHidden") && jsonData.get("homeQrHidden") != null ->
+                jsonData.getIntValue("homeQrHidden")
+            jsonData.containsKey("scanBlockStatus") && jsonData.get("scanBlockStatus") != null ->
+                jsonData.getIntValue("scanBlockStatus")
+            else -> null
+        }
+        if (homeQrHiddenRaw == null) {
+            preservedFields.add("homeQrHidden")
+        } else {
+            config.homeQrHidden = if (homeQrHiddenRaw == AppConfigBean.HOME_QR_HIDDEN_HIDDEN) {
+                AppConfigBean.HOME_QR_HIDDEN_HIDDEN
             } else {
-                AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
+                AppConfigBean.HOME_QR_HIDDEN_SHOW
             }
         }
+        syncHomeQrHiddenFields(config)
         mergeInt("inspectionMode", "inspectionMode") {
             config.inspectionMode = if (it == AppConfigBean.INSPECTION_MODE_ACTIVE) {
                 AppConfigBean.INSPECTION_MODE_ACTIVE

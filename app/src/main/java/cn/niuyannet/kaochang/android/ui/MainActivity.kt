@@ -16,6 +16,7 @@ import android.widget.EditText
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
@@ -267,7 +268,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     reason = result.reason,
                     onlineStatus = result.onlineStatus,
                     supplyStatus = result.supplyStatus,
-                    scanBlockStatus = result.scanBlockStatus,
                     inspectionMode = result.inspectionMode,
                     isEnable = result.isEnable,
                     restStatusSource = result.restStatusSource,
@@ -292,7 +292,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             }
         }
         LogUtils.d(
-            "【MQTT运行时控制】处理完成：" +
+                "【MQTT运行时控制】处理完成：" +
                 "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
                 "configVersion（配置版本）=${result.configVersion ?: "null"}，" +
                 "appliedFields（已应用字段）=${result.appliedFields.joinToString(",")}，" +
@@ -300,7 +300,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 "normalizedFields（已截断字段）=${result.normalizedFields}，" +
                 "onlineStatus（设备营业状态）=${result.onlineStatus}，" +
                 "supplyStatus（补货状态）=${result.supplyStatus}，" +
-                "scanBlockStatus（前台屏蔽状态）=${result.scanBlockStatus}，" +
+                "homeQrHidden（首页二维码隐藏）=${result.homeQrHidden}，" +
                 "inspectionMode（检修模式）=${result.inspectionMode}，" +
                 "isEnable（烤肠算法开关）=${result.isEnable}，" +
                 "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(result.restStatusSource)}"
@@ -461,7 +461,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     override fun setDataToView() {
         val appConfigBean = AppConfig.getAppConfig()
         val isInspectionMode = appConfigBean.inspectionMode == 1
-        val isScanBlocked = appConfigBean.scanBlockStatus == 1
+        val isHomeQrHidden = appConfigBean.homeQrHidden == AppConfigBean.HOME_QR_HIDDEN_HIDDEN
         val isSupplySoldOut =
             appConfigBean.status == 1 &&
                 appConfigBean.onlineStatus == 1 &&
@@ -472,8 +472,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     binding.deviceStatusText.text = "检修中"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_maintaining))
                 }
-                isScanBlocked -> {
-                    binding.deviceStatusText.text = "前台已屏蔽"
+                isHomeQrHidden -> {
+                    binding.deviceStatusText.text = "首页码隐藏"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_working))
                 }
                 else -> when (appConfigBean.onlineStatus) {
@@ -511,8 +511,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
         if (isInspectionMode) {
             binding.tvScanTip.text = "设备检修中"
-        } else if (isScanBlocked) {
-            binding.tvScanTip.text = "当前暂停扫码下单"
+        } else if (isHomeQrHidden) {
+            binding.tvScanTip.text = "首页二维码已隐藏"
         } else if (appConfigBean.onlineStatus == 3) {
             binding.tvScanTip.text = "设备维护中"
         } else if (isSupplySoldOut) {
@@ -536,7 +536,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         if (appConfigBean.status == 1 &&
             AppConfig.getAppConfig().onlineStatus == 1 &&
             !isSupplySoldOut &&
-            !isScanBlocked &&
+            !isHomeQrHidden &&
             !isInspectionMode
         ) {
             binding.qrCodeImage.visibility = View.VISIBLE
@@ -563,10 +563,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             1 -> "1（售罄/待补货）"
             else -> "${appConfigBean.supplyStatus}（未知）"
         }
-        val scanBlockStatusText = when (appConfigBean.scanBlockStatus) {
-            0 -> "0（正常展示）"
-            1 -> "1（隐藏二维码并禁止下单/支付）"
-            else -> "${appConfigBean.scanBlockStatus}（未知）"
+        val homeQrHiddenText = when (appConfigBean.homeQrHidden) {
+            AppConfigBean.HOME_QR_HIDDEN_SHOW -> "0（正常显示首页二维码）"
+            AppConfigBean.HOME_QR_HIDDEN_HIDDEN -> "1（隐藏首页二维码）"
+            else -> "${appConfigBean.homeQrHidden}（未知）"
         }
         val inspectionModeText = when (appConfigBean.inspectionMode) {
             0 -> "0（正常）"
@@ -578,7 +578,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             appConfigBean.status,
             appConfigBean.onlineStatus,
             appConfigBean.supplyStatus,
-            appConfigBean.scanBlockStatus,
+            appConfigBean.homeQrHidden,
             appConfigBean.inspectionMode,
             binding.tvScanTip.text.toString(),
             qrVisible
@@ -590,7 +590,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     "status（设备启用状态）=$statusText，" +
                     "onlineStatus（设备营业状态）=$onlineStatusText，" +
                     "supplyStatus（补货状态）=$supplyStatusText，" +
-                    "scanBlockStatus（前台屏蔽状态）=$scanBlockStatusText，" +
+                    "homeQrHidden（首页二维码隐藏）=$homeQrHiddenText，" +
                     "inspectionMode（检修模式）=$inspectionModeText，" +
                     "available（二维码页预计时间）=${appConfigBean.available}，" +
                     "availableCountdownLatched（二维码页预计时间锁存标记）=${appConfigBean.availableCountdownLatched}，" +

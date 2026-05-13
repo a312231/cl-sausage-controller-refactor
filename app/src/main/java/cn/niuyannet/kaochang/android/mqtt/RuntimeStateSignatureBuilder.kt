@@ -8,7 +8,6 @@ internal object RuntimeStateSignatureBuilder {
             append(config.status).append('|')
             append(config.onlineStatus).append('|')
             append(config.supplyStatus).append('|')
-            append(config.scanBlockStatus).append('|')
             append(config.inspectionMode).append('|')
             append(if (config.isEnable == 1) 1 else 0).append('|')
             append(config.modeType).append('|')

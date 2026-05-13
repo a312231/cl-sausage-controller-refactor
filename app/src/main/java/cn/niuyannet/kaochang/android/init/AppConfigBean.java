@@ -6,8 +6,10 @@ import java.util.ArrayList;
 public class AppConfigBean implements Serializable {
     public static final int SUPPLY_STATUS_NORMAL = 0;
     public static final int SUPPLY_STATUS_SOLD_OUT = 1;
-    public static final int SCAN_BLOCK_STATUS_NORMAL = 0;
-    public static final int SCAN_BLOCK_STATUS_BLOCKED = 1;
+    public static final int HOME_QR_HIDDEN_SHOW = 0;
+    public static final int HOME_QR_HIDDEN_HIDDEN = 1;
+    public static final int SCAN_BLOCK_STATUS_NORMAL = HOME_QR_HIDDEN_SHOW;
+    public static final int SCAN_BLOCK_STATUS_BLOCKED = HOME_QR_HIDDEN_HIDDEN;
     public static final int INSPECTION_MODE_NORMAL = 0;
     public static final int INSPECTION_MODE_ACTIVE = 1;
     public static final int ERROR_STATUS_NORMAL = 0;
@@ -51,7 +53,10 @@ public class AppConfigBean implements Serializable {
     // 补货状态：0=正常，1=售罄/待补货
     public int supplyStatus = SUPPLY_STATUS_NORMAL;
 
-    // 前台屏蔽状态：0=正常展示，1=隐藏二维码并禁止小程序下单/支付
+    // 首页二维码隐藏：0=正常显示首页二维码，1=隐藏首页二维码
+    public int homeQrHidden = HOME_QR_HIDDEN_SHOW;
+
+    // 旧字段兼容：0=正常展示，1=隐藏二维码并禁止小程序下单/支付（仅兼容过渡，v2 删除）
     public int scanBlockStatus = SCAN_BLOCK_STATUS_NORMAL;
 
     // 检修模式：0=正常，1=检修中

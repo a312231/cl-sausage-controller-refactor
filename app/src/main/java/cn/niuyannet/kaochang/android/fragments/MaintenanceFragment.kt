@@ -793,7 +793,6 @@ class MaintenanceFragment : Fragment() {
                     val config = AppConfig.getAppConfig()
                     val previousOnlineStatus = config.onlineStatus
                     val previousErrorStatus = config.errorStatus
-                    val previousScanBlockStatus = config.scanBlockStatus
                     val previousIsEnable = config.isEnable
                     val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
                     config.errorStatus = 0
@@ -801,7 +800,6 @@ class MaintenanceFragment : Fragment() {
                     config.errorCategory = null
                     config.errorReason = null
                     config.onlineStatus = recoveredOnlineStatus
-                    config.scanBlockStatus = AppConfigBean.SCAN_BLOCK_STATUS_NORMAL
                     config.isEnable = 0
                     withContext(Dispatchers.IO) {
                         AppConfig.saveAppConfig(config)
@@ -814,7 +812,6 @@ class MaintenanceFragment : Fragment() {
                         LogUtils.w(
                             "【维护操作】恢复正常状态 MQTT 上报失败，回退 HTTP 补偿：" +
                                 "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
-                                "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(config.scanBlockStatus)}，" +
                                 "errorStatus（设备故障状态）=${config.errorStatus}"
                         )
                         withContext(Dispatchers.IO) {
@@ -825,7 +822,6 @@ class MaintenanceFragment : Fragment() {
                     LogUtils.w(
                         "【维护操作】上位机已完成恢复正常状态：" +
                             "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
-                            "scanBlockStatus（前台屏蔽状态）=${scanBlockStatusText(previousScanBlockStatus)}->${scanBlockStatusText(config.scanBlockStatus)}，" +
                             "errorStatus（设备故障状态）=$previousErrorStatus->${config.errorStatus}（正常），" +
                             "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
                             "恢复入口=上位机维护页，后续动作=现场手动开启烤制算法"
@@ -855,12 +851,6 @@ class MaintenanceFragment : Fragment() {
         } else {
             2
         }
-    }
-
-    private fun scanBlockStatusText(value: Int): String = when (value) {
-        AppConfigBean.SCAN_BLOCK_STATUS_NORMAL -> "0（不屏蔽）"
-        AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED -> "1（屏蔽）"
-        else -> "$value（未知）"
     }
 
     /**
