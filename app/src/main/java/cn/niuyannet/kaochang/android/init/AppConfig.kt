@@ -15,10 +15,22 @@ object AppConfig {
     const val MAX_BOX_REFILL_TARGET_NUM = 15
     const val MIN_HEATING_OFFSET = -20
     const val MAX_HEATING_OFFSET = 20
+    const val DEFAULT_FAULT_BAKING_PAUSE_ABORT_MS = 2L * 60L * 60L * 1000L
+    const val DEFAULT_FAULT_PAUSE_ANOMALY_MS = 4L * 60L * 60L * 1000L
+    const val DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS = 30_000L
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
     private const val KEY_INSPECTION_SNAPSHOT_JSON = "sp_inspection_snapshot_json"
     private val BENIGN_PRESERVED_FIELDS = setOf("available", "availableCountdownLatched")
+    private val LOCAL_RUNTIME_ONLY_FIELDS = setOf(
+        "faultHeatPauseActive",
+        "faultHeatPauseStartedAtMs",
+        "faultHeatPauseReason",
+        "faultHeatPauseSource",
+        "pendingDiscardPositions",
+        "foodSafetyAlertCode",
+        "foodSafetyAlertReason"
+    )
     private var appConfigBean: AppConfigBean? = null
 
     data class RemoteConfigMergeResult(
@@ -77,6 +89,10 @@ object AppConfig {
         return value in MIN_BOX_REFILL_TARGET_NUM..MAX_BOX_REFILL_TARGET_NUM
     }
 
+    fun isLocalRuntimeOnlyField(key: String): Boolean {
+        return key in LOCAL_RUNTIME_ONLY_FIELDS
+    }
+
     fun getBoxRefillTargetNum(): Int {
         val config = getAppConfig()
         val normalized = normalizeBoxRefillTargetNum(config.boxRefillTargetNum)
@@ -122,12 +138,14 @@ object AppConfig {
         val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
+        val faultSafetyMigrated = normalizeFaultSafetyConfig(config, "配置加载")
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         normalizeConcurrencyState(config, "配置加载")
         if (actionGroupPrefetchMigrated ||
             forceVisionSuccessMigrated ||
             boxRefillTargetNumMigrated ||
+            faultSafetyMigrated ||
             oldModeType != config.modeType ||
             oldTransitionMode != config.transitionMode
         ) {
@@ -148,6 +166,35 @@ object AppConfig {
                 "已使用默认值=${config.boxRefillTargetNum}"
         )
         return true
+    }
+
+    private fun normalizeFaultSafetyConfig(config: AppConfigBean, logPrefix: String): Boolean {
+        var changed = false
+        if (config.faultBakingPauseAbortMs <= 0L) {
+            LogUtils.w(
+                "[$logPrefix] faultBakingPauseAbortMs（故障停热烤制报废阈值）非法，" +
+                    "原值=${config.faultBakingPauseAbortMs}，已回退默认值=$DEFAULT_FAULT_BAKING_PAUSE_ABORT_MS"
+            )
+            config.faultBakingPauseAbortMs = DEFAULT_FAULT_BAKING_PAUSE_ABORT_MS
+            changed = true
+        }
+        if (config.faultPauseAnomalyMs <= 0L) {
+            LogUtils.w(
+                "[$logPrefix] faultPauseAnomalyMs（故障停热暂停异常阈值）非法，" +
+                    "原值=${config.faultPauseAnomalyMs}，已回退默认值=$DEFAULT_FAULT_PAUSE_ANOMALY_MS"
+            )
+            config.faultPauseAnomalyMs = DEFAULT_FAULT_PAUSE_ANOMALY_MS
+            changed = true
+        }
+        if (config.httpFallbackMinIntervalMs <= 0L) {
+            LogUtils.w(
+                "[$logPrefix] httpFallbackMinIntervalMs（HTTP 兜底最小间隔）非法，" +
+                    "原值=${config.httpFallbackMinIntervalMs}，已回退默认值=$DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS"
+            )
+            config.httpFallbackMinIntervalMs = DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS
+            changed = true
+        }
+        return changed
     }
 
     private fun migrateForceVisionSuccessDefault(config: AppConfigBean): Boolean {
@@ -289,6 +336,30 @@ object AppConfig {
             setter(jsonData.getLongValue(key))
         }
 
+        fun mergePositiveLongOrDefault(
+            key: String,
+            fieldLabel: String,
+            defaultValue: Long,
+            setter: (Long) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                setter(defaultValue)
+                return
+            }
+            val remoteValue = jsonData.getLongValue(key)
+            if (remoteValue <= 0L) {
+                setter(defaultValue)
+                preservedFields.add("$fieldLabel(invalid_default)")
+                LogUtils.w(
+                    "[$logPrefix] 远端配置 $fieldLabel 非法，remoteValue=$remoteValue，" +
+                        "已使用默认值=$defaultValue，食品安全护栏不允许被关闭"
+                )
+                return
+            }
+            setter(remoteValue)
+        }
+
         fun mergeHeatingOffset(
             key: String,
             fieldLabel: String,
@@ -377,6 +448,7 @@ object AppConfig {
         mergeInt("discardTime", "discardTime") { config.discardTime = it }
         mergeInt("timeThresholdLow", "timeThresholdLow") { config.timeThresholdLow = it }
         mergeInt("timeBeforeClose", "timeBeforeClose") { config.timeBeforeClose = it }
+        preservedFields.addAll(mergeFaultSafetyRemoteConfigInto(config, jsonData, logPrefix))
         if (jsonData.containsKey("boxRefillTargetNum")) {
             val remoteBoxRefillTargetNum = jsonData.getIntValue("boxRefillTargetNum")
             if (isValidBoxRefillTargetNum(remoteBoxRefillTargetNum)) {
@@ -503,6 +575,62 @@ object AppConfig {
             usedLocalFallback = userVisibleFallback,
             message = message
         )
+    }
+
+    internal fun mergeFaultSafetyRemoteConfigInto(
+        config: AppConfigBean,
+        jsonData: JSONObject,
+        logPrefix: String,
+        emitLogs: Boolean = true
+    ): List<String> {
+        val preservedFields = mutableListOf<String>()
+
+        fun mergePositiveLongOrDefault(
+            key: String,
+            fieldLabel: String,
+            defaultValue: Long,
+            setter: (Long) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                setter(defaultValue)
+                return
+            }
+            val remoteValue = jsonData.getLongValue(key)
+            if (remoteValue <= 0L) {
+                preservedFields.add("$fieldLabel(invalid_default)")
+                setter(defaultValue)
+                if (emitLogs) {
+                    LogUtils.w(
+                        "[$logPrefix] 远端配置 $fieldLabel 非法，remoteValue=$remoteValue，" +
+                            "已使用默认值=$defaultValue，食品安全护栏不允许被关闭"
+                    )
+                }
+                return
+            }
+            setter(remoteValue)
+        }
+
+        mergePositiveLongOrDefault(
+            "faultBakingPauseAbortMs",
+            "faultBakingPauseAbortMs",
+            DEFAULT_FAULT_BAKING_PAUSE_ABORT_MS
+        ) { config.faultBakingPauseAbortMs = it }
+        mergePositiveLongOrDefault(
+            "faultPauseAnomalyMs",
+            "faultPauseAnomalyMs",
+            DEFAULT_FAULT_PAUSE_ANOMALY_MS
+        ) { config.faultPauseAnomalyMs = it }
+        mergePositiveLongOrDefault(
+            "httpFallbackMinIntervalMs",
+            "httpFallbackMinIntervalMs",
+            DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS
+        ) { config.httpFallbackMinIntervalMs = it }
+
+        LOCAL_RUNTIME_ONLY_FIELDS.filter { jsonData.containsKey(it) }
+            .forEach { preservedFields.add("$it(local_runtime_preserved)") }
+
+        return preservedFields
     }
 
     fun getDeviceId(): String {

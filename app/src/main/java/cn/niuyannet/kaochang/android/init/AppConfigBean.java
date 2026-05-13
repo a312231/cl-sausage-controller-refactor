@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.init;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 
 public class AppConfigBean implements Serializable {
     public static final int SUPPLY_STATUS_NORMAL = 0;
@@ -95,6 +96,22 @@ public class AppConfigBean implements Serializable {
 
     // 烤制算法开关：0=关闭，1=开启
     public int isEnable = 0;
+
+    // 故障停热暂停状态：0=未暂停，1=故障停热暂停中。该状态仅由本机维护，不参与远端配置合并。
+    public int faultHeatPauseActive = 0;
+    public long faultHeatPauseStartedAtMs = 0L;
+    public String faultHeatPauseReason;
+    public String faultHeatPauseSource;
+
+    // 食品安全护栏阈值。远端未下发或下发非法值时使用默认值，不能关闭护栏。
+    public long faultBakingPauseAbortMs = 2L * 60L * 60L * 1000L;
+    public long faultPauseAnomalyMs = 4L * 60L * 60L * 1000L;
+    public long httpFallbackMinIntervalMs = 30_000L;
+
+    // 待丢弃烤盘位，跨重启保留。该状态仅由本机维护，不参与远端配置合并。
+    public ArrayList<Integer> pendingDiscardPositions = new ArrayList<>();
+    public String foodSafetyAlertCode;
+    public String foodSafetyAlertReason;
 
     // 温度与时间配置
     public int keepWarmTemperature;
