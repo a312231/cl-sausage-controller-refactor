@@ -1,0 +1,77 @@
+package cn.niuyannet.kaochang.android.init
+
+import com.alibaba.fastjson.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AppConfigLocalRuntimeFieldsTest {
+
+    @Test
+    fun isLocalRuntimeOnlyField_shouldProtectFoodSafetyRuntimeFieldsFromRemoteMerge() {
+        val localOnlyFields = listOf(
+            "faultHeatPauseActive",
+            "faultHeatPauseStartedAtMs",
+            "faultHeatPauseReason",
+            "faultHeatPauseSource",
+            "pendingDiscardPositions",
+            "foodSafetyAlertCode",
+            "foodSafetyAlertReason"
+        )
+
+        localOnlyFields.forEach { field ->
+            assertTrue("$field should be local runtime only", AppConfig.isLocalRuntimeOnlyField(field))
+        }
+    }
+
+    @Test
+    fun isLocalRuntimeOnlyField_shouldNotBlockRemoteConfigThresholds() {
+        assertFalse(AppConfig.isLocalRuntimeOnlyField("faultBakingPauseAbortMs"))
+        assertFalse(AppConfig.isLocalRuntimeOnlyField("faultPauseAnomalyMs"))
+        assertFalse(AppConfig.isLocalRuntimeOnlyField("httpFallbackMinIntervalMs"))
+    }
+
+    @Test
+    fun mergeFaultSafetyRemoteConfigInto_shouldPreserveLocalRuntimeStateWhenRemotePushesEmptyValues() {
+        val config = AppConfigBean().apply {
+            deviceCode = "device-001"
+            deviceName = "测试设备"
+            status = 1
+            onlineStatus = 1
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 123_456L
+            faultHeatPauseReason = "modbus_error"
+            faultHeatPauseSource = "stopHeatingForFault"
+            pendingDiscardPositions.addAll(listOf(5, 8))
+            foodSafetyAlertCode = "BAKING_PAUSE_ABORT"
+            foodSafetyAlertReason = "烤制停热超阈值"
+            faultBakingPauseAbortMs = 2 * 60 * 60 * 1000L
+        }
+        val remote = JSONObject().apply {
+            put("deviceCode", "device-001")
+            put("name", "测试设备")
+            put("status", 1)
+            put("onlineStatus", 1)
+            put("faultHeatPauseActive", 0)
+            put("faultHeatPauseStartedAtMs", 0L)
+            put("faultHeatPauseReason", null)
+            put("faultHeatPauseSource", null)
+            put("pendingDiscardPositions", emptyList<Int>())
+            put("foodSafetyAlertCode", null)
+            put("foodSafetyAlertReason", null)
+            put("faultBakingPauseAbortMs", 60_000L)
+        }
+
+        AppConfig.mergeFaultSafetyRemoteConfigInto(config, remote, "unit-test", emitLogs = false)
+
+        assertEquals(1, config.faultHeatPauseActive)
+        assertEquals(123_456L, config.faultHeatPauseStartedAtMs)
+        assertEquals("modbus_error", config.faultHeatPauseReason)
+        assertEquals("stopHeatingForFault", config.faultHeatPauseSource)
+        assertEquals(listOf(5, 8), config.pendingDiscardPositions)
+        assertEquals("BAKING_PAUSE_ABORT", config.foodSafetyAlertCode)
+        assertEquals("烤制停热超阈值", config.foodSafetyAlertReason)
+        assertEquals(60_000L, config.faultBakingPauseAbortMs)
+    }
+}
