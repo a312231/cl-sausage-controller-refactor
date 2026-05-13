@@ -20,6 +20,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
+import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
@@ -186,6 +187,7 @@ class MaintenanceFragment : Fragment() {
         setupButtons()
         syncAlgorithmSwitchFromRuntimeState("维护页初始化", forceLog = true)
         syncInspectionSwitchFromRuntimeState("维护页初始化", forceLog = true)
+        updateManualSupplementConfirmButtonVisibility()
     }
 
     private fun clearRuntimeStateAfterManualPanReset(reason: String) {
@@ -238,6 +240,11 @@ class MaintenanceFragment : Fragment() {
     private fun setMaintenanceButtonsEnabled(enabled: Boolean) {
         binding.btnCz.isEnabled = enabled
         binding.btnClearAll.isEnabled = enabled
+    }
+
+    private fun updateManualSupplementConfirmButtonVisibility() {
+        binding.btnConfirmSupplementSafety.visibility =
+            if (KaoChangOperate.pendingSupplementBatchRequiresManualConfirm() != null) View.VISIBLE else View.GONE
     }
 
     private fun setAlgorithmSwitchCheckedSilently(checked: Boolean) {
@@ -430,6 +437,7 @@ class MaintenanceFragment : Fragment() {
                     }
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
+                    FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击清空烤盘")
                     KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
                     KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
                     clearRuntimeStateAfterManualPanReset("点击清空烤盘")
@@ -659,6 +667,36 @@ class MaintenanceFragment : Fragment() {
             }
             syncInspectionSwitchFromRuntimeState("本地手动切换检修模式完成", forceLog = true)
         }
+
+        binding.btnConfirmSupplementSafety.setOnClickListener {
+            val intent = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+            if (intent == null) {
+                ToastUtils.showShort("当前没有需要人工确认的续补批次")
+                updateManualSupplementConfirmButtonVisibility()
+                return@setOnClickListener
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("确认续补安全")
+                .setMessage(
+                    "请确认机械位置、25~33 半路烤肠和现场环境安全后再继续续补。\n\n" +
+                        "批次=${intent.batchId}\n" +
+                        "已补位置=${intent.targets.filter { it.completed }.map { it.positionSn }}\n" +
+                        "待补位置=${intent.remainingTargets().map { it.positionSn }}"
+                )
+                .setPositiveButton("已确认安全") { _, _ ->
+                    val ok = KaoChangOperate.confirmPendingSupplementBatchSafety("维护人员现场确认")
+                    if (ok) {
+                        ToastUtils.showShort("已确认续补安全")
+                        LogUtils.w("【维护操作】维护人员已确认续补安全：batchId=${intent.batchId}")
+                    } else {
+                        ToastUtils.showShort("确认失败，当前没有待确认批次")
+                        LogUtils.w("【维护操作】确认续补安全失败：activeBatchMissing=true")
+                    }
+                    updateManualSupplementConfirmButtonVisibility()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
     }
 
     @SuppressLint("NotifyDataSetChanged")
@@ -700,6 +738,7 @@ class MaintenanceFragment : Fragment() {
                     }
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
+                    FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击丢弃所有烤肠并重置烤盘")
                     KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
                     KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
                     clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
@@ -918,6 +957,7 @@ class MaintenanceFragment : Fragment() {
                     syncAlgorithmSwitchFromRuntimeState("5秒低频兜底同步")
                     syncInspectionSwitchFromRuntimeState("5秒低频兜底同步")
                 }
+                updateManualSupplementConfirmButtonVisibility()
                 binding.tvErroStatus.apply {
                     val isNormal = AppConfig.getAppConfig().errorStatus == 0
                     text = if (isNormal) "状态：正常" else "状态：错误"
