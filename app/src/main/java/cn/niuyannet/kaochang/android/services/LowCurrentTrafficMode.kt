@@ -154,7 +154,7 @@ object LowCurrentTrafficMode {
 
         checkLowHeatEnd(list1_9)
         if (schedulingEnabled) {
-            checkLowHeatDiscard(list1_9)
+            checkLowHeatDiscard()
         }
 
         val effectiveFrontEmptyPositions = LowToHighDemandGate.effectiveEmptyFrontPositions(list1_9)
@@ -550,32 +550,8 @@ object LowCurrentTrafficMode {
      * 检查前区可售烤肠是否保温到期。
      * 仅当 holdingTime 超过 closeTime 时才触发自动丢弃。
      */
-    private suspend fun checkLowHeatDiscard(list: List<KaoPan>) {
-        for (kaoPan in list) {
-            if (kaoPan.isHasSausage && kaoPan.holdingTime > 0) {
-                val holdTime = System.currentTimeMillis() - kaoPan.holdingTime
-                if (holdTime > kaoPan.closeTime) {
-                    LogUtils.i(
-                        TAG,
-                        "【丢弃流程】检测到过保烤肠：来源=过保到期，烤盘=${kaoPan.positionSn}，已保温=${holdTime}ms，阈值=${kaoPan.closeTime}ms"
-                    )
-                    val discardSuccess = KaoChangOperate.discardSausage(
-                        kaoPan,
-                        source = "过保到期",
-                        detail = "已保温=${holdTime}ms，阈值=${kaoPan.closeTime}ms"
-                    )
-                    val config = AppConfig.getAppConfig()
-                    if (DiscardLoopPolicy.shouldStopAfterDiscard(discardSuccess, config.onlineStatus, config.errorStatus)) {
-                        LogUtils.w(
-                            TAG,
-                            "【丢弃流程】停止继续处理后续过保烤肠：mode=低并发，lastPan=${kaoPan.positionSn}，" +
-                                "discardSuccess=$discardSuccess，reason=${DiscardLoopPolicy.stopReason(discardSuccess, config.onlineStatus, config.errorStatus)}"
-                        )
-                        return
-                    }
-                }
-            }
-        }
+    private suspend fun checkLowHeatDiscard() {
+        OverKeepWarmDiscardScanner.scanAndDiscard(1..9, "低并发轮询")
     }
 
     /**

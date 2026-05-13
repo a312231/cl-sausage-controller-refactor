@@ -288,7 +288,7 @@ object KaoChangAlgorithm {
     }
 
     private fun isHoldingPan(kaoPan: KaoPan): Boolean {
-        return kaoPan.isHasSausage && kaoPan.holdingTime > 0L
+        return KaoPanHelper.isSellable(kaoPan, KaoPanHelper.pendingDiscardPositionsOrEmpty())
     }
 
     private fun buildAvailableDecisionContext(
@@ -714,6 +714,11 @@ object KaoChangAlgorithm {
         val schedulingEnabled =
             isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus) && autoDispatchDecision.canStart
 
+        if (config.pendingDiscardPositions.isNotEmpty()) {
+            OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "pending_discard_priority")
+            return
+        }
+
         val pollStateSnapshot =
             "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},scanBlock=${config.scanBlockStatus},inspection=${config.inspectionMode},enable=$schedulingEnabled"
         if (pollStateSnapshot != lastPollStateSnapshot) {
@@ -847,6 +852,7 @@ object KaoChangAlgorithm {
                 detail = "维护页批量重置烤盘"
             )
         }
+        FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页批量重置烤盘完成")
     }
 
     /**
@@ -1047,6 +1053,12 @@ object KaoChangAlgorithm {
         isEnabled = true
         config.isEnable = 1
         AppConfig.saveAppConfig(config)
+        FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded("enableRoastAlgorithm")
+        KaoChangOperate.applyConfiguredTemperatureByPanState("算法开启后恢复温度")
+        // scanAndDiscard 会先做可售阻断；若机械暂忙，下一轮 pollKaoPanStatus 顶层 pending 优先扫描继续兜底。
+        algorithmScope.launch {
+            OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "fault_recovery")
+        }
         if (!wasRunning) {
             logW(
                 LOG_ALGORITHM,
