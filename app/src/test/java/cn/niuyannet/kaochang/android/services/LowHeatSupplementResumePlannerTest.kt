@@ -94,7 +94,7 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun findFinishedPans_shouldReturnOnly13WhenLaterFilled14And15AreStillBaking() {
+    fun findFinishedPans_shouldReturnEmptyWhenAnyOccupiedPanStillBaking() {
         val nowMs = 50L * 60L * 1000L
         val group = listOf(
             supplementPan(13, "A", hasSausage = true).apply {
@@ -116,7 +116,7 @@ class LowHeatSupplementResumePlannerTest {
 
         val result = LowHeatSupplementResumePlanner.findFinishedPans(group, nowMs, inactiveFaultConfig())
 
-        assertEquals(listOf(13), result.map { it.positionSn })
+        assertTrue(result.isEmpty())
     }
 
     @Test
@@ -247,7 +247,7 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun markFinishedPansKeepWarm_shouldSwitchOnlyFinishedPansToKeepWarm() {
+    fun markFinishedPansKeepWarm_shouldWaitWhenOccupiedPanStillBaking() {
         val nowMs = 50L * 60L * 1000L
         val group = listOf(
             supplementPan(13, "A", hasSausage = true).apply {
@@ -265,16 +265,47 @@ class LowHeatSupplementResumePlannerTest {
 
         val result = LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(group, nowMs, inactiveFaultConfig())
 
-        assertEquals(listOf(13), result.map { it.positionSn })
-        assertEquals(0L, group[0].startTime)
-        assertEquals(nowMs, group[0].holdingTime)
-        assertEquals(2, group[0].status)
+        assertTrue(result.isEmpty())
+        assertEquals(1L, group[0].startTime)
+        assertEquals(0L, group[0].holdingTime)
+        assertEquals(1, group[0].status)
         assertEquals(30L * 60L * 1000L, group[1].startTime)
         assertEquals(1, group[1].status)
     }
 
     @Test
-    fun findKeepWarmPansReadyToMove_shouldReturnRetainedFinishedPans() {
+    fun markFinishedPansKeepWarm_shouldReturnRetainedKeepWarmPanWithNewlyMaturedPans() {
+        val nowMs = 70L * 60L * 1000L
+        val retainedHoldingTime = 10_000L
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = retainedHoldingTime
+                status = 2
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            },
+            supplementPan(15, "A", hasSausage = true).apply {
+                startTime = 30L * 60L * 1000L
+                bakingTime = 40L * 60L * 1000L
+                status = 1
+            }
+        )
+
+        val result = LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(group, nowMs, inactiveFaultConfig())
+
+        assertEquals(listOf(13, 14, 15), result.map { it.positionSn })
+        assertEquals(retainedHoldingTime, group[0].holdingTime)
+        assertEquals(nowMs, group[1].holdingTime)
+        assertEquals(nowMs, group[2].holdingTime)
+        assertEquals(listOf(2, 2, 2), group.map { it.status })
+    }
+
+    @Test
+    fun findKeepWarmPansReadyToMove_shouldWaitWhenOccupiedPanStillBaking() {
         val group = listOf(
             supplementPan(13, "A", hasSausage = true).apply {
                 startTime = 0L
@@ -295,7 +326,32 @@ class LowHeatSupplementResumePlannerTest {
             pendingDiscardPositions = emptyList()
         )
 
-        assertEquals(listOf(13), result.map { it.positionSn })
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun findKeepWarmPansReadyToMove_shouldReturnAllOccupiedPansWhenAllAreKeepWarm() {
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 10_000L
+                status = 2
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 12_000L
+                status = 2
+            },
+            supplementPan(15, "A", hasSausage = false)
+        )
+
+        val result = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(
+            supplementGroup = group,
+            config = inactiveFaultConfig(),
+            pendingDiscardPositions = emptyList()
+        )
+
+        assertEquals(listOf(13, 14), result.map { it.positionSn })
     }
 
     private fun frontPan(positionSn: Int, tasteCode: String, reserved: Boolean): KaoPan =

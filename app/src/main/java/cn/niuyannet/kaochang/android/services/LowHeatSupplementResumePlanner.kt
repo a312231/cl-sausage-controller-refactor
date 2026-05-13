@@ -49,14 +49,14 @@ internal object LowHeatSupplementResumePlanner {
         if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
             return emptyList()
         }
-        return supplementGroup
-            .filter { pan ->
-                pan.isHasSausage &&
-                    pan.startTime > 0L &&
-                    pan.bakingTime > 0L &&
-                    FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
-            }
-            .sortedBy { it.positionSn }
+        val occupiedPans = occupiedPans(supplementGroup)
+        if (occupiedPans.isEmpty()) {
+            return emptyList()
+        }
+        val allReady = occupiedPans.all { pan ->
+            isKeepWarmReady(pan) || isBakingMatured(pan, config, nowMs)
+        }
+        return if (allReady) occupiedPans else emptyList()
     }
 
     fun markFinishedPansKeepWarm(
@@ -66,9 +66,11 @@ internal object LowHeatSupplementResumePlanner {
     ): List<KaoPan> {
         val finishedPans = findFinishedPans(supplementGroup, nowMs, config)
         finishedPans.forEach { pan ->
-            pan.startTime = 0L
-            pan.holdingTime = nowMs
-            pan.status = 2
+            if (pan.startTime > 0L) {
+                pan.startTime = 0L
+                pan.holdingTime = nowMs
+                pan.status = 2
+            }
         }
         return finishedPans
     }
@@ -81,13 +83,15 @@ internal object LowHeatSupplementResumePlanner {
         if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
             return emptyList()
         }
-        return supplementGroup
-            .filter { pan ->
-                KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
-                    pan.startTime == 0L &&
-                    pan.holdingTime > 0L
-            }
-            .sortedBy { it.positionSn }
+        val occupiedPans = occupiedPans(supplementGroup)
+        if (occupiedPans.isEmpty()) {
+            return emptyList()
+        }
+        return if (occupiedPans.all { isKeepWarmReady(it, pendingDiscardPositions) }) {
+            occupiedPans
+        } else {
+            emptyList()
+        }
     }
 
     fun longestRemainingBakingMs(
@@ -113,5 +117,30 @@ internal object LowHeatSupplementResumePlanner {
             return null
         }
         return reservedFrontPans.getOrNull(offset)?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+    }
+
+    private fun occupiedPans(supplementGroup: List<KaoPan>): List<KaoPan> {
+        return supplementGroup
+            .filter { it.isHasSausage }
+            .sortedBy { it.positionSn }
+    }
+
+    private fun isKeepWarmReady(
+        pan: KaoPan,
+        pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
+    ): Boolean {
+        return KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
+            pan.startTime == 0L &&
+            pan.holdingTime > 0L
+    }
+
+    private fun isBakingMatured(
+        pan: KaoPan,
+        config: AppConfigBean,
+        nowMs: Long
+    ): Boolean {
+        return pan.startTime > 0L &&
+            pan.bakingTime > 0L &&
+            FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
     }
 }

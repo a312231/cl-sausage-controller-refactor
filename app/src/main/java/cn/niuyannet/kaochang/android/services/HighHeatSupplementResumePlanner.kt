@@ -77,9 +77,7 @@ internal object HighHeatSupplementResumePlanner {
             return emptyList()
         }
         val allFinished = occupiedPans.all { pan ->
-            pan.startTime > 0L &&
-                pan.bakingTime > 0L &&
-                FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
+            isKeepWarmReady(pan) || isBakingMatured(pan, config, nowMs)
         }
         return if (allFinished) occupiedPans else emptyList()
     }
@@ -91,9 +89,11 @@ internal object HighHeatSupplementResumePlanner {
     ): List<KaoPan> {
         val finishedPans = findFinishedPartialBatch(supplementGroup, nowMs, config)
         finishedPans.forEach { pan ->
-            pan.startTime = 0L
-            pan.holdingTime = nowMs
-            pan.status = 2
+            if (pan.startTime > 0L) {
+                pan.startTime = 0L
+                pan.holdingTime = nowMs
+                pan.status = 2
+            }
         }
         return finishedPans
     }
@@ -112,8 +112,7 @@ internal object HighHeatSupplementResumePlanner {
             return emptyList()
         }
         val allKeepWarm = occupiedPans.all { pan ->
-            KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
-                pan.startTime == 0L
+            isKeepWarmReady(pan, pendingDiscardPositions)
         }
         return if (allKeepWarm) occupiedPans else emptyList()
     }
@@ -128,5 +127,24 @@ internal object HighHeatSupplementResumePlanner {
             return null
         }
         return reservedFrontPans.getOrNull(offset)?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+    }
+
+    private fun isKeepWarmReady(
+        pan: KaoPan,
+        pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
+    ): Boolean {
+        return KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
+            pan.startTime == 0L &&
+            pan.holdingTime > 0L
+    }
+
+    private fun isBakingMatured(
+        pan: KaoPan,
+        config: AppConfigBean,
+        nowMs: Long
+    ): Boolean {
+        return pan.startTime > 0L &&
+            pan.bakingTime > 0L &&
+            FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
     }
 }
