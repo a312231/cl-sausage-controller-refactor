@@ -2484,6 +2484,7 @@ object KaoChangOperate {
             kaoPan.startTime=0
             kaoPan.status=0
             handleSuccessfulDiscardDemandGate(kaoPan.positionSn, source)
+            FaultHeatPauseManager.clearDiscardPositionAndAlertIfFinished(kaoPan.positionSn)
             LogUtils.i(
                 "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail，" +
                     "panHasSausage=${kaoPan.isHasSausage}，panStatus=${kaoPan.status}"
@@ -2532,19 +2533,10 @@ object KaoChangOperate {
      * 加热温度 160
      */
     fun heating(area: Int) {
-        logD(LOG_HEAT, "开始加热：temperature=${AppConfig.getAppConfig().heatingTemperature}")
+        val heatingTemperature = AppConfig.getAppConfig().heatingTemperature
+        logD(LOG_HEAT, "开始加热：temperature=$heatingTemperature")
         //加热管开始工作
-        when (area) {
-            1 -> {
-                 writeSingleRegister(action_address_1_temperature_write,AppConfig.getAppConfig().heatingTemperature)
-            }
-            2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,AppConfig.getAppConfig().heatingTemperature)
-            }
-            3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,AppConfig.getAppConfig().heatingTemperature)
-            }
-        }
+        setAreaTargetTemperature(area, heatingTemperature, "heating")
     }
     /**
      *
@@ -2552,20 +2544,11 @@ object KaoChangOperate {
      * 保温 60
      */
     fun keepWarm(area: Int) {
-        logD(LOG_HEAT, "开始保温：temperature=${AppConfig.getAppConfig().keepWarmTemperature}")
-        logD(LOG_HEAT, "当前加热温度配置：temperature=${AppConfig.getAppConfig().heatingTemperature}")
+        val config = AppConfig.getAppConfig()
+        logD(LOG_HEAT, "开始保温：temperature=${config.keepWarmTemperature}")
+        logD(LOG_HEAT, "当前加热温度配置：temperature=${config.heatingTemperature}")
         //开始保温工作
-        when (area) {
-            1 -> {
-                 writeSingleRegister(action_address_1_temperature_write, AppConfig.getAppConfig().keepWarmTemperature)
-            }
-            2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,AppConfig.getAppConfig().keepWarmTemperature)
-            }
-            3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,AppConfig.getAppConfig().keepWarmTemperature)
-            }
-        }
+        setAreaTargetTemperature(area, config.keepWarmTemperature, "keepWarm")
     }
 
     /**
@@ -2575,17 +2558,7 @@ object KaoChangOperate {
      */
     fun stopHeating(area: Int) {
         //停止加热
-        when (area) {
-            1 -> {
-                 writeSingleRegister(action_address_1_temperature_write,0)
-            }
-            2 -> {
-                 writeSingleRegister(action_address_2_temperature_write,0)
-            }
-            3 -> {
-                 writeSingleRegister(action_address_3_temperature_write,0)
-            }
-        }
+        writeAreaTargetTemperatureRaw(area, 0, "stopHeating")
     }
 
     /**
@@ -2614,9 +2587,9 @@ object KaoChangOperate {
             return false
         }
 
-        writeAreaTargetTemperature(1, 0)
-        writeAreaTargetTemperature(2, 0)
-        writeAreaTargetTemperature(3, 0)
+        writeAreaTargetTemperatureRaw(1, 0, "stopAllHeatingIfNoSausage")
+        writeAreaTargetTemperatureRaw(2, 0, "stopAllHeatingIfNoSausage")
+        writeAreaTargetTemperatureRaw(3, 0, "stopAllHeatingIfNoSausage")
         logTemperatureApplyOnce(
             signature = "stopAll:$reason:$force:0,0,0",
             message = "全盘无肠，已关闭一/二/三区目标温度：reason=$reason，force（是否强制清零）=$force，寄存器503=0，寄存器504=0，寄存器505=0"
@@ -2638,6 +2611,7 @@ object KaoChangOperate {
      * - 否则：写 0，关闭该区加热和保温
      */
     fun applyConfiguredTemperatureByPanState(reason: String) {
+        FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded(reason)
         val config = AppConfig.getAppConfig()
         val decisions = TemperatureControlPolicy.decideZoneTemperatures(
             pans = KaoPanHelper.getKaoPanList(),
@@ -2647,10 +2621,11 @@ object KaoChangOperate {
                 1 to config.zone1HeatingOffset,
                 2 to config.zone2HeatingOffset,
                 3 to config.zone3HeatingOffset
-            )
+            ),
+            pendingDiscardPositions = config.pendingDiscardPositions
         )
         decisions.forEach { decision ->
-            writeAreaTargetTemperature(decision.area, decision.targetTemperature)
+            setAreaTargetTemperature(decision.area, decision.targetTemperature, reason)
         }
         val detail = decisions.joinToString("，") { decision ->
             val offset = when (decision.area) {
@@ -2688,21 +2663,31 @@ object KaoChangOperate {
      * 设备故障态停热入口。
      *
      * 寄存器 503/504/505 分别是一/二/三区目标温度，写 0 表示停止烤制和保温加热。
-     * 这里只停热和关闭自动调度，不改烤盘计时字段；首版故障食品由后端暂停履约/退款流程收口。
+     * 这里只停热和关闭自动调度；计时补偿由恢复非 0 温度前统一执行。
      */
     fun stopHeatingForFault(reason: String) {
-        writeAreaTargetTemperature(1, 0)
-        writeAreaTargetTemperature(2, 0)
-        writeAreaTargetTemperature(3, 0)
+        FaultHeatPauseManager.beginFaultHeatPauseIfNeeded(reason, source = "stopHeatingForFault")
+        writeAreaTargetTemperatureRaw(1, 0, "stopHeatingForFault")
+        writeAreaTargetTemperatureRaw(2, 0, "stopHeatingForFault")
+        writeAreaTargetTemperatureRaw(3, 0, "stopHeatingForFault")
         lastTemperatureApplyLogSignature = null
         logW(
             LOG_HEAT,
             "设备故障停热：reason=$reason，" +
-                "寄存器503/504/505目标温度已写0，后续恢复加热需由现场在上位机维护页恢复正常状态后手动开启烤制算法"
+                "寄存器503/504/505目标温度已写0，已记录故障停热暂停；后续恢复非0温度前会先补偿烤制计时"
         )
     }
 
-    private fun writeAreaTargetTemperature(area: Int, temperature: Int) {
+    private fun setAreaTargetTemperature(area: Int, temperature: Int, reason: String) {
+        if (temperature > 0) {
+            FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded(reason)
+        }
+        writeAreaTargetTemperatureRaw(area, temperature, "setAreaTargetTemperature:$reason")
+    }
+
+    // 仅供写 0 停热/主动暂停/故障停热路径，以及 setAreaTargetTemperature 内部最终落寄存器使用。
+    private fun writeAreaTargetTemperatureRaw(area: Int, temperature: Int, source: String) {
+        logD(LOG_HEAT, "写入温区目标温度：source=$source，area=$area，temperature=$temperature")
         when (area) {
             1 -> writeSingleRegister(action_address_1_temperature_write, temperature)
             2 -> writeSingleRegister(action_address_2_temperature_write, temperature)
@@ -2761,9 +2746,9 @@ object KaoChangOperate {
      */
     fun pauseBusiness() {
         //1，2，3 区停止保温
-        writeSingleRegister(action_address_1_temperature_write,0)
-        writeSingleRegister(action_address_2_temperature_write,0)
-        writeSingleRegister(action_address_3_temperature_write,0)
+        writeAreaTargetTemperatureRaw(1, 0, "pauseBusiness")
+        writeAreaTargetTemperatureRaw(2, 0, "pauseBusiness")
+        writeAreaTargetTemperatureRaw(3, 0, "pauseBusiness")
 
     }
 
