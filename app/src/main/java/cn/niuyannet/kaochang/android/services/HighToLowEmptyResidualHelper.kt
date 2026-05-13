@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 
 internal data class HighToLowEmptyResidualDecision(
@@ -28,10 +29,11 @@ internal object HighToLowEmptyResidualHelper {
         hasSupplyBoxesAvailable: Boolean,
         kaoPanList: List<KaoPan>
     ): HighToLowEmptyResidualDecision {
+        val pendingDiscardPositions = KaoPanHelper.pendingDiscardPositionsOrEmpty()
         val isHighToLowTransition = transitionMode == TRANSITION_HIGH_TO_LOW
         val hasFrontSellableSausage = kaoPanList
             .filter { it.positionSn in 1..21 }
-            .any { pan -> pan.isHasSausage && (pan.holdingTime > 0L || pan.status == 2) }
+            .any { pan -> KaoPanHelper.isSellable(pan, pendingDiscardPositions) }
         val highConcurrencyAreaIdle = kaoPanList
             .filter { it.positionSn in 10..21 || it.positionSn in 25..33 }
             .none { pan ->

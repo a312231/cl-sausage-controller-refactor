@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -25,7 +26,7 @@ object KaoPanCloudSyncReporter {
     fun captureSellableSnapshot(pans: List<KaoPan>): SellableSnapshot =
         SellableSnapshot(
             pans
-                .filter { it.isHasSausage && it.status == 2 && it.holdingTime > 0L }
+                .filter { KaoPanHelper.isSellable(it, KaoPanHelper.pendingDiscardPositionsOrEmpty()) }
                 .map { pan ->
                     SellablePan(
                         positionSn = pan.positionSn,

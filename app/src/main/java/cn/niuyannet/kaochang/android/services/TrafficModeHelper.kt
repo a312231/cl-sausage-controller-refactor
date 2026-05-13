@@ -31,12 +31,12 @@ object TrafficModeHelper {
     }
 
     fun selectSellCandidate(list: List<KaoPan>, tasteCode: String, productId: Int): KaoPan? {
+        val pendingDiscardPositions = KaoPanHelper.pendingDiscardPositionsOrEmpty()
         return list
             .filter {
-                it.isHasSausage &&
+                KaoPanHelper.isSellable(it, pendingDiscardPositions) &&
                     it.taste.tasteCode == tasteCode &&
-                    it.taste.productId == productId &&
-                    it.holdingTime > 0L
+                    it.taste.productId == productId
             }
             .sortedWith(oldestHoldingFirstComparator)
             .firstOrNull()

@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 
@@ -59,13 +60,15 @@ internal object LowHeatSupplementResumePlanner {
         return finishedPans
     }
 
-    fun findKeepWarmPansReadyToMove(supplementGroup: List<KaoPan>): List<KaoPan> {
+    fun findKeepWarmPansReadyToMove(
+        supplementGroup: List<KaoPan>,
+        pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
+    ): List<KaoPan> {
         return supplementGroup
             .filter { pan ->
-                pan.isHasSausage &&
+                KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
                     pan.startTime == 0L &&
-                    pan.holdingTime > 0L &&
-                    pan.status == 2
+                    pan.holdingTime > 0L
             }
             .sortedBy { it.positionSn }
     }

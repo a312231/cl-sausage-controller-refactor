@@ -54,6 +54,23 @@ object KaoPanHelper {
     private var kaoPanBoxList = mutableListOf<KaoPanBox>()
 
     /**
+     * 统一可售判定。
+     *
+     * pendingDiscardPositions（待丢弃烤盘位）里的烤盘即使 status=2（保温可售）
+     * 且 holdingTime>0，也不能再被二维码、订单、云端快照视为可售。
+     */
+    fun isSellable(kaoPan: KaoPan, pendingDiscardPositions: Collection<Int> = emptyList()): Boolean {
+        return kaoPan.isHasSausage &&
+            kaoPan.status == 2 &&
+            kaoPan.holdingTime > 0L &&
+            kaoPan.positionSn !in pendingDiscardPositions
+    }
+
+    fun pendingDiscardPositionsOrEmpty(): Collection<Int> {
+        return runCatching { getAppConfig().pendingDiscardPositions }.getOrDefault(emptyList())
+    }
+
+    /**
      * 初始化烤盘配置。
      *
      * 优先读取本地缓存；若本地还没有保存过，则按默认工位顺序生成 33 个烤盘并立即落盘。

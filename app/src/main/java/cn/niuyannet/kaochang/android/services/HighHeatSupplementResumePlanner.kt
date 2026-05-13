@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 
@@ -47,12 +48,17 @@ internal object HighHeatSupplementResumePlanner {
         }
     }
 
-    fun isCompleteFinishedBatch(supplementGroup: List<KaoPan>): Boolean {
+    fun isCompleteFinishedBatch(
+        supplementGroup: List<KaoPan>,
+        pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
+    ): Boolean {
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         if (!hasFullBatchStarted(sortedGroup)) {
             return false
         }
-        return sortedGroup.all { it.status == 2 }
+        return sortedGroup.all {
+            it.status == 2 && it.positionSn !in pendingDiscardPositions
+        }
     }
 
     fun findFinishedPartialBatch(supplementGroup: List<KaoPan>, nowMs: Long): List<KaoPan> {
@@ -79,16 +85,18 @@ internal object HighHeatSupplementResumePlanner {
         return finishedPans
     }
 
-    fun findKeepWarmPartialBatchReadyToMove(supplementGroup: List<KaoPan>): List<KaoPan> {
+    fun findKeepWarmPartialBatchReadyToMove(
+        supplementGroup: List<KaoPan>,
+        pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
+    ): List<KaoPan> {
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         val occupiedPans = sortedGroup.filter { it.isHasSausage }
         if (occupiedPans.size !in 1 until sortedGroup.size) {
             return emptyList()
         }
         val allKeepWarm = occupiedPans.all { pan ->
-            pan.startTime == 0L &&
-                pan.holdingTime > 0L &&
-                pan.status == 2
+            KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
+                pan.startTime == 0L
         }
         return if (allKeepWarm) occupiedPans else emptyList()
     }

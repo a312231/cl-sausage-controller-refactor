@@ -37,10 +37,13 @@ object TemperatureControlPolicy {
         pans: List<KaoPan>,
         keepWarmTemperature: Int,
         heatingTemperature: Int,
-        heatingOffsetsByArea: Map<Int, Int> = emptyMap()
+        heatingOffsetsByArea: Map<Int, Int> = emptyMap(),
+        pendingDiscardPositions: Collection<Int> = emptyList()
     ): List<ZoneTemperatureDecision> {
         return zoneDefinitions.map { (area, positions) ->
-            val zonePans = pans.filter { it.positionSn in positions }
+            val zonePans = pans.filter {
+                it.positionSn in positions && it.positionSn !in pendingDiscardPositions
+            }
             val mode = when {
                 zonePans.any { it.isHasSausage && it.status == 1 } -> ZoneMode.HEATING
                 zonePans.any { it.isHasSausage && (it.status == 2 || it.holdingTime > 0L) } -> ZoneMode.KEEP_WARM

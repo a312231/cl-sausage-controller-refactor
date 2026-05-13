@@ -720,7 +720,8 @@ object DataManagementAPI {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val kaoPanPayload = JSON.toJSONString(kaoPanList)
         val kaoPanCount = kaoPanList.size
-        val warmingCount = kaoPanList.count { it.isHasSausage && it.status == 2 }
+        val pendingDiscardPositions = AppConfig.getAppConfig().pendingDiscardPositions
+        val warmingCount = kaoPanList.count { KaoPanHelper.isSellable(it, pendingDiscardPositions) }
         val bakingCount = kaoPanList.count { it.isHasSausage && it.status == 1 }
 
         val kaoPanBoxList = KaoPanHelper.getKaoPanBoxList()
