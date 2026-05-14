@@ -254,6 +254,31 @@ object AppConfig {
         config.scanBlockStatus = normalized
     }
 
+    internal fun applyHomeQrHiddenRemoteConfigInto(
+        config: AppConfigBean,
+        jsonData: JSONObject
+    ): List<String> {
+        val remoteValue: Int? = when {
+            jsonData.containsKey("homeQrHidden") && jsonData.get("homeQrHidden") != null ->
+                jsonData.getIntValue("homeQrHidden")
+            jsonData.containsKey("scanBlockStatus") && jsonData.get("scanBlockStatus") != null ->
+                jsonData.getIntValue("scanBlockStatus")
+            else -> null
+        }
+        if (remoteValue == null) {
+            syncHomeQrHiddenFields(config)
+            return listOf("homeQrHidden")
+        }
+        val normalized = if (remoteValue == AppConfigBean.HOME_QR_HIDDEN_HIDDEN) {
+            AppConfigBean.HOME_QR_HIDDEN_HIDDEN
+        } else {
+            AppConfigBean.HOME_QR_HIDDEN_SHOW
+        }
+        config.homeQrHidden = normalized
+        config.scanBlockStatus = normalized
+        return emptyList()
+    }
+
     private fun normalizeConcurrencyState(config: AppConfigBean, logPrefix: String) {
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
@@ -429,23 +454,7 @@ object AppConfig {
                 AppConfigBean.SUPPLY_STATUS_NORMAL
             }
         }
-        val homeQrHiddenRaw: Int? = when {
-            jsonData.containsKey("homeQrHidden") && jsonData.get("homeQrHidden") != null ->
-                jsonData.getIntValue("homeQrHidden")
-            jsonData.containsKey("scanBlockStatus") && jsonData.get("scanBlockStatus") != null ->
-                jsonData.getIntValue("scanBlockStatus")
-            else -> null
-        }
-        if (homeQrHiddenRaw == null) {
-            preservedFields.add("homeQrHidden")
-        } else {
-            config.homeQrHidden = if (homeQrHiddenRaw == AppConfigBean.HOME_QR_HIDDEN_HIDDEN) {
-                AppConfigBean.HOME_QR_HIDDEN_HIDDEN
-            } else {
-                AppConfigBean.HOME_QR_HIDDEN_SHOW
-            }
-        }
-        syncHomeQrHiddenFields(config)
+        preservedFields.addAll(applyHomeQrHiddenRemoteConfigInto(config, jsonData))
         mergeInt("inspectionMode", "inspectionMode") {
             config.inspectionMode = if (it == AppConfigBean.INSPECTION_MODE_ACTIVE) {
                 AppConfigBean.INSPECTION_MODE_ACTIVE
