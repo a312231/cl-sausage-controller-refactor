@@ -47,26 +47,39 @@ class StartInitActivity : BaseActivity() {
             LogUtils.i("设备初始化：跳过 ARUCO 前置检测，直接尝试登录")
             
             showLoadingExt("初始化中...")
-            NetApi.initDevice(binding.etDeviceId.text.toString()) { code, content ->
-                dismissLoadingExt()
-                if (code == 0) {
-                    val json = JSON.parseObject(content)
-                    if (json.getIntValue("code") == 200) {
-                        PreferenceUtils.saveBooleanPreference(spFileKey, "sp_init_status", true)
-                        AppConfig.saveDeviceId(binding.etDeviceId.text.toString())
-                        MainActivity.start(it.context)
-                        finish()
-                    } else {
-                        ToastUtils.showShort(json.getString("msg"))
-                    }
-                } else {
-                    ToastUtils.showShort("网络服务错误")
+            val initInput = StartInitIdentity.normalize(binding.etDeviceId.text.toString())
+            if (StartInitIdentity.isActivationCode(initInput)) {
+                NetApi.initDeviceByActivationCode(initInput.uppercase()) { code, content ->
+                    handleInitResult(initInput, code, content)
+                }
+            } else {
+                NetApi.initDevice(initInput) { code, content ->
+                    handleInitResult(initInput, code, content)
                 }
             }
         }
 
         binding.btnStartCheck.setOnClickListener {
             SauceDetectionLauncher.launch(this)
+        }
+    }
+
+    private fun handleInitResult(initInput: String, code: Int, content: String?) {
+        dismissLoadingExt()
+        if (code == 0) {
+            val json = JSON.parseObject(content)
+            if (json.getIntValue("code") == 200) {
+                val deviceCode = json.getJSONObject("data")?.getString("deviceCode")?.takeIf { it.isNotBlank() }
+                    ?: initInput
+                PreferenceUtils.saveBooleanPreference(spFileKey, "sp_init_status", true)
+                AppConfig.saveDeviceId(deviceCode)
+                MainActivity.start(this)
+                finish()
+            } else {
+                ToastUtils.showShort(json.getString("msg"))
+            }
+        } else {
+            ToastUtils.showShort("网络服务错误")
         }
     }
 }

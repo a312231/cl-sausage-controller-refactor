@@ -723,6 +723,11 @@ object DataManagementAPI {
         val bakingCount = kaoPanList.count { it.isHasSausage && it.status == 1 }
 
         val kaoPanBoxList = KaoPanHelper.getKaoPanBoxList()
+        if (shouldSkipSnapshotUploadForMissingStockCache(kaoPanBoxList.size)) {
+            logW("设备数据快照暂缓同步：本地烤肠箱缓存为空，可能是首次安装后云端库存尚未落盘；已触发库存补拉，避免空库存覆盖云端")
+            refreshStockData(logPrefix = "$LOG_SYNC-stock-before-snapshot")
+            return
+        }
         val stockPayload = JSON.toJSONString(kaoPanBoxList)
         val stockItemCount = kaoPanBoxList.size
         val stockTotalCount = kaoPanBoxList.sumOf { box -> box.num }
@@ -768,6 +773,10 @@ object DataManagementAPI {
                 )
             }
         }
+    }
+
+    internal fun shouldSkipSnapshotUploadForMissingStockCache(stockItemCount: Int): Boolean {
+        return stockItemCount <= 0
     }
 
     private fun logPendingRetryIfNeeded(type: CloudSyncRetryStore.Type) {

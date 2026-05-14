@@ -47,4 +47,13 @@ class KaoPanHelperRatioTest {
 
         assertTrue(allocation.isEmpty())
     }
+
+    @Test
+    fun restoreKaoPanBoxList_shouldReturnMutableEmptyListWhenPreferenceMissing() {
+        val restored = KaoPanHelper.restoreKaoPanBoxList(null)
+
+        assertTrue(restored.isEmpty())
+        restored.add(KaoPanBox().apply { positionSn = 1 })
+        assertEquals(1, restored.size)
+    }
 }

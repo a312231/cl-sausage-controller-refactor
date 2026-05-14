@@ -141,6 +141,11 @@ object KaoPanHelper {
             }
         }
     }
+
+    internal fun restoreKaoPanBoxList(savedKaoPanBoxList: List<KaoPanBox>?): MutableList<KaoPanBox> {
+        return savedKaoPanBoxList?.toMutableList() ?: mutableListOf()
+    }
+
     /**
      * 重置烤盘
      */
@@ -189,7 +194,11 @@ object KaoPanHelper {
         if (this.kaoPanBoxList.size>0){
             return this.kaoPanBoxList
         }
-        this.kaoPanBoxList=  PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, KaoPanBox::class.java).toMutableList()
+        val savedKaoPanBoxList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, KaoPanBox::class.java)
+        this.kaoPanBoxList = restoreKaoPanBoxList(savedKaoPanBoxList)
+        if (this.kaoPanBoxList.isEmpty()) {
+            LogUtils.w("本地烤肠箱缓存为空，等待云端库存同步后恢复；首次安装或清空数据后可能出现")
+        }
         return this.kaoPanBoxList
     }
     /**
@@ -199,7 +208,11 @@ object KaoPanHelper {
         if (tasteList.size>0){
             return tasteList
         }
-        tasteList= PreferenceUtils.getListPreference(FILE_SP_URL, KEY_TASTE_LIST, Taste::class.java).toMutableList()
+        val savedTasteList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_TASTE_LIST, Taste::class.java)
+        tasteList = savedTasteList?.toMutableList() ?: mutableListOf()
+        if (tasteList.isEmpty()) {
+            LogUtils.w("本地口味缓存为空，等待云端产品列表同步后恢复；首次安装或清空数据后可能出现")
+        }
         return tasteList;
     }
     /**

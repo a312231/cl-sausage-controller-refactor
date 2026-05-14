@@ -68,6 +68,26 @@ object NetApi {
             })
     }
 
+    fun initDeviceByActivationCode(activationCode: String, callback: (code: Int, content: String?) -> Unit) {
+        val json = JSONObject()
+        json["activationCode"] = activationCode
+        LogUtils.d("【网络请求】开始使用一次性激活码初始化设备：activationCode=$activationCode")
+        OkGo.post<String>(init_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.d("【网络请求】一次性激活码初始化请求成功")
+                    callback(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e("【网络请求】一次性激活码初始化请求失败：error=${response?.exception?.message}")
+                    callback(1, null)
+                }
+            })
+    }
+
     /**
      * 获取广告列表。
      */

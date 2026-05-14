@@ -697,6 +697,11 @@ object KaoChangAlgorithm {
             logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
             return
         }
+        if (kaoPanBoxList.isEmpty()) {
+            logW(LOG_ALGORITHM, "本地烤肠箱缓存为空，跳过本轮自动调度并触发库存补拉，避免首次安装时使用空库存运行")
+            DataManagementAPI.refreshStockData(logPrefix = "算法轮询-stock-missing")
+            return
+        }
         if (TemperatureControlPolicy.shouldRestoreHeatingAfterStartup(startupHeatingStateRestored, modbusConnected = true)) {
             KaoChangOperate.restoreHeatingStateFromCurrentPans("App启动后首次检测到Modbus已连接，按当前烤盘状态恢复温度")
             startupHeatingStateRestored = true
