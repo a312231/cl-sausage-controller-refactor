@@ -753,9 +753,9 @@ object KaoChangOperate {
 
     suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
         if (!VMModbusHelper.connectStatus()) {
-            val detail = "跳过动作组恢复：Modbus 未连接，reason=$reason"
+            val detail = "动作组恢复早退：Modbus 未连接，reason=$reason"
             lastActionGroupRecoveryFailureReason = detail
-            logW(LOG_ACTION_GROUP, detail)
+            enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
         }
         val client = createAtomicActionClient()
@@ -1444,9 +1444,14 @@ object KaoChangOperate {
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠预取流水线")
             return 0
         }
-        if (!ensureModbusReady("补肠预取流水线恢复检查") ||
-            !recoverActionGroupStateAfterModbusReady("补肠预取流水线入口前恢复检查")
-        ) {
+        if (!ensureModbusReady("补肠预取流水线恢复检查")) {
+            enterActionGroupMaintenance(
+                "补肠预取流水线入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=补肠预取流水线",
+                FaultCode.MODBUS_COMM_DROP
+            )
+            return 0
+        }
+        if (!recoverActionGroupStateAfterModbusReady("补肠预取流水线入口前恢复检查")) {
             return 0
         }
 
@@ -1799,9 +1804,14 @@ object KaoChangOperate {
             logE(LOG_SUPPLEMENT, "补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
             return false
         }
-        if (!ensureModbusReady("补肠动作组恢复检查") ||
-            !recoverActionGroupStateAfterModbusReady("补肠入口前恢复检查")
-        ) {
+        if (!ensureModbusReady("补肠动作组恢复检查")) {
+            enterActionGroupMaintenance(
+                "补肠入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=普通补肠",
+                FaultCode.MODBUS_COMM_DROP
+            )
+            return false
+        }
+        if (!recoverActionGroupStateAfterModbusReady("补肠入口前恢复检查")) {
             return false
         }
 
@@ -2108,9 +2118,14 @@ object KaoChangOperate {
      * 顾客是否取走；不再调用售卖口拍照或视觉识别。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
-        if (!ensureModbusReady("维护手动取肠动作组恢复检查") ||
-            !recoverActionGroupStateAfterModbusReady("维护手动取肠入口前恢复检查")
-        ) {
+        if (!ensureModbusReady("维护手动取肠动作组恢复检查")) {
+            enterActionGroupMaintenance(
+                "维护手动取肠入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=维护手动取肠",
+                FaultCode.MODBUS_COMM_DROP
+            )
+            return false
+        }
+        if (!recoverActionGroupStateAfterModbusReady("维护手动取肠入口前恢复检查")) {
             return false
         }
 
@@ -2252,9 +2267,14 @@ object KaoChangOperate {
         // - 这里不能再要求 moveStatus==0，否则会和整单锁冲突，导致出餐卡住。
         // - 只需要等待与出餐冲突的动作（补肠/搬盘/丢弃）结束：1/3/4。
         // - 如果当前是 0（例如非整单场景直接调用），这里临时占用为 2，结束后再恢复。
-        if (!ensureModbusReady("出餐动作组恢复检查") ||
-            !recoverActionGroupStateAfterModbusReady("正式出餐入口前恢复检查")
-        ) {
+        if (!ensureModbusReady("出餐动作组恢复检查")) {
+            enterActionGroupMaintenance(
+                "正式出餐入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=正式出餐",
+                FaultCode.MODBUS_COMM_DROP
+            )
+            return TakeSausageResult.ERROR
+        }
+        if (!recoverActionGroupStateAfterModbusReady("正式出餐入口前恢复检查")) {
             return TakeSausageResult.ERROR
         }
         var appState = AppConfig.getAppConfig().moveStatus
