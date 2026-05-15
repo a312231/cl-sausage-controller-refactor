@@ -29,6 +29,10 @@ internal object HighHeatSupplementResumePlanner {
         return supplementGroup.any { it.isHasSausage }
     }
 
+    fun isReturnCleared(supplementGroup: List<KaoPan>): Boolean {
+        return supplementGroup.none { it.isHasSausage }
+    }
+
     fun planInitialTargets(
         frontPans: List<KaoPan>,
         supplementGroup: List<KaoPan>,

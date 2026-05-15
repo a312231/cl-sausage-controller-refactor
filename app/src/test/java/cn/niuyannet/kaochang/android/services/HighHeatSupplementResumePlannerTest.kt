@@ -97,6 +97,19 @@ class HighHeatSupplementResumePlannerTest {
     }
 
     @Test
+    fun isReturnCleared_shouldWaitUntilZone3HasNoSausage() {
+        val leftoverGroup = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position == 33)
+        }
+        val emptyGroup = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = false)
+        }
+
+        assertFalse(HighHeatSupplementResumePlanner.isReturnCleared(leftoverGroup))
+        assertTrue(HighHeatSupplementResumePlanner.isReturnCleared(emptyGroup))
+    }
+
+    @Test
     fun planInitialTargets_shouldRequestNinePansEvenWhenFrontOnlyHasSevenReservedEmptyPans() {
         val front = (1..21).map { position ->
             frontPan(position, "B", reserved = position in 1..7).apply {

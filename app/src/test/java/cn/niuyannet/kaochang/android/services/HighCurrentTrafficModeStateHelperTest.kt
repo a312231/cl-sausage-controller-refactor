@@ -142,4 +142,30 @@ class HighCurrentTrafficModeStateHelperTest {
             )
         )
     }
+
+    @Test
+    fun canFinishHighToLowDrain_shouldAllowCloseoutWhenFrontHasNineAndZone3IsEmpty() {
+        assertTrue(
+            canFinishHighToLowDrain(
+                frontSausageCount = 9,
+                zone3SausageCount = 0
+            )
+        )
+    }
+
+    @Test
+    fun canFinishHighToLowDrain_shouldWaitWhenFrontHasMoreThanNineOrZone3HasSausage() {
+        assertFalse(
+            canFinishHighToLowDrain(
+                frontSausageCount = 10,
+                zone3SausageCount = 0
+            )
+        )
+        assertFalse(
+            canFinishHighToLowDrain(
+                frontSausageCount = 9,
+                zone3SausageCount = 1
+            )
+        )
+    }
 }

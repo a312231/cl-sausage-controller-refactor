@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TrafficModeHelperTest {
@@ -44,6 +45,67 @@ class TrafficModeHelperTest {
         assertEquals(false, TrafficModeHelper.shouldUseExpandedSellRange(modeType = 1, transitionMode = 0, highConcurrencyResidualDrain = 0))
     }
 
+    @Test
+    fun shouldUseExpandedSellRangeForPurchase_shouldKeepLowToHighInLowSellArea() {
+        assertEquals(
+            false,
+            TrafficModeHelper.shouldUseExpandedSellRangeForPurchase(
+                modeType = 2,
+                transitionMode = 1,
+                highConcurrencyResidualDrain = 0
+            )
+        )
+    }
+
+    @Test
+    fun shouldUseExpandedSellRangeForPurchase_shouldExpandDuringHighToLowAndResidualDrain() {
+        assertEquals(
+            true,
+            TrafficModeHelper.shouldUseExpandedSellRangeForPurchase(
+                modeType = 2,
+                transitionMode = 2,
+                highConcurrencyResidualDrain = 0
+            )
+        )
+        assertEquals(
+            true,
+            TrafficModeHelper.shouldUseExpandedSellRangeForPurchase(
+                modeType = 1,
+                transitionMode = 0,
+                highConcurrencyResidualDrain = 1
+            )
+        )
+    }
+
+    @Test
+    fun selectFrontTargetPanForHighHeatReturn_shouldUseBlankTastePanWhenSameTasteIsUnavailable() {
+        val pans = listOf(
+            emptyPan(positionSn = 10, tasteCode = null),
+            emptyPan(positionSn = 11, tasteCode = "C"),
+            emptyPan(positionSn = 12, tasteCode = "A").apply { isHasSausage = true }
+        )
+
+        val result = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(pans, "A")
+
+        assertEquals(10, result?.positionSn)
+        assertEquals("A", result?.taste?.tasteCode)
+        assertEquals("C", pans.first { it.positionSn == 11 }.taste.tasteCode)
+    }
+
+    @Test
+    fun selectFrontTargetPanForHighHeatReturn_shouldNotOverwriteDifferentTasteReservation() {
+        val pans = listOf(
+            emptyPan(positionSn = 10, tasteCode = "C"),
+            emptyPan(positionSn = 11, tasteCode = "D")
+        )
+
+        val result = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(pans, "A")
+
+        assertNull(result)
+        assertEquals("C", pans.first { it.positionSn == 10 }.taste.tasteCode)
+        assertEquals("D", pans.first { it.positionSn == 11 }.taste.tasteCode)
+    }
+
     private fun box(positionSn: Int, tasteCode: String, num: Int): KaoPanBox {
         return KaoPanBox().apply {
             this.positionSn = positionSn
@@ -61,6 +123,18 @@ class TrafficModeHelperTest {
             taste = Taste().apply {
                 tasteCode = "A"
                 productId = 104
+            }
+        }
+    }
+
+    private fun emptyPan(positionSn: Int, tasteCode: String?): KaoPan {
+        return KaoPan().apply {
+            this.positionSn = positionSn
+            isHasSausage = false
+            if (tasteCode != null) {
+                taste = Taste().apply {
+                    this.tasteCode = tasteCode
+                }
             }
         }
     }

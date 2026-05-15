@@ -50,6 +50,17 @@ object TrafficModeHelper {
         return modeType == 2 || transitionMode != 0 || highConcurrencyResidualDrain == 1
     }
 
+    fun shouldUseExpandedSellRangeForPurchase(
+        modeType: Int,
+        transitionMode: Int,
+        highConcurrencyResidualDrain: Int
+    ): Boolean {
+        if (transitionMode == 1) {
+            return false
+        }
+        return modeType == 2 || transitionMode == 2 || highConcurrencyResidualDrain == 1
+    }
+
     fun selectFrontTargetPan(
         list: List<KaoPan>,
         tasteCode: String?,
@@ -65,6 +76,29 @@ object TrafficModeHelper {
                     (!requireReserved || it.isHasGrilling)
             }
             .minByOrNull { it.positionSn }
+    }
+
+    fun selectFrontTargetPanForHighHeatReturn(
+        list: List<KaoPan>,
+        tasteCode: String?
+    ): KaoPan? {
+        if (tasteCode.isNullOrBlank()) {
+            return null
+        }
+        val sameTasteTarget = selectFrontTargetPan(list, tasteCode)
+        if (sameTasteTarget != null) {
+            return sameTasteTarget
+        }
+        val blankTasteTarget = list
+            .filter {
+                !it.isHasSausage &&
+                    it.taste?.tasteCode.isNullOrBlank()
+            }
+            .minByOrNull { it.positionSn }
+        if (blankTasteTarget != null) {
+            blankTasteTarget.taste = Taste(tasteCode)
+        }
+        return blankTasteTarget
     }
 
     fun sortByHoldingAgeThenPosition(list: List<KaoPan>): List<KaoPan> {

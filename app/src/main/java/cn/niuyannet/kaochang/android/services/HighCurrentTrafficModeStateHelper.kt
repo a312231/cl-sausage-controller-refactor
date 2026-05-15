@@ -78,3 +78,11 @@ internal fun shouldSwitchHighToLowByTimeout(
     val thresholdMs = timeThresholdLowMinutes * 60 * 1000L
     return now - lastFillPitTime > thresholdMs
 }
+
+internal fun canFinishHighToLowDrain(
+    frontSausageCount: Int,
+    zone3SausageCount: Int,
+    maxFrontSausageCount: Int = 9
+): Boolean {
+    return frontSausageCount <= maxFrontSausageCount && zone3SausageCount == 0
+}

@@ -794,6 +794,8 @@ object KaoChangAlgorithm {
                     )
                     HighCurrentTrafficMode.drainHighConcurrencyResidual(
                         list = kaoPanList,
+                        listBox = kaoPanBoxList,
+                        schedulingEnabled = schedulingEnabled,
                         reason = "低并发高并发残留消化态"
                     )
                 } else {
@@ -835,7 +837,12 @@ object KaoChangAlgorithm {
     ): KaoChangOperate.TakeSausageResult {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
-        val targetKaoPan: KaoPan? = if (config.modeType == 1 || config.transitionMode == 1) {
+        val expandedSellRangeForPurchase = TrafficModeHelper.shouldUseExpandedSellRangeForPurchase(
+            config.modeType,
+            config.transitionMode,
+            config.highConcurrencyResidualDrain
+        )
+        val targetKaoPan: KaoPan? = if (!expandedSellRangeForPurchase) {
             TrafficModeHelper.selectSellCandidate(
                 TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList),
                 tasteCode,
