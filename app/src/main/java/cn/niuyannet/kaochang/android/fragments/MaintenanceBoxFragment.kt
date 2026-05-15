@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.dismissLoadingExt
@@ -72,11 +73,9 @@ class MaintenanceBoxFragment : Fragment() {
      */
     private fun setupButtons() {
         binding.btnMoveToKaopan.setOnClickListener {
-            LogUtils.d("[维护操作] 点击烤肠箱搬运到烤盘")
             moveOvenToKaoPan()
         }
         binding.btnClearAll.setOnClickListener {
-            LogUtils.d("[维护操作] 点击清空选中烤肠箱")
             clearOven()
         }
     }
@@ -87,14 +86,32 @@ class MaintenanceBoxFragment : Fragment() {
     private fun moveOvenToKaoPan() {
         val selectedBoxes = KaoPanHelper.getKaoPanBoxList().filter { it.checkStatus == true }
         if (selectedBoxes.isEmpty()) {
+            AdminOperationLogger.w(
+                action = "烤肠箱搬运到烤盘",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=未选择烤肠箱"
+            )
             ToastUtils.showShort("请先选择烤肠箱")
             return
         }
         if (selectedBoxes.size > 1) {
+            AdminOperationLogger.w(
+                action = "烤肠箱搬运到烤盘",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=只能选择一个烤肠箱，已选择=${boxPositionListText(selectedBoxes)}"
+            )
             ToastUtils.showShort("只能选择一个烤肠箱")
             return
         }
         if (selectedBoxes[0].num <= 0) {
+            AdminOperationLogger.w(
+                action = "烤肠箱搬运到烤盘",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=烤肠箱库存不足，烤肠箱位=${selectedBoxes[0].positionSn}号"
+            )
             ToastUtils.showShort("当前烤肠箱库存不足，无法继续补肠")
             return
         }
@@ -107,10 +124,11 @@ class MaintenanceBoxFragment : Fragment() {
                 val numberPicker = dialog.getCustomView().findViewById<NumberPicker>(R.id.number_picker)
                 val targetPosition = KaoPanHelper.getKaoPanList().first { it.positionSn == numberPicker.value }
                 val boxPosition = selectedBoxes[0]
-                LogUtils.d(
-                    "[维护操作] 确认烤肠箱搬运：箱位=${boxPosition.positionSn}，口味=${
-                        boxPosition.tasteName ?: "未知口味"
-                    }，目标烤盘=${targetPosition.positionSn}"
+                AdminOperationLogger.i(
+                    action = "烤肠箱搬运到烤盘",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_START,
+                    detail = "烤肠箱位=${boxPosition.positionSn}号，目标烤盘位=${targetPosition.positionSn}，口味=${boxPosition.tasteName ?: "未知口味"}"
                 )
                 showLoadingExt("移动中...")
                 viewLifecycleOwner.lifecycleScope.launch {
@@ -123,11 +141,21 @@ class MaintenanceBoxFragment : Fragment() {
                     }
                     dismissLoadingExt()
                     if (result) {
-                            LogUtils.d("[维护操作] 烤肠箱搬运完成：箱位=${boxPosition.positionSn} -> 烤盘${targetPosition.positionSn}")
-                            ToastUtils.showShort("移动成功")
+                        AdminOperationLogger.i(
+                            action = "烤肠箱搬运到烤盘",
+                            page = AdminOperationLogger.PAGE_BOX,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = "烤肠箱位=${boxPosition.positionSn}号，目标烤盘位=${targetPosition.positionSn}，口味=${boxPosition.tasteName ?: "未知口味"}"
+                        )
+                        ToastUtils.showShort("移动成功")
                     } else {
-                            LogUtils.e("[维护操作] 烤肠箱搬运失败：箱位=${boxPosition.positionSn} -> 烤盘${targetPosition.positionSn}")
-                            ToastUtils.showShort("移动失败")
+                        AdminOperationLogger.e(
+                            action = "烤肠箱搬运到烤盘",
+                            page = AdminOperationLogger.PAGE_BOX,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "烤肠箱位=${boxPosition.positionSn}号，目标烤盘位=${targetPosition.positionSn}，口味=${boxPosition.tasteName ?: "未知口味"}"
+                        )
+                        ToastUtils.showShort("移动失败")
                     }
                 }
             }
@@ -156,9 +184,14 @@ class MaintenanceBoxFragment : Fragment() {
     private fun clearOven() {
         val selectedBoxes = KaoPanHelper.getKaoPanBoxList().filter { it.checkStatus == true }
         if (selectedBoxes.isEmpty()) {
+            AdminOperationLogger.w(
+                action = "清空烤肠箱",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=未选择烤肠箱"
+            )
             ToastUtils.showShort("请先选择需要清空的烤肠箱")
         } else {
-            LogUtils.d("[维护操作] 确认清空烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
             showClearConfirmDialog(selectedBoxes)
         }
     }
@@ -172,6 +205,12 @@ class MaintenanceBoxFragment : Fragment() {
             positiveButton(text = "确定") { dialog ->
                 resetAdminIdleTimer("清空烤肠箱弹窗确认")
                 dialog.dismiss()
+                AdminOperationLogger.i(
+                    action = "清空烤肠箱",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_START,
+                    detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}"
+                )
                 for (box in selectedBoxes) {
                     box.productId = null
                     box.tasteCode = null
@@ -187,12 +226,29 @@ class MaintenanceBoxFragment : Fragment() {
                         if (json.getIntValue("code") == 200) {
                             KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
                             kaoPanBoxAdapter.notifyDataSetChanged()
-                            LogUtils.d("[维护操作] 已清空烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
+                            AdminOperationLogger.i(
+                                action = "清空烤肠箱",
+                                page = AdminOperationLogger.PAGE_BOX,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}"
+                            )
                             ToastUtils.showShort("已清空烤肠箱")
                         } else {
+                            AdminOperationLogger.w(
+                                action = "清空烤肠箱",
+                                page = AdminOperationLogger.PAGE_BOX,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，失败原因=${json.getString("msg")}"
+                            )
                             ToastUtils.showShort(json.getString("msg"))
                         }
                     } else {
+                        AdminOperationLogger.w(
+                            action = "清空烤肠箱",
+                            page = AdminOperationLogger.PAGE_BOX,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，失败原因=接口请求失败"
+                        )
                         ToastUtils.showShort("设置失败")
                     }
                 }
@@ -242,10 +298,15 @@ class MaintenanceBoxFragment : Fragment() {
         binding.btnRefill.setOnClickListener {
             val selectedBoxes = KaoPanHelper.getKaoPanBoxList().filter { it.checkStatus == true }
             if (selectedBoxes.isEmpty()) {
+                AdminOperationLogger.w(
+                    action = "加满烤肠箱",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "拒绝原因=未选择烤肠箱"
+                )
                 ToastUtils.showShort("请先选择需要加满的烤肠箱")
                 return@setOnClickListener
             }
-            LogUtils.d("[维护操作] 点击加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}")
             showTasteSelectDialog(selectedBoxes)
         }
     }
@@ -254,7 +315,7 @@ class MaintenanceBoxFragment : Fragment() {
         if (KaoPanHelper.getKaoPanBoxList().isNotEmpty()) {
             return
         }
-        LogUtils.w("[维护操作] 烤肠箱本地缓存为空，进入页面后主动补拉库存")
+        LogUtils.d("烤肠箱本地缓存为空，进入页面后主动补拉库存")
         showLoadingExt("同步烤肠箱中...")
         DataManagementAPI.refreshStockData(logPrefix = "维护页烤肠箱首屏补拉") { success, stockCount ->
             activity?.runOnUiThread {
@@ -264,7 +325,7 @@ class MaintenanceBoxFragment : Fragment() {
                 }
                 if (success) {
                     kaoPanBoxAdapter.setData(KaoPanHelper.getKaoPanBoxList())
-                    LogUtils.i("[维护操作] 烤肠箱首屏补拉完成：箱位数=$stockCount")
+                    LogUtils.d("烤肠箱首屏补拉完成：箱位数=$stockCount")
                 } else {
                     ToastUtils.showShort("烤肠箱数据同步失败，请稍后重试")
                 }
@@ -292,7 +353,12 @@ class MaintenanceBoxFragment : Fragment() {
 
         val tastes = KaoPanHelper.getTasteList()
         if (tastes.isEmpty()) {
-            LogUtils.e("[维护操作] 打开加满口味弹窗失败：口味列表为空，无法为${selectedBoxes.joinToString { "箱位${it.positionSn}" }}设置口味")
+            AdminOperationLogger.e(
+                action = "加满烤肠箱",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，失败原因=口味列表为空"
+            )
             ToastUtils.showShort("口味列表为空，请先检查商品同步或网络状态")
             dialog.dismiss()
             return
@@ -332,17 +398,24 @@ class MaintenanceBoxFragment : Fragment() {
             val selectedView = radioGroup.findViewById<RadioButton>(selectedId)
             val selectedIndex = radioGroup.indexOfChild(selectedView)
             if (selectedIndex < 0 || selectedIndex >= tastes.size) {
-                LogUtils.e("[维护操作] 加满烤肠箱失败：未选中有效口味，selectedId=$selectedId, selectedIndex=$selectedIndex, tasteCount=${tastes.size}")
+                AdminOperationLogger.e(
+                    action = "加满烤肠箱",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，失败原因=未选择有效口味"
+                )
                 ToastUtils.showShort("请先选择有效口味")
                 return@setOnClickListener
             }
 
             val selectedTaste = tastes[selectedIndex]
             val boxRefillTargetNum = AppConfig.getBoxRefillTargetNum()
-            LogUtils.d(
-                "[维护操作] 准备加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}，" +
-                    "口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
-                    "boxRefillTargetNum（烤肠箱加满目标库存）=$boxRefillTargetNum"
+            AdminOperationLogger.i(
+                action = "加满烤肠箱",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_START,
+                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
+                    "加满目标库存=$boxRefillTargetNum"
             )
 
             for (box in selectedBoxes) {
@@ -361,23 +434,43 @@ class MaintenanceBoxFragment : Fragment() {
                     if (json.getIntValue("code") == 200) {
                         KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
                         kaoPanBoxAdapter.notifyDataSetChanged()
-                        LogUtils.d(
-                            "[维护操作] 已加满烤肠箱：${selectedBoxes.joinToString { "箱位${it.positionSn}" }}，" +
-                                "口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
-                                "boxRefillTargetNum（烤肠箱加满目标库存）=$boxRefillTargetNum"
+                        AdminOperationLogger.i(
+                            action = "加满烤肠箱",
+                            page = AdminOperationLogger.PAGE_BOX,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
+                                "加满目标库存=$boxRefillTargetNum"
                         )
                         ToastUtils.showShort("已成功加满选中的烤肠箱")
                         dialog.dismiss()
                     } else {
+                        AdminOperationLogger.w(
+                            action = "加满烤肠箱",
+                            page = AdminOperationLogger.PAGE_BOX,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
+                                "失败原因=${json.getString("msg")}"
+                        )
                         ToastUtils.showShort(json.getString("msg"))
                     }
                 } else {
+                    AdminOperationLogger.w(
+                        action = "加满烤肠箱",
+                        page = AdminOperationLogger.PAGE_BOX,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
+                            "失败原因=接口请求失败"
+                    )
                     ToastUtils.showShort("添加失败")
                 }
             }
         }
 
         dialog.show()
+    }
+
+    private fun boxPositionListText(boxes: List<KaoPanBox>): String {
+        return boxes.joinToString("、") { "${it.positionSn}号" }
     }
 
     /**

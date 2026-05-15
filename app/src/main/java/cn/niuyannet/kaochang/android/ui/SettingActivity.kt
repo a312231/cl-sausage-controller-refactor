@@ -26,11 +26,29 @@ class SettingActivity : AdminInactivityTimeoutActivity() {
         binding = ActivitySettingBinding.inflate(layoutInflater)
         setContentView(binding.root)
         setupViewPager()
+        AdminOperationLogger.i(
+            action = "进入管理界面",
+            page = AdminOperationLogger.PAGE_SETTING,
+            result = AdminOperationLogger.RESULT_SUCCESS,
+            detail = "默认页面=烤盘信息"
+        )
         binding.btnBack.setOnClickListener {
+            AdminOperationLogger.i(
+                action = "退出管理界面",
+                page = AdminOperationLogger.PAGE_SETTING,
+                result = AdminOperationLogger.RESULT_SUCCESS,
+                detail = "返回页面=首页"
+            )
             finish()
         }
 
         binding.btnExit.setOnClickListener {
+            AdminOperationLogger.i(
+                action = "退出管理界面",
+                page = AdminOperationLogger.PAGE_SETTING,
+                result = AdminOperationLogger.RESULT_SUCCESS,
+                detail = "返回页面=系统桌面"
+            )
             val intent = Intent(Intent.ACTION_MAIN)
             intent.addCategory(Intent.CATEGORY_HOME)
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK

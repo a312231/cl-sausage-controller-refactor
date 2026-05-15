@@ -28,6 +28,8 @@ class LogUtilsTest {
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【状态切换】设备进入维护：工作中/正在出餐 -> 维护中"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【云端同步】云端已确认设备状态：工作中/正在出餐"))
         assertTrue(LogUtils.shouldWriteToFileForTest("W", "【取肠语音】音频焦点申请失败，继续尝试播放"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("I", "【烤制算法】状态变化：低并发稳态 -> 低转高过渡态"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("I", "【管理员操作】清空烤盘：页面=烤盘信息，操作结果=开始"))
     }
 
     @Test
@@ -51,5 +53,6 @@ class LogUtilsTest {
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "[300/400动作组] 准备下发原子动作：sessionId=out:1，action=out1"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "[300/400动作组] 原子动作完成：sessionId=in_pipeline:1，action=in1，success=true"))
         assertFalse(LogUtils.shouldWriteToFileForTest("W", "串口探测失败：device=/dev/ttyS2, error=Port not found"))
+        assertFalse(LogUtils.shouldWriteToFileForTest("D", "【Modbus】复用刚完成的重连结果，避免连续重复完整串口探测：status=false"))
     }
 }

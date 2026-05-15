@@ -65,6 +65,7 @@ object KaoChangAlgorithm {
     private var startupHeatingStateRestored = false
     private var faultHeatingStopped = false
     private var lastPollStateSnapshot: String? = null
+    private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
     var isEnabled = false
 
@@ -726,13 +727,33 @@ object KaoChangAlgorithm {
         }
 
         val pollStateSnapshot =
-            "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},homeQrHidden=${config.homeQrHidden},inspection=${config.inspectionMode},enable=$schedulingEnabled"
+            "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},homeQrHidden=${config.homeQrHidden},inspection=${config.inspectionMode},isEnable=${config.isEnable},enable=$schedulingEnabled"
         if (pollStateSnapshot != lastPollStateSnapshot) {
-            logD(
-                LOG_ALGORITHM,
-                "算法状态变化：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}，highConcurrencyResidualDrain=${residualDrainText(config.highConcurrencyResidualDrain)}，onlineStatus=${onlineStatusText(onlineStatus)}，supplyStatus=${supplyStatusText(config.supplyStatus)}，homeQrHidden=${config.homeQrHidden}，inspectionMode=${config.inspectionMode}，moveStatus=${moveStatusText(config.moveStatus)}，errorStatus=${errorStatusText(config.errorStatus)}，schedulingEnabled=$schedulingEnabled"
+            val currentStateName = AlgorithmStateLogFormatter.stateName(
+                modeType = config.modeType,
+                transitionMode = config.transitionMode,
+                highConcurrencyResidualDrain = config.highConcurrencyResidualDrain,
+                schedulingEnabled = schedulingEnabled
+            )
+            LogUtils.i(
+                TAG,
+                AlgorithmStateLogFormatter.buildChangeLog(
+                    previousStateName = lastPollStateName,
+                    modeType = config.modeType,
+                    transitionMode = config.transitionMode,
+                    highConcurrencyResidualDrain = config.highConcurrencyResidualDrain,
+                    onlineStatus = onlineStatus,
+                    supplyStatus = config.supplyStatus,
+                    homeQrHidden = config.homeQrHidden,
+                    inspectionMode = config.inspectionMode,
+                    moveStatus = config.moveStatus,
+                    errorStatus = config.errorStatus,
+                    isEnable = config.isEnable,
+                    schedulingEnabled = schedulingEnabled
+                )
             )
             lastPollStateSnapshot = pollStateSnapshot
+            lastPollStateName = currentStateName
         }
 
         checkAvailable(config, kaoPanList)

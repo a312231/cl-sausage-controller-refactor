@@ -25,6 +25,7 @@ import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.TemperatureControlPolicy
+import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
 import cn.niuyannet.kaochang.android.ui.endAdminBusy
@@ -412,7 +413,12 @@ class MaintenanceFragment : Fragment() {
         binding.btnClearAll.setOnClickListener {
             if (clearPanCooldownJob?.isActive == true) return@setOnClickListener
 
-            LogUtils.d("【维护操作】点击清空烤盘，准备立即关闭烤制算法并清空全部烤盘")
+            AdminOperationLogger.i(
+                action = "清空烤盘",
+                page = AdminOperationLogger.PAGE_PAN,
+                result = AdminOperationLogger.RESULT_START,
+                detail = "说明=将关闭烤肠算法并等待机械臂空闲"
+            )
             setMaintenanceActionButtonsEnabled(false)
             binding.tvCooldownHint.text = "正在清空烤盘"
             disableAlgorithmForMaintenance("点击清空烤盘")
@@ -428,7 +434,12 @@ class MaintenanceFragment : Fragment() {
                         }
                     )
                     if (!idleReady) {
-                        LogUtils.w("【维护操作】点击清空烤盘等待机械空闲超时，已取消本次操作")
+                        AdminOperationLogger.w(
+                            action = "清空烤盘",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "失败原因=等待机械臂空闲超时"
+                        )
                         binding.tvCooldownHint.text = ""
                         setMaintenanceActionButtonsEnabled(true)
                         ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
@@ -441,7 +452,12 @@ class MaintenanceFragment : Fragment() {
                     KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
                     KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
                     clearRuntimeStateAfterManualPanReset("点击清空烤盘")
-                    LogUtils.i("【维护操作】清空烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
+                    AdminOperationLogger.i(
+                        action = "清空烤盘",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = "烤肠算法开关=关闭，说明=进入15秒防重复操作冷却"
+                    )
                     finishMaintenanceAction()
                     clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
                         setMaintenanceActionButtonsEnabled(true)
@@ -523,13 +539,12 @@ class MaintenanceFragment : Fragment() {
                     reason = "本地手动切换完成:$reason",
                     forceLog = true
                 )
-                LogUtils.i(
-                    "【维护操作】手动切换烤肠算法完成：" +
-                        "requestedChecked=$enable，" +
-                        "isEnable（烤肠算法开关）=$beforeIsEnable->${afterConfig.isEnable}，" +
-                        "onlineStatus（设备营业状态）=${onlineStatusText(afterConfig.onlineStatus)}，" +
-                        "modeType（并发模式）=${modeText(afterConfig.modeType)}，" +
-                        "transitionMode（并发切换过渡态）=${transitionText(afterConfig.transitionMode)}"
+                AdminOperationLogger.i(
+                    action = if (enable) "开启烤肠算法" else "关闭烤肠算法",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "烤肠算法开关=${isEnableText(beforeIsEnable)}->${isEnableText(afterConfig.isEnable)}，" +
+                        "设备营业状态=${onlineStatusText(afterConfig.onlineStatus)}"
                 )
                 startAlgorithmSwitchCooldown()
             }
@@ -545,25 +560,23 @@ class MaintenanceFragment : Fragment() {
                 return@setOnCheckedChangeListener
             }
             if (isAlgorithmCoolingDown) {
-                LogUtils.w(
-                    "【维护操作】烤肠算法开关处于冷却中，拒绝本次切换：" +
-                        "requestedChecked=$isChecked，" +
-                        "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
-                        "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
-                        "modeType（并发模式）=${modeText(currentConfig.modeType)}，" +
-                        "transitionMode（并发切换过渡态）=${transitionText(currentConfig.transitionMode)}"
+                AdminOperationLogger.w(
+                    action = if (isChecked) "开启烤肠算法" else "关闭烤肠算法",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "拒绝原因=开关处于冷却中，烤肠算法开关=${isEnableText(currentConfig.isEnable)}，" +
+                        "设备营业状态=${onlineStatusText(currentConfig.onlineStatus)}"
                 )
                 setAlgorithmSwitchCheckedSilently(!isChecked)
                 return@setOnCheckedChangeListener
             }
 
-            LogUtils.i(
-                "【维护操作】收到手动切换烤肠算法请求：" +
-                    "requestedChecked=$isChecked，" +
-                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
-                    "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
-                    "modeType（并发模式）=${modeText(currentConfig.modeType)}，" +
-                    "transitionMode（并发切换过渡态）=${transitionText(currentConfig.transitionMode)}"
+            AdminOperationLogger.i(
+                action = if (isChecked) "开启烤肠算法" else "关闭烤肠算法",
+                page = AdminOperationLogger.PAGE_PAN,
+                result = AdminOperationLogger.RESULT_START,
+                detail = "当前烤肠算法开关=${isEnableText(currentConfig.isEnable)}，" +
+                    "设备营业状态=${onlineStatusText(currentConfig.onlineStatus)}"
             )
             if (!isChecked) {
                 applyAlgorithmSwitch(enable = false, reason = "维护页手动关闭算法")
@@ -585,11 +598,12 @@ class MaintenanceFragment : Fragment() {
                     }
                     val latestConfig = AppConfig.getAppConfig()
                     if (!result.success) {
-                        LogUtils.w(
-                            "【维护操作】手动开启烤肠算法前同步云端状态失败，拒绝本次开启：" +
-                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                                "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
-                                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                        AdminOperationLogger.w(
+                            action = "开启烤肠算法",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "失败原因=同步云端设备状态失败，设备营业状态=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                "烤肠算法开关=${isEnableText(latestConfig.isEnable)}"
                         )
                         syncAlgorithmSwitchFromRuntimeState("开启算法前同步失败后回滚UI", forceLog = true)
                         ToastUtils.showShort("同步云端设备状态失败，请稍后重试")
@@ -598,13 +612,13 @@ class MaintenanceFragment : Fragment() {
                     }
 
                     if (latestConfig.onlineStatus in setOf(0, 2, 3) || latestConfig.inspectionMode == 1 || latestConfig.errorStatus != 0) {
-                        LogUtils.w(
-                            "【维护操作】手动开启烤肠算法前已同步到云端最新状态，本次拒绝开启：" +
-                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                                "inspectionMode（检修模式）=${inspectionModeText(latestConfig.inspectionMode)}，" +
-                                "errorStatus（设备故障状态）=${latestConfig.errorStatus}，" +
-                                "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
-                                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                        AdminOperationLogger.w(
+                            action = "开启烤肠算法",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_REJECT,
+                            detail = "拒绝原因=设备状态不允许开启，设备营业状态=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                "检修模式=${inspectionModeText(latestConfig.inspectionMode)}，设备故障状态=${latestConfig.errorStatus}，" +
+                                "烤肠算法开关=${isEnableText(latestConfig.isEnable)}"
                         )
                         syncAlgorithmSwitchFromRuntimeState("开启算法前云端状态不允许后回滚UI", forceLog = true)
                         val tip = when {
@@ -641,22 +655,23 @@ class MaintenanceFragment : Fragment() {
                 AppConfig.saveInspectionSnapshot("维护页手动进入检修模式")
                 config.inspectionMode = 1
                 AppConfig.saveAppConfig(config)
-                LogUtils.i(
-                    "【检修模式】已进入检修模式：" +
-                        "inspectionMode（检修模式）=${inspectionModeText(config.inspectionMode)}，" +
-                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
-                        "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
+                AdminOperationLogger.i(
+                    action = "进入检修模式",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "检修模式=${inspectionModeText(config.inspectionMode)}，" +
+                        "设备营业状态=${onlineStatusText(config.onlineStatus)}，烤肠算法开关=${isEnableText(config.isEnable)}"
                 )
             } else {
                 val snapshot = AppConfig.getInspectionSnapshot()
                 config.inspectionMode = 0
                 AppConfig.saveAppConfig(config)
-                LogUtils.i(
-                    "【检修模式】已退出检修模式：" +
-                        "inspectionMode（检修模式）=${inspectionModeText(config.inspectionMode)}，" +
-                        "snapshotFound=${snapshot != null}，" +
-                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
-                        "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
+                AdminOperationLogger.i(
+                    action = "退出检修模式",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "检修模式=${inspectionModeText(config.inspectionMode)}，存在检修快照=${if (snapshot != null) "是" else "否"}，" +
+                        "设备营业状态=${onlineStatusText(config.onlineStatus)}，烤肠算法开关=${isEnableText(config.isEnable)}"
                 )
                 AppConfig.clearInspectionSnapshot()
             }
@@ -687,10 +702,20 @@ class MaintenanceFragment : Fragment() {
                     val ok = KaoChangOperate.confirmPendingSupplementBatchSafety("维护人员现场确认")
                     if (ok) {
                         ToastUtils.showShort("已确认续补安全")
-                        LogUtils.w("【维护操作】维护人员已确认续补安全：batchId=${intent.batchId}")
+                        AdminOperationLogger.w(
+                            action = "确认续补安全",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = "批次=${intent.batchId}"
+                        )
                     } else {
                         ToastUtils.showShort("确认失败，当前没有待确认批次")
-                        LogUtils.w("【维护操作】确认续补安全失败：activeBatchMissing=true")
+                        AdminOperationLogger.w(
+                            action = "确认续补安全",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "失败原因=当前没有待确认批次"
+                        )
                     }
                     updateManualSupplementConfirmButtonVisibility()
                 }
@@ -712,7 +737,12 @@ class MaintenanceFragment : Fragment() {
         binding.btnCz.setOnClickListener {
             if (resetPanCooldownJob?.isActive == true) return@setOnClickListener
 
-            LogUtils.d("【维护操作】点击丢弃所有烤肠并重置烤盘，准备立即关闭烤制算法并重置烤盘状态")
+            AdminOperationLogger.i(
+                action = "丢弃所有烤肠并重置烤盘",
+                page = AdminOperationLogger.PAGE_PAN,
+                result = AdminOperationLogger.RESULT_START,
+                detail = "说明=将关闭烤肠算法并等待机械臂空闲"
+            )
             setMaintenanceActionButtonsEnabled(false)
             binding.tvCooldownHint.text = "正在丢弃并重置烤盘"
             disableAlgorithmForMaintenance("点击丢弃所有烤肠并重置烤盘")
@@ -726,7 +756,12 @@ class MaintenanceFragment : Fragment() {
                         update = { binding.tvCooldownHint.text = it }
                     )
                     if (!idleReady) {
-                        LogUtils.w("【维护操作】点击重置烤盘等待机械空闲超时，已取消本次操作")
+                        AdminOperationLogger.w(
+                            action = "丢弃所有烤肠并重置烤盘",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "失败原因=等待机械臂空闲超时"
+                        )
                         binding.tvCooldownHint.text = ""
                         setMaintenanceActionButtonsEnabled(true)
                         ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
@@ -742,7 +777,12 @@ class MaintenanceFragment : Fragment() {
                     KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
                     KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
                     clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
-                    LogUtils.i("【维护操作】重置烤盘完成，烤制算法保持关闭，进入15秒防重复操作冷却")
+                    AdminOperationLogger.i(
+                        action = "丢弃所有烤肠并重置烤盘",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = "烤肠算法开关=关闭，说明=进入15秒防重复操作冷却"
+                    )
                     finishMaintenanceAction()
                     resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {
                         setMaintenanceActionButtonsEnabled(true)
@@ -770,6 +810,12 @@ class MaintenanceFragment : Fragment() {
                 ToastUtils.showShort("正在恢复设备状态，请稍候")
                 return@setOnClickListener
             }
+            AdminOperationLogger.i(
+                action = "恢复正常状态",
+                page = AdminOperationLogger.PAGE_PAN,
+                result = AdminOperationLogger.RESULT_START,
+                detail = "说明=检查下位机连接并清除设备故障状态"
+            )
             binding.btnErroStatus.isEnabled = false
             binding.tvCooldownHint.text = "正在恢复设备状态"
             lifecycleScope.launch {
@@ -781,12 +827,13 @@ class MaintenanceFragment : Fragment() {
                     if (!modbusConnected) {
                         val latestConfig = AppConfig.getAppConfig()
                         ToastUtils.showLong("下位机串口仍未连接，请确认通信恢复后再操作")
-                        LogUtils.w(
-                            "【维护操作】拒绝恢复正常状态：下位机串口仍未连接，" +
-                                "modbusAddress（Modbus串口地址）=${latestConfig.modbusAddress}，" +
-                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                                "errorStatus（设备故障状态）=${latestConfig.errorStatus}，" +
-                                "moveStatus（机械动作状态）=${latestConfig.moveStatus}"
+                        AdminOperationLogger.w(
+                            action = "恢复正常状态",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_REJECT,
+                            detail = "拒绝原因=下位机串口未连接，Modbus串口地址=${latestConfig.modbusAddress}，" +
+                                "设备营业状态=${onlineStatusText(latestConfig.onlineStatus)}，设备故障状态=${latestConfig.errorStatus}，" +
+                                "机械动作状态=${latestConfig.moveStatus}"
                         )
                         return@launch
                     }
@@ -819,12 +866,13 @@ class MaintenanceFragment : Fragment() {
                         }
                     }
                     ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
-                    LogUtils.w(
-                        "【维护操作】上位机已完成恢复正常状态：" +
-                            "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
-                            "errorStatus（设备故障状态）=$previousErrorStatus->${config.errorStatus}（正常），" +
-                            "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
-                            "恢复入口=上位机维护页，后续动作=现场手动开启烤制算法"
+                    AdminOperationLogger.w(
+                        action = "恢复正常状态",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = "设备营业状态=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
+                            "设备故障状态=$previousErrorStatus->${config.errorStatus}（正常），" +
+                            "烤肠算法开关=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，后续动作=现场手动开启烤制算法"
                     )
                 } finally {
                     manualRecoveryInProgress.set(false)
@@ -875,7 +923,12 @@ class MaintenanceFragment : Fragment() {
                 val tasteLabel = kaoPan.taste.productName?.takeIf { it.isNotBlank() }
                     ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
                     ?: "未知口味"
-                LogUtils.d("【维护操作】手动取肠确认：准备从烤盘${kaoPan.positionSn}取出烤肠($tasteLabel)")
+                AdminOperationLogger.i(
+                    action = "手动取肠",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_START,
+                    detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel"
+                )
 
                 lifecycleScope.launch {
                     try {
@@ -884,9 +937,12 @@ class MaintenanceFragment : Fragment() {
                         }
                         if (!modbusConnected) {
                             ToastUtils.showShort("下位机未连接，请先恢复通信")
-                            LogUtils.w(
-                                "【维护操作】拒绝手动取肠：下位机当前未连接，" +
-                                    "modbusAddress（Modbus串口地址）=${AppConfig.getAppConfig().modbusAddress}"
+                            AdminOperationLogger.w(
+                                action = "手动取肠",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_REJECT,
+                                detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel，拒绝原因=下位机未连接，" +
+                                    "Modbus串口地址=${AppConfig.getAppConfig().modbusAddress}"
                             )
                             return@launch
                         }
@@ -895,9 +951,12 @@ class MaintenanceFragment : Fragment() {
                             waitingText = "请等待上位机空闲"
                         )
                         if (!idleReady) {
-                            LogUtils.w(
-                                "【维护操作】手动取肠等待机械空闲超时：" +
-                                    "moveStatus（机械动作状态）=${AppConfig.getAppConfig().moveStatus}"
+                            AdminOperationLogger.w(
+                                action = "手动取肠",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel，失败原因=等待机械臂空闲超时，" +
+                                    "机械动作状态=${AppConfig.getAppConfig().moveStatus}"
                             )
                             ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
                             return@launch
@@ -906,7 +965,20 @@ class MaintenanceFragment : Fragment() {
                             KaoChangOperate.takeSausage(kaoPan)
                         }
                         if (!result) {
+                            AdminOperationLogger.w(
+                                action = "手动取肠",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel"
+                            )
                             ToastUtils.showShort("手动取肠失败，请查看日志")
+                        } else {
+                            AdminOperationLogger.i(
+                                action = "手动取肠",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel"
+                            )
                         }
                     } finally {
                         dialog.dismiss()

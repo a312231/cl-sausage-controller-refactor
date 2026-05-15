@@ -14,6 +14,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
+import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import com.blankj.utilcode.util.LogUtils
@@ -47,10 +48,30 @@ class ConfigFragment : Fragment() {
 
         binding.btnSaveMqttConfig.setOnClickListener {
             val uiScope = viewLifecycleOwner.lifecycleScope
+            val oldHost = configBean.mqttHost
+            val oldPort = configBean.mqttPort
+            val oldUsername = configBean.mqttUsername
+            val oldPassword = configBean.mqttPassword
             configBean.mqttHost = binding.etMqttIp.text.toString()
             configBean.mqttPort = binding.etMqttPort.text.toString().toInt()
             configBean.mqttUsername = binding.etMqttUsername.text.toString()
             configBean.mqttPassword = binding.etMqttPassword.text.toString()
+            val mqttChangeDetail = AdminOperationLogger.mqttConfigDetail(
+                oldHost = oldHost,
+                newHost = configBean.mqttHost,
+                oldPort = oldPort,
+                newPort = configBean.mqttPort,
+                oldUsername = oldUsername,
+                newUsername = configBean.mqttUsername,
+                oldPassword = oldPassword,
+                newPassword = configBean.mqttPassword
+            )
+            AdminOperationLogger.i(
+                action = "保存MQTT配置",
+                page = AdminOperationLogger.PAGE_CONFIG,
+                result = AdminOperationLogger.RESULT_START,
+                detail = mqttChangeDetail
+            )
             AppConfig.saveAppConfig(configBean)
 
             ToastUtils.showShort("MQTT 配置已保存，正在连接")
@@ -68,8 +89,20 @@ class ConfigFragment : Fragment() {
                         }
                     }
                     if (connected) {
+                        AdminOperationLogger.i(
+                            action = "保存MQTT配置",
+                            page = AdminOperationLogger.PAGE_CONFIG,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = "连接结果=成功"
+                        )
                         LogUtils.d("【配置页】MQTT 连接成功")
                     } else {
+                        AdminOperationLogger.w(
+                            action = "保存MQTT配置",
+                            page = AdminOperationLogger.PAGE_CONFIG,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "失败原因=MQTT连接失败"
+                        )
                         LogUtils.w("【配置页】MQTT 连接失败")
                     }
                 }
@@ -78,7 +111,15 @@ class ConfigFragment : Fragment() {
 
         binding.btnSaveModbusConfig.setOnClickListener {
             val uiScope = viewLifecycleOwner.lifecycleScope
+            val oldAddress = configBean.modbusAddress
+            val oldBaudRate = configBean.modbusBaudRate
             configBean.modbusBaudRate = binding.etModbusBaudRate.text.toString().toInt()
+            AdminOperationLogger.i(
+                action = "保存Modbus配置",
+                page = AdminOperationLogger.PAGE_CONFIG,
+                result = AdminOperationLogger.RESULT_START,
+                detail = "Modbus串口地址=${oldAddress}->${configBean.modbusAddress}，波特率=${oldBaudRate}->${configBean.modbusBaudRate}"
+            )
             AppConfig.saveAppConfig(configBean)
 
             ToastUtils.showShort("MODBUS 配置已保存，正在连接")
@@ -96,8 +137,20 @@ class ConfigFragment : Fragment() {
                         }
                     }
                     if (connected) {
+                        AdminOperationLogger.i(
+                            action = "保存Modbus配置",
+                            page = AdminOperationLogger.PAGE_CONFIG,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = "Modbus串口地址=${configBean.modbusAddress}，波特率=${configBean.modbusBaudRate}，连接结果=成功"
+                        )
                         LogUtils.d("【配置页】MODBUS 连接成功")
                     } else {
+                        AdminOperationLogger.w(
+                            action = "保存Modbus配置",
+                            page = AdminOperationLogger.PAGE_CONFIG,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "Modbus串口地址=${configBean.modbusAddress}，波特率=${configBean.modbusBaudRate}，失败原因=未收到有效从站响应"
+                        )
                         LogUtils.w("【配置页】MODBUS 连接失败：未收到有效从站响应")
                     }
                 }
@@ -114,6 +167,12 @@ class ConfigFragment : Fragment() {
                 }
                 updateModbusStatus(false)
                 ToastUtils.showShort("MODBUS 已断开")
+                AdminOperationLogger.i(
+                    action = "手动断开Modbus",
+                    page = AdminOperationLogger.PAGE_CONFIG,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "Modbus串口地址=${configBean.modbusAddress}"
+                )
                 LogUtils.d("【配置页】MODBUS 已手动断开")
             }
         }
@@ -130,6 +189,12 @@ class ConfigFragment : Fragment() {
             ToastUtils.showShort(
                 "烤肠箱加满数量必须是 ${AppConfig.MIN_BOX_REFILL_TARGET_NUM}-${AppConfig.MAX_BOX_REFILL_TARGET_NUM}"
             )
+            AdminOperationLogger.w(
+                action = "保存烤肠箱加满目标库存",
+                page = AdminOperationLogger.PAGE_CONFIG,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = "输入值=$input，允许范围=${AppConfig.MIN_BOX_REFILL_TARGET_NUM}..${AppConfig.MAX_BOX_REFILL_TARGET_NUM}"
+            )
             LogUtils.w(
                 "【配置页】保存 boxRefillTargetNum（烤肠箱加满目标库存）失败：" +
                     "input=$input，允许范围=${AppConfig.MIN_BOX_REFILL_TARGET_NUM}..${AppConfig.MAX_BOX_REFILL_TARGET_NUM}"
@@ -141,6 +206,12 @@ class ConfigFragment : Fragment() {
         AppConfig.saveAppConfig(configBean)
         binding.etBoxRefillTargetNum.setText(boxRefillTargetNum.toString())
         ToastUtils.showShort("烤肠箱加满数量已保存")
+        AdminOperationLogger.i(
+            action = "保存烤肠箱加满目标库存",
+            page = AdminOperationLogger.PAGE_CONFIG,
+            result = AdminOperationLogger.RESULT_DONE,
+            detail = "加满目标库存=$boxRefillTargetNum"
+        )
         LogUtils.i("【配置页】已保存 boxRefillTargetNum（烤肠箱加满目标库存）=$boxRefillTargetNum")
     }
 

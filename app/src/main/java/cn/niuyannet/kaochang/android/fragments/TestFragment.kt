@@ -19,6 +19,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionSpec
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActions
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
+import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
 import cn.niuyannet.kaochang.android.ui.endAdminBusy
 import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
@@ -139,20 +140,25 @@ class TestFragment : Fragment() {
     private fun executeAtomicActionFromTestPage(item: TestAtomicActionItem, infoValue: Int) {
         lifecycleScope.launch {
             if (AppConfig.getAppConfig().moveStatus == 5) {
+                AdminOperationLogger.w(
+                    action = "执行300/400原子动作",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "拒绝原因=当前正在自清洁，动作名=${item.spec.name}"
+                )
                 showToast("当前正在自清洁，测试下位机动作已禁用")
                 return@launch
             }
             val adminBusy = beginAdminBusy("测试下位机原子动作:${item.spec.name}")
             val sessionId = "test_${item.spec.name}_${System.currentTimeMillis()}"
             try {
-                binding.tvAtomicActionResult.text = "执行中：sessionId=$sessionId"
-                LogUtils.i(
-                    "【下位机测试】300/400原子动作开始：" +
-                        "action（动作名）=${item.spec.name}，" +
-                        "commandRegister（命令寄存器）=${item.spec.commandRegister}，" +
-                        "resultRegister（结果寄存器）=${item.spec.resultRegister}，" +
-                        "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
-                        "infoValue（信息参数）=$infoValue，sessionId=$sessionId"
+                binding.tvAtomicActionResult.text = "执行中：动作名=${item.spec.name}"
+                AdminOperationLogger.i(
+                    action = "执行300/400原子动作",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_START,
+                    detail = "动作名=${item.spec.name}，命令寄存器=${item.spec.commandRegister}，" +
+                        "结果寄存器=${item.spec.resultRegister}，信息寄存器=${item.spec.infoRegister}，信息参数=$infoValue"
                 )
                 val result = withContext(Dispatchers.IO) {
                     AtomicActionExecutor(
@@ -165,12 +171,23 @@ class TestFragment : Fragment() {
                     ).execute(item.spec, infoValue)
                 }
                 binding.tvAtomicActionResult.text = describeAtomicActionResult(result)
-                LogUtils.i(
-                    "【下位机测试】300/400原子动作结束：" +
-                        "action（动作名）=${item.spec.name}，" +
-                        "infoRegister（信息寄存器）=${item.spec.infoRegister}，" +
-                        "infoValue（信息参数）=$infoValue，result=$result，sessionId=$sessionId"
-                )
+                val success = result is AtomicActionResult.Success
+                val resultDetail = "动作名=${item.spec.name}，信息寄存器=${item.spec.infoRegister}，信息参数=$infoValue，执行结果=${describeAtomicActionResult(result)}"
+                if (success) {
+                    AdminOperationLogger.i(
+                        action = "执行300/400原子动作",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = resultDetail
+                    )
+                } else {
+                    AdminOperationLogger.w(
+                        action = "执行300/400原子动作",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = resultDetail
+                    )
+                }
             } finally {
                 endAdminBusy(adminBusy)
             }
@@ -250,14 +267,19 @@ class TestFragment : Fragment() {
                     "${read.label}=${formatBusinessActionRegisterValue(read)}"
                 }
                 binding.tvAtomicActionResult.text = summary
-                LogUtils.i(
-                    "【下位机测试】业务动作协议自检完成：" +
-                        "modbusAddress（Modbus串口地址）=${AppConfig.getAppConfig().modbusAddress}，" +
-                        "results（自检结果）=${results.joinToString("；") { read -> "${read.label}=${formatBusinessActionRegisterValue(read)}" }}"
+                LogUtils.d(
+                    "测试下位机业务动作协议自检完成：" +
+                        "Modbus串口地址=${AppConfig.getAppConfig().modbusAddress}，" +
+                        "自检结果=${results.joinToString("；") { read -> "${read.label}=${formatBusinessActionRegisterValue(read)}" }}"
                 )
             } catch (e: Exception) {
                 binding.tvAtomicActionResult.text = "业务动作协议自检异常：${e.message}"
-                LogUtils.e("【下位机测试】业务动作协议自检异常：error=${e.message}", e)
+                AdminOperationLogger.e(
+                    action = "业务动作协议自检",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "失败原因=${e.message}"
+                )
             } finally {
                 binding.btnBusinessActionSelfCheck.isEnabled = true
             }
@@ -318,9 +340,11 @@ class TestFragment : Fragment() {
                 binding.tvSelfCleanResult.text = "正在执行烤盘 ${positionSn} 自清洁..."
                 val source = "测试下位机页面手动触发"
                 try {
-                    LogUtils.i(
-                        "【下位机测试】自清洁开始：target（目标）=烤盘$positionSn，" +
-                            "source（来源）=$source"
+                    AdminOperationLogger.i(
+                        action = "执行烤盘自清洁",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_START,
+                        detail = "烤盘位=$positionSn"
                     )
                     val startedAtMs = System.currentTimeMillis()
                     val report = withContext(Dispatchers.IO) {
@@ -344,9 +368,11 @@ class TestFragment : Fragment() {
                 binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
                 val source = "测试下位机页面手动触发"
                 try {
-                    LogUtils.i(
-                        "【下位机测试】自清洁开始：target（目标）=出肠台，" +
-                            "source（来源）=$source"
+                    AdminOperationLogger.i(
+                        action = "执行出肠台自清洁",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_START,
+                        detail = "目标=出肠台"
                     )
                     val startedAtMs = System.currentTimeMillis()
                     val report = withContext(Dispatchers.IO) {
@@ -369,17 +395,25 @@ class TestFragment : Fragment() {
         startedAtMs: Long
     ) {
         val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
-        val logMessage =
-            "【下位机测试】自清洁结束：" +
-                "target（目标）=${report.targetLabel}，" +
-                "command（下位机自清洁指令）=${report.command}，" +
-                "success（是否成功）=${report.success}，" +
-                "status201（动作状态寄存器）=${formatSelfCleanStatus201(report.status201)}，" +
-                "message（结果消息）=${report.message}，elapsedMs（耗时毫秒）=$elapsedMs"
+        val actionName = if (report.targetLabel == "出肠台") "执行出肠台自清洁" else "执行烤盘自清洁"
+        val logDetail =
+            "目标=${report.targetLabel}，下位机自清洁指令=${report.command}，" +
+                "动作状态寄存器201=${formatSelfCleanStatus201(report.status201)}，" +
+                "结果消息=${report.message}，耗时=${elapsedMs}ms"
         if (report.success) {
-            LogUtils.i(logMessage)
+            AdminOperationLogger.i(
+                action = actionName,
+                page = AdminOperationLogger.PAGE_TEST,
+                result = AdminOperationLogger.RESULT_DONE,
+                detail = logDetail
+            )
         } else {
-            LogUtils.w(logMessage)
+            AdminOperationLogger.w(
+                action = actionName,
+                page = AdminOperationLogger.PAGE_TEST,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = logDetail
+            )
         }
     }
 
@@ -451,26 +485,27 @@ class TestFragment : Fragment() {
                     readValues to (System.currentTimeMillis() - startMs)
                 }
                 if (values != null) {
-                    LogUtils.i(
-                        "【下位机测试】读寄存器成功：" +
-                            "description（说明）=$description，" +
-                            "startRegister（起始寄存器）=$register，quantity（数量）=$quantity，" +
-                            "values（返回值）=${values.joinToString()}，elapsedMs（耗时毫秒）=$elapsedMs"
+                    LogUtils.d(
+                        "测试下位机读寄存器成功：" +
+                            "说明=$description，起始寄存器=$register，数量=$quantity，" +
+                            "返回值=${values.joinToString()}，耗时=${elapsedMs}ms"
                     )
                     callback.invoke(values)
                 } else {
-                    LogUtils.w(
-                        "【下位机测试】读寄存器失败：返回为空，" +
-                            "description（说明）=$description，" +
-                            "startRegister（起始寄存器）=$register，quantity（数量）=$quantity，elapsedMs（耗时毫秒）=$elapsedMs"
+                    AdminOperationLogger.w(
+                        action = "读取寄存器",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "说明=$description，起始寄存器=$register，数量=$quantity，失败原因=返回为空，耗时=${elapsedMs}ms"
                     )
                     showToast("读取${description}失败：返回为空")
                 }
             } catch (e: Exception) {
-                LogUtils.e(
-                    "【下位机测试】读寄存器异常：" +
-                        "description（说明）=$description，" +
-                        "startRegister（起始寄存器）=$register，quantity（数量）=$quantity，error=${e.message}"
+                AdminOperationLogger.e(
+                    action = "读取寄存器",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "说明=$description，起始寄存器=$register，数量=$quantity，失败原因=${e.message}"
                 )
                 showToast("读取${description}失败: ${e.message}")
             }
@@ -501,9 +536,11 @@ class TestFragment : Fragment() {
             if (value == null) {
                 showToast("${input.label} 必须是整数")
                 binding.tvTemperatureWriteResult.text = "${input.label} 输入非法：$text"
-                LogUtils.w(
-                    "【下位机测试】目标温度输入非法：" +
-                        "area（区域）=${input.area}，register（寄存器）=${input.register}，input=$text"
+                AdminOperationLogger.w(
+                    action = "写入目标温度",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "区域=${input.area}，寄存器=${input.register}，输入值=$text，失败原因=目标温度必须是整数"
                 )
                 return
             }
@@ -518,9 +555,23 @@ class TestFragment : Fragment() {
 
         lifecycleScope.launch {
             if (AppConfig.getAppConfig().moveStatus == 5) {
+                AdminOperationLogger.w(
+                    action = "写入目标温度",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "拒绝原因=当前正在自清洁"
+                )
                 showToast("当前正在自清洁，测试下位机写操作已禁用")
                 return@launch
             }
+            AdminOperationLogger.i(
+                action = "写入目标温度",
+                page = AdminOperationLogger.PAGE_TEST,
+                result = AdminOperationLogger.RESULT_START,
+                detail = parsedTargets.joinToString("；") { (input, value) ->
+                    "区域=${input.area}，寄存器=${input.register}，写入值=$value"
+                }
+            )
             binding.tvTemperatureWriteResult.text = "正在写入并回读确认..."
             val results = withContext(Dispatchers.IO) {
                 parsedTargets.map { (input, value) ->
@@ -530,6 +581,25 @@ class TestFragment : Fragment() {
             binding.tvTemperatureWriteResult.text = results.joinToString("\n") { result ->
                 val statusText = if (result.confirmed) "一致" else "不一致/失败"
                 "${result.description}：写入=${result.writeValue}，回读=${result.readBackValue ?: "失败"}，确认=$statusText"
+            }
+            val allConfirmed = results.all { it.confirmed }
+            val resultDetail = results.joinToString("；") { result ->
+                "${result.description}，写入值=${result.writeValue}，回读值=${result.readBackValue ?: "读取失败"}，确认=${if (result.confirmed) "一致" else "不一致/失败"}"
+            }
+            if (allConfirmed) {
+                AdminOperationLogger.i(
+                    action = "写入目标温度",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = resultDetail
+                )
+            } else {
+                AdminOperationLogger.w(
+                    action = "写入目标温度",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = resultDetail
+                )
             }
             readTemperatureDiagnostics()
         }
@@ -541,26 +611,15 @@ class TestFragment : Fragment() {
         description: String
     ): RegisterWriteConfirmation {
         val startMs = System.currentTimeMillis()
-        LogUtils.i(
-            "【下位机测试】写寄存器开始：" +
-                "description（说明）=$description，register（寄存器）=$register，value（写入值）=$value"
-        )
         val writeResult = KaoChangOperate.writeSingleRegister(register, value)
         val readBack = KaoChangOperate.readHoldingRegisters(register, 1)?.firstOrNull()
         val elapsedMs = System.currentTimeMillis() - startMs
         val confirmed = writeResult.isSuccess && readBack == value
-        val logMessage =
-            "【下位机测试】写寄存器回读确认：" +
-                "description（说明）=$description，register（寄存器）=$register，" +
-                "writeValue（写入值）=$value，writeStatus（写入状态）=${writeResult.status}，" +
-                "writeMessage（写入消息）=${writeResult.message ?: "无"}，" +
-                "readBackValue（回读值）=${readBack ?: "读取失败"}，confirmed（一致）=$confirmed，" +
-                "elapsedMs（耗时毫秒）=$elapsedMs"
-        if (confirmed) {
-            LogUtils.i(logMessage)
-        } else {
-            LogUtils.w(logMessage)
-        }
+        LogUtils.d(
+            "测试下位机写寄存器回读确认：" +
+                "说明=$description，寄存器=$register，写入值=$value，写入状态=${writeResult.status}，" +
+                "写入消息=${writeResult.message ?: "无"}，回读值=${readBack ?: "读取失败"}，确认一致=$confirmed，耗时=${elapsedMs}ms"
+        )
         return RegisterWriteConfirmation(
             description = description,
             writeValue = value,

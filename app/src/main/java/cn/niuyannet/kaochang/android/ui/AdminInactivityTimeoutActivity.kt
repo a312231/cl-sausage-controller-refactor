@@ -37,11 +37,6 @@ open class AdminInactivityTimeoutActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        LogUtils.d(
-            "【管理员超时】初始化管理员后台空闲计时：" +
-                "adminIdleTimeout（管理员后台空闲超时）=${ADMIN_IDLE_TIMEOUT_MS}ms，" +
-                "adminBusyStale（管理员后台忙碌兜底超时）=${ADMIN_BUSY_STALE_MS}ms"
-        )
     }
 
     override fun onResume() {
@@ -89,11 +84,6 @@ open class AdminInactivityTimeoutActivity : AppCompatActivity() {
     fun beginAdminBusy(reason: String): AdminBusyState.Token {
         val token = adminBusyState.begin(reason)
         resetAdminIdleTimer("进入忙碌保护:$reason")
-        LogUtils.i(
-            "【管理员超时】进入后台忙碌保护：" +
-                "reason=$reason，" +
-                "adminBusyCount（后台关键操作计数）=${adminBusyState.activeCount()}"
-        )
         return token
     }
 
@@ -102,11 +92,6 @@ open class AdminInactivityTimeoutActivity : AppCompatActivity() {
             return
         }
         adminBusyState.finish(token)
-        LogUtils.i(
-            "【管理员超时】退出后台忙碌保护：" +
-                "reason=${token.reason}，" +
-                "adminBusyCount（后台关键操作计数）=${adminBusyState.activeCount()}"
-        )
         resetAdminIdleTimer("忙碌保护结束:${token.reason}")
     }
 
@@ -146,10 +131,9 @@ open class AdminInactivityTimeoutActivity : AppCompatActivity() {
             return
         }
         if (isAdminBusy()) {
-            LogUtils.i(
-                "【管理员超时】到达空闲超时但后台关键操作仍在执行，延后返回首页：" +
-                    "adminBusyCount（后台关键操作计数）=${adminBusyState.activeCount()}，" +
-                    "activeReasons（忙碌原因）=${adminBusyState.activeReasons().joinToString("/")}"
+            LogUtils.d(
+                "管理员无操作超时暂缓退出：后台关键操作仍在执行，" +
+                    "关键操作数量=${adminBusyState.activeCount()}，忙碌原因=${adminBusyState.activeReasons().joinToString("/")}"
             )
             resetAdminIdleTimer("后台关键操作仍在执行")
             return
@@ -159,11 +143,7 @@ open class AdminInactivityTimeoutActivity : AppCompatActivity() {
 
     private fun isAdminBusy(): Boolean {
         return adminBusyState.isBusy { token, elapsedMs ->
-            LogUtils.w(
-                "【管理员超时】后台忙碌保护超过兜底时间，已自动清理：" +
-                    "reason=${token.reason}，elapsedMs（持续毫秒）=$elapsedMs，" +
-                    "adminBusyStale（管理员后台忙碌兜底超时）=${ADMIN_BUSY_STALE_MS}ms"
-            )
+            LogUtils.d("清理管理员后台忙碌保护：忙碌原因=${token.reason}，持续时间=${elapsedMs}ms，兜底超时=${ADMIN_BUSY_STALE_MS}ms")
         }
     }
 
@@ -171,10 +151,11 @@ open class AdminInactivityTimeoutActivity : AppCompatActivity() {
         returningHome = true
         adminIdleHandler.removeCallbacks(adminIdleTimeoutRunnable)
         Toast.makeText(this, "管理员界面已超时，自动返回首页", Toast.LENGTH_SHORT).show()
-        LogUtils.i(
-            "【管理员超时】管理员后台无操作超时，自动返回首页：" +
-                "adminIdleTimeout（管理员后台空闲超时）=${ADMIN_IDLE_TIMEOUT_MS}ms，" +
-                "target=MainActivity（首页视频/二维码界面）"
+        AdminOperationLogger.i(
+            action = "管理员无操作超时",
+            page = AdminOperationLogger.PAGE_SETTING,
+            result = AdminOperationLogger.RESULT_AUTO_EXIT,
+            detail = "超时时间=${ADMIN_IDLE_TIMEOUT_MS / 1000}秒，返回页面=首页"
         )
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
