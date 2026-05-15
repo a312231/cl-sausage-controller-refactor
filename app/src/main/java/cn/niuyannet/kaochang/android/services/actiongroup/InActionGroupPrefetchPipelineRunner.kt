@@ -184,7 +184,8 @@ class InActionGroupPrefetchPipelineRunner(
                 sourceBoxNo,
                 AtomicActionCodes.IR_PICK_FAILED,
                 task.targetPanNo,
-                sourceBoxNo
+                sourceBoxNo,
+                maxAttempts = 2
             )) {
                 AtomicActionResult.Success -> Unit
                 is AtomicActionResult.Failed -> {
@@ -246,12 +247,13 @@ class InActionGroupPrefetchPipelineRunner(
         infoValue: Int,
         retryableErrorCode: Int,
         targetPanNo: Int,
-        sourceBoxNo: Int
+        sourceBoxNo: Int,
+        maxAttempts: Int = 3
     ): AtomicActionResult {
         var lastResult: AtomicActionResult = AtomicActionResult.Success
-        for (attempt in 1..3) {
+        for (attempt in 1..maxAttempts) {
             val startedAtMs = System.currentTimeMillis()
-            operationLogger("【补肠】烤盘$targetPanNo ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo，第$attempt/3次")
+            operationLogger("【补肠】烤盘$targetPanNo ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo，第$attempt/${maxAttempts}次")
             val result = client.execute(spec, infoValue)
             val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
             lastResult = result
@@ -259,13 +261,13 @@ class InActionGroupPrefetchPipelineRunner(
                 operationLogger("【补肠】烤盘$targetPanNo ${actionFinishLabel(spec)} 完成，用时=${formatElapsedSeconds(elapsedMs)}秒")
                 return AtomicActionResult.Success
             }
-            if (!isRetryable(result, retryableErrorCode) || attempt == 3) {
+            if (!isRetryable(result, retryableErrorCode) || attempt == maxAttempts) {
                 failureLogger("【失败原因】补肠烤盘$targetPanNo ${failureText(spec, result)}")
                 return result
             }
-            logger("重试原子动作：action=${spec.name}，attempt=$attempt/3，reason=${describe(result)}")
+            logger("重试原子动作：action=${spec.name}，attempt=$attempt/$maxAttempts，reason=${describe(result)}")
             operationLogger(
-                "【补肠】烤盘$targetPanNo ${actionFinishLabel(spec)} 第$attempt/3次失败：${describe(result)}，准备重试"
+                "【补肠】烤盘$targetPanNo ${actionFinishLabel(spec)} 第$attempt/${maxAttempts}次失败：${describe(result)}，准备重试"
             )
         }
         return lastResult

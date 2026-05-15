@@ -132,11 +132,10 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
-    fun pipeline_shouldRetryIn2PickFailureThreeTimesBeforeContinuing() = runBlocking {
+    fun pipeline_shouldRetryIn2PickFailureTwoTimesBeforeContinuing() = runBlocking {
         val client = FakeClient(
             results = queueOf(
                 AtomicActionResult.Success,
-                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
@@ -153,7 +152,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(result is InActionGroupPipelineResult.Success)
         assertEquals(
             listOf(
-                "in1:17", "in2:17", "in2:17", "in2:17", "in3:0",
+                "in1:17", "in2:17", "in2:17", "in3:0",
                 "in4:0", "in5:0", "in6:0", "dispatch:in6", "in7:13"
             ),
             client.calls
@@ -165,7 +164,6 @@ class InActionGroupPrefetchPipelineRunnerTest {
         val client = FakeClient(
             results = queueOf(
                 AtomicActionResult.Success,
-                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Success,
@@ -185,7 +183,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertEquals(18, (result as InActionGroupPipelineResult.Success).completed.single().sourceBoxNo)
         assertEquals(
             listOf(
-                "in1:17", "in2:17", "in2:17", "in2:17",
+                "in1:17", "in2:17", "in2:17",
                 "in1:18", "in2:18", "in3:0", "in4:0", "in5:0",
                 "in6:0", "dispatch:in6", "in7:13"
             ),

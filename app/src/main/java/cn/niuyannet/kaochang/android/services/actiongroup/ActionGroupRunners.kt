@@ -109,13 +109,14 @@ internal data class ActionStep(
     val spec: AtomicActionSpec,
     val infoValue: Int,
     val retryableErrorCode: Int? = null,
-    val discardedOnCustomerTimeout: Boolean = false
+    val discardedOnCustomerTimeout: Boolean = false,
+    val maxAttempts: Int = 3
 )
 
 internal fun inActionSteps(sourceBoxNo: Int, targetPanNo: Int): List<ActionStep> {
     return listOf(
         ActionStep(AtomicActions.in1, sourceBoxNo),
-        ActionStep(AtomicActions.in2, sourceBoxNo, AtomicActionCodes.IR_PICK_FAILED),
+        ActionStep(AtomicActions.in2, sourceBoxNo, AtomicActionCodes.IR_PICK_FAILED, maxAttempts = 2),
         ActionStep(AtomicActions.in3, 0),
         ActionStep(AtomicActions.in4, 0),
         ActionStep(AtomicActions.in5, 0, AtomicActionCodes.IR_THROW_FAILED),
@@ -200,16 +201,16 @@ private suspend fun executeRetriableStep(
     logger: (String) -> Unit
 ): ActionGroupResult {
     var lastResult: AtomicActionResult = AtomicActionResult.Success
-    for (attempt in 1..3) {
+    for (attempt in 1..step.maxAttempts) {
         val result = client.execute(step.spec, step.infoValue)
         lastResult = result
         if (result == AtomicActionResult.Success) {
             return ActionGroupResult.Success
         }
-        if (!isRetryable(result, step.retryableErrorCode!!) || attempt == 3) {
+        if (!isRetryable(result, step.retryableErrorCode!!) || attempt == step.maxAttempts) {
             return mapActionResult(step, result)
         }
-        logger("重试原子动作：action=${step.spec.name}，attempt=$attempt/3，reason=${describe(result)}")
+        logger("重试原子动作：action=${step.spec.name}，attempt=$attempt/${step.maxAttempts}，reason=${describe(result)}")
     }
     return mapActionResult(step, lastResult)
 }

@@ -20,11 +20,10 @@ class ActionGroupRunnerTest {
     }
 
     @Test
-    fun inRunner_shouldRetryIn2PickFailureThreeTimesWithoutRestartingIn1() = runBlocking {
+    fun inRunner_shouldRetryIn2PickFailureTwoTimesWithoutRestartingIn1() = runBlocking {
         val client = FakeClient(
             results = queueOf(
                 AtomicActionResult.Success,
-                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
@@ -40,9 +39,71 @@ class ActionGroupRunnerTest {
 
         assertEquals(ActionGroupResult.Success, result)
         assertEquals(
-            listOf("in1:17", "in2:17", "in2:17", "in2:17", "in3:0", "in4:0", "in5:0", "in6:0", "in7:2"),
+            listOf("in1:17", "in2:17", "in2:17", "in3:0", "in4:0", "in5:0", "in6:0", "in7:2"),
             client.calls
         )
+    }
+
+    @Test
+    fun inRunner_shouldFailIn2AfterTwoPickFailuresWithoutThirdAttempt() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠")
+            )
+        )
+        val runner = InActionGroupRunner(client)
+
+        val result = runner.run(sourceBoxNo = 17, targetPanNo = 2)
+
+        assertTrue(result is ActionGroupResult.Failed)
+        assertEquals("in2", (result as ActionGroupResult.Failed).actionName)
+        assertEquals(listOf("in1:17", "in2:17", "in2:17"), client.calls)
+    }
+
+    @Test
+    fun inRunner_shouldRetryIn5ThrowFailureThreeTimesBeforeFailing() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IR_THROW_FAILED, "抛肠后仍检测到有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_THROW_FAILED, "抛肠后仍检测到有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_THROW_FAILED, "抛肠后仍检测到有肠")
+            )
+        )
+        val runner = InActionGroupRunner(client)
+
+        val result = runner.run(sourceBoxNo = 17, targetPanNo = 2)
+
+        assertTrue(result is ActionGroupResult.Failed)
+        assertEquals("in5", (result as ActionGroupResult.Failed).actionName)
+        assertEquals(
+            listOf("in1:17", "in2:17", "in3:0", "in4:0", "in5:0", "in5:0", "in5:0"),
+            client.calls
+        )
+    }
+
+    @Test
+    fun outRunner_shouldRetryOut2StickFailureThreeTimesBeforeFailing() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.STICK_FAILED, "穿签失败"),
+                AtomicActionResult.Failed(AtomicActionCodes.STICK_FAILED, "穿签失败"),
+                AtomicActionResult.Failed(AtomicActionCodes.STICK_FAILED, "穿签失败")
+            )
+        )
+        val runner = OutActionGroupRunner(client)
+
+        val result = runner.run(sourcePanNo = 8)
+
+        assertTrue(result is ActionGroupResult.Failed)
+        assertEquals("out2", (result as ActionGroupResult.Failed).actionName)
+        assertEquals(listOf("out1:8", "out2:0", "out2:0", "out2:0"), client.calls)
     }
 
     @Test
