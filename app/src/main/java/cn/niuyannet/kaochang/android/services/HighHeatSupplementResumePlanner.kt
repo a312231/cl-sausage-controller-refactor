@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 
 internal object HighHeatSupplementResumePlanner {
@@ -22,6 +23,42 @@ internal object HighHeatSupplementResumePlanner {
 
     fun hasFullBatchStarted(supplementGroup: List<KaoPan>): Boolean {
         return supplementGroup.isNotEmpty() && supplementGroup.all { it.isHasSausage }
+    }
+
+    fun hasBatchStarted(supplementGroup: List<KaoPan>): Boolean {
+        return supplementGroup.any { it.isHasSausage }
+    }
+
+    fun planInitialTargets(
+        frontPans: List<KaoPan>,
+        supplementGroup: List<KaoPan>,
+        listBox: List<KaoPanBox>,
+        requestedCount: Int = 9
+    ): List<ResumeTarget> {
+        val targetPans = supplementGroup
+            .filter { !it.isHasSausage }
+            .sortedBy { it.positionSn }
+            .take(requestedCount)
+        if (targetPans.isEmpty()) {
+            return emptyList()
+        }
+
+        val reservedTasteCodes = frontPans
+            .filter { !it.isHasSausage }
+            .sortedBy { it.positionSn }
+            .mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
+        val stockRatioTasteCodes = expandTasteAllocation(
+            KaoPanHelper.computeHighKaoPamRatio(listBox, targetPans.size)
+        )
+
+        return targetPans.mapIndexedNotNull { index, targetPan ->
+            val tasteCode = reservedTasteCodes.getOrNull(index)
+                ?: stockRatioTasteCodes.getOrNull(index)
+                ?: stockRatioTasteCodes.firstOrNull()
+                ?: return@mapIndexedNotNull null
+            targetPan.taste = Taste(tasteCode)
+            ResumeTarget(targetPan, tasteCode)
+        }
     }
 
     fun planResumeTargets(frontPans: List<KaoPan>, supplementGroup: List<KaoPan>): List<ResumeTarget> {
@@ -127,6 +164,12 @@ internal object HighHeatSupplementResumePlanner {
             return null
         }
         return reservedFrontPans.getOrNull(offset)?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+    }
+
+    private fun expandTasteAllocation(allocation: Map<String, Int>): List<String> {
+        return allocation.flatMap { (tasteCode, count) ->
+            List(count.coerceAtLeast(0)) { tasteCode }
+        }
     }
 
     private fun isKeepWarmReady(

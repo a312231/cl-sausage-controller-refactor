@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -84,6 +85,40 @@ class HighHeatSupplementResumePlannerTest {
         }
 
         assertTrue(HighHeatSupplementResumePlanner.hasFullBatchStarted(group))
+    }
+
+    @Test
+    fun hasBatchStarted_shouldAcceptPartialStartedGroup() {
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..31)
+        }
+
+        assertTrue(HighHeatSupplementResumePlanner.hasBatchStarted(group))
+    }
+
+    @Test
+    fun planInitialTargets_shouldRequestNinePansEvenWhenFrontOnlyHasSevenReservedEmptyPans() {
+        val front = (1..21).map { position ->
+            frontPan(position, "B", reserved = position in 1..7).apply {
+                isHasSausage = position !in 1..7
+            }
+        }
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(
+            box(positionSn = 18, tasteCode = "B", num = 2),
+            box(positionSn = 17, tasteCode = "B", num = 5)
+        )
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals(List(9) { "B" }, result.map { it.tasteCode })
+        assertEquals("B", group.first { it.positionSn == 32 }.taste.tasteCode)
+        assertEquals("B", group.first { it.positionSn == 33 }.taste.tasteCode)
     }
 
     @Test
@@ -375,6 +410,13 @@ class HighHeatSupplementResumePlannerTest {
         }
 
     private fun inactiveFaultConfig(): AppConfigBean = AppConfigBean()
+
+    private fun box(positionSn: Int, tasteCode: String, num: Int): KaoPanBox =
+        KaoPanBox().apply {
+            this.positionSn = positionSn
+            this.tasteCode = tasteCode
+            this.num = num
+        }
 
     private fun supplementPan(positionSn: Int, tasteCode: String?, hasSausage: Boolean): KaoPan =
         KaoPan().apply {

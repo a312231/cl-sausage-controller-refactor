@@ -307,7 +307,7 @@ object HighCurrentTrafficMode {
         val isBeforeCloseWindow =
             KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
-        val hasStartedHighHeatSupply = list25_33.any { it.isHasSausage }
+        val hasStartedHighHeatSupply = HighHeatSupplementResumePlanner.hasBatchStarted(list25_33)
         val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
             allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
             reason = "低转高过渡调度入口",
@@ -328,42 +328,39 @@ object HighCurrentTrafficMode {
             )
         } else if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
-            val flavorAllocation = KaoPanHelper.computeHighKaoPamRatio(listBox, frontEmptyCount)
-            var currentPosition = 0
-            flavorAllocation.forEach { (flavor, count) ->
-                var allocated = 0
-                while (allocated < count && currentPosition < list1_21.size) {
-                    while (currentPosition < list1_21.size && list1_21[currentPosition].isHasSausage) {
-                        currentPosition++
-                    }
-                    if (currentPosition < list1_21.size) {
-                        list1_21[currentPosition].taste = Taste().apply {
-                            tasteCode = flavor
-                        }
-                        allocated++
-                        currentPosition++
-                    } else {
-                        break
-                    }
-                }
+            TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
+            val plannedTargets = HighHeatSupplementResumePlanner.planInitialTargets(
+                frontPans = list1_21,
+                supplementGroup = list25_33,
+                listBox = listBox
+            )
+            val availableStockByTaste = listBox
+                .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
+                .groupBy { it.tasteCode.orEmpty() }
+                .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
+            val targets = plannedTargets.map { target ->
+                KaoChangOperate.SupplementTarget(target.kaoPan, target.tasteCode)
+            }
+            if (targets.isEmpty()) {
+                LogUtils.w(
+                    TAG,
+                    "【并发切换】低转高过渡：无法规划 25~33 高并发补热批次，frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste"
+                )
             }
 
-            val emptyPositions25_33 = list25_33.filter { !it.isHasSausage }
-            val emptyPositions1_21 = list1_21.filter { !it.isHasSausage }
-            val neededTastes = emptyPositions1_21.take(9).map { it.taste.tasteCode }
-
-            KaoChangOperate.heating(3)
-            val targets = neededTastes.mapIndexedNotNull { index, tasteCode ->
-                if (index < emptyPositions25_33.size) {
-                    val targetPosition = emptyPositions25_33[index]
-                    targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                    KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
-                } else {
-                    null
-                }
+            val movedCount = if (targets.isNotEmpty()) {
+                KaoChangOperate.heating(3)
+                KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
+            } else {
+                0
             }
-            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
             if (movedCount > 0) {
+                val partialBatch = movedCount < targets.size
+                val batchResultText = if (partialBatch) {
+                    "已启动残缺高并发补热批次，后续进入高并发正常态续补或成熟回补"
+                } else {
+                    "已启动完整高并发补热批次"
+                }
                 recordSupplementLaunch(
                     filledCount = movedCount,
                     now = System.currentTimeMillis(),
@@ -371,10 +368,19 @@ object HighCurrentTrafficMode {
                 )
                 LogUtils.i(
                     TAG,
-                    "【并发切换】低转高过渡：已向 25~33 启动高并发补肠，movedCount=$movedCount，lastFillPitTime=$lastFillPitTime"
+                    "【并发切换】低转高过渡：已向 25~33 启动高并发补肠，batchResult=$batchResultText，" +
+                        "frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste，" +
+                        "requestedTargetCount=${targets.size}，actualMovedCount=$movedCount，" +
+                        "partialBatch=$partialBatch，targetPositions=${targets.map { it.kaoPan.positionSn }}，" +
+                        "lastFillPitTime=$lastFillPitTime"
                 )
             } else {
-                LogUtils.w(TAG, "【并发切换】低转高过渡：尝试向 25~33 启动高并发补肠，但本次未成功移动烤肠")
+                LogUtils.w(
+                    TAG,
+                    "【并发切换】低转高过渡：尝试向 25~33 启动高并发补肠，但本次未成功移动烤肠，" +
+                        "frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste，" +
+                        "requestedTargetCount=${targets.size}，targetPositions=${targets.map { it.kaoPan.positionSn }}"
+                )
             }
         }
 
@@ -387,7 +393,7 @@ object HighCurrentTrafficMode {
         if (!hasOldLowHeatAreaSausage) {
             KaoChangOperate.stopHeating(2)
         }
-        val hasStartedHighHeatSupplyNow = list25_33.any { it.isHasSausage }
+        val hasStartedHighHeatSupplyNow = HighHeatSupplementResumePlanner.hasBatchStarted(list25_33)
         val hasFullHighHeatSupplyBatchNow = HighHeatSupplementResumePlanner.hasFullBatchStarted(list25_33)
         val idleResolvedState = resolveLowToHighTransitionIdleState(
             currentModeType = config.modeType,
@@ -411,13 +417,14 @@ object HighCurrentTrafficMode {
         val completionState = resolveLowToHighTransitionCompletionState(
             currentModeType = config.modeType,
             hasOldLowHeatAreaSausage = hasOldLowHeatAreaSausage,
-            hasFullHighHeatSupplyBatchNow = hasFullHighHeatSupplyBatchNow
+            hasFullHighHeatSupplyBatchNow = hasFullHighHeatSupplyBatchNow,
+            hasStartedHighHeatSupplyBatchNow = hasStartedHighHeatSupplyNow
         )
         if (completionState == null) {
-            if (!hasOldLowHeatAreaSausage && hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow) {
+            if (hasOldLowHeatAreaSausage && hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow) {
                 LogUtils.i(
                     TAG,
-                    "【并发切换】低转高继续等待 25~33 补满：当前有肠数=${list25_33.count { it.isHasSausage }}，目标=9"
+                    "【并发切换】低转高已启动 25~33 残缺高并发补热批次，等待 13~18 旧低并发补热区清空后进入高并发正常态：当前有肠数=${list25_33.count { it.isHasSausage }}，目标=9"
                 )
             }
             return
@@ -428,7 +435,10 @@ object HighCurrentTrafficMode {
         val highSupplyOccupiedCount = list25_33.count { it.isHasSausage }
         LogUtils.i(
             TAG,
-            "【并发切换】低转高完成条件满足：13~18 旧低并发补热区仍有烤肠=$hasOldLowHeatAreaSausage，25~33 完整补热批次已启动=$hasFullHighHeatSupplyBatchNow，1~21 当前有肠数=$frontOccupiedCount，25~33 当前有肠数=$highSupplyOccupiedCount"
+            "【并发切换】低转高完成条件满足：13~18 旧低并发补热区仍有烤肠=$hasOldLowHeatAreaSausage，" +
+                "25~33 补热批次已启动=$hasStartedHighHeatSupplyNow，25~33 完整补热批次已启动=$hasFullHighHeatSupplyBatchNow，" +
+                "25~33 残缺批次=${hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow}，" +
+                "1~21 当前有肠数=$frontOccupiedCount，25~33 当前有肠数=$highSupplyOccupiedCount"
         )
 
         config.modeType = completionState.modeType

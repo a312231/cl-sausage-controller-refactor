@@ -33,9 +33,12 @@ internal fun resolveLowToHighTransitionIdleState(
 internal fun resolveLowToHighTransitionCompletionState(
     currentModeType: Int,
     hasOldLowHeatAreaSausage: Boolean,
-    hasFullHighHeatSupplyBatchNow: Boolean
+    hasFullHighHeatSupplyBatchNow: Boolean,
+    hasStartedHighHeatSupplyBatchNow: Boolean
 ): HighTrafficModeState? {
-    if (hasOldLowHeatAreaSausage || !hasFullHighHeatSupplyBatchNow) {
+    val hasAnyHighHeatBatchStarted =
+        hasFullHighHeatSupplyBatchNow || hasStartedHighHeatSupplyBatchNow
+    if (hasOldLowHeatAreaSausage || !hasAnyHighHeatBatchStarted) {
         return null
     }
     return HighTrafficModeState(
