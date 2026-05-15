@@ -28,6 +28,8 @@ sealed class InActionGroupPipelineResult {
     data class Failed(
         val completed: List<CompletedInActionGroupPipelineTask>,
         val task: InActionGroupPipelineTask?,
+        val sourceBoxNo: Int? = null,
+        val failedSourceBoxNos: List<Int> = emptyList(),
         val actionName: String,
         val result: AtomicActionResult,
         val message: String,
@@ -86,7 +88,7 @@ class InActionGroupPrefetchPipelineRunner(
             logger("当前根进入投放阶段：targetPan=${task.targetPanNo}，sourceBox=${prefetched.sourceBoxNo}")
             when (val in4 = executeLoggedAction(AtomicActions.in4, 0, task.targetPanNo, prefetched.sourceBoxNo)) {
                 AtomicActionResult.Success -> Unit
-                else -> return@coroutineScope deliveryFailure(completed, task, "in4", in4, nextPrefetch)
+                else -> return@coroutineScope deliveryFailure(completed, task, prefetched.sourceBoxNo, "in4", in4, nextPrefetch)
             }
             when (val in5 = executeRetriableAction(
                 AtomicActions.in5,
@@ -96,7 +98,7 @@ class InActionGroupPrefetchPipelineRunner(
                 prefetched.sourceBoxNo
             )) {
                 AtomicActionResult.Success -> Unit
-                else -> return@coroutineScope deliveryFailure(completed, task, "in5", in5, nextPrefetch)
+                else -> return@coroutineScope deliveryFailure(completed, task, prefetched.sourceBoxNo, "in5", in5, nextPrefetch)
             }
             when (val in6 = executeLoggedAction(
                 AtomicActions.in6,
@@ -106,12 +108,12 @@ class InActionGroupPrefetchPipelineRunner(
                 onCommandDispatched = startNextPrefetchIfNeeded
             )) {
                 AtomicActionResult.Success -> Unit
-                else -> return@coroutineScope deliveryFailure(completed, task, "in6", in6, nextPrefetch)
+                else -> return@coroutineScope deliveryFailure(completed, task, prefetched.sourceBoxNo, "in6", in6, nextPrefetch)
             }
             logger("in6 完成，立即执行 in7：targetPan=${task.targetPanNo}，sourceBox=${prefetched.sourceBoxNo}")
             when (val in7 = executeLoggedAction(AtomicActions.in7, task.targetPanNo, task.targetPanNo, prefetched.sourceBoxNo)) {
                 AtomicActionResult.Success -> Unit
-                else -> return@coroutineScope deliveryFailure(completed, task, "in7", in7, nextPrefetch)
+                else -> return@coroutineScope deliveryFailure(completed, task, prefetched.sourceBoxNo, "in7", in7, nextPrefetch)
             }
 
             val completedTask = CompletedInActionGroupPipelineTask(
@@ -161,6 +163,7 @@ class InActionGroupPrefetchPipelineRunner(
         }
 
         var lastPickFailure: PrefetchResult.Failed? = null
+        val failedPickSourceBoxNos = mutableListOf<Int>()
         task.sourceBoxCandidates.forEachIndexed { index, sourceBoxNo ->
             logger(
                 "下一根进入预取阶段：targetPan=${task.targetPanNo}，sourceBox=$sourceBoxNo，" +
@@ -169,6 +172,7 @@ class InActionGroupPrefetchPipelineRunner(
             if (sourceBoxNo !in 1..22) {
                 return PrefetchResult.Failed(
                     actionName = "in",
+                    sourceBoxNo = sourceBoxNo,
                     result = AtomicActionResult.Failed(AtomicActionCodes.PARAM_ERROR, "参数错误"),
                     message = "源肠箱编号必须在 1..22，当前=$sourceBoxNo"
                 )
@@ -176,7 +180,7 @@ class InActionGroupPrefetchPipelineRunner(
 
             when (val in1 = executeLoggedAction(AtomicActions.in1, sourceBoxNo, task.targetPanNo, sourceBoxNo)) {
                 AtomicActionResult.Success -> Unit
-                else -> return PrefetchResult.Failed("in1", in1, "${AtomicActions.in1.description}失败：${describe(in1)}")
+                else -> return PrefetchResult.Failed("in1", in1, "${AtomicActions.in1.description}失败：${describe(in1)}", sourceBoxNo)
             }
 
             when (val in2 = executeRetriableAction(
@@ -189,21 +193,39 @@ class InActionGroupPrefetchPipelineRunner(
             )) {
                 AtomicActionResult.Success -> Unit
                 is AtomicActionResult.Failed -> {
-                    val failed = PrefetchResult.Failed("in2", in2, "${AtomicActions.in2.description}失败：${describe(in2)}")
+                    val failedSourceBoxNos = if (in2.errorCode == AtomicActionCodes.IR_PICK_FAILED) {
+                        (failedPickSourceBoxNos + sourceBoxNo).distinct()
+                    } else {
+                        failedPickSourceBoxNos.toList()
+                    }
+                    val failed = PrefetchResult.Failed(
+                        actionName = "in2",
+                        result = in2,
+                        message = "${AtomicActions.in2.description}失败：${describe(in2)}",
+                        sourceBoxNo = sourceBoxNo,
+                        failedSourceBoxNos = failedSourceBoxNos
+                    )
                     if (in2.errorCode == AtomicActionCodes.IR_PICK_FAILED && index < task.sourceBoxCandidates.lastIndex) {
                         logger("预取 in2 连续取肠失败，切换下一候选箱：sourceBox=$sourceBoxNo，targetPan=${task.targetPanNo}")
                         operationLogger("【补肠】烤盘${task.targetPanNo} in2（取肠、分料、避让）连续失败，切换下一候选烤肠箱：当前箱=$sourceBoxNo")
+                        failedPickSourceBoxNos += sourceBoxNo
                         lastPickFailure = failed
                         return@forEachIndexed
                     }
                     return failed
                 }
-                else -> return PrefetchResult.Failed("in2", in2, "${AtomicActions.in2.description}失败：${describe(in2)}")
+                else -> return PrefetchResult.Failed(
+                    actionName = "in2",
+                    result = in2,
+                    message = "${AtomicActions.in2.description}失败：${describe(in2)}",
+                    sourceBoxNo = sourceBoxNo,
+                    failedSourceBoxNos = failedPickSourceBoxNos.toList()
+                )
             }
 
             when (val in3 = executeLoggedAction(AtomicActions.in3, 0, task.targetPanNo, sourceBoxNo)) {
                 AtomicActionResult.Success -> return PrefetchResult.Success(sourceBoxNo)
-                else -> return PrefetchResult.Failed("in3", in3, "${AtomicActions.in3.description}失败：${describe(in3)}")
+                else -> return PrefetchResult.Failed("in3", in3, "${AtomicActions.in3.description}失败：${describe(in3)}", sourceBoxNo)
             }
         }
 
@@ -276,6 +298,7 @@ class InActionGroupPrefetchPipelineRunner(
     private suspend fun deliveryFailure(
         completed: List<CompletedInActionGroupPipelineTask>,
         task: InActionGroupPipelineTask,
+        sourceBoxNo: Int,
         actionName: String,
         result: AtomicActionResult,
         nextPrefetch: Deferred<PrefetchResult>?
@@ -288,6 +311,7 @@ class InActionGroupPrefetchPipelineRunner(
         return InActionGroupPipelineResult.Failed(
             completed = completed,
             task = task,
+            sourceBoxNo = sourceBoxNo,
             actionName = actionName,
             result = result,
             message = "${actionName} 投放阶段失败：${describe(result)}",
@@ -302,6 +326,8 @@ class InActionGroupPrefetchPipelineRunner(
         return InActionGroupPipelineResult.Failed(
             completed = completed,
             task = task,
+            sourceBoxNo = sourceBoxNo,
+            failedSourceBoxNos = failedSourceBoxNos,
             actionName = actionName,
             result = result,
             message = message,
@@ -314,7 +340,9 @@ class InActionGroupPrefetchPipelineRunner(
         data class Failed(
             val actionName: String,
             val result: AtomicActionResult,
-            val message: String
+            val message: String,
+            val sourceBoxNo: Int? = null,
+            val failedSourceBoxNos: List<Int> = emptyList()
         ) : PrefetchResult()
     }
 

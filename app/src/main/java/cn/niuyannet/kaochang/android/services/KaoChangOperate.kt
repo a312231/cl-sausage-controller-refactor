@@ -1711,7 +1711,7 @@ object KaoChangOperate {
             AtomicActionResult.Success -> 0
         }
         plannedMove?.kaoPan?.cmdStatusMove = failureCode
-        val sourceBoxNo = result.task?.sourceBoxCandidates?.firstOrNull()
+        val sourceBoxNo = result.sourceBoxNo
         val sourceBox = sourceBoxNo?.let { boxNo ->
             KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == boxNo }
         }
@@ -1721,7 +1721,7 @@ object KaoChangOperate {
             LOG_SUPPLEMENT,
             "补肠预取流水线失败：targetPan=$targetPanNo，sourceBox=$sourceBoxNo，" +
                 "action=${result.actionName}，result=${describeAtomicActionResult(result.result)}，" +
-                "hasPrefetchedNext=${result.hasPrefetchedNext}"
+                "failedSourceBoxes=${result.failedSourceBoxNos}，hasPrefetchedNext=${result.hasPrefetchedNext}"
         )
         supplementBatchIntentRepository.markFailure(
             batchId = batchId,
@@ -1759,8 +1759,9 @@ object KaoChangOperate {
                 }
             }
             enterActionGroupMaintenance(
-                "补肠预取流水线取肠红外未检测到肠（0x00E5），当前版本不在流水线内自动切箱，设备进入维护等待人工确认：" +
-                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，result=${describeAtomicActionResult(result.result)}"
+                "补肠预取流水线同口味候选箱取肠均失败（0x00E5），设备进入维护等待人工确认：" +
+                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，failedSourceBoxes=${result.failedSourceBoxNos}，" +
+                    "action=${result.actionName}，result=${describeAtomicActionResult(result.result)}"
             )
             return
         }

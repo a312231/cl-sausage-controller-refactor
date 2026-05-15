@@ -192,6 +192,33 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldReportActualFailedBoxWhenAllCandidateIn2PickFailuresExhaust() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠")
+            )
+        )
+        val runner = InActionGroupPrefetchPipelineRunner(client)
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17, 18), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals("in2", failed.actionName)
+        assertEquals(18, failed.sourceBoxNo)
+        assertEquals(listOf(17, 18), failed.failedSourceBoxNos)
+        assertEquals(
+            listOf("in1:17", "in2:17", "in2:17", "in1:18", "in2:18", "in2:18"),
+            client.calls
+        )
+    }
+
+    @Test
     fun pipeline_shouldRetryIn5ThrowFailureThreeTimesAndStopBeforeIn6() = runBlocking {
         val client = FakeClient(
             results = queueOf(
