@@ -716,6 +716,24 @@ object KaoChangOperate {
         return ok
     }
 
+    fun savePendingOrderErrorEventAndTryFlush(
+        orderContext: ActionGroupOrderContext,
+        panNo: Int,
+        source: String
+    ): Boolean {
+        if (!orderContext.isValid()) {
+            logE(LOG_ORDER, "出餐失败订单终态补偿保存失败：订单上下文不完整，source=$source，orderContext=$orderContext")
+            return false
+        }
+        savePendingActionGroupOrderEvent(
+            orderContext = orderContext,
+            status = ActionGroupOrderStatus.ERROR,
+            panNo = panNo,
+            discarded = false
+        )
+        return flushPendingActionGroupOrderEvent(source)
+    }
+
     private fun flushPendingActionGroupOrderEvent(reason: String): Boolean {
         val pending = actionGroupOrderEventStore.load() ?: return true
         logW(

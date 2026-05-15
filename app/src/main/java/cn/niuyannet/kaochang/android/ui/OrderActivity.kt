@@ -17,6 +17,7 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.SupplementPauseController
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventCompensationPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -747,6 +748,18 @@ abstract class OrderActivity: BaseSauceDetection() {
                     "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
                     "status（订单事件状态）=$eventDesc，订单状态可能与服务端不同步"
             )
+            if (ActionGroupOrderEventCompensationPolicy.shouldPersistPendingEvent(status, ok)) {
+                KaoChangOperate.savePendingOrderErrorEventAndTryFlush(
+                    orderContext = ActionGroupOrderContext(
+                        orderNo = orderNo,
+                        itemId = itemId,
+                        productId = productId,
+                        tasteCode = tasteCode
+                    ),
+                    panNo = 0,
+                    source = "正式出餐 status=5 MQTT 上报失败"
+                )
+            }
         } else {
             LogUtils.i(
                 "【云端同步】订单事件已上报：订单号=$orderNo，状态=${eventDesc.substringAfter("（").substringBefore("）")}"
