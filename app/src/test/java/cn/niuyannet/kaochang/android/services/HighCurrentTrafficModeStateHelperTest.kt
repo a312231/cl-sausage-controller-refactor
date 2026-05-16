@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -168,4 +169,67 @@ class HighCurrentTrafficModeStateHelperTest {
             )
         )
     }
+
+    @Test
+    fun clearEmptyHighConcurrencyResidualMetadata_shouldClearEmptyDirtyHighAreaPans() {
+        val pans = emptyPans().map { pan ->
+            when (pan.positionSn) {
+                13 -> pan.apply {
+                    isHasGrilling = true
+                    startTime = 1_000L
+                    holdingTime = 2_000L
+                    status = 2
+                    temperature = 60
+                }
+                25 -> pan.apply {
+                    holdingTime = 3_000L
+                    status = 2
+                    temperature = 60
+                }
+                else -> pan
+            }
+        }
+
+        val clearedPositions = clearEmptyHighConcurrencyResidualMetadata(pans)
+
+        assertEquals(listOf(13, 25), clearedPositions)
+        assertEquals(0, HighConcurrencyResidualDrainEvaluator.evaluate(1, pans, includeLowHeatOverlapArea = true))
+    }
+
+    @Test
+    fun clearEmptyHighConcurrencyResidualMetadata_shouldKeepRealSausageResidual() {
+        val pans = emptyPans().map { pan ->
+            when (pan.positionSn) {
+                10 -> pan.apply {
+                    isHasSausage = true
+                    holdingTime = 2_000L
+                    status = 2
+                }
+                25 -> pan.apply {
+                    holdingTime = 3_000L
+                    status = 2
+                }
+                else -> pan
+            }
+        }
+
+        val clearedPositions = clearEmptyHighConcurrencyResidualMetadata(pans)
+
+        assertEquals(listOf(25), clearedPositions)
+        assertTrue(pans.first { it.positionSn == 10 }.isHasSausage)
+        assertEquals(1, HighConcurrencyResidualDrainEvaluator.evaluate(1, pans))
+    }
+
+    private fun emptyPans(): List<KaoPan> =
+        (1..33).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+                isHasGrilling = false
+                startTime = 0L
+                holdingTime = 0L
+                status = 0
+                temperature = 0
+            }
+        }
 }

@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
+
 internal data class HighTrafficSupplementTrackingState(
     val pitCount: Int,
     val lastFillPitTime: Long
@@ -85,4 +87,29 @@ internal fun canFinishHighToLowDrain(
     maxFrontSausageCount: Int = 9
 ): Boolean {
     return frontSausageCount <= maxFrontSausageCount && zone3SausageCount == 0
+}
+
+internal fun clearEmptyHighConcurrencyResidualMetadata(
+    kaoPanList: List<KaoPan>
+): List<Int> {
+    val clearedPositions = mutableListOf<Int>()
+    kaoPanList
+        .filter { pan ->
+            (pan.positionSn in 10..21 || pan.positionSn in 25..33) &&
+                !pan.isHasSausage &&
+                (pan.isHasGrilling ||
+                    pan.startTime > 0L ||
+                    pan.holdingTime > 0L ||
+                    pan.status != 0 ||
+                    pan.temperature != 0)
+        }
+        .forEach { pan ->
+            pan.isHasGrilling = false
+            pan.startTime = 0L
+            pan.holdingTime = 0L
+            pan.status = 0
+            pan.temperature = 0
+            clearedPositions += pan.positionSn
+        }
+    return clearedPositions.sorted()
 }

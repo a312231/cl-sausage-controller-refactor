@@ -606,6 +606,7 @@ object HighCurrentTrafficMode {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
+        val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
         val sausageCount = list1_21.count { it.isHasSausage }
         val alreadySausages1_9 = list1_9.filter { it.isHasSausage }
         if (alreadySausages1_9.size < sausageCount) {
@@ -644,6 +645,15 @@ object HighCurrentTrafficMode {
                 "【并发切换】高转低/残留收拢未完成，等待下轮继续搬移：remaining10_21=${remaining10_21.map { it.positionSn }}"
             )
             return false
+        }
+
+        val clearedResidualPositions = clearEmptyHighConcurrencyResidualMetadata(list1_21 + list25_33)
+        if (clearedResidualPositions.isNotEmpty()) {
+            LogUtils.i(
+                TAG,
+                "【并发切换】高转低/残留收拢清理空盘残留元数据：positions=$clearedResidualPositions，" +
+                    "fields=isHasGrilling/startTime/holdingTime/status/temperature"
+            )
         }
 
         val existingCountMap = list1_9
