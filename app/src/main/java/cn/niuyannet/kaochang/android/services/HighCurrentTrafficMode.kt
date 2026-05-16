@@ -26,6 +26,7 @@ object HighCurrentTrafficMode {
     private var lastFillPitTime = 0L
 
     private var lastHighTrafficSnapshot: String? = null
+    private var lastLowToHighPartialWaitSnapshot: LowToHighPartialWaitLogSnapshot? = null
 
     private fun modeText(value: Int): String = when (value) {
         1 -> "1(低并发)"
@@ -63,6 +64,7 @@ object HighCurrentTrafficMode {
     }
 
     private fun resetSupplementTracking(reason: String) {
+        clearLowToHighPartialWaitSnapshot()
         applySupplementTrackingState(
             nextState = resetHighTrafficSupplementTracking(),
             reason = reason
@@ -88,6 +90,38 @@ object HighCurrentTrafficMode {
         applySupplementTrackingState(
             nextState = currentSupplementTrackingState().copy(pitCount = 0),
             reason = reason
+        )
+    }
+
+    private fun clearLowToHighPartialWaitSnapshot() {
+        lastLowToHighPartialWaitSnapshot = null
+    }
+
+    private fun logLowToHighPartialWaitIfChanged(
+        list13_18: List<KaoPan>,
+        list25_33: List<KaoPan>,
+        boxSupplyAvailable: Boolean,
+        schedulingEnabled: Boolean,
+        errorStatus: Int
+    ) {
+        val currentSnapshot = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = list13_18,
+            partialHighHeatPans = list25_33,
+            boxSupplyAvailable = boxSupplyAvailable,
+            schedulingEnabled = schedulingEnabled,
+            errorStatus = errorStatus
+        )
+        if (!shouldLogLowToHighPartialWait(lastLowToHighPartialWaitSnapshot, currentSnapshot)) {
+            return
+        }
+        lastLowToHighPartialWaitSnapshot = currentSnapshot
+        LogUtils.i(
+            TAG,
+            "【并发切换】低转高等待旧补热区清空：13~18剩余=${currentSnapshot.oldLowHeatPositions}，" +
+                "25~33残缺批次=${currentSnapshot.partialHighHeatPositions}(${currentSnapshot.partialHighHeatPositions.size}/9)，" +
+                "boxSupplyAvailable=${currentSnapshot.boxSupplyAvailable}，" +
+                "schedulingEnabled=${currentSnapshot.schedulingEnabled}，" +
+                "errorStatus=${currentSnapshot.errorStatus}"
         )
     }
 
@@ -441,9 +475,12 @@ object HighCurrentTrafficMode {
         )
         if (completionState == null) {
             if (hasOldLowHeatAreaSausage && hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow) {
-                LogUtils.i(
-                    TAG,
-                    "【并发切换】低转高已启动 25~33 残缺高并发补热批次，等待 13~18 旧低并发补热区清空后进入高并发正常态：当前有肠数=${list25_33.count { it.isHasSausage }}，目标=9"
+                logLowToHighPartialWaitIfChanged(
+                    list13_18 = list13_18,
+                    list25_33 = list25_33,
+                    boxSupplyAvailable = boxSupplyAvailable,
+                    schedulingEnabled = schedulingEnabled,
+                    errorStatus = config.errorStatus
                 )
             }
             return
@@ -462,6 +499,7 @@ object HighCurrentTrafficMode {
 
         config.modeType = completionState.modeType
         config.transitionMode = completionState.transitionMode
+        clearLowToHighPartialWaitSnapshot()
         AppConfig.saveAppConfig(config)
         SendServerHelper.publishServiceUpdateStatus()
         LogUtils.i(

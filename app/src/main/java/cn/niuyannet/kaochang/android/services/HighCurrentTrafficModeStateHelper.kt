@@ -12,6 +12,40 @@ internal data class HighTrafficModeState(
     val transitionMode: Int
 )
 
+internal data class LowToHighPartialWaitLogSnapshot(
+    val oldLowHeatPositions: List<Int>,
+    val partialHighHeatPositions: List<Int>,
+    val boxSupplyAvailable: Boolean,
+    val schedulingEnabled: Boolean,
+    val errorStatus: Int
+)
+
+internal fun createLowToHighPartialWaitLogSnapshot(
+    oldLowHeatPans: List<KaoPan>,
+    partialHighHeatPans: List<KaoPan>,
+    boxSupplyAvailable: Boolean,
+    schedulingEnabled: Boolean,
+    errorStatus: Int
+): LowToHighPartialWaitLogSnapshot =
+    LowToHighPartialWaitLogSnapshot(
+        oldLowHeatPositions = oldLowHeatPans
+            .filter { it.isHasSausage }
+            .map { it.positionSn }
+            .sorted(),
+        partialHighHeatPositions = partialHighHeatPans
+            .filter { it.isHasSausage }
+            .map { it.positionSn }
+            .sorted(),
+        boxSupplyAvailable = boxSupplyAvailable,
+        schedulingEnabled = schedulingEnabled,
+        errorStatus = errorStatus
+    )
+
+internal fun shouldLogLowToHighPartialWait(
+    previous: LowToHighPartialWaitLogSnapshot?,
+    current: LowToHighPartialWaitLogSnapshot
+): Boolean = previous != current
+
 internal fun resolveLowToHighTransitionIdleState(
     currentModeType: Int,
     schedulingEnabled: Boolean,

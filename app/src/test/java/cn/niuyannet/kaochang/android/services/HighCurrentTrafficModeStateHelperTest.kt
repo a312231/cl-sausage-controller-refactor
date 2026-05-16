@@ -171,6 +171,77 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun shouldLogLowToHighPartialWait_shouldLogFirstSnapshotAndSuppressSameSnapshot() {
+        val snapshot = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = occupiedPans(13, 14),
+            partialHighHeatPans = occupiedPans(25, 26, 27, 28, 29),
+            boxSupplyAvailable = false,
+            schedulingEnabled = true,
+            errorStatus = 0
+        )
+
+        assertTrue(shouldLogLowToHighPartialWait(previous = null, current = snapshot))
+        assertFalse(shouldLogLowToHighPartialWait(previous = snapshot, current = snapshot))
+    }
+
+    @Test
+    fun shouldLogLowToHighPartialWait_shouldLogWhenPanPositionsChange() {
+        val previous = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = occupiedPans(13, 14),
+            partialHighHeatPans = occupiedPans(25, 26, 27, 28, 29),
+            boxSupplyAvailable = false,
+            schedulingEnabled = true,
+            errorStatus = 0
+        )
+        val oldLowHeatChanged = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = occupiedPans(14),
+            partialHighHeatPans = occupiedPans(25, 26, 27, 28, 29),
+            boxSupplyAvailable = false,
+            schedulingEnabled = true,
+            errorStatus = 0
+        )
+        val partialHighHeatChanged = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = occupiedPans(14),
+            partialHighHeatPans = occupiedPans(25, 26, 27, 28, 29, 30),
+            boxSupplyAvailable = false,
+            schedulingEnabled = true,
+            errorStatus = 0
+        )
+
+        assertTrue(shouldLogLowToHighPartialWait(previous, oldLowHeatChanged))
+        assertTrue(shouldLogLowToHighPartialWait(oldLowHeatChanged, partialHighHeatChanged))
+    }
+
+    @Test
+    fun shouldLogLowToHighPartialWait_shouldLogWhenSchedulingStockOrErrorChanges() {
+        val previous = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = occupiedPans(13, 14),
+            partialHighHeatPans = occupiedPans(25, 26, 27, 28, 29),
+            boxSupplyAvailable = false,
+            schedulingEnabled = true,
+            errorStatus = 0
+        )
+
+        assertTrue(shouldLogLowToHighPartialWait(previous, previous.copy(boxSupplyAvailable = true)))
+        assertTrue(shouldLogLowToHighPartialWait(previous, previous.copy(schedulingEnabled = false)))
+        assertTrue(shouldLogLowToHighPartialWait(previous, previous.copy(errorStatus = 1)))
+    }
+
+    @Test
+    fun shouldLogLowToHighPartialWait_shouldLogAgainAfterSnapshotReset() {
+        val snapshot = createLowToHighPartialWaitLogSnapshot(
+            oldLowHeatPans = occupiedPans(13, 14),
+            partialHighHeatPans = occupiedPans(25, 26, 27, 28, 29),
+            boxSupplyAvailable = false,
+            schedulingEnabled = true,
+            errorStatus = 0
+        )
+
+        assertFalse(shouldLogLowToHighPartialWait(previous = snapshot, current = snapshot))
+        assertTrue(shouldLogLowToHighPartialWait(previous = null, current = snapshot))
+    }
+
+    @Test
     fun clearEmptyHighConcurrencyResidualMetadata_shouldClearEmptyDirtyHighAreaPans() {
         val pans = emptyPans().map { pan ->
             when (pan.positionSn) {
@@ -219,6 +290,14 @@ class HighCurrentTrafficModeStateHelperTest {
         assertTrue(pans.first { it.positionSn == 10 }.isHasSausage)
         assertEquals(1, HighConcurrencyResidualDrainEvaluator.evaluate(1, pans))
     }
+
+    private fun occupiedPans(vararg positions: Int): List<KaoPan> =
+        positions.map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = true
+            }
+        }
 
     private fun emptyPans(): List<KaoPan> =
         (1..33).map { position ->
