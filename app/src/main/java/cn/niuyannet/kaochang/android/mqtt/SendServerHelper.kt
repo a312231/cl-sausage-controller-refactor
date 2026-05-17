@@ -65,7 +65,6 @@ object SendServerHelper {
     data class RuntimeStatePublishSnapshot(
         val runtimeSeq: Long,
         val source: String,
-        val status: Int,
         val onlineStatus: Int,
         val supplyStatus: Int,
         val inspectionMode: Int,
@@ -141,7 +140,6 @@ object SendServerHelper {
         payload["messageType"] = MqttProtocol.TYPE_RUNTIME_STATE
         payload["deviceCode"] = AppConfig.getDeviceId()
         payload["runtimeSeq"] = seq
-        payload["status"] = config.status
         payload["onlineStatus"] = config.onlineStatus
         payload["supplyStatus"] = config.supplyStatus
         payload["inspectionMode"] = config.inspectionMode
@@ -173,7 +171,6 @@ object SendServerHelper {
             val snapshot = RuntimeStatePublishSnapshot(
                 runtimeSeq = seq,
                 source = source,
-                status = config.status,
                 onlineStatus = config.onlineStatus,
                 supplyStatus = config.supplyStatus,
                 inspectionMode = config.inspectionMode,
@@ -191,7 +188,7 @@ object SendServerHelper {
             scheduleRuntimeStateAckTimeout(snapshot)
             LogUtils.d(
                 "【MQTT运行态】已上报运行时状态：" +
-                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，" +
+                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，" +
                     "onlineStatus=${config.onlineStatus}，supplyStatus=${config.supplyStatus}，" +
                     "inspectionMode=${config.inspectionMode}，" +
                     "isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
@@ -228,7 +225,6 @@ object SendServerHelper {
         payload["available"] = config.available
         payload["availableCountdownLatched"] = config.availableCountdownLatched
         payload["onlineStatus"] = config.onlineStatus
-        payload["status"] = config.status
         payload["source"] = source
         payload["reportedAt"] = now
         val ok = VMMqttHelper.publishService(

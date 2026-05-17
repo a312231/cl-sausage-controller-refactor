@@ -5,7 +5,6 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 internal object RuntimeStateSignatureBuilder {
     fun build(config: AppConfigBean): String {
         return buildString {
-            append(config.status).append('|')
             append(config.onlineStatus).append('|')
             append(config.supplyStatus).append('|')
             append(config.inspectionMode).append('|')

@@ -42,6 +42,30 @@ class SendServerHelperSignatureTest {
         assertNotEquals(RuntimeStateSignatureBuilder.build(original), RuntimeStateSignatureBuilder.build(changed))
     }
 
+    @Test
+    fun buildRuntimeStateSignature_shouldIgnoreLocalBasicStatus() {
+        val enabled = baseConfig().apply {
+            status = 1
+        }
+        val disabled = baseConfig().apply {
+            status = 0
+        }
+
+        assertEquals(RuntimeStateSignatureBuilder.build(enabled), RuntimeStateSignatureBuilder.build(disabled))
+    }
+
+    @Test
+    fun buildRuntimeStateSignature_shouldChangeWhenOnlineStatusChanges() {
+        val operating = baseConfig().apply {
+            onlineStatus = 1
+        }
+        val resting = baseConfig().apply {
+            onlineStatus = 2
+        }
+
+        assertNotEquals(RuntimeStateSignatureBuilder.build(operating), RuntimeStateSignatureBuilder.build(resting))
+    }
+
     private fun baseConfig(): AppConfigBean =
         AppConfigBean().apply {
             status = 1

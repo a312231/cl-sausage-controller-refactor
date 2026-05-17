@@ -544,6 +544,8 @@ object AppConfig {
             config.pendingDisableActionGroupV2 = if (jsonData.getIntValue("pendingDisableActionGroupV2") == 1) 1 else 0
         }
 
+        // config.status 仅本地使用，表示"运营态激活（1=已激活）"，与后端 kc_device.status（0=正常，1=停用）语义相反。
+        // 严禁通过 MQTT/HTTP payload 上报至云端，详见 SendServerHelper 的 publishServiceUpdateStatus / publishAvailableState 收口策略。
         if (config.onlineStatus in 1..4 && config.status != 1) {
             preservedFields.add("status(normalized_from_onlineStatus)")
             config.status = 1
