@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.delay
 
 sealed class ActionGroupResult {
@@ -24,11 +25,11 @@ class InActionGroupRunner(
         targetPanNo: Int,
         resumeFromRunningState: Boolean = false
     ): ActionGroupResult {
-        if (sourceBoxNo !in 1..22) {
+        if (!SourceBoxPositionPolicy.isValidSourceBox(sourceBoxNo)) {
             return ActionGroupResult.Failed(
                 "in",
                 AtomicActionResult.Failed(AtomicActionCodes.PARAM_ERROR, "参数错误"),
-                "源肠箱编号必须在 1..22，当前=$sourceBoxNo"
+                "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
             )
         }
         if (targetPanNo !in 1..33) {

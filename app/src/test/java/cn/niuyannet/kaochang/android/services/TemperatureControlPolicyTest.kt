@@ -84,6 +84,22 @@ class TemperatureControlPolicyTest {
     }
 
     @Test
+    fun decideZoneTemperatures_shouldClampTargetTemperatureToFourFHeatingRange() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(
+                pan(positionSn = 3, hasSausage = true, status = 1),
+                pan(positionSn = 15, hasSausage = true, status = 1),
+                pan(positionSn = 26, hasSausage = true, status = 2, holdingTime = 100L)
+            ),
+            keepWarmTemperature = 250,
+            heatingTemperature = 198,
+            heatingOffsetsByArea = mapOf(1 to 5, 2 to -250)
+        )
+
+        assertEquals(listOf(199, 0, 199), result.map { it.targetTemperature })
+    }
+
+    @Test
     fun decideZoneTemperatures_shouldNotApplyHeatingOffsetToKeepWarmZone() {
         val result = TemperatureControlPolicy.decideZoneTemperatures(
             pans = pans(pan(positionSn = 26, hasSausage = true, status = 2, holdingTime = 100L)),

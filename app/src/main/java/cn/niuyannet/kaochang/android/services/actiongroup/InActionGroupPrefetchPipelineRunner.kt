@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -169,12 +170,12 @@ class InActionGroupPrefetchPipelineRunner(
                 "下一根进入预取阶段：targetPan=${task.targetPanNo}，sourceBox=$sourceBoxNo，" +
                     "candidateIndex=${index + 1}/${task.sourceBoxCandidates.size}"
             )
-            if (sourceBoxNo !in 1..22) {
+            if (!SourceBoxPositionPolicy.isValidSourceBox(sourceBoxNo)) {
                 return PrefetchResult.Failed(
                     actionName = "in",
                     sourceBoxNo = sourceBoxNo,
                     result = AtomicActionResult.Failed(AtomicActionCodes.PARAM_ERROR, "参数错误"),
-                    message = "源肠箱编号必须在 1..22，当前=$sourceBoxNo"
+                    message = "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
                 )
             }
 

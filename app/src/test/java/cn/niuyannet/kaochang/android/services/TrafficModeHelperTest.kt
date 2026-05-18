@@ -15,6 +15,38 @@ class TrafficModeHelperTest {
             box(positionSn = 1, tasteCode = "A", num = 0),
             box(positionSn = 2, tasteCode = "B", num = 3),
             box(positionSn = 3, tasteCode = "A", num = 2),
+            box(positionSn = 11, tasteCode = "A", num = 9),
+            box(positionSn = 22, tasteCode = "A", num = 9),
+            box(positionSn = 8, tasteCode = "A", num = 1),
+            box(positionSn = 6, tasteCode = "A", num = 5)
+        )
+
+        val result = TrafficModeHelper.findSupplyBoxesByTaste(boxes, "A")
+
+        assertEquals("4F 源肠箱保留位 11/22 不能作为自动补肠候选", listOf(8, 6, 3), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findSupplyBoxesByTaste_shouldAllowValidBoxesAroundReservedSlots() {
+        val boxes = listOf(
+            box(positionSn = 10, tasteCode = "A", num = 1),
+            box(positionSn = 11, tasteCode = "A", num = 1),
+            box(positionSn = 12, tasteCode = "A", num = 1),
+            box(positionSn = 21, tasteCode = "A", num = 1),
+            box(positionSn = 22, tasteCode = "A", num = 1)
+        )
+
+        val result = TrafficModeHelper.findSupplyBoxesByTaste(boxes, "A")
+
+        assertEquals(listOf(21, 12, 10), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findSupplyBoxesByTaste_shouldReturnSameTasteStockBoxesByDescendingPosition_legacyExpectation() {
+        val boxes = listOf(
+            box(positionSn = 1, tasteCode = "A", num = 0),
+            box(positionSn = 2, tasteCode = "B", num = 3),
+            box(positionSn = 3, tasteCode = "A", num = 2),
             box(positionSn = 8, tasteCode = "A", num = 1),
             box(positionSn = 6, tasteCode = "A", num = 5)
         )

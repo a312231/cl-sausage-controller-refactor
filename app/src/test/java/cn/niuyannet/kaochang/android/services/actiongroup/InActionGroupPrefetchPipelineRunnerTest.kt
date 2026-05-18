@@ -160,6 +160,21 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldRejectReservedSourceBoxCandidateBeforeWritingAnyAction() = runBlocking {
+        val client = FakeClient()
+        val runner = InActionGroupPrefetchPipelineRunner(client)
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(22), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals("in", failed.actionName)
+        assertEquals(22, failed.sourceBoxNo)
+        assertEquals("源肠箱编号必须在 1~10、12~21，当前=22", failed.message)
+        assertTrue(client.calls.isEmpty())
+    }
+
+    @Test
     fun pipeline_shouldTryNextBoxWhenIn2PickFailureExhaustsCurrentBox() = runBlocking {
         val client = FakeClient(
             results = queueOf(

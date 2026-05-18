@@ -52,9 +52,9 @@ object RemoteRuntimeConfigPatchApplier {
                 "highConcurrencyResidualDrain" ->
                     applyIntRange(config, field, entry.value, 0, 1) { config.highConcurrencyResidualDrain = it }
                 "keepWarmTemperature" ->
-                    applyIntValue(config, field, entry.value) { config.keepWarmTemperature = it }
+                    applyTemperatureTarget(config, field, entry.value, normalizedFields) { config.keepWarmTemperature = it }
                 "heatingTemperature" ->
-                    applyIntValue(config, field, entry.value) { config.heatingTemperature = it }
+                    applyTemperatureTarget(config, field, entry.value, normalizedFields) { config.heatingTemperature = it }
                 "zone1HeatingOffset" ->
                     applyHeatingOffset(config, field, entry.value, normalizedFields) { config.zone1HeatingOffset = it }
                 "zone2HeatingOffset" ->
@@ -122,6 +122,22 @@ object RemoteRuntimeConfigPatchApplier {
     ): Boolean {
         val intValue = toInt(value) ?: return false
         val normalized = intValue.coerceIn(AppConfig.MIN_HEATING_OFFSET, AppConfig.MAX_HEATING_OFFSET)
+        setter(normalized)
+        if (normalized != intValue) {
+            normalizedFields[field] = normalized
+        }
+        return readIntField(config, field) == normalized
+    }
+
+    private fun applyTemperatureTarget(
+        config: AppConfigBean,
+        field: String,
+        value: Any?,
+        normalizedFields: MutableMap<String, Int>,
+        setter: (Int) -> Unit
+    ): Boolean {
+        val intValue = toInt(value) ?: return false
+        val normalized = cn.niuyannet.kaochang.android.services.FourFTemperaturePolicy.clampTargetTemperature(intValue)
         setter(normalized)
         if (normalized != intValue) {
             normalizedFields[field] = normalized

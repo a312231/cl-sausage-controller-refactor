@@ -15,7 +15,19 @@ class ActionGroupRunnerTest {
         val result = runner.run(sourceBoxNo = 23, targetPanNo = 1)
 
         assertTrue(result is ActionGroupResult.Failed)
-        assertEquals("源肠箱编号必须在 1..22，当前=23", (result as ActionGroupResult.Failed).message)
+        assertEquals("源肠箱编号必须在 1~10、12~21，当前=23", (result as ActionGroupResult.Failed).message)
+        assertTrue(client.calls.isEmpty())
+    }
+
+    @Test
+    fun inRunner_shouldRejectReservedSourceBoxBeforeWritingAnyAction() = runBlocking {
+        val client = FakeClient()
+        val runner = InActionGroupRunner(client)
+
+        val result = runner.run(sourceBoxNo = 11, targetPanNo = 1)
+
+        assertTrue(result is ActionGroupResult.Failed)
+        assertEquals("源肠箱编号必须在 1~10、12~21，当前=11", (result as ActionGroupResult.Failed).message)
         assertTrue(client.calls.isEmpty())
     }
 

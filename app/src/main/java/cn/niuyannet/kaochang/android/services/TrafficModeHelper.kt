@@ -158,7 +158,7 @@ object TrafficModeHelper {
             return emptyList()
         }
         return listBox
-            .filter { it.tasteCode == tasteCode && it.num > 0 }
+            .filter { it.tasteCode == tasteCode && it.num > 0 && SourceBoxPositionPolicy.isValidSourceBox(it.positionSn) }
             .sortedByDescending { it.positionSn }
     }
 

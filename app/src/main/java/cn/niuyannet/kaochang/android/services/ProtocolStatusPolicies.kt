@@ -29,3 +29,41 @@ object PanMove203Policy {
         }
     }
 }
+
+enum class Legacy201Decision {
+    WaitingForStart,
+    Running,
+    Success,
+    BusyOrError,
+    ReadFailed
+}
+
+object Legacy201Policy {
+    fun evaluateAfterCommand(status201: Int, hasObservedRunning: Boolean): Legacy201Decision {
+        return when (status201) {
+            -1 -> Legacy201Decision.ReadFailed
+            0 -> if (hasObservedRunning) Legacy201Decision.Success else Legacy201Decision.WaitingForStart
+            1 -> Legacy201Decision.Running
+            2 -> Legacy201Decision.BusyOrError
+            else -> Legacy201Decision.BusyOrError
+        }
+    }
+}
+
+object SourceBoxPositionPolicy {
+    fun isValidSourceBox(positionSn: Int): Boolean {
+        return positionSn in 1..22 && positionSn != 11 && positionSn != 22
+    }
+
+    fun validRangeText(): String = "1~10、12~21"
+}
+
+object FourFTemperaturePolicy {
+    fun clampTargetTemperature(value: Int): Int {
+        return when {
+            value <= 0 -> 0
+            value > 199 -> 199
+            else -> value
+        }
+    }
+}

@@ -3,6 +3,7 @@
 import android.provider.Settings
 import cn.niuyannet.kaochang.android.MyApp
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.services.FourFTemperaturePolicy
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
@@ -206,7 +207,7 @@ object AppConfig {
         LogUtils.i(
             "【配置迁移】检测到旧视觉联调开关历史开启，已自动关闭：" +
                 "forceVisionSuccess（视觉识别固定返回成功开关）=1（开启）->0（关闭），" +
-                "当前主出餐链路使用 out5（光电检查顾客是否取走），不再依赖售卖口视觉识别"
+                "当前 4F 主出餐链路使用 out4（开窗推送并收口）判定单次履约完成，不再依赖售卖口视觉识别"
         )
         return true
     }
@@ -470,8 +471,12 @@ object AppConfig {
         mergeInt("errorStatus", "errorStatus") { config.errorStatus = it }
         mergeInt("available", "available") { config.available = it.toLong() }
         mergeInt("availableCountdownLatched", "availableCountdownLatched") { config.availableCountdownLatched = it }
-        mergeInt("keepWarmTemperature", "keepWarmTemperature") { config.keepWarmTemperature = it }
-        mergeInt("heatingTemperature", "heatingTemperature") { config.heatingTemperature = it }
+        mergeInt("keepWarmTemperature", "keepWarmTemperature") {
+            config.keepWarmTemperature = FourFTemperaturePolicy.clampTargetTemperature(it)
+        }
+        mergeInt("heatingTemperature", "heatingTemperature") {
+            config.heatingTemperature = FourFTemperaturePolicy.clampTargetTemperature(it)
+        }
         mergeHeatingOffset("zone1HeatingOffset", "zone1HeatingOffset") { config.zone1HeatingOffset = it }
         mergeHeatingOffset("zone2HeatingOffset", "zone2HeatingOffset") { config.zone2HeatingOffset = it }
         mergeHeatingOffset("zone3HeatingOffset", "zone3HeatingOffset") { config.zone3HeatingOffset = it }

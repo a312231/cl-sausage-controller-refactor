@@ -457,6 +457,7 @@ object KaoChangOperate {
         busyRetryDelayMs: Long = 1000L,
         runningPollDelayMs: Long = 1000L,
         runningTimeoutMs: Long = 60_000L,
+        requireRunningBeforeIdleSuccess: Boolean = false,
         issueAction: suspend () -> VMModbusHelper.ModbusOperationResult
     ): ActionExecutionResult {
         var busyRetryCount = 0
@@ -510,33 +511,62 @@ object KaoChangOperate {
                 }
             }
             val start = System.currentTimeMillis()
+            var hasObservedRunning = false
 
             while (true) {
                 delay(runningPollDelayMs)
                 if (!ensureModbusReady(actionName)) {
                     return ActionExecutionResult.DISCONNECTED
                 }
-                when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
-                    ActionStatus201.RUNNING -> {
-                        if (System.currentTimeMillis() - start > runningTimeoutMs) {
-                            logE(LOG_ACTION, "$actionName 长时间处于执行中(201=1)，已超时")
-                            return ActionExecutionResult.RUNNING_TIMEOUT
+                val status201 = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+                if (requireRunningBeforeIdleSuccess) {
+                    when (Legacy201Policy.evaluateAfterCommand(status201, hasObservedRunning)) {
+                        Legacy201Decision.Running -> {
+                            hasObservedRunning = true
+                            if (System.currentTimeMillis() - start > runningTimeoutMs) {
+                                logE(LOG_ACTION, "$actionName 长时间处于执行中(201=1)，已超时")
+                                return ActionExecutionResult.RUNNING_TIMEOUT
+                            }
                         }
-                    }
-                    ActionStatus201.IDLE -> return ActionExecutionResult.SUCCESS
-                    ActionStatus201.BUSY -> {
-                        busyRetryCount++
-                        if (busyRetryCount > maxBusyRetry) {
-                            logE(LOG_ACTION, "$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
+                        Legacy201Decision.Success -> return ActionExecutionResult.SUCCESS
+                        Legacy201Decision.WaitingForStart -> {
+                            if (System.currentTimeMillis() - start > runningTimeoutMs) {
+                                logE(LOG_ACTION, "$actionName 未观察到 201=1（执行中），不能把 201=0（空闲/完成）当成本轮成功")
+                                return ActionExecutionResult.RUNNING_TIMEOUT
+                            }
+                        }
+                        Legacy201Decision.BusyOrError -> {
+                            logE(LOG_ACTION, "$actionName 下发后收到 201=$status201（旧式错误/忙），本轮不清库存")
                             return ActionExecutionResult.BUSY_TIMEOUT
                         }
-                        logW(LOG_ACTION, "$actionName 下发后收到设备忙(201=2)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
-                        delay(busyRetryDelayMs)
-                        continue@retryLoop
+                        Legacy201Decision.ReadFailed -> {
+                            logE(LOG_ACTION, "$actionName 执行过程中读取动作状态失败")
+                            return ActionExecutionResult.DISCONNECTED
+                        }
                     }
-                    ActionStatus201.DISCONNECTED -> {
-                        logE(LOG_ACTION, "$actionName 执行过程中读取动作状态失败")
-                        return ActionExecutionResult.DISCONNECTED
+                } else {
+                    when (parseActionStatus201(status201)) {
+                        ActionStatus201.RUNNING -> {
+                            if (System.currentTimeMillis() - start > runningTimeoutMs) {
+                                logE(LOG_ACTION, "$actionName 长时间处于执行中(201=1)，已超时")
+                                return ActionExecutionResult.RUNNING_TIMEOUT
+                            }
+                        }
+                        ActionStatus201.IDLE -> return ActionExecutionResult.SUCCESS
+                        ActionStatus201.BUSY -> {
+                            busyRetryCount++
+                            if (busyRetryCount > maxBusyRetry) {
+                                logE(LOG_ACTION, "$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
+                                return ActionExecutionResult.BUSY_TIMEOUT
+                            }
+                            logW(LOG_ACTION, "$actionName 下发后收到设备忙(201=2)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
+                            delay(busyRetryDelayMs)
+                            continue@retryLoop
+                        }
+                        ActionStatus201.DISCONNECTED -> {
+                            logE(LOG_ACTION, "$actionName 执行过程中读取动作状态失败")
+                            return ActionExecutionResult.DISCONNECTED
+                        }
                     }
                 }
             }
@@ -1874,6 +1904,13 @@ object KaoChangOperate {
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠操作")
             return false
         }
+        if (!SourceBoxPositionPolicy.isValidSourceBox(kaoPanBox.positionSn)) {
+            logE(
+                LOG_SUPPLEMENT,
+                "补肠取消：烤肠箱${kaoPanBox.positionSn}为 4F 保留/非法源肠箱，合法源肠箱=${SourceBoxPositionPolicy.validRangeText()}"
+            )
+            return false
+        }
         if (kaoPanBox.num <= 0) {
             logE(LOG_SUPPLEMENT, "补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
             return false
@@ -2574,8 +2611,10 @@ object KaoChangOperate {
 
         val result = executeActionWithRetry(
             actionName = "烤盘${kaoPan.positionSn}${source}丢弃",
+            maxBusyRetry = 0,
             runningPollDelayMs = 2000L,
-            runningTimeoutMs = 120_000L
+            runningTimeoutMs = 120_000L,
+            requireRunningBeforeIdleSuccess = true
         ) {
             writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
         }
@@ -2800,11 +2839,19 @@ object KaoChangOperate {
 
     // 仅供写 0 停热/主动暂停/故障停热路径，以及 setAreaTargetTemperature 内部最终落寄存器使用。
     private fun writeAreaTargetTemperatureRaw(area: Int, temperature: Int, source: String) {
-        logD(LOG_HEAT, "写入温区目标温度：source=$source，area=$area，temperature=$temperature")
+        val targetTemperature = FourFTemperaturePolicy.clampTargetTemperature(temperature)
+        if (targetTemperature != temperature) {
+            logW(
+                LOG_HEAT,
+                "温区目标温度已按 4F 限制归一化：source=$source，area=$area，" +
+                    "rawTemperature=$temperature，targetTemperature=$targetTemperature（1~199 加热，<=0 写0，>199 截到199）"
+            )
+        }
+        logD(LOG_HEAT, "写入温区目标温度：source=$source，area=$area，temperature=$targetTemperature")
         when (area) {
-            1 -> writeSingleRegister(action_address_1_temperature_write, temperature)
-            2 -> writeSingleRegister(action_address_2_temperature_write, temperature)
-            3 -> writeSingleRegister(action_address_3_temperature_write, temperature)
+            1 -> writeSingleRegister(action_address_1_temperature_write, targetTemperature)
+            2 -> writeSingleRegister(action_address_2_temperature_write, targetTemperature)
+            3 -> writeSingleRegister(action_address_3_temperature_write, targetTemperature)
         }
     }
 

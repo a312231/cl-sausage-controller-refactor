@@ -26,6 +26,33 @@ class RemoteRuntimeConfigPatchApplierTest {
     }
 
     @Test
+    fun apply_shouldClampRemoteTemperatureTargetsToFourFRange() {
+        val config = AppConfigBean().apply {
+            keepWarmTemperature = 60
+            heatingTemperature = 160
+        }
+        val patch = JSONObject().apply {
+            put("keepWarmTemperature", 250)
+            put("heatingTemperature", -5)
+        }
+
+        val result = RemoteRuntimeConfigPatchApplier.apply(config, patch)
+
+        assertTrue(result.hasApplied)
+        assertTrue(result.isPartial)
+        assertTrue(result.temperatureChanged)
+        assertEquals(199, config.keepWarmTemperature)
+        assertEquals(0, config.heatingTemperature)
+        assertEquals(
+            mapOf(
+                "keepWarmTemperature" to 199,
+                "heatingTemperature" to 0
+            ),
+            result.normalizedFields
+        )
+    }
+
+    @Test
     fun apply_shouldNotMarkTemperatureChangedForRuntimePatch() {
         val config = AppConfigBean().apply {
             onlineStatus = 1

@@ -33,4 +33,12 @@ class ProtocolStatusPolicyTest {
         assertEquals(500L, PanMove203Policy.pollDelayMs)
         assertEquals(2_000L, PanMove203Policy.waitOtherActionDelayMs)
     }
+
+    @Test
+    fun legacy201_shouldRequireRunningBeforeIdleMeansCompleted() {
+        assertEquals(Legacy201Decision.WaitingForStart, Legacy201Policy.evaluateAfterCommand(0, hasObservedRunning = false))
+        assertEquals(Legacy201Decision.Running, Legacy201Policy.evaluateAfterCommand(1, hasObservedRunning = false))
+        assertEquals(Legacy201Decision.Success, Legacy201Policy.evaluateAfterCommand(0, hasObservedRunning = true))
+        assertEquals(Legacy201Decision.BusyOrError, Legacy201Policy.evaluateAfterCommand(2, hasObservedRunning = true))
+    }
 }

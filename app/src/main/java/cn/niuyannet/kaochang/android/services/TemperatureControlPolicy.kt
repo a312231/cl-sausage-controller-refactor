@@ -54,8 +54,10 @@ object TemperatureControlPolicy {
                 positions = positions,
                 mode = mode,
                 targetTemperature = when (mode) {
-                    ZoneMode.HEATING -> heatingTemperature + (heatingOffsetsByArea[area] ?: 0)
-                    ZoneMode.KEEP_WARM -> keepWarmTemperature
+                    ZoneMode.HEATING -> FourFTemperaturePolicy.clampTargetTemperature(
+                        heatingTemperature + (heatingOffsetsByArea[area] ?: 0)
+                    )
+                    ZoneMode.KEEP_WARM -> FourFTemperaturePolicy.clampTargetTemperature(keepWarmTemperature)
                     ZoneMode.STOP -> 0
                 }
             )
