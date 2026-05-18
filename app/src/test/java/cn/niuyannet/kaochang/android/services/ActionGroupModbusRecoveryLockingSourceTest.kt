@@ -39,11 +39,60 @@ class ActionGroupModbusRecoveryLockingSourceTest {
             recoverReason = "维护手动取肠入口前恢复检查",
             returnText = "return false"
         )
-        assertEntry(
+        assertOrderDispatchEntry(
             source = source,
             ensureActionName = "出餐动作组恢复检查",
             recoverReason = "正式出餐入口前恢复检查",
             returnText = "return TakeSausageResult.ERROR"
+        )
+    }
+
+    @Test
+    fun orderDeliveryHotPath_shouldUseOrderDispatchGateInsteadOfFullRecovery() {
+        val source = orderActivitySourceText()
+        val functionStart = source.indexOf("private suspend fun ensureModbusReadyForDelivery(")
+        assertTrue("必须存在订单出餐前 Modbus 预检函数", functionStart >= 0)
+        val functionEnd = source.indexOf("private suspend fun syncDeviceStatusToServer", functionStart)
+            .let { if (it >= 0) it else source.length }
+        val functionSource = source.substring(functionStart, functionEnd)
+
+        assertTrue(
+            "订单热路径必须改用 ensureActionGroupReadyForOrderDispatch，避免重复读取 12 个 result 寄存器",
+            functionSource.contains("KaoChangOperate.ensureActionGroupReadyForOrderDispatch(")
+        )
+        assertTrue(
+            "订单热路径不应直接调用 recoverActionGroupStateAfterModbusReady",
+            !functionSource.contains("KaoChangOperate.recoverActionGroupStateAfterModbusReady(")
+        )
+    }
+
+    @Test
+    fun modbusDisconnect_shouldInvalidateOrderRecoveryVerification() {
+        val source = algorithmSourceText()
+        val disconnectStart = source.indexOf("actionGroupRecoveredAfterModbusConnect = false")
+        assertTrue("Modbus 断开分支必须重置后台恢复标志", disconnectStart >= 0)
+        val disconnectBlockEnd = source.indexOf("if (modbusDisconnectSinceMs == null)", disconnectStart)
+            .let { if (it >= 0) it else source.length }
+        val disconnectBlock = source.substring(disconnectStart, disconnectBlockEnd)
+
+        assertTrue(
+            "Modbus 断开时必须清除订单动作组恢复验证标志",
+            disconnectBlock.contains("KaoChangOperate.invalidateActionGroupRecoveryVerification(")
+        )
+    }
+
+    @Test
+    fun actionGroupFaultLock_shouldInvalidateOrderRecoveryVerification() {
+        val source = sourceText()
+        val faultStart = source.indexOf("private fun markDeviceErrorAndUpload(")
+        assertTrue("必须存在动作组故障锁存入口", faultStart >= 0)
+        val faultEnd = source.indexOf("private fun armPostSellSupplementGuard", faultStart)
+            .let { if (it >= 0) it else source.length }
+        val faultBlock = source.substring(faultStart, faultEnd)
+
+        assertTrue(
+            "动作组/硬件故障锁存时必须清除订单动作组恢复验证标志",
+            faultBlock.contains("invalidateActionGroupRecoveryVerification(")
         )
     }
 
@@ -69,10 +118,48 @@ class ActionGroupModbusRecoveryLockingSourceTest {
         assertTrue("recover 失败分支必须按入口返回：$recoverReason", recoverBlock.contains(returnText))
     }
 
+    private fun assertOrderDispatchEntry(
+        source: String,
+        ensureActionName: String,
+        recoverReason: String,
+        returnText: String
+    ) {
+        val ensureBlockStart = source.indexOf("if (!ensureModbusReady(\"$ensureActionName\")) {")
+        assertTrue("入口必须单独判断 ensureModbusReady：$ensureActionName", ensureBlockStart >= 0)
+        val recoveryGateStart = source.indexOf("if (!ensureActionGroupReadyForOrderDispatch(\"$recoverReason\")) {", ensureBlockStart)
+        assertTrue("出餐入口必须走订单动作组恢复门控：$recoverReason", recoveryGateStart > ensureBlockStart)
+
+        val ensureBlock = source.substring(ensureBlockStart, recoveryGateStart)
+        assertTrue("ensure 失败分支必须锁存维护：$ensureActionName", ensureBlock.contains("enterActionGroupMaintenance("))
+        assertTrue("ensure 失败分支必须按入口返回：$ensureActionName", ensureBlock.contains(returnText))
+        assertTrue("ensure 失败分支必须使用 MODBUS_COMM_DROP：$ensureActionName", ensureBlock.contains("FaultCode.MODBUS_COMM_DROP"))
+
+        val recoveryBlockEnd = source.indexOf("\n        }\n", recoveryGateStart).let { if (it >= 0) it else source.length }
+        val recoveryBlock = source.substring(recoveryGateStart, recoveryBlockEnd)
+        assertTrue("订单动作组恢复门控失败分支只能 return，不能二次锁存：$recoverReason", !recoveryBlock.contains("enterActionGroupMaintenance("))
+        assertTrue("订单动作组恢复门控失败分支必须按入口返回：$recoverReason", recoveryBlock.contains(returnText))
+    }
+
     private fun sourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"),
             File("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        ).first { it.exists() }
+        return sourceFile.readText().replace("\r\n", "\n")
+    }
+
+    private fun orderActivitySourceText(): String {
+        val sourceFile = listOf(
+            File("src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt"),
+            File("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
+        ).first { it.exists() }
+        return sourceFile.readText().replace("\r\n", "\n")
+    }
+
+    private fun algorithmSourceText(): String {
+        val sourceFile = listOf(
+            File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt"),
+            File("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
         ).first { it.exists() }
         return sourceFile.readText().replace("\r\n", "\n")
     }

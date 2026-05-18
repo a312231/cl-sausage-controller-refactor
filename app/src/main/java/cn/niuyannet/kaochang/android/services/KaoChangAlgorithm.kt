@@ -977,6 +977,7 @@ object KaoChangAlgorithm {
                     }
                 } else {
                     actionGroupRecoveredAfterModbusConnect = false
+                    KaoChangOperate.invalidateActionGroupRecoveryVerification("Modbus断开")
                     modbusReconnectSinceMs = null
                     loggedManualRecoveryRequiredAfterReconnect = false
                     if (modbusDisconnectSinceMs == null) {

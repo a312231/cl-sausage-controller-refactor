@@ -16,6 +16,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryRes
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventPayloadBuilder
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderRecoveryDecision
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOperationLogContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSession
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSessionType
@@ -101,6 +103,9 @@ object KaoChangOperate {
     private var lastActionGroupRecoveryFailureReason: String? = null
 
     @Volatile
+    private var actionGroupRecoveryVerified: Boolean = false
+
+    @Volatile
     private var supplementBlockedUntilMs: Long = 0L
 
     private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
@@ -108,6 +113,21 @@ object KaoChangOperate {
     private fun logW(category: String, message: String) = LogUtils.w("[$category] $message")
     private fun logE(category: String, message: String) = LogUtils.e("[$category] $message")
     private fun logE(category: String, message: String, tr: Throwable) = LogUtils.e("[$category] $message", tr)
+
+    fun invalidateActionGroupRecoveryVerification(reason: String) {
+        val wasVerified = actionGroupRecoveryVerified
+        actionGroupRecoveryVerified = false
+        if (wasVerified) {
+            logW(LOG_ACTION_GROUP, "动作组恢复验证失效：reason=$reason")
+        }
+    }
+
+    private fun markActionGroupRecoveryVerified(reason: String) {
+        if (!actionGroupRecoveryVerified) {
+            logD(LOG_ACTION_GROUP, "动作组恢复验证通过：reason=$reason")
+        }
+        actionGroupRecoveryVerified = true
+    }
 
     private fun onlineStatusDesc(status: Int): String = when (status) {
         0 -> "0(未启用)"
@@ -238,6 +258,7 @@ object KaoChangOperate {
     }
 
     private fun markDeviceErrorAndUpload(code: FaultCode, logMessage: String) {
+        invalidateActionGroupRecoveryVerification("设备故障锁存：errorCode=${code.name}")
         val config = AppConfig.getAppConfig()
         val previousOnlineStatus = config.onlineStatus
         val previousErrorStatus = config.errorStatus
@@ -766,10 +787,40 @@ object KaoChangOperate {
         )
     }
 
+    suspend fun ensureActionGroupReadyForOrderDispatch(reason: String): Boolean {
+        val modbusConnected = VMModbusHelper.connectStatus()
+        val hasPendingSession = actionGroupSessionStore.load() != null
+        val resourceLocksIdle = actionGroupLocks.isIdle()
+        val decision = ActionGroupOrderRecoveryGatePolicy.evaluate(
+            modbusConnected = modbusConnected,
+            recoveryVerified = actionGroupRecoveryVerified,
+            hasPendingSession = hasPendingSession,
+            resourceLocksIdle = resourceLocksIdle
+        )
+        if (decision == ActionGroupOrderRecoveryDecision.FAST_PATH) {
+            lastActionGroupRecoveryFailureReason = null
+            logD(
+                LOG_ACTION_GROUP,
+                "订单出餐动作组恢复短路：Modbus 已连接，恢复已验证，无本地会话且资源锁空闲，" +
+                    "reason=$reason，resourceLocks=${actionGroupLocks.snapshot()}"
+            )
+            return true
+        }
+        logD(
+            LOG_ACTION_GROUP,
+            "订单出餐动作组恢复门控未短路：decision=$decision，" +
+                "modbusConnected=$modbusConnected，recoveryVerified=$actionGroupRecoveryVerified，" +
+                "hasPendingSession=$hasPendingSession，resourceLocksIdle=$resourceLocksIdle，" +
+                "resourceLocks=${actionGroupLocks.snapshot()}，reason=$reason"
+        )
+        return recoverActionGroupStateAfterModbusReady(reason)
+    }
+
     suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
         if (!VMModbusHelper.connectStatus()) {
             val detail = "动作组恢复早退：Modbus 未连接，reason=$reason"
             lastActionGroupRecoveryFailureReason = detail
+            invalidateActionGroupRecoveryVerification(detail)
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
         }
@@ -797,6 +848,7 @@ object KaoChangOperate {
                     }
                 }
                 flushPendingActionGroupOrderEvent(reason)
+                markActionGroupRecoveryVerified(reason)
                 true
             }
             is ActionGroupRecoveryResult.StaleSessionCleared -> {
@@ -824,11 +876,13 @@ object KaoChangOperate {
                     }
                 }
                 logW(LOG_ACTION_GROUP, "${result.reason}，reason=$reason")
+                markActionGroupRecoveryVerified(reason)
                 true
             }
             is ActionGroupRecoveryResult.MaintenanceRequired -> {
                 val detail = "动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}"
                 lastActionGroupRecoveryFailureReason = detail
+                invalidateActionGroupRecoveryVerification(detail)
                 enterActionGroupMaintenance(detail)
                 false
             }
@@ -836,9 +890,16 @@ object KaoChangOperate {
                 val handled = handleRecoveredActionGroupSession(result.session, result.actionResult, reason)
                 if (handled) {
                     lastActionGroupRecoveryFailureReason = null
+                    markActionGroupRecoveryVerified(reason)
                 } else if (lastActionGroupRecoveryFailureReason == null) {
                     lastActionGroupRecoveryFailureReason =
                         "动作组恢复接管失败：reason=$reason，sessionId=${result.session.sessionId}，result=${result.actionResult}"
+                }
+                if (!handled) {
+                    invalidateActionGroupRecoveryVerification(
+                        lastActionGroupRecoveryFailureReason
+                            ?: "动作组恢复接管失败：reason=$reason，sessionId=${result.session.sessionId}"
+                    )
                 }
                 handled
             }
@@ -2311,7 +2372,7 @@ object KaoChangOperate {
             )
             return TakeSausageResult.ERROR
         }
-        if (!recoverActionGroupStateAfterModbusReady("正式出餐入口前恢复检查")) {
+        if (!ensureActionGroupReadyForOrderDispatch("正式出餐入口前恢复检查")) {
             return TakeSausageResult.ERROR
         }
         var appState = AppConfig.getAppConfig().moveStatus
