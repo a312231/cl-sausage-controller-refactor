@@ -239,7 +239,7 @@ class InActionGroupPrefetchPipelineRunner(
     private suspend fun executeAction(
         spec: AtomicActionSpec,
         infoValue: Int,
-        onCommandDispatched: (() -> Unit)? = null
+        onCommandDispatched: (suspend () -> Unit)? = null
     ): AtomicActionResult {
         return client.execute(spec, infoValue, onCommandDispatched)
     }
@@ -249,7 +249,7 @@ class InActionGroupPrefetchPipelineRunner(
         infoValue: Int,
         targetPanNo: Int,
         sourceBoxNo: Int,
-        onCommandDispatched: (() -> Unit)? = null
+        onCommandDispatched: (suspend () -> Unit)? = null
     ): AtomicActionResult {
         val startedAtMs = System.currentTimeMillis()
         operationLogger("【补肠】烤盘$targetPanNo ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo")

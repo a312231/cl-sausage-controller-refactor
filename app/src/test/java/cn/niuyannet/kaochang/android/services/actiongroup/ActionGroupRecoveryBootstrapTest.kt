@@ -290,7 +290,7 @@ class ActionGroupRecoveryBootstrapTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (() -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             onCommandDispatched?.invoke()

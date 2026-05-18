@@ -25,7 +25,6 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
-import cn.niuyannet.kaochang.android.services.actiongroup.AtomicStartupConfirmPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.CompletedInActionGroupPipelineTask
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineTask
@@ -545,7 +544,6 @@ object KaoChangOperate {
 
     private fun createAtomicActionClient(
         telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext(),
-        startupConfirmPolicy: AtomicStartupConfirmPolicy = AtomicStartupConfirmPolicy.STRICT,
         onTelemetry: (ActionGroupTelemetry) -> Unit = {}
     ): AtomicActionClient {
         return AtomicActionExecutor(
@@ -555,8 +553,7 @@ object KaoChangOperate {
             telemetrySink = { telemetry ->
                 publishActionGroupTelemetry(telemetry)
                 onTelemetry(telemetry)
-            },
-            startupConfirmPolicy = startupConfirmPolicy
+            }
         )
     }
 
@@ -1600,8 +1597,7 @@ object KaoChangOperate {
                     ActionGroupTelemetryContext(
                         sessionId = owner,
                         resourceLocks = actionGroupLocks.snapshot()
-                    ),
-                    startupConfirmPolicy = AtomicStartupConfirmPolicy.SOFT_SUCCESS_WHEN_COMMAND_STILL_PENDING
+                    )
                 ),
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogger = { message -> LogUtils.i(message) },

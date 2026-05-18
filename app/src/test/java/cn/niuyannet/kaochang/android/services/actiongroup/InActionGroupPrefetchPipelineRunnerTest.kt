@@ -338,7 +338,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (() -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             if (spec.name == "in6" && onCommandDispatched != null) {
@@ -357,7 +357,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (() -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?
         ): AtomicActionResult {
             if (spec.name == "in3") {
                 in3Count += 1
