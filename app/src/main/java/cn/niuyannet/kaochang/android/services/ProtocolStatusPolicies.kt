@@ -30,6 +30,28 @@ object PanMove203Policy {
     }
 }
 
+object FourFSelfCleanNoOpPolicy {
+    const val message = "4f_self_clean_no_op"
+
+    fun isNoOp(value: String?): Boolean {
+        return value == message
+    }
+}
+
+object Zone3SelfCleanPolicy {
+    fun shouldMarkPending(
+        zone3Dirty: Int,
+        zone3CleanPending: Int,
+        zone3CleanSuppressedFor4F: Int,
+        zone3HasSausage: Boolean
+    ): Boolean {
+        return zone3Dirty == 1 &&
+            zone3CleanPending != 1 &&
+            zone3CleanSuppressedFor4F != 1 &&
+            !zone3HasSausage
+    }
+}
+
 enum class Legacy201Decision {
     WaitingForStart,
     Running,

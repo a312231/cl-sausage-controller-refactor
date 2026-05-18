@@ -337,7 +337,7 @@ class TestFragment : Fragment() {
             }
             lifecycleScope.launch {
                 val adminBusy = beginAdminBusy("测试下位机烤盘自清洁")
-                binding.tvSelfCleanResult.text = "正在执行烤盘 ${positionSn} 自清洁..."
+                binding.tvSelfCleanResult.text = "4F 当前自清洁为 no-op，不会真实机械清洁；准备记录烤盘 ${positionSn} 手动触发结果..."
                 val source = "测试下位机页面手动触发"
                 try {
                     AdminOperationLogger.i(
@@ -365,7 +365,7 @@ class TestFragment : Fragment() {
         binding.btnRunSellPlatformSelfClean.setOnClickListener {
             lifecycleScope.launch {
                 val adminBusy = beginAdminBusy("测试下位机出肠台自清洁")
-                binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
+                binding.tvSelfCleanResult.text = "4F 当前自清洁为 no-op，不会真实机械清洁；准备记录出肠台手动触发结果..."
                 val source = "测试下位机页面手动触发"
                 try {
                     AdminOperationLogger.i(
@@ -420,6 +420,7 @@ class TestFragment : Fragment() {
     private fun buildSelfCleanReportText(report: KaoChangOperate.SelfCleanExecutionReport): String {
         val status201Text = formatSelfCleanStatus201(report.status201)
         return "目标=${report.targetLabel}\n" +
+            "提示：4F 当前自清洁为 no-op，不会真实机械清洁\n" +
             "command（下位机自清洁指令）=${report.command}\n" +
             "status201（动作状态寄存器）=$status201Text\n" +
             "success=${report.success}\n" +

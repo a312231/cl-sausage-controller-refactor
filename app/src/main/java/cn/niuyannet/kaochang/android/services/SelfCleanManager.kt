@@ -66,17 +66,21 @@ object SelfCleanManager {
         }
         config.zone3Dirty = 1
         config.zone3CleanPending = 0
+        config.zone3CleanSuppressedFor4F = 0
         AppConfig.saveAppConfig(config)
-        logI("三区自清洁标记已置脏 | zone3Dirty=true，zone3CleanPending=false，range=25~33")
+        logI("三区自清洁标记已置脏 | zone3Dirty=true，zone3CleanPending=false，zone3CleanSuppressedFor4F=false，range=25~33")
     }
 
     fun markZone3CleanPendingIfNeeded(list: List<KaoPan>) {
         val config = AppConfig.getAppConfig()
-        if (config.zone3Dirty != 1 || config.zone3CleanPending == 1) {
-            return
-        }
         val zone3Pans = list.filter { it.positionSn in 25..33 }
-        if (zone3Pans.any { it.isHasSausage }) {
+        if (!Zone3SelfCleanPolicy.shouldMarkPending(
+                zone3Dirty = config.zone3Dirty,
+                zone3CleanPending = config.zone3CleanPending,
+                zone3CleanSuppressedFor4F = config.zone3CleanSuppressedFor4F,
+                zone3HasSausage = zone3Pans.any { it.isHasSausage }
+            )
+        ) {
             return
         }
         config.zone3CleanPending = 1
@@ -113,8 +117,19 @@ object SelfCleanManager {
         )
         val latestConfig = AppConfig.getAppConfig()
         if (!result.success) {
+            if (result.reports.any { FourFSelfCleanNoOpPolicy.isNoOp(it.message) }) {
+                latestConfig.zone3Dirty = 1
+                latestConfig.zone3CleanPending = 0
+                latestConfig.zone3CleanSuppressedFor4F = 1
+                latestConfig.onlineStatus = previousOnlineStatus
+                AppConfig.saveAppConfig(latestConfig)
+                HomeUiRefreshBridge.requestRefresh("zone3_self_clean:no_op")
+                logW("三区批量自清洁未执行：4F 当前为 no-op，不会真实机械清洁；保留 zone3Dirty=true，清除 zone3CleanPending，并设置 zone3CleanSuppressedFor4F=true 抑制重复自动触发")
+                return false
+            }
             latestConfig.zone3Dirty = 0
             latestConfig.zone3CleanPending = 0
+            latestConfig.zone3CleanSuppressedFor4F = 0
             AppConfig.saveAppConfig(latestConfig)
             HomeUiRefreshBridge.requestRefresh("zone3_self_clean:failed")
             logE("三区批量自清洁失败，已停止后续步骤并清除待执行标记")
@@ -123,13 +138,14 @@ object SelfCleanManager {
 
         latestConfig.zone3Dirty = 0
         latestConfig.zone3CleanPending = 0
+        latestConfig.zone3CleanSuppressedFor4F = 0
         latestConfig.onlineStatus = previousOnlineStatus
         AppConfig.saveAppConfig(latestConfig)
         publishRuntimeState("zone3_self_clean:finished")
         HomeUiRefreshBridge.requestRefresh("zone3_self_clean:finished")
         logI(
             "三区批量自清洁完成 | range=25~33，onlineStatus（设备营业状态）=${latestConfig.onlineStatus}，" +
-                "zone3Dirty=false，zone3CleanPending=false"
+                "zone3Dirty=false，zone3CleanPending=false，zone3CleanSuppressedFor4F=false"
         )
         return true
     }

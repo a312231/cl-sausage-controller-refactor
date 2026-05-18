@@ -41,4 +41,32 @@ class ProtocolStatusPolicyTest {
         assertEquals(Legacy201Decision.Success, Legacy201Policy.evaluateAfterCommand(0, hasObservedRunning = true))
         assertEquals(Legacy201Decision.BusyOrError, Legacy201Policy.evaluateAfterCommand(2, hasObservedRunning = true))
     }
+
+    @Test
+    fun zone3SelfClean_shouldNotMarkPendingWhenFourFNoOpSuppressed() {
+        assertEquals(
+            false,
+            Zone3SelfCleanPolicy.shouldMarkPending(
+                zone3Dirty = 1,
+                zone3CleanPending = 0,
+                zone3CleanSuppressedFor4F = 1,
+                zone3HasSausage = false
+            )
+        )
+        assertEquals(
+            true,
+            Zone3SelfCleanPolicy.shouldMarkPending(
+                zone3Dirty = 1,
+                zone3CleanPending = 0,
+                zone3CleanSuppressedFor4F = 0,
+                zone3HasSausage = false
+            )
+        )
+    }
+
+    @Test
+    fun selfCleanNoOp_shouldBeRecognizedByStableMessage() {
+        assertEquals(true, FourFSelfCleanNoOpPolicy.isNoOp("4f_self_clean_no_op"))
+        assertEquals(false, FourFSelfCleanNoOpPolicy.isNoOp("201=2"))
+    }
 }

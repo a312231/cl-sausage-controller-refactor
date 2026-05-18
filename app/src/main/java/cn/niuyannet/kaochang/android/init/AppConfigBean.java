@@ -166,4 +166,5 @@ public class AppConfigBean implements Serializable {
 
     public int zone3Dirty = 0;
     public int zone3CleanPending = 0;
+    public int zone3CleanSuppressedFor4F = 0;
 }

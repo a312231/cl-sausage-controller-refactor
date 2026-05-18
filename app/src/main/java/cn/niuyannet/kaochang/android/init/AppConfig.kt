@@ -30,7 +30,10 @@ object AppConfig {
         "faultHeatPauseSource",
         "pendingDiscardPositions",
         "foodSafetyAlertCode",
-        "foodSafetyAlertReason"
+        "foodSafetyAlertReason",
+        "zone3Dirty",
+        "zone3CleanPending",
+        "zone3CleanSuppressedFor4F"
     )
     private var appConfigBean: AppConfigBean? = null
 

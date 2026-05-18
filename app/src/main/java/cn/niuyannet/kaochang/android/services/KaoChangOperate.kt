@@ -1083,6 +1083,7 @@ object KaoChangOperate {
         config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
         config.zone3Dirty = 0
         config.zone3CleanPending = 0
+        config.zone3CleanSuppressedFor4F = 0
         AppConfig.saveAppConfig(config)
         publishRuntimeStateWithHttpFallback("自清洁失败，进入维护中")
         HomeUiRefreshBridge.requestRefresh("self_clean:failed")
@@ -1099,38 +1100,17 @@ object KaoChangOperate {
         targetLabel: String,
         source: String
     ): SelfCleanExecutionReport {
-        logI(
+        val message = "4F 当前自清洁为 no-op，不会真实机械清洁；已阻止写入 200=$command"
+        logW(
             LOG_SELF_CLEAN,
-            "开始执行自清洁：source=$source，target=$targetLabel，command（下位机自清洁指令）=$command，" +
-                "moveStatus（机械动作状态）=${moveStatusDesc(AppConfig.getAppConfig().moveStatus)}，" +
-                "onlineStatus（设备营业状态）=${onlineStatusDesc(AppConfig.getAppConfig().onlineStatus)}"
-        )
-        val result = executeActionWithRetry(
-            actionName = "$targetLabel 自清洁",
-            runningPollDelayMs = 1000L,
-            runningTimeoutMs = 180_000L
-        ) {
-            writeSingleRegister2(action_address, command)
-        }
-        if (result != ActionExecutionResult.SUCCESS) {
-            logE(
-                LOG_SELF_CLEAN,
-                "自清洁失败：source=$source，target=$targetLabel，command=$command，result=${actionExecutionResultDesc(result)}"
-            )
-            markSelfCleanFailure(targetLabel, result)
-            return buildSelfCleanFailureReport(command, targetLabel, result)
-        }
-
-        logI(
-            LOG_SELF_CLEAN,
-            "自清洁完成：source=$source，target=$targetLabel，command=$command，status201（动作状态寄存器）=0（空闲/完成）"
+            "跳过自清洁：source=$source，target=$targetLabel，command（旧 200 自清洁指令）=$command，$message"
         )
         return SelfCleanExecutionReport(
-            success = true,
+            success = false,
             command = command,
             targetLabel = targetLabel,
-            status201 = 0,
-            message = "completed"
+            status201 = -1,
+            message = FourFSelfCleanNoOpPolicy.message
         )
     }
 
@@ -3026,6 +3006,21 @@ object KaoChangOperate {
             )
             if (!selfCleanResult.success) {
                 val failedReport = selfCleanResult.reports.lastOrNull()
+                if (selfCleanResult.reports.any { FourFSelfCleanNoOpPolicy.isNoOp(it.message) }) {
+                    config.zone3CleanPending = 0
+                    if (config.zone3Dirty == 1) {
+                        config.zone3CleanSuppressedFor4F = 1
+                    }
+                    AppConfig.saveAppConfig(config)
+                    logI(
+                        LOG_SELF_CLEAN,
+                        "营业结束全量自清洁未执行：4F 当前为 no-op，不会真实机械清洁；" +
+                            "onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}，" +
+                            "zone3Dirty=${config.zone3Dirty}，zone3CleanPending=${config.zone3CleanPending}，" +
+                            "zone3CleanSuppressedFor4F=${config.zone3CleanSuppressedFor4F}"
+                    )
+                    return
+                }
                 logE(
                     LOG_SELF_CLEAN,
                     "营业结束全量自清洁失败：target=${failedReport?.targetLabel ?: "unknown"}，" +
@@ -3035,10 +3030,11 @@ object KaoChangOperate {
             }
             config.zone3Dirty = 0
             config.zone3CleanPending = 0
+            config.zone3CleanSuppressedFor4F = 0
             AppConfig.saveAppConfig(config)
             logI(
                 LOG_SELF_CLEAN,
-                "营业结束全量自清洁完成：sequence=501..533,534，onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}"
+                "营业结束全量自清洁完成：onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}"
             )
         } catch (e: Exception) {
             // 营业结束时若重置烤盘失败，不应抛未实现异常导致崩溃；
