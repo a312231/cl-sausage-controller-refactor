@@ -11,7 +11,7 @@ object ActionGroupOrderStatus {
     fun statusFor(result: KaoChangOperate.TakeSausageResult): Int {
         return when (result) {
             KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> FINISHED
-            KaoChangOperate.TakeSausageResult.DISCARDED -> CUSTOMER_TIMEOUT_DISCARDED
+            KaoChangOperate.TakeSausageResult.DISCARDED -> FINISHED
             KaoChangOperate.TakeSausageResult.ERROR -> ERROR
         }
     }

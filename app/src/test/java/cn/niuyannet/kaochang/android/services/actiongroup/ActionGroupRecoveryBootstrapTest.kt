@@ -261,7 +261,7 @@ class ActionGroupRecoveryBootstrapTest {
 
     @Test
     fun recover_shouldEnterMaintenanceWhenLegacyErrorCodeExists() = runBlocking {
-        val client = FakeClient(states = mutableMapOf("out5" to AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED))
+        val client = FakeClient(states = mutableMapOf("out4" to AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED))
 
         val result = ActionGroupRecoveryBootstrap(client, MemorySessionStore(null), ResourceLocks()).recover()
 

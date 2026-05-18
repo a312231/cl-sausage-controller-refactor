@@ -402,6 +402,14 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun messageOf_shouldDescribeOutExitSausageNotDetectedWithoutCustomerTimeoutWording() {
+        assertEquals(
+            "售卖口未检测到烤肠（出肠检测失败）",
+            AtomicActionExecutor.messageOf(AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED)
+        )
+    }
+
+    @Test
     fun execute_shouldEmitTelemetryWhenActionFinishes() = runBlocking {
         val gateway = FakeGateway(
             reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
@@ -440,7 +448,7 @@ class AtomicActionExecutorTest {
     fun definitions_shouldUse300And400Registers() {
         assertEquals(AtomicActionSpec("in1", 310, 311, 312, 80_000L, 200L, "in1：移动到肠箱预推送位置"), AtomicActions.in1)
         assertEquals(AtomicActionSpec("in7", 370, 371, 372, 120_000L, 500L, "in7：上平台从升降台夹肠并放入烤盘"), AtomicActions.in7)
-        assertEquals(AtomicActionSpec("out5", 450, 451, 452, 90_000L, 500L, "out5：检查顾客是否取走，超时未取由下位机自动丢弃"), AtomicActions.out5)
+        assertEquals(AtomicActionSpec("out5", 450, 451, 452, 90_000L, 500L, "out5：关门回零/出餐收尾"), AtomicActions.out5)
     }
 
     data class Write(val address: Int, val value: Int)

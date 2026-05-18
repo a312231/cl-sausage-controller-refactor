@@ -564,7 +564,7 @@ object KaoChangOperate {
     private fun actionGroupResultDesc(result: ActionGroupResult): String {
         return when (result) {
             ActionGroupResult.Success -> "SUCCESS（动作组完成）"
-            ActionGroupResult.Discarded -> "DISCARDED（顾客超时未取，已自动丢弃）"
+            ActionGroupResult.Discarded -> "DISCARDED（历史兼容结果，4F 主流程不再产生）"
             is ActionGroupResult.Failed -> "FAILED（${result.actionName}：${result.message}）"
         }
     }
@@ -640,9 +640,9 @@ object KaoChangOperate {
 
     private fun orderEventStatusDesc(status: Int): String = when (status) {
         1 -> "1(开始夹取)"
-        ActionGroupOrderStatus.FINISHED -> "2(单次履约完成)"
+        ActionGroupOrderStatus.FINISHED -> "2(单次履约完成：out4已收口)"
         5 -> "5(单次履约失败)"
-        ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED -> "6(顾客超时未取已丢弃)"
+        ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED -> "6(历史状态：顾客超时未取已丢弃，4F主流程不再产生)"
         else -> "$status(未知)"
     }
 
@@ -750,19 +750,19 @@ object KaoChangOperate {
         orderContext: ActionGroupOrderContext?,
         panNo: Int
     ) {
-        if (telemetry.actionName != "out5" || orderContext == null || !orderContext.isValid()) {
+        if (telemetry.actionName != "out4" || orderContext == null || !orderContext.isValid()) {
             return
         }
         val status = when (telemetry.errorCode) {
             null -> ActionGroupOrderStatus.FINISHED
-            AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED -> ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED
+            AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED -> ActionGroupOrderStatus.ERROR
             else -> return
         }
         savePendingActionGroupOrderEvent(
             orderContext = orderContext,
             status = status,
             panNo = panNo,
-            discarded = status == ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED
+            discarded = false
         )
     }
 
@@ -919,16 +919,11 @@ object KaoChangOperate {
             return false
         }
         if (!isManualTake) {
-            val terminalStatus = if (discarded) {
-                ActionGroupOrderStatus.CUSTOMER_TIMEOUT_DISCARDED
-            } else {
-                ActionGroupOrderStatus.FINISHED
-            }
             savePendingActionGroupOrderEvent(
                 orderContext = orderContext!!,
-                status = terminalStatus,
+                status = ActionGroupOrderStatus.FINISHED,
                 panNo = session.sourceNo,
-                discarded = discarded
+                discarded = false
             )
         }
         val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == session.sourceNo }
@@ -948,7 +943,11 @@ object KaoChangOperate {
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
         val actionText = if (isManualTake) "维护手动取肠" else "出餐"
-        val resultText = if (discarded) "顾客超时未取且已自动丢弃" else "顾客已取走"
+        val resultText = if (discarded) {
+            "历史丢弃结果已按 4F 履约完成收口"
+        } else {
+            "out4 已收口，本单已处理完成"
+        }
         logW(LOG_ACTION_GROUP, "$actionText 动作组恢复完成并已清空烤盘：$resultText，reason=$reason，session=$session")
         actionGroupSessionStore.clear()
         if (!isManualTake) {
@@ -2128,8 +2127,8 @@ object KaoChangOperate {
     /**
      * 维护页手动取肠入口。
      *
-     * 当前手动取肠也走 300/400 新动作组 out1~out5，由下位机在 out5 通过光电传感器判断
-     * 顾客是否取走；不再调用售卖口拍照或视觉识别。
+     * 当前手动取肠也走 300/400 新动作组 out1~out5，由 out4 负责售卖口出肠检测和收口；
+     * out5 只负责关门回零，不再调用售卖口拍照或视觉识别。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
         if (!ensureModbusReady("维护手动取肠动作组恢复检查")) {
@@ -2168,7 +2167,7 @@ object KaoChangOperate {
         logD(
             LOG_ACTION,
             "维护手动取肠走 300/400 新动作组：烤盘=${kaoPan.positionSn}，口味=$sausageName，" +
-                "检测方式=out5 光电传感器，不调用视觉识别/拍照"
+                "检测方式=out4 收口结果，不调用视觉识别/拍照"
         )
         try {
             if (!isActionGroupEnabledOrEnterMaintenance("维护手动取肠")) {
@@ -2237,9 +2236,9 @@ object KaoChangOperate {
                     }
                     actionGroupSessionStore.clear()
                     if (actionGroupResult == ActionGroupResult.Discarded) {
-                        logW(LOG_ACTION_GROUP, "维护手动取肠超时未取，out5 已按下位机策略自动丢弃并关窗：panNo=${kaoPan.positionSn}")
+                        logW(LOG_ACTION_GROUP, "维护手动取肠历史丢弃结果已按 4F 收口完成处理：panNo=${kaoPan.positionSn}")
                     } else {
-                        logD(LOG_ACTION_GROUP, "维护手动取肠完成，out5 已确认售卖口收口：panNo=${kaoPan.positionSn}")
+                        logD(LOG_ACTION_GROUP, "维护手动取肠完成，out4 已收口且 out5 已关门回零：panNo=${kaoPan.positionSn}")
                     }
                     return true
                 }
@@ -2265,9 +2264,9 @@ object KaoChangOperate {
     /**
      * 正式订单出餐入口。
      *
-     * 当前真实业务语义：
-     * - 顾客取走：返回 TAKEN_BY_USER
-     * - 超时未取且系统已丢弃：返回 DISCARDED，当前订单逻辑按“本次已处理完成”推进
+     * 当前 4F 业务语义：
+     * - out4 返回 2（out4 收口成功）：返回 TAKEN_BY_USER，按 status=2（单次履约完成）推进
+     * - 4F 当前无法区分“顾客正常取走”和“15 秒未取后下位机回收”
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
     suspend fun takeSausageResult(
@@ -2395,7 +2394,7 @@ object KaoChangOperate {
 
             val takeResult = when (actionGroupResult) {
                 ActionGroupResult.Success -> TakeSausageResult.TAKEN_BY_USER
-                ActionGroupResult.Discarded -> TakeSausageResult.DISCARDED
+                ActionGroupResult.Discarded -> TakeSausageResult.TAKEN_BY_USER
                 is ActionGroupResult.Failed -> {
                     kaoPan.cmdStatusTake = atomicFailureCode(actionGroupResult)
                     markActionGroupFailure("正式出餐", actionGroupResult)
@@ -2410,10 +2409,10 @@ object KaoChangOperate {
 
             when (takeResult) {
                 TakeSausageResult.TAKEN_BY_USER -> LogUtils.i(
-                    "【出餐】${deliveryPrefix}完成：顾客已取走，来源烤盘=${kaoPan.positionSn}，订单号=${orderContext?.orderNo ?: "无订单上下文"}"
+                    "【出餐】${deliveryPrefix}完成：out4 已收口，本单已处理完成，来源烤盘=${kaoPan.positionSn}，订单号=${orderContext?.orderNo ?: "无订单上下文"}"
                 )
                 TakeSausageResult.DISCARDED -> LogUtils.w(
-                    "【出餐】${deliveryPrefix}完成：顾客超时未取，out5 已自动丢弃，来源烤盘=${kaoPan.positionSn}，订单号=${orderContext?.orderNo ?: "无订单上下文"}"
+                    "【出餐】${deliveryPrefix}完成：历史丢弃结果已按 4F 履约完成收口，来源烤盘=${kaoPan.positionSn}，订单号=${orderContext?.orderNo ?: "无订单上下文"}"
                 )
                 TakeSausageResult.ERROR -> Unit
             }
@@ -2424,7 +2423,7 @@ object KaoChangOperate {
                     orderContext = orderContext,
                     status = terminalStatus,
                     panNo = kaoPan.positionSn,
-                    discarded = takeResult == TakeSausageResult.DISCARDED
+                    discarded = false
                 )
             } else {
                 logW(
@@ -2440,13 +2439,7 @@ object KaoChangOperate {
             kaoPan.holdingTime = 0L
             kaoPan.startTime = 0
             kaoPan.status = 0
-            armPostSellSupplementGuard("out5 已完成关窗和安全位收口")
-            if (takeResult == TakeSausageResult.DISCARDED) {
-                logW(
-                    LOG_ACTION_GROUP,
-                    "顾客超时未取，out5 已自动执行 SAU_DISCARD 丢弃；本订单项按已收口处理，不退款、不补发，panNo=${kaoPan.positionSn}"
-                )
-            }
+            armPostSellSupplementGuard("out5 已完成关门回零/出餐收尾")
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }

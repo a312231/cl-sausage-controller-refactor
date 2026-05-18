@@ -13,7 +13,7 @@ object AtomicActionCodes {
     const val IR_PICK_FAILED = 0x00E5
     const val IR_THROW_FAILED = 0x00E6
     const val STICK_FAILED = 0x00E7
-    const val CLIENT_TAKE_TIMEOUT_DISCARDED = 0x00E8
+    const val OUT_EXIT_SAUSAGE_NOT_DETECTED = 0x00E8
     const val STICK_EMPTY = 0x00E9
     const val BUSY = 0x00EA
     const val IN_SOURCE_SLOT_PARAM = 0x00EB
@@ -54,7 +54,7 @@ object AtomicActions {
     val out2 = AtomicActionSpec("out2", 420, 421, 422, 90_000L, 500L, "out2：执行穿签")
     val out3 = AtomicActionSpec("out3", 430, 431, 432, 90_000L, 500L, "out3：从穿签位放到预推送位置")
     val out4 = AtomicActionSpec("out4", 440, 441, 442, 90_000L, 500L, "out4：开窗并推送")
-    val out5 = AtomicActionSpec("out5", 450, 451, 452, 90_000L, 500L, "out5：检查顾客是否取走，超时未取由下位机自动丢弃")
+    val out5 = AtomicActionSpec("out5", 450, 451, 452, 90_000L, 500L, "out5：关门回零/出餐收尾")
 }
 
 sealed class AtomicIoResult {
@@ -616,7 +616,7 @@ class AtomicActionExecutor(
             AtomicActionCodes.IR_PICK_FAILED -> "下平台推动取肠红外未检测到肠"
             AtomicActionCodes.IR_THROW_FAILED -> "下平台抛肠后残肠红外失败"
             AtomicActionCodes.STICK_FAILED -> "穿签机械失败，签杆推出超时"
-            AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED -> "顾客取走相关错误"
+            AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED -> "售卖口未检测到烤肠（出肠检测失败）"
             AtomicActionCodes.STICK_EMPTY -> "穿签插空，签杆推出但疑似未穿到肠"
             AtomicActionCodes.BUSY -> "忙碌错误"
             AtomicActionCodes.IN_SOURCE_SLOT_PARAM -> "in1/in2 源肠箱编号参数非法"

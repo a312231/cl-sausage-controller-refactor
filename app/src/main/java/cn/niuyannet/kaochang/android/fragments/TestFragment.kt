@@ -58,7 +58,7 @@ class TestFragment : Fragment() {
         TestAtomicActionItem("out2：执行穿签", AtomicActions.out2, 0),
         TestAtomicActionItem("out3：从穿签位放到预推送位置", AtomicActions.out3, 0),
         TestAtomicActionItem("out4：开窗并推送", AtomicActions.out4, 0),
-        TestAtomicActionItem("out5：光电检查顾客是否取走", AtomicActions.out5, 0)
+        TestAtomicActionItem("out5：关门回零/出餐收尾", AtomicActions.out5, 0)
     )
 
     private data class TemperatureTargetInput(

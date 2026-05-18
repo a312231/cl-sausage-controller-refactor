@@ -88,12 +88,10 @@ class ActionGroupRunnerTest {
     }
 
     @Test
-    fun outRunner_shouldRetryOut2StickFailureThreeTimesBeforeFailing() = runBlocking {
+    fun outRunner_shouldFailOut2StickFailureWithoutAutomaticRetry() = runBlocking {
         val client = FakeClient(
             results = queueOf(
                 AtomicActionResult.Success,
-                AtomicActionResult.Failed(AtomicActionCodes.STICK_FAILED, "穿签失败"),
-                AtomicActionResult.Failed(AtomicActionCodes.STICK_FAILED, "穿签失败"),
                 AtomicActionResult.Failed(AtomicActionCodes.STICK_FAILED, "穿签失败")
             )
         )
@@ -103,26 +101,29 @@ class ActionGroupRunnerTest {
 
         assertTrue(result is ActionGroupResult.Failed)
         assertEquals("out2", (result as ActionGroupResult.Failed).actionName)
-        assertEquals(listOf("out1:8", "out2:0", "out2:0", "out2:0"), client.calls)
+        assertEquals(listOf("out1:8", "out2:0"), client.calls)
     }
 
     @Test
-    fun outRunner_shouldReturnDiscardedWhenOut5ReportsCustomerTimeoutDiscarded() = runBlocking {
+    fun outRunner_shouldFailWhenOut4ReportsOutExitSausageNotDetectedInsteadOfMappingDiscarded() = runBlocking {
         val client = FakeClient(
             results = queueOf(
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
-                AtomicActionResult.Success,
-                AtomicActionResult.Failed(AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED, "顾客超时未取，已自动丢弃")
+                AtomicActionResult.Failed(
+                    AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED,
+                    "售卖口未检测到烤肠（出肠检测失败）"
+                )
             )
         )
         val runner = OutActionGroupRunner(client)
 
         val result = runner.run(sourcePanNo = 8)
 
-        assertEquals(ActionGroupResult.Discarded, result)
-        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "out5:0"), client.calls)
+        assertTrue(result is ActionGroupResult.Failed)
+        assertEquals("out4", (result as ActionGroupResult.Failed).actionName)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "dispatch:out4"), client.calls)
     }
 
     @Test
@@ -183,7 +184,7 @@ class ActionGroupRunnerTest {
     }
 
     @Test
-    fun outRunner_shouldCallWindowHookAfterOut4SuccessBeforeOut5() = runBlocking {
+    fun outRunner_shouldCallWindowHookAfterOut4CommandDispatchedBeforeOut5() = runBlocking {
         val client = FakeClient()
         val runner = OutActionGroupRunner(client)
 
@@ -194,7 +195,7 @@ class ActionGroupRunnerTest {
         )
 
         assertEquals(ActionGroupResult.Success, result)
-        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "window-hook", "out5:0"), client.calls)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "dispatch:out4", "window-hook", "out5:0"), client.calls)
     }
 
     @Test
@@ -210,7 +211,7 @@ class ActionGroupRunnerTest {
         )
 
         assertEquals(ActionGroupResult.Success, result)
-        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "out5:0"), client.calls)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "dispatch:out4", "out5:0"), client.calls)
         assertTrue(logs.any { it.contains("【取肠语音】hook 异常") && it.contains("voice hook failed") })
     }
 
@@ -234,8 +235,8 @@ class ActionGroupRunnerTest {
         )
 
         assertTrue(result is ActionGroupResult.Failed)
-        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0"), client.calls)
-        assertTrue(!hookCalled)
+        assertEquals(listOf("out1:8", "out2:0", "out3:0", "out4:0", "dispatch:out4"), client.calls)
+        assertTrue("out4 命令寄存器 440=1 写入成功后即触发取肠语音，后续 out4 执行失败不回滚语音", hookCalled)
     }
 
     @Test
@@ -354,6 +355,9 @@ class ActionGroupRunnerTest {
             onCommandDispatched: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
+            if (spec.name == "out4" && onCommandDispatched != null) {
+                calls += "dispatch:out4"
+            }
             onCommandDispatched?.invoke()
             states[spec.name] = COMPLETED
             return results.removeFirstOrNull() ?: AtomicActionResult.Success

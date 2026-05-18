@@ -81,7 +81,7 @@ class OutActionGroupRunner(
 
         val steps = outActionSteps(sourcePanNo)
         logger(
-            "出餐动作组计划：sourcePan=$sourcePanNo，检测方式=out5 光电传感器，" +
+            "出餐动作组计划：sourcePan=$sourcePanNo，检测方式=out4 收口结果，" +
                 "resumeFromRunningState（是否按恢复模式跳过已完成步骤）=$resumeFromRunningState，" +
                 "steps=${steps.joinToString(" -> ") { it.spec.description }}"
         )
@@ -109,7 +109,6 @@ internal data class ActionStep(
     val spec: AtomicActionSpec,
     val infoValue: Int,
     val retryableErrorCode: Int? = null,
-    val discardedOnCustomerTimeout: Boolean = false,
     val maxAttempts: Int = 3
 )
 
@@ -128,10 +127,10 @@ internal fun inActionSteps(sourceBoxNo: Int, targetPanNo: Int): List<ActionStep>
 internal fun outActionSteps(sourcePanNo: Int): List<ActionStep> {
     return listOf(
         ActionStep(AtomicActions.out1, sourcePanNo),
-        ActionStep(AtomicActions.out2, 0, AtomicActionCodes.STICK_FAILED),
+        ActionStep(AtomicActions.out2, 0),
         ActionStep(AtomicActions.out3, 0),
         ActionStep(AtomicActions.out4, 0),
-        ActionStep(AtomicActions.out5, 0, discardedOnCustomerTimeout = true)
+        ActionStep(AtomicActions.out5, 0)
     )
 }
 
@@ -156,8 +155,19 @@ private suspend fun executeSteps(
         operationLogContext?.let { context ->
             operationLogger(formatOperationStepStart(context, step.spec))
         }
+        val dispatchHook: (suspend () -> Unit)? = if (step.spec == AtomicActions.out4 && enableVoiceReminder) {
+            {
+                try {
+                    onWindowOpened()
+                } catch (t: Throwable) {
+                    logger("【取肠语音】hook 异常：message=${t.message ?: t.javaClass.simpleName}")
+                }
+            }
+        } else {
+            null
+        }
         val result = if (step.retryableErrorCode == null) {
-            mapActionResult(step, client.execute(step.spec, step.infoValue))
+            mapActionResult(step, client.execute(step.spec, step.infoValue, dispatchHook))
         } else {
             executeRetriableStep(client, step, logger)
         }
@@ -174,15 +184,8 @@ private suspend fun executeSteps(
             }
         }
         if (step.spec == AtomicActions.out4 && result == ActionGroupResult.Success) {
-            if (enableVoiceReminder) {
-                try {
-                    onWindowOpened()
-                } catch (t: Throwable) {
-                    logger("【取肠语音】hook 异常：message=${t.message ?: t.javaClass.simpleName}")
-                }
-            }
             if (windowOpenBufferMs > 0L) {
-                logger("out4 开窗并推送完成，等待 ${windowOpenBufferMs}ms 后进入 out5 顾客取走检测")
+                logger("out4 已收口，等待 ${windowOpenBufferMs}ms 后进入 out5 关门回零")
                 delay(windowOpenBufferMs)
             }
         }
@@ -218,9 +221,6 @@ private suspend fun executeRetriableStep(
 private fun mapActionResult(step: ActionStep, result: AtomicActionResult): ActionGroupResult {
     return when {
         result == AtomicActionResult.Success -> ActionGroupResult.Success
-        step.discardedOnCustomerTimeout &&
-            result is AtomicActionResult.Failed &&
-            result.errorCode == AtomicActionCodes.CLIENT_TAKE_TIMEOUT_DISCARDED -> ActionGroupResult.Discarded
         else -> ActionGroupResult.Failed(step.spec.name, result, "${step.spec.description}失败：${describe(result)}")
     }
 }
@@ -331,7 +331,7 @@ private fun formatElapsedSeconds(elapsedMs: Long): String {
 private fun actionGroupResultDesc(result: ActionGroupResult): String {
     return when (result) {
         ActionGroupResult.Success -> "SUCCESS（动作成功）"
-        ActionGroupResult.Discarded -> "DISCARDED（顾客超时未取，out5 已自动丢弃）"
+        ActionGroupResult.Discarded -> "DISCARDED（历史兼容结果，4F 主流程不再产生）"
         is ActionGroupResult.Failed -> "FAILED（${result.actionName}：${result.message}）"
     }
 }

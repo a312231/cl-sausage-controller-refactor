@@ -60,8 +60,8 @@ abstract class OrderActivity: BaseSauceDetection() {
 
     private fun orderEventStatusText(status: Int): String = when (status) {
         1 -> "1（开始夹取）"
-        2 -> "2（单次履约完成：顾客已取走）"
-        6 -> "6（顾客超时未取，已自动丢弃）"
+        2 -> "2（单次履约完成：out4 已收口）"
+        6 -> "6（历史状态：顾客超时未取，4F 主流程不再产生）"
         5 -> "5（单次履约失败）"
         else -> "${status}（未知）"
     }
@@ -307,7 +307,8 @@ abstract class OrderActivity: BaseSauceDetection() {
      * 执行单个商品项的逐根出餐。
      *
      * 注意：
-     * - TAKEN_BY_USER 和 DISCARDED 当前都会把 deliveredCount + 1
+     * - 4F 主流程下 TAKEN_BY_USER 表示 out4 已收口，本单已处理完成
+     * - DISCARDED 仅作历史兼容，若出现也会按 status=2（单次履约完成）推进
      * - 只有 ERROR 才会中断本商品项并上报 status=5
      */
     private suspend fun handleOrderItemDelivery(
@@ -411,10 +412,10 @@ abstract class OrderActivity: BaseSauceDetection() {
                     KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> {
                         deliveredCount++
                         LogUtils.d(
-                            "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根完成：顾客已取走，订单号=$orderNo"
+                            "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根完成：out4 已收口，本单已处理完成，订单号=$orderNo"
                         )
                         LogUtils.d(
-                            "【履约完结】光电判定顾客已取走，已上报订单事件(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】out4 已收口，本单已处理完成，已上报订单事件(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
                         KaoChangOperate.reportActionGroupOrderTerminalEvent(
@@ -427,19 +428,18 @@ abstract class OrderActivity: BaseSauceDetection() {
                     KaoChangOperate.TakeSausageResult.DISCARDED -> {
                         deliveredCount++
                         LogUtils.d(
-                            "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根完成：顾客超时未取，out5 已自动丢弃，订单号=$orderNo"
+                            "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根完成：历史丢弃结果按 4F 履约完成处理，订单号=$orderNo"
                         )
                         LogUtils.w(
-                            "【履约完结】顾客超时未取，烤肠已由 out5 自动丢弃，已上报订单事件(status=6)：orderNo=$orderNo, " +
+                            "【履约完结】历史丢弃结果已按 status=2（单次履约完成）上报：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
                         KaoChangOperate.reportActionGroupOrderTerminalEvent(
                             orderContext,
                             ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.DISCARDED),
-                            "正常订单出餐超时丢弃"
+                            "正常订单出餐历史丢弃结果按完成收口"
                         )
-                        LogUtils.w("【订单流转】本轮出餐按丢弃计完成，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
-                        LogUtils.w("【履约完结】本根烤肠因超时丢弃完成，不再重试：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                        LogUtils.w("【订单流转】本轮出餐按 4F 完成收口，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {

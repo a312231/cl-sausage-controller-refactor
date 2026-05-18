@@ -7,9 +7,9 @@ import org.junit.Test
 class ActionGroupOrderStatusTest {
 
     @Test
-    fun statusForTakeResult_shouldReportDiscardedAsCustomerTimeoutDiscarded() {
+    fun statusForTakeResult_shouldReportDiscardedAsFinishedInFourFMainFlow() {
         assertEquals(2, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.TAKEN_BY_USER))
-        assertEquals(6, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.DISCARDED))
+        assertEquals(2, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.DISCARDED))
         assertEquals(5, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.ERROR))
     }
 }
