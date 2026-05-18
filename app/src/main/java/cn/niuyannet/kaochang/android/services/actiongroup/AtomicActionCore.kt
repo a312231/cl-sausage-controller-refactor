@@ -29,6 +29,10 @@ object AtomicActionCodes {
     const val IN7_SAU_ADD_BUSY = 0x00F5
     const val OUT_UNSUPPORTED_ACTION = 0x00F6
     const val BOTTOM_UNSUPPORTED_ACTION = 0x00F7
+    const val MOVE_PARAM_ERROR = 0x00F8
+    const val MOVE_BUSY = 0x00F9
+    const val MOVE_TIMEOUT = 0x00FA
+    const val MOVE_STATE_ERROR = 0x00FB
 }
 
 data class AtomicActionSpec(
@@ -632,6 +636,10 @@ class AtomicActionExecutor(
             AtomicActionCodes.IN7_SAU_ADD_BUSY -> "in7 调上平台放肠流程时上平台忙或状态异常"
             AtomicActionCodes.OUT_UNSUPPORTED_ACTION -> "不支持的 400 动作"
             AtomicActionCodes.BOTTOM_UNSUPPORTED_ACTION -> "不支持的下平台 300 动作"
+            AtomicActionCodes.MOVE_PARAM_ERROR -> "搬盘参数非法"
+            AtomicActionCodes.MOVE_BUSY -> "搬盘机构忙"
+            AtomicActionCodes.MOVE_TIMEOUT -> "搬盘超时"
+            AtomicActionCodes.MOVE_STATE_ERROR -> "搬盘内部状态异常"
             else -> "未知错误码 ${formatCode(code)}"
         }
     }

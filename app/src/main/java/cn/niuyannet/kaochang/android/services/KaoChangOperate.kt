@@ -1984,10 +1984,11 @@ object KaoChangOperate {
      *
      * 这条链路走 202/203 寄存器，不复用 200/201 的忙态语义：
      * - 202：下发搬移动作，值为“起始烤盘 << 8 | 目标烤盘”
-     * - 203：搬移结果，0=完成，1=执行中，其余=错误，-1=上位机读失败
+     * - 203：搬移结果，0=空闲/等待接收，1=执行中，2=完成，0x00F8~0x00FB=错误，-1=上位机读失败
      *
      * 因此这里除了写指令预检外，还要单独处理：
-     * - 203 长时间停在 1 的超时
+     * - 写 202 后必须先观察到 203=1（执行中），再观察到 203=2（完成）
+     * - 203 长时间停在 0（空闲/等待接收）或 1（执行中）的超时
      * - 203 读失败
      * - 203 返回非 0/1 的明确错误
      */
@@ -2030,7 +2031,7 @@ object KaoChangOperate {
         try {
             var appState = AppConfig.getAppConfig().moveStatus
             while (appState != 0) {
-                delay(2000)
+                delay(PanMove203Policy.waitOtherActionDelayMs)
                 appState = AppConfig.getAppConfig().moveStatus
                 logD(LOG_PAN_MOVE, "烤盘搬移前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
             }
@@ -2066,36 +2067,59 @@ object KaoChangOperate {
             }
             val moveStart = System.currentTimeMillis()
             val moveTimeoutMs = 60_000L
-            var result = 1
-            while (result == 1) {
-                delay(2000)
-                result = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move_result)
-                if (result == -1) {
-                    AppConfig.getAppConfig().moveStatus = 0
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=读取 203 失败")
-                    markDeviceErrorAndUpload(FaultCode.MODBUS_COMM_DROP,
-                        "烤盘${sourcePosition}到烤盘${targetPosition}搬移时读取203失败，设备进入维护中")
-                    return false
+            var hasObservedRunning = false
+            while (true) {
+                delay(PanMove203Policy.pollDelayMs)
+                val result = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move_result)
+                val commandValue = if (result == AtomicActionCodes.COMPLETED && !hasObservedRunning) {
+                    VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move)
+                } else {
+                    null
+                }
+                when (PanMove203Policy.evaluate(result, hasObservedRunning, commandValue)) {
+                    PanMove203Decision.Running -> {
+                        hasObservedRunning = true
+                        logD(LOG_PAN_MOVE, "搬移执行中：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=1（执行中）")
+                    }
+                    PanMove203Decision.Success -> break
+                    PanMove203Decision.WaitingForStart -> {
+                        logD(
+                            LOG_PAN_MOVE,
+                            "等待搬移启动确认：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=$result（空闲/残留完成，不算本轮成功）"
+                        )
+                    }
+                    PanMove203Decision.ReadFailed -> {
+                        AppConfig.getAppConfig().moveStatus = 0
+                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                        logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=读取 203 失败")
+                        markDeviceErrorAndUpload(FaultCode.MODBUS_COMM_DROP,
+                            "烤盘${sourcePosition}到烤盘${targetPosition}搬移时读取203失败，设备进入维护中")
+                        return false
+                    }
+                    PanMove203Decision.Failed -> {
+                        AppConfig.getAppConfig().moveStatus = 0
+                        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                        logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=$result")
+                        markDeviceErrorAndUpload(FaultCode.KAOPAN_MOVE_FAILED,
+                            "烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
+                        return false
+                    }
                 }
                 if (System.currentTimeMillis() - moveStart > moveTimeoutMs) {
                     AppConfig.getAppConfig().moveStatus = 0
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=203 长时间为 1（执行中）")
+                    val reason = if (hasObservedRunning) {
+                        "203 长时间为 1（执行中）"
+                    } else {
+                        "写 202 后未观察到 203=1（执行中）"
+                    }
+                    logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=$reason")
                     markDeviceErrorAndUpload(FaultCode.KAOPAN_MOVE_TIMEOUT,
-                        "烤盘${sourcePosition}到烤盘${targetPosition}搬移长时间处于执行中(203=1)，设备进入维护中")
+                        "烤盘${sourcePosition}到烤盘${targetPosition}搬移超时：$reason，设备进入维护中")
                     return false
                 }
             }
-            if (result != 0) {
-                AppConfig.getAppConfig().moveStatus = 0
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=$result")
-                markDeviceErrorAndUpload(FaultCode.KAOPAN_MOVE_FAILED,
-                    "烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
-                return false
-            }
-            kaoPan.cmdStatusMove = result
+            kaoPan.cmdStatusMove = 0
             newKaoPan.isHasSausage = true
             LowToHighDemandGate.clearPosition(newKaoPan.positionSn, "烤盘搬移目标位写入")
             newKaoPan.isHasGrilling = false
