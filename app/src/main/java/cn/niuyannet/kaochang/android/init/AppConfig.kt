@@ -3,6 +3,7 @@
 import android.provider.Settings
 import cn.niuyannet.kaochang.android.MyApp
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.services.FourFTemperaturePolicy
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
@@ -315,12 +316,64 @@ object AppConfig {
         )
     }
 
+    private fun logRemoteTransitionWriteIfNeeded(
+        logPrefix: String,
+        oldModeType: Int,
+        oldTransitionMode: Int,
+        config: AppConfigBean
+    ) {
+        if (config.transitionMode !in listOf(1, 2)) {
+            return
+        }
+        if (oldModeType == config.modeType && oldTransitionMode == config.transitionMode) {
+            return
+        }
+        val kaoPanList = KaoPanHelper.getKaoPanList()
+        LogUtils.w(
+            "[$logPrefix] 【并发切换诊断】远端配置写入 transitionMode=${transitionModeText(config.transitionMode)}：" +
+                "source=AppConfig.mergeRemoteConfig，" +
+                "modeType（并发模式）=${modeTypeText(oldModeType)}->${modeTypeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionModeText(oldTransitionMode)}->${transitionModeText(config.transitionMode)}，" +
+                "1~21空位=${kaoPanList.filter { it.positionSn in 1..21 && !it.isHasSausage }.map { it.positionSn }.sorted()}，" +
+                "13~18状态=${panStatusSummary(kaoPanList.filter { it.positionSn in 13..18 }.sortedBy { it.positionSn })}，" +
+                "25~33状态=${panStatusSummary(kaoPanList.filter { it.positionSn in 25..33 }.sortedBy { it.positionSn })}"
+        )
+    }
+
+    private fun modeTypeText(value: Int): String = when (value) {
+        1 -> "1（低并发）"
+        2 -> "2（高并发）"
+        else -> "$value（未知）"
+    }
+
+    private fun transitionModeText(value: Int): String = when (value) {
+        0 -> "0（无过渡态）"
+        1 -> "1（低转高过渡）"
+        2 -> "2（高转低过渡）"
+        else -> "$value（未知）"
+    }
+
+    private fun panStatusSummary(pans: List<KaoPan>): String {
+        return pans.joinToString(prefix = "[", postfix = "]") { pan ->
+            val state = when {
+                pan.isHasSausage && pan.startTime > 0L -> "烤制中"
+                pan.isHasSausage && pan.holdingTime > 0L -> "保温"
+                pan.isHasSausage -> "有肠"
+                pan.isHasGrilling -> "预留"
+                else -> "空"
+            }
+            "${pan.positionSn}:$state"
+        }
+    }
+
     fun mergeRemoteConfig(
         jsonData: JSONObject?,
         rawContent: String?,
         logPrefix: String
     ): RemoteConfigMergeResult {
         val config = getAppConfig()
+        val oldModeTypeForTransitionDiagnostics = config.modeType
+        val oldTransitionModeForTransitionDiagnostics = config.transitionMode
         if (jsonData == null) {
             val hasFallback = hasValidDeviceConfig()
             val message = "远端配置数据为空，responseLength=${rawContent?.length ?: 0}"
@@ -559,6 +612,12 @@ object AppConfig {
             config.status = 1
         }
         normalizeConcurrencyState(config, logPrefix)
+        logRemoteTransitionWriteIfNeeded(
+            logPrefix = logPrefix,
+            oldModeType = oldModeTypeForTransitionDiagnostics,
+            oldTransitionMode = oldTransitionModeForTransitionDiagnostics,
+            config = config
+        )
 
         saveAppConfig(config)
 

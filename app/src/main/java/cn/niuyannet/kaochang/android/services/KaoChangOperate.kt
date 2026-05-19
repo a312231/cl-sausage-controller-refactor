@@ -2854,12 +2854,15 @@ object KaoChangOperate {
         if (!result.changedModeState && !result.blockedFrontPositionsChanged) {
             return
         }
+        if (config.transitionMode == 2) {
+            clearPendingSupplementBatchIntent("过保丢弃进入高转低/残留消化，停止25~33未完成补肠意图")
+        }
         AppConfig.saveAppConfig(config)
         LogUtils.w(
-            "【并发切换】过保丢弃触发低并发收口：烤盘=$positionSn，" +
+            "【并发切换诊断】过保丢弃触发残留消化/低并发收口：source=KaoChangOperate.handleSuccessfulDiscardDemandGate，烤盘=$positionSn，" +
                 "modeType（并发模式）=${modeTypeDesc(oldModeType)}->${modeTypeDesc(config.modeType)}，" +
                 "transitionMode（并发切换过渡态）=${transitionModeDesc(oldTransitionMode)}->${transitionModeDesc(config.transitionMode)}，" +
-                "blockedFrontPositions（过保丢弃空位，仅1~9）=${result.blockedFrontPositions}，" +
+                "blockedFrontPositions（过保丢弃空位，跟踪1~21）=${result.blockedFrontPositions}，" +
                 "highConcurrencyResidualDrain（高并发残留消化态）不在此处写入，交由下一轮现有求值器计算"
         )
         SendServerHelper.publishServiceUpdateStatus("runtime_state:expired_discard_low_mode_closeout")

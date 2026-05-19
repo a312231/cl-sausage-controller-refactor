@@ -125,6 +125,61 @@ object HighCurrentTrafficMode {
         )
     }
 
+    private fun selfHealStaleLowToHighTransition(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ): Boolean {
+        val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
+        val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
+        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
+        val hasRealLowHeatLegacyBatch = hasRealOldLowHeatLegacyBatch(
+            oldLowHeatPans = list13_18,
+            frontPans = list1_9
+        )
+        val hasHighHeatSupplyInProgress =
+            HighHeatSupplementResumePlanner.hasBatchStarted(list25_33) || pitCount > 0
+        val resolvedState = resolveStaleLowToHighTransitionState(
+            currentModeType = config.modeType,
+            currentTransitionMode = config.transitionMode,
+            hasRealLowHeatLegacyBatch = hasRealLowHeatLegacyBatch,
+            hasHighHeatSupplyInProgress = hasHighHeatSupplyInProgress
+        ) ?: return false
+
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        config.modeType = resolvedState.modeType
+        config.transitionMode = resolvedState.transitionMode
+        clearLowToHighPartialWaitSnapshot()
+        AppConfig.saveAppConfig(config)
+        SendServerHelper.publishServiceUpdateStatus("runtime_state:stale_low_to_high_transition_healed")
+        LogUtils.w(
+            TAG,
+            "【并发切换自愈】禁止高并发稳态反向进入低转高，已自动纠正且本轮不启动25~33：" +
+                "source=HighCurrentTrafficMode.selfHealStaleLowToHighTransition，" +
+                "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "hasRealLowHeatLegacyBatch（13~18真实旧低并发补热批次）=$hasRealLowHeatLegacyBatch，" +
+                "hasHighHeatSupplyInProgress（25~33补热批次仍在处理）=$hasHighHeatSupplyInProgress，" +
+                "1~21空位=${TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter { !it.isHasSausage }.map { it.positionSn }}，" +
+                "13~18状态=${panStatusSummary(list13_18)}，" +
+                "25~33状态=${panStatusSummary(list25_33)}"
+        )
+        return true
+    }
+
+    private fun panStatusSummary(pans: List<KaoPan>): String {
+        return pans.joinToString(prefix = "[", postfix = "]") { pan ->
+            val state = when {
+                pan.isHasSausage && pan.startTime > 0L -> "烤制中"
+                pan.isHasSausage && pan.holdingTime > 0L -> "保温"
+                pan.isHasSausage -> "有肠"
+                pan.isHasGrilling -> "预留"
+                else -> "空"
+            }
+            "${pan.positionSn}:$state"
+        }
+    }
+
     /**
      * 高并发主处理器。
      *
@@ -187,6 +242,10 @@ object HighCurrentTrafficMode {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     return
                 } else if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
+                    val shouldResumeIncompleteBatch = shouldResumeIncompleteHighHeatBatch(
+                        pitCount = pitCount,
+                        hasIncompleteBatch = true
+                    )
                     val handledFinishedPartialBatch = if (schedulingEnabled) {
                         checkHighHeatSausage(list)
                     } else {
@@ -194,17 +253,24 @@ object HighCurrentTrafficMode {
                     }
                     if (handledFinishedPartialBatch) {
                         // 已处理成熟残缺批次，本轮不再续补，避免新肠混入同一补热批次。
-                    } else if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                    } else if (shouldResumeIncompleteBatch && schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                         resumeIncompleteHighHeatSupplement(
                             list = list,
                             listBox = listBox,
-                            reason = "高并发正常态续补25~33未完成批次"
+                            reason = "高并发正常态恢复25~33未完成批次"
                         )
                     } else {
                         LogUtils.i(
                             TAG,
-                            "【高并发补肠】25~33 补热区未补满，等待续补，不执行回补：boxSupplyAvailable=$boxSupplyAvailable，schedulingEnabled=$schedulingEnabled，errorStatus=${config.errorStatus}，处于停业前收口窗口=$isBeforeCloseWindow"
+                            "【高并发补肠】25~33 补热区存在未满批次，本轮不续补：pitCount=$pitCount，" +
+                                "原因=${if (shouldResumeIncompleteBatch) "等待库存/调度条件满足" else "已记录实际批次大小，按当前批次整批烤熟后回搬"}，" +
+                                "boxSupplyAvailable=$boxSupplyAvailable，schedulingEnabled=$schedulingEnabled，errorStatus=${config.errorStatus}，处于停业前收口窗口=$isBeforeCloseWindow"
                         )
+                    }
+                } else if (HighHeatSupplementResumePlanner.hasBatchStarted(list25_33)) {
+                    checkHighHeatEnd(list25_33, 3)
+                    if (schedulingEnabled) {
+                        checkHighHeatSausage(list)
                     }
                 } else if (totalEmpty == 30) {
                     if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
@@ -217,6 +283,15 @@ object HighCurrentTrafficMode {
                         )
                     }
                 } else if (p1_21 >= 9) {
+                    val blockedEmptyFrontPositions = LowToHighDemandGate.blockedEmptyFrontPositions(list1_21)
+                    if (blockedEmptyFrontPositions.isNotEmpty()) {
+                        switchHighToLow(
+                            reason = "高并发前区达到补肠门槛但包含过保丢弃空位，blockedEmptyFrontPositions=$blockedEmptyFrontPositions",
+                            kaoPanList = list
+                        )
+                        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                        return
+                    }
                     if (p25_33 == 9) {
                         if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                             val movedCount = addHighHeatSausage(list, listBox)
@@ -250,7 +325,7 @@ object HighCurrentTrafficMode {
                     checkHighHeatDiscard()
                 }
                 if (schedulingEnabled && boxSupplyAvailable) {
-                    checkSwitchToLow()
+                    checkSwitchToLow(list)
                 }
                 if (schedulingEnabled) {
                     SelfCleanManager.maybeRunZone3SelfClean(list)
@@ -261,11 +336,15 @@ object HighCurrentTrafficMode {
             }
 
             1 -> {
+                if (selfHealStaleLowToHighTransition(config, list)) {
+                    KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    return
+                }
                 lowTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
             }
 
             2 -> {
-                highTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
+                highTrafficModeTransition(config, list, listBox, schedulingEnabled)
             }
         }
     }
@@ -299,7 +378,8 @@ object HighCurrentTrafficMode {
         checkHighHeatSausage(list)
         val frontSausageCount = TrafficModeHelper.getTrafficModePositions(1, 21, list).count { it.isHasSausage }
         val zone3SausageCount = list25_33.count { it.isHasSausage }
-        if (canFinishHighToLowDrain(frontSausageCount, zone3SausageCount)) {
+        val hasAnyUnreadySausage = hasUnreadySausage(list)
+        if (canFinishHighToLowDrain(frontSausageCount, zone3SausageCount, hasUnreadySausage = hasAnyUnreadySausage)) {
             finishHighToLowCloseout(
                 config = AppConfig.getAppConfig(),
                 list = list,
@@ -360,7 +440,9 @@ object HighCurrentTrafficMode {
         val isBeforeCloseWindow =
             KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
-        val hasStartedHighHeatSupply = HighHeatSupplementResumePlanner.hasBatchStarted(list25_33)
+        val hasStartedHighHeatSupply =
+            HighHeatSupplementResumePlanner.hasBatchStarted(list25_33) || pitCount > 0
+        val hadStartedHighHeatSupplyBefore = hasStartedHighHeatSupply
         val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
             allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
             reason = "低转高过渡调度入口",
@@ -373,11 +455,17 @@ object HighCurrentTrafficMode {
             return
         }
 
-        if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33) && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
+        val hasIncompleteHighHeatBatch = HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)
+        if (
+            shouldResumeIncompleteHighHeatBatch(pitCount = pitCount, hasIncompleteBatch = hasIncompleteHighHeatBatch) &&
+            boxSupplyAvailable &&
+            schedulingEnabled &&
+            !isBeforeCloseWindow
+        ) {
             resumeIncompleteHighHeatSupplement(
                 list = list,
                 listBox = listBox,
-                reason = "低转高过渡续补25~33未完成批次"
+                reason = "低转高过渡恢复25~33未完成批次"
             )
         } else if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
@@ -410,7 +498,7 @@ object HighCurrentTrafficMode {
             if (movedCount > 0) {
                 val partialBatch = movedCount < targets.size
                 val batchResultText = if (partialBatch) {
-                    "已启动残缺高并发补热批次，后续进入高并发正常态续补或成熟回补"
+                    "已按实际库存启动高并发补热小批次，后续按本批实际数量成熟回补"
                 } else {
                     "已启动完整高并发补热批次"
                 }
@@ -438,16 +526,26 @@ object HighCurrentTrafficMode {
         }
 
         if (schedulingEnabled) {
-            moveFinishedOldLowHeatGroupToFront(list, 13, 15, "13~15")
-            moveFinishedOldLowHeatGroupToFront(list, 16, 18, "16~18")
+            planOldLowHeatReturnGroups(
+                oldLowHeatPans = list13_18,
+                nowMs = System.currentTimeMillis()
+            ).forEach { group ->
+                moveFinishedOldLowHeatGroupToFront(list, group.start, group.end, group.groupName)
+            }
         }
 
         val hasOldLowHeatAreaSausage = list13_18.any { it.isHasSausage }
         if (!hasOldLowHeatAreaSausage) {
             KaoChangOperate.stopHeating(2)
+            if (schedulingEnabled) {
+                checkHighHeatEnd(list25_33, 3, requireCompleteZone3Batch = false)
+                checkHighHeatSausage(list)
+            }
         }
         val hasStartedHighHeatSupplyNow = HighHeatSupplementResumePlanner.hasBatchStarted(list25_33)
         val hasFullHighHeatSupplyBatchNow = HighHeatSupplementResumePlanner.hasFullBatchStarted(list25_33)
+        val hasReturnedHighHeatSupplyBatch =
+            hadStartedHighHeatSupplyBefore && HighHeatSupplementResumePlanner.isReturnCleared(list25_33)
         val idleResolvedState = resolveLowToHighTransitionIdleState(
             currentModeType = config.modeType,
             schedulingEnabled = schedulingEnabled,
@@ -471,7 +569,8 @@ object HighCurrentTrafficMode {
             currentModeType = config.modeType,
             hasOldLowHeatAreaSausage = hasOldLowHeatAreaSausage,
             hasFullHighHeatSupplyBatchNow = hasFullHighHeatSupplyBatchNow,
-            hasStartedHighHeatSupplyBatchNow = hasStartedHighHeatSupplyNow
+            hasStartedHighHeatSupplyBatchNow = hasStartedHighHeatSupplyNow,
+            hasReturnedHighHeatSupplyBatch = hasReturnedHighHeatSupplyBatch
         )
         if (completionState == null) {
             if (hasOldLowHeatAreaSausage && hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow) {
@@ -493,6 +592,7 @@ object HighCurrentTrafficMode {
             TAG,
             "【并发切换】低转高完成条件满足：13~18 旧低并发补热区仍有烤肠=$hasOldLowHeatAreaSausage，" +
                 "25~33 补热批次已启动=$hasStartedHighHeatSupplyNow，25~33 完整补热批次已启动=$hasFullHighHeatSupplyBatchNow，" +
+                "25~33 第一批已全部搬回1~21=$hasReturnedHighHeatSupplyBatch，" +
                 "25~33 残缺批次=${hasStartedHighHeatSupplyNow && !hasFullHighHeatSupplyBatchNow}，" +
                 "1~21 当前有肠数=$frontOccupiedCount，25~33 当前有肠数=$highSupplyOccupiedCount"
         )
@@ -583,23 +683,9 @@ object HighCurrentTrafficMode {
         config: AppConfigBean,
         list: List<KaoPan>,
         listBox: List<KaoPanBox>,
-        boxSupplyAvailable: Boolean,
         schedulingEnabled: Boolean
     ) {
-        val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
-        val isBeforeCloseWindow =
-            KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
-        val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
-            allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
-            reason = "高转低过渡调度入口",
-            boxSupplyAvailable = boxSupplyAvailable,
-            schedulingEnabled = schedulingEnabled,
-            isBeforeCloseWindow = isBeforeCloseWindow
-        )
-        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-            return
-        }
+        KaoChangOperate.clearPendingSupplementBatchIntent("高转低过渡不再启动新的25~33补肠")
 
         if (AppConfig.getAppConfig().onlineStatus == 4 || AppConfig.getAppConfig().moveStatus != 0) {
             LogUtils.i(
@@ -620,8 +706,9 @@ object HighCurrentTrafficMode {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val sausageCount = list1_21.count { it.isHasSausage }
         val sausageCount25_33 = list25_33.count { it.isHasSausage }
+        val hasAnyUnreadySausage = hasUnreadySausage(list)
 
-        if (canFinishHighToLowDrain(sausageCount, sausageCount25_33)) {
+        if (canFinishHighToLowDrain(sausageCount, sausageCount25_33, hasUnreadySausage = hasAnyUnreadySausage)) {
             finishHighToLowCloseout(
                 config = config,
                 list = list,
@@ -880,13 +967,22 @@ object HighCurrentTrafficMode {
             return movedPartialBatch
         }
         if (HighHeatSupplementResumePlanner.isCompleteFinishedBatch(list25_33)) {
+            val sourcePans = list25_33.filter { it.isHasSausage }
+            val frontEmptyCount = TrafficModeHelper.getTrafficModePositions(1, 21, list).count { !it.isHasSausage }
+            if (!canReturnHighHeatBatchToFront(frontEmptyCount = frontEmptyCount, batchSize = sourcePans.size)) {
+                LogUtils.i(
+                    TAG,
+                    "【高并发补肠】25~33 补热区已烤熟但暂不回搬：1~21空位=$frontEmptyCount，本批实际数量=${sourcePans.size}，等待空位足够后整批回搬"
+                )
+                return true
+            }
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             LogUtils.i(TAG, "【高并发补肠】25~33 补热区已烤熟，开始回补 1~21")
             KaoChangOperate.keepWarm(3)
             KaoChangOperate.keepWarm(2)
             KaoChangOperate.keepWarm(1)
 
-            list25_33.forEach { kaoPan ->
+            sourcePans.forEach { kaoPan ->
                 if (kaoPan.isHasSausage && kaoPan.taste != null) {
                     val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
                     val tasteCode = kaoPan.taste.tasteCode
@@ -966,6 +1062,14 @@ object HighCurrentTrafficMode {
         }
         if (readyPans.isEmpty()) {
             return false
+        }
+        val frontEmptyCount = TrafficModeHelper.getTrafficModePositions(1, 21, list).count { !it.isHasSausage }
+        if (!canReturnHighHeatBatchToFront(frontEmptyCount = frontEmptyCount, batchSize = readyPans.size)) {
+            LogUtils.i(
+                TAG,
+                "【高并发补肠】25~33 残缺补热批次已烤熟但暂不回搬：1~21空位=$frontEmptyCount，本批实际数量=${readyPans.size}，等待空位足够后整批回搬"
+            )
+            return true
         }
 
         LogUtils.i(
@@ -1097,29 +1201,34 @@ object HighCurrentTrafficMode {
      * 1. 接近营业结束；
      * 2. 距离上次高并发补肠已超过高转低间隔阈值。
      */
-    private fun checkSwitchToLow() {
+    private fun checkSwitchToLow(kaoPanList: List<KaoPan>) {
         val businessTime = AppConfig.getAppConfig().businessTime
         if (businessTime != null) {
             val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
             val beforeCloseThreshold =
                 (AppConfig.getAppConfig().timeBeforeClose.takeIf { it > 0 } ?: 30) * 60 * 1000L
             if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < beforeCloseThreshold) {
-                switchHighToLow("接近营业结束")
+                switchHighToLow("接近营业结束", kaoPanList)
                 return
             }
         }
 
-        if (lastFillPitTime > 0) {
-            val currentTime = System.currentTimeMillis()
-            val timeSinceLastFill = currentTime - lastFillPitTime
-            val timeThresholdLowMinutes = AppConfig.getAppConfig().timeThresholdLow
-            if (shouldSwitchHighToLowByTimeout(lastFillPitTime, currentTime, timeThresholdLowMinutes)) {
-                LogUtils.w(
-                    TAG,
-                    "【并发切换】高并发补肠间隔超时判定成立：lastFillPitTime=$lastFillPitTime，currentTime=$currentTime，elapsedMs=$timeSinceLastFill，timeThresholdLow=${timeThresholdLowMinutes}分钟"
-                )
-                switchHighToLow("高并发补肠间隔超时")
-            }
+        val currentTime = System.currentTimeMillis()
+        if (lastFillPitTime <= 0L) {
+            applySupplementTrackingState(
+                nextState = currentSupplementTrackingState().copy(lastFillPitTime = currentTime),
+                reason = "高并发稳态建立高转低计时锚点"
+            )
+            return
+        }
+        val timeSinceLastFill = currentTime - lastFillPitTime
+        val timeThresholdLowMinutes = AppConfig.getAppConfig().timeThresholdLow
+        if (shouldSwitchHighToLowByTimeout(lastFillPitTime, currentTime, timeThresholdLowMinutes)) {
+            LogUtils.w(
+                TAG,
+                "【并发切换】高并发补肠间隔超时判定成立：lastFillPitTime=$lastFillPitTime，currentTime=$currentTime，elapsedMs=$timeSinceLastFill，timeThresholdLow=${timeThresholdLowMinutes}分钟"
+            )
+            switchHighToLow("高并发补肠间隔超时", kaoPanList)
         }
     }
 
@@ -1138,15 +1247,24 @@ object HighCurrentTrafficMode {
      * 高并发 -> 低并发。
      * 这里只写入过渡态，由高转低过渡处理器负责最终落回低并发。
      */
-    private fun switchHighToLow(reason: String) {
-        LogUtils.w(
-            TAG,
-            "【并发切换】触发高转低：原因=$reason，modeType=${modeText(AppConfig.getAppConfig().modeType)}，transitionMode=${transitionText(AppConfig.getAppConfig().transitionMode)}->2(高转低过渡)"
-        )
-        AppConfig.getAppConfig().apply {
+    private fun switchHighToLow(reason: String, kaoPanList: List<KaoPan> = KaoPanHelper.getKaoPanList()) {
+        val config = AppConfig.getAppConfig()
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        config.apply {
             transitionMode = 2
         }
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        KaoChangOperate.clearPendingSupplementBatchIntent("写入高转低过渡态后停止25~33未完成补肠意图")
+        LogUtils.w(
+            TAG,
+            "【并发切换诊断】写入 transitionMode=2（高转低过渡）：source=HighCurrentTrafficMode.switchHighToLow，reason=$reason，" +
+                "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "1~21空位=${TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter { !it.isHasSausage }.map { it.positionSn }}，" +
+                "13~18状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList))}，" +
+                "25~33状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList))}"
+        )
+        AppConfig.saveAppConfig(config)
         SendServerHelper.publishServiceUpdateStatus()
         resetSupplementTracking("进入高转低过渡")
     }

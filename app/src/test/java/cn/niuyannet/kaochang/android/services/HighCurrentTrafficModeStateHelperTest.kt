@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -43,7 +44,8 @@ class HighCurrentTrafficModeStateHelperTest {
             currentModeType = 2,
             hasOldLowHeatAreaSausage = true,
             hasFullHighHeatSupplyBatchNow = true,
-            hasStartedHighHeatSupplyBatchNow = true
+            hasStartedHighHeatSupplyBatchNow = true,
+            hasReturnedHighHeatSupplyBatch = false
         )
 
         assertEquals(null, resolved)
@@ -55,33 +57,34 @@ class HighCurrentTrafficModeStateHelperTest {
             currentModeType = 2,
             hasOldLowHeatAreaSausage = false,
             hasFullHighHeatSupplyBatchNow = false,
-            hasStartedHighHeatSupplyBatchNow = false
+            hasStartedHighHeatSupplyBatchNow = false,
+            hasReturnedHighHeatSupplyBatch = false
         )
 
         assertEquals(null, resolved)
     }
 
     @Test
-    fun resolveLowToHighTransitionCompletionState_shouldCompleteAfterOldLowHeatAreaIsCleared() {
+    fun resolveLowToHighTransitionCompletionState_shouldWaitUntilHighHeatBatchReturns() {
         val resolved = resolveLowToHighTransitionCompletionState(
             currentModeType = 2,
             hasOldLowHeatAreaSausage = false,
             hasFullHighHeatSupplyBatchNow = true,
-            hasStartedHighHeatSupplyBatchNow = true
+            hasStartedHighHeatSupplyBatchNow = true,
+            hasReturnedHighHeatSupplyBatch = false
         )
 
-        assertNotNull(resolved)
-        assertEquals(2, resolved!!.modeType)
-        assertEquals(0, resolved.transitionMode)
+        assertEquals(null, resolved)
     }
 
     @Test
-    fun resolveLowToHighTransitionCompletionState_shouldCompleteWhenPartialHighHeatBatchStartedAndOldAreaCleared() {
+    fun resolveLowToHighTransitionCompletionState_shouldCompleteAfterHighHeatBatchReturns() {
         val resolved = resolveLowToHighTransitionCompletionState(
             currentModeType = 2,
             hasOldLowHeatAreaSausage = false,
             hasFullHighHeatSupplyBatchNow = false,
-            hasStartedHighHeatSupplyBatchNow = true
+            hasStartedHighHeatSupplyBatchNow = true,
+            hasReturnedHighHeatSupplyBatch = true
         )
 
         assertNotNull(resolved)
@@ -123,6 +126,42 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun shouldResumeIncompleteHighHeatBatch_shouldTreatRecordedPartialCountAsCurrentBatchSize() {
+        assertFalse(
+            shouldResumeIncompleteHighHeatBatch(
+                pitCount = 5,
+                hasIncompleteBatch = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldResumeIncompleteHighHeatBatch_shouldAllowRecoveryWhenNoBatchSizeWasRecorded() {
+        assertTrue(
+            shouldResumeIncompleteHighHeatBatch(
+                pitCount = 0,
+                hasIncompleteBatch = true
+            )
+        )
+    }
+
+    @Test
+    fun canReturnHighHeatBatchToFront_shouldUseActualBatchSize() {
+        assertTrue(
+            canReturnHighHeatBatchToFront(
+                frontEmptyCount = 5,
+                batchSize = 5
+            )
+        )
+        assertFalse(
+            canReturnHighHeatBatchToFront(
+                frontEmptyCount = 4,
+                batchSize = 5
+            )
+        )
+    }
+
+    @Test
     fun shouldSwitchHighToLowByTimeout_shouldReturnFalseWhenThresholdIsNonPositive() {
         assertFalse(
             shouldSwitchHighToLowByTimeout(
@@ -159,15 +198,116 @@ class HighCurrentTrafficModeStateHelperTest {
         assertFalse(
             canFinishHighToLowDrain(
                 frontSausageCount = 10,
-                zone3SausageCount = 0
+                zone3SausageCount = 0,
+                hasUnreadySausage = false
             )
         )
         assertFalse(
             canFinishHighToLowDrain(
                 frontSausageCount = 9,
-                zone3SausageCount = 1
+                zone3SausageCount = 1,
+                hasUnreadySausage = false
             )
         )
+        assertFalse(
+            canFinishHighToLowDrain(
+                frontSausageCount = 9,
+                zone3SausageCount = 0,
+                hasUnreadySausage = true
+            )
+        )
+    }
+
+    @Test
+    fun resolveStaleLowToHighTransitionState_shouldNormalizeHighModeBackToStable() {
+        val resolved = resolveStaleLowToHighTransitionState(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            hasRealLowHeatLegacyBatch = false,
+            hasHighHeatSupplyInProgress = false
+        )
+
+        assertNotNull(resolved)
+        assertEquals(2, resolved!!.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveStaleLowToHighTransitionState_shouldKeepRealLowToHighTransition() {
+        val resolved = resolveStaleLowToHighTransitionState(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            hasRealLowHeatLegacyBatch = true,
+            hasHighHeatSupplyInProgress = false
+        )
+
+        assertEquals(null, resolved)
+    }
+
+    @Test
+    fun hasRealOldLowHeatLegacyBatch_shouldKeepMatureOldLowHeatWithReservedFrontTarget() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 10_000L, status = 2)
+        )
+        val frontPans = frontPansWithReservedTarget(position = 1, tasteCode = "A")
+
+        assertTrue(hasRealOldLowHeatLegacyBatch(oldLowHeatPans, frontPans))
+        val resolved = resolveStaleLowToHighTransitionState(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            hasRealLowHeatLegacyBatch = hasRealOldLowHeatLegacyBatch(oldLowHeatPans, frontPans),
+            hasHighHeatSupplyInProgress = false
+        )
+
+        assertEquals(null, resolved)
+    }
+
+    @Test
+    fun hasRealOldLowHeatLegacyBatch_shouldAllowSelfHealWhenOldAndHighHeatBatchesAreAbsent() {
+        val oldLowHeatPans = (13..18).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+            }
+        }
+        val frontPans = frontPansWithReservedTarget(position = 1, tasteCode = "A")
+
+        assertFalse(hasRealOldLowHeatLegacyBatch(oldLowHeatPans, frontPans))
+        val resolved = resolveStaleLowToHighTransitionState(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            hasRealLowHeatLegacyBatch = hasRealOldLowHeatLegacyBatch(oldLowHeatPans, frontPans),
+            hasHighHeatSupplyInProgress = false
+        )
+
+        assertNotNull(resolved)
+        assertEquals(2, resolved!!.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
+    fun hasRealOldLowHeatLegacyBatch_shouldKeepActiveOldLowHeatWithoutReservedFrontTarget() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 10_000L, holdingTime = 0L, status = 1)
+        )
+        val frontPans = frontPansWithReservedTarget(position = 1, tasteCode = "B")
+
+        assertTrue(hasRealOldLowHeatLegacyBatch(oldLowHeatPans, frontPans))
+    }
+
+    @Test
+    fun planOldLowHeatReturnGroups_shouldPrioritizeEarlierMaxStartTime() {
+        val oldLowHeatPans =
+            oldLowHeatBatch(13, 15, listOf(2_000L, 2_500L, 3_000L)) +
+                oldLowHeatBatch(16, 18, listOf(1_000L, 1_200L, 1_500L))
+
+        val plannedGroups = planOldLowHeatReturnGroups(
+            oldLowHeatPans = oldLowHeatPans,
+            nowMs = 10_000L
+        )
+
+        assertEquals(listOf(16, 13), plannedGroups.map { it.start })
+        assertEquals(listOf("16~18", "13~15"), plannedGroups.map { it.groupName })
     }
 
     @Test
@@ -309,6 +449,48 @@ class HighCurrentTrafficModeStateHelperTest {
                 holdingTime = 0L
                 status = 0
                 temperature = 0
+            }
+        }
+
+    private fun oldLowHeatPan(
+        position: Int,
+        tasteCode: String,
+        startTime: Long,
+        holdingTime: Long,
+        status: Int
+    ): KaoPan =
+        KaoPan().apply {
+            positionSn = position
+            isHasSausage = true
+            this.startTime = startTime
+            this.holdingTime = holdingTime
+            this.status = status
+            taste = Taste(tasteCode)
+            bakingTime = 1_000L
+        }
+
+    private fun oldLowHeatBatch(
+        start: Int,
+        end: Int,
+        startTimes: List<Long>
+    ): List<KaoPan> =
+        (start..end).zip(startTimes).map { (position, startTime) ->
+            oldLowHeatPan(
+                position = position,
+                tasteCode = "A",
+                startTime = startTime,
+                holdingTime = 0L,
+                status = 1
+            )
+        }
+
+    private fun frontPansWithReservedTarget(position: Int, tasteCode: String): List<KaoPan> =
+        (1..9).map { index ->
+            KaoPan().apply {
+                positionSn = index
+                isHasSausage = index != position
+                isHasGrilling = index == position
+                taste = Taste(tasteCode)
             }
         }
 }

@@ -163,17 +163,20 @@ object LowCurrentTrafficMode {
             boxSupplyAvailable &&
             config.modeType == 1 &&
             config.transitionMode == 0 &&
-            LowToHighDemandGate.canTriggerLowToHigh(list1_9, p13_18)
+            LowToHighDemandGate.canTriggerLowToHigh(
+                frontPans = list1_9,
+                lowHeatPans = list13_18
+            )
         ) {
             LogUtils.w(
                 TAG,
                 "【并发切换】触发低转高：1~9空位=$p1_9，" +
                     "过保丢弃空位=$blockedFrontPositions，" +
-                    "有效空位=${effectiveFrontEmptyPositions.size}，13~18 全满，" +
+                    "有效空位=${effectiveFrontEmptyPositions.size}，13~18 低并发补热批次在烤，" +
                     "modeType=${modeText(config.modeType)}->2(高并发)，" +
                     "transitionMode=${transitionText(config.transitionMode)}->1(低转高过渡)"
             )
-            switchLowToHigh()
+            switchLowToHigh(kaoPanList)
         } else if (schedulingEnabled &&
             boxSupplyAvailable &&
             config.modeType == 1 &&
@@ -565,16 +568,37 @@ object LowCurrentTrafficMode {
      * 低并发 -> 高并发。
      * modeType 切到 2，transitionMode 切到 1，表示进入低转高过渡态。
      */
-    private fun switchLowToHigh() {
-        AppConfig.getAppConfig().apply {
+    private fun switchLowToHigh(kaoPanList: List<KaoPan>) {
+        val config = AppConfig.getAppConfig()
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        config.apply {
             modeType = 2
             transitionMode = 1
         }
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        AppConfig.saveAppConfig(config)
         LogUtils.i(
             TAG,
-            "【并发切换】低转高状态已写入本地：modeType=${modeText(AppConfig.getAppConfig().modeType)}，transitionMode=${transitionText(AppConfig.getAppConfig().transitionMode)}"
+            "【并发切换诊断】写入 transitionMode=1（低转高过渡）：source=LowCurrentTrafficMode.switchLowToHigh，" +
+                "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "1~21空位=${TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter { !it.isHasSausage }.map { it.positionSn }}，" +
+                "13~18状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList))}，" +
+                "25~33状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList))}"
         )
         SendServerHelper.publishServiceUpdateStatus()
+    }
+
+    private fun panStatusSummary(pans: List<KaoPan>): String {
+        return pans.joinToString(prefix = "[", postfix = "]") { pan ->
+            val state = when {
+                pan.isHasSausage && pan.startTime > 0L -> "烤制中"
+                pan.isHasSausage && pan.holdingTime > 0L -> "保温"
+                pan.isHasSausage -> "有肠"
+                pan.isHasGrilling -> "预留"
+                else -> "空"
+            }
+            "${pan.positionSn}:$state"
+        }
     }
 }

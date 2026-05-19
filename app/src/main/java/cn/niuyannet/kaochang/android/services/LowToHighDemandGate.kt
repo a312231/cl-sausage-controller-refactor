@@ -13,8 +13,12 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 object LowToHighDemandGate {
     private const val TAG = "LowToHighDemandGate"
     private const val LOW_MODE = 1
+    private const val HIGH_MODE = 2
     private const val NO_TRANSITION = 0
-    private val frontPositions = 1..9
+    private const val LOW_TO_HIGH_TRANSITION = 1
+    private const val HIGH_TO_LOW_TRANSITION = 2
+    private val trackedFrontPositions = 1..21
+    private val lowHeatPositions = 13..18
     private val blockedFrontPositions = linkedSetOf<Int>()
     private val defaultInfoLogger: (String) -> Unit = { message -> LogUtils.i(TAG, message) }
     private var infoLogger: (String) -> Unit = defaultInfoLogger
@@ -27,7 +31,7 @@ object LowToHighDemandGate {
 
     @Synchronized
     fun recordExpiredDiscard(positionSn: Int): Boolean {
-        if (positionSn !in frontPositions) {
+        if (positionSn !in trackedFrontPositions) {
             return false
         }
         return blockedFrontPositions.add(positionSn)
@@ -86,20 +90,31 @@ object LowToHighDemandGate {
 
     @Synchronized
     fun effectiveEmptyFrontPositions(frontPans: List<KaoPan>): Set<Int> {
+        pruneObservedFilledPositions(frontPans)
         val currentEmptyPositions = frontPans
-            .filter { it.positionSn in frontPositions && !it.isHasSausage }
+            .filter { it.positionSn in trackedFrontPositions && !it.isHasSausage }
             .map { it.positionSn }
             .toSet()
-        blockedFrontPositions.retainAll(currentEmptyPositions)
         return currentEmptyPositions - blockedFrontPositions
+    }
+
+    @Synchronized
+    fun blockedEmptyFrontPositions(frontPans: List<KaoPan>): Set<Int> {
+        pruneObservedFilledPositions(frontPans)
+        return frontPans
+            .filter { it.positionSn in trackedFrontPositions && !it.isHasSausage }
+            .map { it.positionSn }
+            .filter { it in blockedFrontPositions }
+            .toSet()
     }
 
     @Synchronized
     fun canTriggerLowToHigh(
         frontPans: List<KaoPan>,
-        lowHeatEmptyCount: Int
+        lowHeatPans: List<KaoPan>
     ): Boolean {
-        return effectiveEmptyFrontPositions(frontPans).size >= 7 && lowHeatEmptyCount == 0
+        return effectiveEmptyFrontPositions(frontPans).size >= 7 &&
+            hasActiveLowHeatBatch(lowHeatPans)
     }
 
     @Synchronized
@@ -108,13 +123,47 @@ object LowToHighDemandGate {
         positionSn: Int
     ): ExpiredDiscardCloseoutResult {
         val blockedChanged = recordExpiredDiscard(positionSn)
-        val changedModeState = config.modeType != LOW_MODE || config.transitionMode != NO_TRANSITION
-        config.modeType = LOW_MODE
-        config.transitionMode = NO_TRANSITION
+        val shouldDrainHighConcurrency =
+            config.modeType == HIGH_MODE ||
+                config.transitionMode == LOW_TO_HIGH_TRANSITION ||
+                config.transitionMode == HIGH_TO_LOW_TRANSITION
+        val targetModeType = if (shouldDrainHighConcurrency) HIGH_MODE else LOW_MODE
+        val targetTransitionMode = if (shouldDrainHighConcurrency) HIGH_TO_LOW_TRANSITION else NO_TRANSITION
+        val changedModeState =
+            config.modeType != targetModeType || config.transitionMode != targetTransitionMode
+        config.modeType = targetModeType
+        config.transitionMode = targetTransitionMode
         return ExpiredDiscardCloseoutResult(
             changedModeState = changedModeState,
             blockedFrontPositionsChanged = blockedChanged,
             blockedFrontPositions = blockedFrontPositions.toSet()
         )
+    }
+
+    private fun pruneObservedFilledPositions(frontPans: List<KaoPan>) {
+        val observedPositions = frontPans
+            .filter { it.positionSn in trackedFrontPositions }
+            .map { it.positionSn }
+            .toSet()
+        if (observedPositions.isEmpty()) {
+            return
+        }
+        val currentEmptyPositions = frontPans
+            .filter { it.positionSn in observedPositions && !it.isHasSausage }
+            .map { it.positionSn }
+            .toSet()
+        blockedFrontPositions.removeAll { position ->
+            position in observedPositions && position !in currentEmptyPositions
+        }
+    }
+
+    private fun hasActiveLowHeatBatch(lowHeatPans: List<KaoPan>): Boolean {
+        val byPosition = lowHeatPans
+            .filter { it.positionSn in lowHeatPositions }
+            .associateBy { it.positionSn }
+        return lowHeatPositions.all { position ->
+            val pan = byPosition[position] ?: return@all false
+            pan.isHasSausage && pan.startTime > 0L && pan.status != 2
+        }
     }
 }
