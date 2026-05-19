@@ -113,7 +113,7 @@ object LowToHighDemandGate {
         frontPans: List<KaoPan>,
         lowHeatPans: List<KaoPan>
     ): Boolean {
-        return effectiveEmptyFrontPositions(frontPans).size >= 7 &&
+        return effectiveEmptyFrontPositions(frontPans).size > 7 &&
             hasActiveLowHeatBatch(lowHeatPans)
     }
 

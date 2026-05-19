@@ -153,7 +153,7 @@ object SelfCleanManager {
     private fun publishRuntimeState(source: String) {
         val mqttOk = SendServerHelper.publishServiceUpdateStatus("runtime_state:$source")
         if (!mqttOk) {
-            logW("运行态上报失败，回退 HTTP 补偿 | source=$source")
+            logW("运行态 MQTT 发送队列拒绝，回退 HTTP 补偿 | source=$source")
             DataManagementAPI.uploadDeviceInfo()
         }
     }

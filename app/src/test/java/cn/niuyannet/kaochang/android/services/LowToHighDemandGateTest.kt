@@ -81,10 +81,34 @@ class LowToHighDemandGateTest {
     }
 
     @Test
-    fun canTriggerLowToHigh_shouldRejectWhenSevenEmptyPositionsIncludeExpiredDiscardSlots() {
+    fun canTriggerLowToHigh_shouldRejectWhenEightEmptyPositionsIncludeExpiredDiscardSlots() {
         LowToHighDemandGate.recordExpiredDiscard(5)
         LowToHighDemandGate.recordExpiredDiscard(6)
 
+        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7, 8))
+
+        assertFalse(
+            LowToHighDemandGate.canTriggerLowToHigh(
+                frontPans = frontPans,
+                lowHeatPans = lowHeatPans(activeBakingPositions = (13..18).toSet())
+            )
+        )
+    }
+
+    @Test
+    fun canTriggerLowToHigh_shouldAllowWhenEightEmptyPositionsComeFromRealDemand() {
+        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7, 8))
+
+        assertTrue(
+            LowToHighDemandGate.canTriggerLowToHigh(
+                frontPans = frontPans,
+                lowHeatPans = lowHeatPans(activeBakingPositions = (13..18).toSet())
+            )
+        )
+    }
+
+    @Test
+    fun canTriggerLowToHigh_shouldRejectWhenExactlySevenEmptyPositionsAreNotGreaterThanSeven() {
         val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7))
 
         assertFalse(
@@ -96,20 +120,8 @@ class LowToHighDemandGateTest {
     }
 
     @Test
-    fun canTriggerLowToHigh_shouldAllowWhenSevenEmptyPositionsComeFromRealDemand() {
-        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7))
-
-        assertTrue(
-            LowToHighDemandGate.canTriggerLowToHigh(
-                frontPans = frontPans,
-                lowHeatPans = lowHeatPans(activeBakingPositions = (13..18).toSet())
-            )
-        )
-    }
-
-    @Test
     fun canTriggerLowToHigh_shouldRejectWhenOnly13To15IsBaking() {
-        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7))
+        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7, 8))
 
         assertFalse(
             LowToHighDemandGate.canTriggerLowToHigh(
@@ -124,7 +136,7 @@ class LowToHighDemandGateTest {
 
     @Test
     fun canTriggerLowToHigh_shouldRejectWhenOnly16To18IsBaking() {
-        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7))
+        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7, 8))
 
         assertFalse(
             LowToHighDemandGate.canTriggerLowToHigh(
@@ -139,7 +151,7 @@ class LowToHighDemandGateTest {
 
     @Test
     fun canTriggerLowToHigh_shouldRejectWhenLowHeatAreaIsKeepWarmInsteadOfBaking() {
-        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7))
+        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7, 8))
 
         assertFalse(
             LowToHighDemandGate.canTriggerLowToHigh(

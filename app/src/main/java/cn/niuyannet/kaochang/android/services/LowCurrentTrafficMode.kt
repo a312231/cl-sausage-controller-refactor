@@ -181,7 +181,7 @@ object LowCurrentTrafficMode {
             boxSupplyAvailable &&
             config.modeType == 1 &&
             config.transitionMode == 0 &&
-            p1_9 >= 7 &&
+            p1_9 > 7 &&
             p13_18 == 0 &&
             blockedFrontPositions.isNotEmpty()
         ) {

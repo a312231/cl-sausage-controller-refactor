@@ -415,7 +415,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                             "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根完成：out4 已收口，本单已处理完成，订单号=$orderNo"
                         )
                         LogUtils.d(
-                            "【履约完结】out4 已收口，本单已处理完成，已上报订单事件(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】out4 已收口，本单已处理完成，已触发订单终态事件入队(status=2)：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
                         KaoChangOperate.reportActionGroupOrderTerminalEvent(
@@ -431,7 +431,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                             "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根完成：历史丢弃结果按 4F 履约完成处理，订单号=$orderNo"
                         )
                         LogUtils.w(
-                            "【履约完结】历史丢弃结果已按 status=2（单次履约完成）上报：orderNo=$orderNo, " +
+                            "【履约完结】历史丢弃结果已按 status=2（单次履约完成）触发订单终态事件入队：orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
                         )
                         KaoChangOperate.reportActionGroupOrderTerminalEvent(
@@ -446,7 +446,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.ERROR))
                         failureEventReported = true
                         LogUtils.e("【出餐】第$currentIndex/${totalCount}根失败：订单号=$orderNo，原因=动作组返回失败")
-                        LogUtils.e("【订单流转】单根出餐失败，已上报 Java 订单事件 status=5：orderNo=$orderNo, itemId=${item.id}")
+                        LogUtils.e("【订单流转】单根出餐失败，已触发 Java 订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}")
                         throw IllegalStateException("单根出餐失败：orderNo=$orderNo, itemId=${item.id}")
                     }
                 }
@@ -455,7 +455,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                 LogUtils.e("【订单流转】处理单根烤肠时发生异常：${e.message}")
                 if (!failureEventReported) {
                     reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-                    LogUtils.e("【订单流转】单根出餐异常，已补充上报订单事件 status=5：orderNo=$orderNo, itemId=${item.id}")
+                    LogUtils.e("【订单流转】单根出餐异常，已补充触发订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}")
                 }
                 LogUtils.e("【设备状态】单根出餐异常，已切到维护中并准备上报：${e.message}")
                 withContext(Dispatchers.Main) {
@@ -479,7 +479,7 @@ abstract class OrderActivity: BaseSauceDetection() {
 
         if (deliveredCount < item.quantity) {
             LogUtils.e("【订单流转】商品项未全部履约完成：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            LogUtils.e("【订单流转】商品项履约失败，已上报订单事件 status=5：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("【订单流转】商品项履约失败，已触发订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
             reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
             return DeliveryResult(false, deliveredCount)
         }
@@ -668,9 +668,9 @@ abstract class OrderActivity: BaseSauceDetection() {
         LogUtils.d("【设备状态】触发 MQTT 上报：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         val firstPublishOk = SendServerHelper.publishServiceUpdateStatus()
         if (firstPublishOk) {
-            LogUtils.d("【设备状态】MQTT 上报成功：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
+            LogUtils.d("【设备状态】MQTT 发送队列已接受：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         } else {
-            LogUtils.e("【设备状态】MQTT 上报失败：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
+            LogUtils.e("【设备状态】MQTT 发送队列拒绝：attempt=0, onlineStatus（设备营业状态）=${onlineStatusText(expectedStatus)}")
         }
         mirrorDeviceStatusToHttp(expectedStatus, attempt = 0)
 
@@ -684,9 +684,9 @@ abstract class OrderActivity: BaseSauceDetection() {
                     LogUtils.d("【设备状态】触发 MQTT 上报：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     val retryPublishOk = SendServerHelper.publishServiceUpdateStatus()
                     if (retryPublishOk) {
-                        LogUtils.d("【设备状态】MQTT 上报成功：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
+                        LogUtils.d("【设备状态】MQTT 发送队列已接受：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     } else {
-                        LogUtils.e("【设备状态】MQTT 上报失败：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
+                        LogUtils.e("【设备状态】MQTT 发送队列拒绝：attempt=$attempt, onlineStatus（设备营业状态）=${onlineStatusText(currentStatus)}")
                     }
                     mirrorDeviceStatusToHttp(currentStatus, attempt = attempt)
                 } else {
@@ -744,7 +744,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         val ok = SendServerHelper.publishServiceUpdateOrder(payload)
         if (!ok) {
             LogUtils.e(
-                "【订单流转】MQTT 上报订单事件失败（MQTT 可能断连）：" +
+                "【订单流转】订单事件进入 MQTT 发送队列失败（MQTT 可能断连或队列已满）：" +
                     "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
                     "status（订单事件状态）=$eventDesc，订单状态可能与服务端不同步"
             )
@@ -757,15 +757,15 @@ abstract class OrderActivity: BaseSauceDetection() {
                         tasteCode = tasteCode
                     ),
                     panNo = 0,
-                    source = "正式出餐 status=5 MQTT 上报失败"
+                    source = "正式出餐 status=5 MQTT 发送队列拒绝"
                 )
             }
         } else {
             LogUtils.i(
-                "【云端同步】订单事件已上报：订单号=$orderNo，状态=${eventDesc.substringAfter("（").substringBefore("）")}"
+                "【云端同步】订单事件已进入 MQTT 发送队列：订单号=$orderNo，状态=${eventDesc.substringAfter("（").substringBefore("）")}"
             )
             LogUtils.d(
-                "【订单流转】MQTT 上报订单事件成功：" +
+                "【订单流转】MQTT 发送队列已接受订单事件：" +
                     "orderNo=$orderNo, itemId=$itemId, productId=$productId, tasteCode=$tasteCode, " +
                     "status（订单事件状态）=$eventDesc"
             )

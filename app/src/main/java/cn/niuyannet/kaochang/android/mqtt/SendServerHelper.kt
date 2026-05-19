@@ -119,7 +119,8 @@ object SendServerHelper {
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_ORDER_EVENT
                 content = JSON.toJSONString(msgObj)
-            }
+            },
+            priority = MqttPublishPriority.HIGH
         )
     }
 
@@ -164,7 +165,8 @@ object SendServerHelper {
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
-            }
+            },
+            priority = MqttPublishPriority.NORMAL
         )
         if (ok) {
             lastPublishedRuntimeStateSeq = seq
@@ -187,7 +189,7 @@ object SendServerHelper {
             pendingRuntimeStateAcks[seq] = snapshot
             scheduleRuntimeStateAckTimeout(snapshot)
             LogUtils.d(
-                "【MQTT运行态】已上报运行时状态：" +
+                "【MQTT运行态】运行时状态已进入 MQTT 发送队列：" +
                     "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，" +
                     "onlineStatus=${config.onlineStatus}，supplyStatus=${config.supplyStatus}，" +
                     "inspectionMode=${config.inspectionMode}，" +
@@ -198,11 +200,11 @@ object SendServerHelper {
                     "restStatusSource=${config.restStatusSource}"
             )
             if (!reusedSeq) {
-                LogUtils.i("【云端同步】设备状态已上报：${onlineStatusLabel(config.onlineStatus)}")
+                LogUtils.i("【云端同步】设备状态已进入 MQTT 发送队列：${onlineStatusLabel(config.onlineStatus)}")
             }
         } else {
             LogUtils.w(
-                "【云端同步】设备状态上报失败：状态=${onlineStatusLabel(config.onlineStatus)}，将等待下一次重试"
+                "【云端同步】设备状态进入 MQTT 发送队列失败：状态=${onlineStatusLabel(config.onlineStatus)}，将等待下一次重试"
             )
         }
         return ok
@@ -231,7 +233,8 @@ object SendServerHelper {
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
-            }
+            },
+            priority = MqttPublishPriority.LOW
         )
         if (ok) {
             lastPublishedAvailableStateSeq = seq
@@ -245,13 +248,13 @@ object SendServerHelper {
             pendingAvailableStateAcks[seq] = snapshot
             scheduleAvailableStateAckTimeout(snapshot)
             LogUtils.d(
-                "【MQTT展示态】已上报首页展示态：" +
+                "【MQTT展示态】首页展示态已进入 MQTT 发送队列：" +
                     "availableSeq=$seq，source=$source，available=${config.available}，" +
                     "availableCountdownLatched=${config.availableCountdownLatched}，reportedAt=$now"
             )
         } else {
             LogUtils.w(
-                "【MQTT展示态】首页展示态上报失败：" +
+                "【MQTT展示态】首页展示态进入 MQTT 发送队列失败：" +
                     "source=$source，available=${config.available}，" +
                     "availableCountdownLatched=${config.availableCountdownLatched}"
             )
@@ -290,7 +293,8 @@ object SendServerHelper {
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
-            }
+            },
+            priority = MqttPublishPriority.HIGH
         )
     }
 
@@ -309,7 +313,8 @@ object SendServerHelper {
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_SERVICE_STATE
                 content = JSON.toJSONString(payload)
-            }
+            },
+            priority = MqttPublishPriority.HIGH
         )
     }
 
@@ -334,17 +339,18 @@ object SendServerHelper {
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_DEVICE_LOG
                 content = JSON.toJSONString(payload)
-            }
+            },
+            priority = MqttPublishPriority.LOW
         )
         if (ok) {
             LogUtils.d(
-                "【300/400动作组】已上报结构化动作日志：" +
+                "【300/400动作组】结构化动作日志已进入 MQTT 发送队列：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
                     "errorCode=${telemetry.errorCode}，elapsedMs=${telemetry.elapsedMs}"
             )
         } else {
             LogUtils.w(
-                "【300/400动作组】结构化动作日志上报失败：" +
+                "【300/400动作组】结构化动作日志进入 MQTT 发送队列失败：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，errorCode=${telemetry.errorCode}"
             )
         }

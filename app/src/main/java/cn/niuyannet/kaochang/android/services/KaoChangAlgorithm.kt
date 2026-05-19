@@ -266,7 +266,7 @@ object KaoChangAlgorithm {
         if (!mqttOk) {
             logW(
                 LOG_ALGORITHM,
-                "二维码预计时间 MQTT 主上报失败，回退 HTTP 补偿：" +
+                "二维码预计时间 MQTT 发送队列拒绝，回退 HTTP 补偿：" +
                     "reason=$reason，available=$newAvailable，availableCountdownLatched=$newLatched"
             )
             NetApi.updateDeviceInfo()
@@ -482,7 +482,7 @@ object KaoChangAlgorithm {
     private fun publishRuntimeStateOrFallback(source: String) {
         val mqttOk = SendServerHelper.publishServiceUpdateStatus(source)
         if (!mqttOk) {
-            logW(LOG_DEVICE, "运行态主上报失败，回退 HTTP 补偿：source=$source")
+            logW(LOG_DEVICE, "运行态 MQTT 发送队列拒绝，回退 HTTP 补偿：source=$source")
             NetApi.updateDeviceInfo()
         }
     }

@@ -225,7 +225,7 @@ class MaintenanceFragment : Fragment() {
         val availablePublishOk = SendServerHelper.publishAvailableState("maintenance:$reason")
         if (!runtimePublishOk || !availablePublishOk) {
             LogUtils.w(
-                "【维护操作】$reason，MQTT 主上报失败，回退 HTTP 补偿：" +
+                "【维护操作】$reason，MQTT 发送队列拒绝，回退 HTTP 补偿：" +
                     "runtimePublishOk=$runtimePublishOk，availablePublishOk=$availablePublishOk"
             )
             DataManagementAPI.uploadDeviceInfo()
@@ -677,7 +677,7 @@ class MaintenanceFragment : Fragment() {
             }
             val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
             if (!runtimePublishOk) {
-                LogUtils.w("【检修模式】检修模式状态 MQTT 主上报失败，回退 HTTP 补偿")
+                LogUtils.w("【检修模式】检修模式状态 MQTT 发送队列拒绝，回退 HTTP 补偿")
                 DataManagementAPI.uploadDeviceInfo()
             }
             syncInspectionSwitchFromRuntimeState("本地手动切换检修模式完成", forceLog = true)
@@ -857,7 +857,7 @@ class MaintenanceFragment : Fragment() {
                     }
                     if (!runtimePublishOk) {
                         LogUtils.w(
-                            "【维护操作】恢复正常状态 MQTT 上报失败，回退 HTTP 补偿：" +
+                            "【维护操作】恢复正常状态 MQTT 发送队列拒绝，回退 HTTP 补偿：" +
                                 "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
                                 "errorStatus（设备故障状态）=${config.errorStatus}"
                         )

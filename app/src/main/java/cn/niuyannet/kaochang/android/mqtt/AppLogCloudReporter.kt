@@ -4,7 +4,6 @@ import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
-import org.eclipse.paho.client.mqttv3.MqttMessage
 
 /**
  * 将本地关键 App 日志实时上报到云端设备日志表。
@@ -26,13 +25,15 @@ object AppLogCloudReporter {
                 action = MqttProtocol.ACTION_DEVICE_LOG
                 this.content = JSON.toJSONString(payload)
             }
-            val message = MqttMessage().apply {
-                this.payload = JSON.toJSONString(topicMessage).toByteArray()
-                qos = 1
-                isRetained = false
-            }
-            client.publish(AppConfig.getTopicDeviceIdUrl(TOPIC_BY_DEVICE), message)
-            true
+            VMMqttHelper.publish(
+                topic = AppConfig.getTopicDeviceIdUrl(TOPIC_BY_DEVICE),
+                msg = JSON.toJSONString(topicMessage),
+                qos = 1,
+                retained = false,
+                priority = MqttPublishPriority.LOW,
+                coalesceKey = "app_log",
+                logLifecycle = false
+            )
         } catch (e: Throwable) {
             Log.w(TAG, "App log cloud report dropped: ${e.message}")
             false

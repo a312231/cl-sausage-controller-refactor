@@ -252,7 +252,7 @@ object KaoChangOperate {
     private fun publishRuntimeStateWithHttpFallback(reason: String) {
         val mqttOk = SendServerHelper.publishServiceUpdateStatus()
         if (!mqttOk) {
-            logW(LOG_DEVICE, "$reason：MQTT 主上报失败，回退 HTTP 补偿")
+            logW(LOG_DEVICE, "$reason：MQTT 发送队列拒绝，回退 HTTP 补偿")
             DataManagementAPI.uploadDeviceInfo()
         }
     }
@@ -745,7 +745,7 @@ object KaoChangOperate {
         if (ok) {
             logD(
                 LOG_ORDER,
-                "动作组订单终态上报成功：source=$source，orderNo=${orderContext.orderNo}，" +
+                "动作组订单终态已进入 MQTT 发送队列：source=$source，orderNo=${orderContext.orderNo}，" +
                     "itemId=${orderContext.itemId}，productId=${orderContext.productId}，" +
                     "tasteCode=${orderContext.tasteCode}，status=${orderEventStatusDesc(status)}"
             )
@@ -757,7 +757,7 @@ object KaoChangOperate {
         } else {
             logE(
                 LOG_ORDER,
-                "动作组订单终态 MQTT 上报失败，保留待补偿事件：source=$source，" +
+                "动作组订单终态进入 MQTT 发送队列失败，保留待补偿事件：source=$source，" +
                     "orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}，status=${orderEventStatusDesc(status)}"
             )
         }

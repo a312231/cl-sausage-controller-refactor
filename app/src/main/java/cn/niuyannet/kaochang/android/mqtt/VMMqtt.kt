@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.eclipse.paho.client.mqttv3.IMqttActionListener
 import org.eclipse.paho.client.mqttv3.IMqttToken
 import org.eclipse.paho.client.mqttv3.MqttAsyncClient
@@ -17,6 +18,7 @@ import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+import kotlin.coroutines.resume
 
 /**
  * MQTT 基础操作封装。
@@ -37,6 +39,14 @@ open class VMMqtt {
 
     // 受控后台协程作用域：用于旧客户端资源回收，避免裸 Thread 不可控膨胀
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // MQTT 发布背压队列：统一串行化所有上报，避免 Paho inflight 爆掉
+    private val publishScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val publishQueue = MqttPublishBackpressureQueue(
+        scope = publishScope,
+        maxPendingCount = 256,
+        sender = { request -> sendQueuedPublish(request) }
+    )
 
     private val topicByServer = "/cl/devices/{device_id}/get"      // 服务端发给上位机的主题 (Topic)
     private val topicByDevice = "/cl/devices/{device_id}/service"  // 上位机上报给服务端的主题 (Topic)
@@ -117,6 +127,7 @@ open class VMMqtt {
                 isCleanSession = false        // 保留会话
                 isAutomaticReconnect = false  // 禁用 Paho 自动重连，由 VMMqttHelper 持久化托管
                 connectionTimeout = 30        // 设置 30s 连接超时，防止异步任务无限挂起
+                maxInflight = 1              // 由上层队列统一串行化发布，Paho 侧只保留 1 个在途消息
             }
 
             LogUtils.d("【MQTT配置】心跳间隔: ${options.keepAliveInterval}s, 连接超时: ${options.connectionTimeout}s")
@@ -132,6 +143,8 @@ open class VMMqtt {
                         isConnecting = false // 连接成功，释放锁 (status=0)
                         LogUtils.d("【MQTT连接】TCP连接成功回调，已释放锁 | generation=$currentGen")
                     }
+
+                    publishQueue.markConnected()
 
                     // 业务订阅完全生效后才对外宣告 MQTT 可用
                     LogUtils.d("【MQTT连接】开始绑定 Callback 和执行全量关键业务订阅 | generation=$currentGen")
@@ -238,38 +251,58 @@ open class VMMqtt {
 
     /**
      * 发布消息到指定主题。
+     * 返回值仅表示消息是否成功进入本地发送队列，不代表 broker 已确认接收。
      */
     fun publish(topic: String, msg: String, qos: Int = 1, retained: Boolean = false): Boolean {
+        return publish(
+            topic = topic,
+            msg = msg,
+            qos = qos,
+            retained = retained,
+            priority = MqttPublishPriority.NORMAL,
+            coalesceKey = null,
+            logLifecycle = true
+        )
+    }
+
+    fun publish(
+        topic: String,
+        msg: String,
+        qos: Int = 1,
+        retained: Boolean = false,
+        priority: MqttPublishPriority = MqttPublishPriority.NORMAL,
+        coalesceKey: String? = null,
+        logLifecycle: Boolean = true
+    ): Boolean {
         val client = mqttClient
         if (client == null) {
-            LogUtils.w("【MQTT发布】跳过发布：客户端未初始化，topic=$topic")
+            if (logLifecycle) {
+                LogUtils.w("【MQTT发布】跳过发布：客户端未初始化，topic=$topic")
+            }
             return false
         }
         if (!client.isConnected) {
-            LogUtils.w("【MQTT发布】跳过发布：客户端未连接，topic=$topic")
+            if (logLifecycle) {
+                LogUtils.w("【MQTT发布】跳过发布：客户端未连接，topic=$topic")
+            }
             return false
         }
-        return try {
-            LogUtils.d("【MQTT发布】开始发布：topic=$topic, qos=$qos, retained=$retained")
-            val message = MqttMessage().apply {
-                payload = msg.toByteArray()
-                this.qos = qos
-                isRetained = retained
-            }
-            client.publish(topic, message, null, object : IMqttActionListener {
-                override fun onSuccess(asyncActionToken: IMqttToken?) {
-                    LogUtils.d("【MQTT发布】发布成功：topic=$topic")
-                }
-
-                override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
-                    LogUtils.e("【MQTT发布】发布失败：topic=$topic, error=${exception?.message}")
-                }
-            })
-            true
-        } catch (e: Throwable) {
-            LogUtils.e("【MQTT发布】发布异常：topic=$topic, error=${e.message}", e)
-            false
+        val accepted = publishQueue.offer(
+            QueuedMqttPublish(
+                topic = topic,
+                payload = msg,
+                qos = qos,
+                retained = retained,
+                description = "topic=$topic, qos=$qos, retained=$retained",
+                priority = priority,
+                coalesceKey = coalesceKey,
+                logLifecycle = logLifecycle
+            )
+        )
+        if (!accepted && logLifecycle) {
+            LogUtils.w("【MQTT发布】发布入队失败：发布队列已满，topic=$topic, qos=$qos, retained=$retained")
         }
+        return accepted
     }
 
     /**
@@ -281,6 +314,8 @@ open class VMMqtt {
             connectionGeneration = 0L  // 使所有挂起的异步回调全部失效
             LogUtils.d("【MQTT连接】主动调用断开流程，已重置状态标志位和代次")
         }
+
+        publishQueue.pause()
 
         try {
             LogUtils.d("【MQTT连接】开始断开连接请求")
@@ -355,9 +390,25 @@ open class VMMqtt {
 
     /**
      * 向服务端主题发布消息。
+     * 返回值仅表示消息是否成功进入本地发送队列，不代表 broker 已确认接收。
      */
     fun publishService(it: TopicMessage): Boolean {
         return publish(AppConfig.getTopicDeviceIdUrl(topicByDevice), JSON.toJSONString(it))
+    }
+
+    fun publishService(
+        it: TopicMessage,
+        priority: MqttPublishPriority,
+        coalesceKey: String? = null,
+        logLifecycle: Boolean = true
+    ): Boolean {
+        return publish(
+            topic = AppConfig.getTopicDeviceIdUrl(topicByDevice),
+            msg = JSON.toJSONString(it),
+            priority = priority,
+            coalesceKey = coalesceKey,
+            logLifecycle = logLifecycle
+        )
     }
 
     /**
@@ -429,6 +480,58 @@ open class VMMqtt {
             wakeLock = null
         } catch (e: Exception) {
             LogUtils.e("【MQTT连接】释放WakeLock失败：${e.message}", e)
+        }
+    }
+
+    private suspend fun sendQueuedPublish(request: QueuedMqttPublish): Boolean {
+        val client = mqttClient
+        if (client == null || !client.isConnected) {
+            if (request.logLifecycle) {
+                LogUtils.w("【MQTT发布】跳过发送：客户端未连接，${request.description}")
+            }
+            return false
+        }
+        if (request.logLifecycle) {
+            LogUtils.d("【MQTT发布】开始发送：${request.description}")
+        }
+        return try {
+            val message = MqttMessage().apply {
+                payload = request.payload.toByteArray()
+                qos = request.qos
+                isRetained = request.retained
+            }
+            suspendCancellableCoroutine { continuation ->
+                try {
+                    client.publish(request.topic, message, null, object : IMqttActionListener {
+                        override fun onSuccess(asyncActionToken: IMqttToken?) {
+                            if (continuation.isActive) {
+                                continuation.resume(true)
+                            }
+                        }
+
+                        override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                            if (request.logLifecycle) {
+                                LogUtils.e("【MQTT发布】发送失败：${request.description}, error=${exception?.message}")
+                            }
+                            if (continuation.isActive) {
+                                continuation.resume(false)
+                            }
+                        }
+                    })
+                } catch (e: Throwable) {
+                    if (request.logLifecycle) {
+                        LogUtils.e("【MQTT发布】发送异常：${request.description}, error=${e.message}", e)
+                    }
+                    if (continuation.isActive) {
+                        continuation.resume(false)
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            if (request.logLifecycle) {
+                LogUtils.e("【MQTT发布】发送构建异常：${request.description}, error=${e.message}", e)
+            }
+            false
         }
     }
 }
