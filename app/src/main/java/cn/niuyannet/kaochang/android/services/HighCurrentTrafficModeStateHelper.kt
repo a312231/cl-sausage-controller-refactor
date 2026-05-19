@@ -177,6 +177,34 @@ internal fun hasRealOldLowHeatLegacyBatch(
         }
 }
 
+internal fun hasHighHeatReturnStartedAndUncleared(
+    recordedBatchSize: Int,
+    highHeatPans: List<KaoPan>
+): Boolean {
+    val remainingCount = highHeatPans.count { it.positionSn in 25..33 && it.isHasSausage }
+    return recordedBatchSize > 0 && remainingCount in 1 until recordedBatchSize
+}
+
+internal fun hasOldLowHeatAreaSausageForLowToHighTransition(
+    oldLowHeatPans: List<KaoPan>,
+    highHeatPans: List<KaoPan>,
+    recordedHighHeatBatchSize: Int
+): Boolean {
+    val highHeatReturnStarted = hasHighHeatReturnStartedAndUncleared(
+        recordedBatchSize = recordedHighHeatBatchSize,
+        highHeatPans = highHeatPans
+    )
+    return oldLowHeatPans
+        .filter { it.positionSn in 13..18 && it.isHasSausage }
+        .any { pan ->
+            if (!highHeatReturnStarted) {
+                true
+            } else {
+                pan.startTime > 0L && pan.status != 2
+            }
+        }
+}
+
 internal fun planOldLowHeatReturnGroups(
     oldLowHeatPans: List<KaoPan>,
     nowMs: Long

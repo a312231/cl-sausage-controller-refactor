@@ -296,6 +296,74 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun hasHighHeatReturnStartedAndUncleared_shouldDetectPartialReturnByRecordedBatchSize() {
+        assertTrue(
+            hasHighHeatReturnStartedAndUncleared(
+                recordedBatchSize = 9,
+                highHeatPans = highHeatPans(occupiedPositions = setOf(33))
+            )
+        )
+        assertFalse(
+            hasHighHeatReturnStartedAndUncleared(
+                recordedBatchSize = 9,
+                highHeatPans = highHeatPans(occupiedPositions = (25..33).toSet())
+            )
+        )
+        assertFalse(
+            hasHighHeatReturnStartedAndUncleared(
+                recordedBatchSize = 9,
+                highHeatPans = highHeatPans(occupiedPositions = emptySet())
+            )
+        )
+    }
+
+    @Test
+    fun hasOldLowHeatAreaSausageForLowToHighTransition_shouldIgnoreKeepWarmOverlapAfterHighHeatReturnStarts() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 10_000L, status = 2),
+            oldLowHeatPan(position = 14, tasteCode = "A", startTime = 0L, holdingTime = 10_000L, status = 2)
+        )
+
+        assertFalse(
+            hasOldLowHeatAreaSausageForLowToHighTransition(
+                oldLowHeatPans = oldLowHeatPans,
+                highHeatPans = highHeatPans(occupiedPositions = setOf(33)),
+                recordedHighHeatBatchSize = 9
+            )
+        )
+    }
+
+    @Test
+    fun hasOldLowHeatAreaSausageForLowToHighTransition_shouldKeepOldLowHeatBeforeHighHeatReturnStarts() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 10_000L, status = 2)
+        )
+
+        assertTrue(
+            hasOldLowHeatAreaSausageForLowToHighTransition(
+                oldLowHeatPans = oldLowHeatPans,
+                highHeatPans = highHeatPans(occupiedPositions = (25..33).toSet()),
+                recordedHighHeatBatchSize = 9
+            )
+        )
+    }
+
+    @Test
+    fun hasOldLowHeatAreaSausageForLowToHighTransition_shouldKeepActiveOldLowHeatAfterHighHeatReturnStarts() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 10_000L, holdingTime = 0L, status = 1)
+        )
+
+        assertTrue(
+            hasOldLowHeatAreaSausageForLowToHighTransition(
+                oldLowHeatPans = oldLowHeatPans,
+                highHeatPans = highHeatPans(occupiedPositions = setOf(33)),
+                recordedHighHeatBatchSize = 9
+            )
+        )
+    }
+
+    @Test
     fun planOldLowHeatReturnGroups_shouldPrioritizeEarlierMaxStartTime() {
         val oldLowHeatPans =
             oldLowHeatBatch(13, 15, listOf(2_000L, 2_500L, 3_000L)) +
@@ -491,6 +559,17 @@ class HighCurrentTrafficModeStateHelperTest {
                 isHasSausage = index != position
                 isHasGrilling = index == position
                 taste = Taste(tasteCode)
+            }
+        }
+
+    private fun highHeatPans(occupiedPositions: Set<Int>): List<KaoPan> =
+        (25..33).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = position in occupiedPositions
+                taste = if (position in occupiedPositions) Taste("A") else null
+                holdingTime = if (position in occupiedPositions) 10_000L else 0L
+                status = if (position in occupiedPositions) 2 else 0
             }
         }
 }
