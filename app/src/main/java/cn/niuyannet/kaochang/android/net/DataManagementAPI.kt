@@ -8,9 +8,11 @@ import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
+import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -182,6 +184,25 @@ object DataManagementAPI {
         if (oldValue != newValue) {
             changes.add("$label: ${formatDiffValue(label, oldValue)}->${formatDiffValue(label, newValue)}")
         }
+    }
+
+    private fun transitionTargetText(transitionMode: Int): String = when (transitionMode) {
+        0 -> "无切换"
+        1 -> "高并发"
+        2 -> "低并发"
+        else -> "未知"
+    }
+
+    private fun hasHighConcurrencyAreaActive(kaoPanList: List<KaoPan>): Boolean {
+        return kaoPanList
+            .filter { pan -> pan.positionSn in 10..21 || pan.positionSn in 25..33 }
+            .any { pan ->
+                pan.isHasSausage ||
+                    pan.isHasGrilling ||
+                    pan.startTime > 0L ||
+                    pan.holdingTime > 0L ||
+                    pan.status != 0
+            }
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
@@ -599,21 +620,40 @@ object DataManagementAPI {
         val previousTransitionMode = currentConfigBeforeApply.transitionMode
         val previousResidualDrain = currentConfigBeforeApply.highConcurrencyResidualDrain
         val requestedModeType = json.getInteger("modeType") ?: previousModeType
-        val requestedTransitionMode = json.getInteger("transitionMode")
+        val requestedTransitionMode = if (hasTransitionMode) json.getInteger("transitionMode") else null
         val operator = json.getString("operator").orEmpty()
-        val resolvedModeType = requestedModeType.takeIf { it == 1 || it == 2 }
-            ?: previousModeType.takeIf { it == 1 || it == 2 }
-            ?: 1
-        val resolvedTransitionMode = 0
-        val resolvedResidualDrain = HighConcurrencyResidualDrainEvaluator.evaluate(
-            modeType = resolvedModeType,
-            kaoPanList = KaoPanHelper.getKaoPanList(),
-            includeLowHeatOverlapArea = resolvedModeType == 1 &&
-                (previousModeType == 2 || previousTransitionMode != 0 || previousResidualDrain == 1)
+        val kaoPanList = KaoPanHelper.getKaoPanList()
+        val highConcurrencyAreaActive = hasHighConcurrencyAreaActive(kaoPanList)
+        val emptyResidualDecision = HighToLowEmptyResidualHelper.evaluate(
+            transitionMode = previousTransitionMode,
+            onlineStatus = currentConfigBeforeApply.onlineStatus,
+            errorStatus = currentConfigBeforeApply.errorStatus,
+            moveStatus = currentConfigBeforeApply.moveStatus,
+            hasSupplyBoxesAvailable = KaoPanHelper.getKaoPanBoxList().any { it.num > 0 },
+            kaoPanList = kaoPanList
         )
+        val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = previousModeType,
+            currentTransitionMode = previousTransitionMode,
+            requestedModeType = requestedModeType,
+            requestedTransitionMode = requestedTransitionMode,
+            highConcurrencyAreaActive = highConcurrencyAreaActive,
+            highToLowEmptyResidualCanClear = emptyResidualDecision.canClear,
+            preserveHighToLowTransition = previousTransitionMode == 2 && !emptyResidualDecision.canClear
+        )
+        val resolvedResidualDrain = if (resolvedTarget.modeType == 1 && resolvedTarget.transitionMode == 0) {
+            HighConcurrencyResidualDrainEvaluator.evaluate(
+                modeType = resolvedTarget.modeType,
+                kaoPanList = kaoPanList,
+                includeLowHeatOverlapArea =
+                    previousModeType == 2 || previousTransitionMode != 0 || previousResidualDrain == 1
+            )
+        } else {
+            0
+        }
 
-        currentConfigBeforeApply.modeType = resolvedModeType
-        currentConfigBeforeApply.transitionMode = resolvedTransitionMode
+        currentConfigBeforeApply.modeType = resolvedTarget.modeType
+        currentConfigBeforeApply.transitionMode = resolvedTarget.transitionMode
         currentConfigBeforeApply.highConcurrencyResidualDrain = resolvedResidualDrain
         AppConfig.saveAppConfig(currentConfigBeforeApply)
 
@@ -627,23 +667,25 @@ object DataManagementAPI {
             lastAppliedConcurrencyControlSeq = maxOf(lastAppliedConcurrencyControlSeq, controlSeq)
         }
 
-        val overrodeConflictingTransition = previousTransitionMode != 0 && currentConfig.transitionMode == 0
-        if (overrodeConflictingTransition) {
+        if (resolvedTarget.overrodeConflictingTransition) {
             logW(
                 "远端并发控制覆盖了本地过渡态：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                     "后台目标 modeType（并发模式）=${formatDiffValue("modeType", currentConfig.modeType)}，" +
                     "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
-                    "策略=以后台最新目标为准"
+                    "targetMode（并发切换目标）=${transitionTargetText(currentConfig.transitionMode)}，" +
+                    "策略=以后台最新明确目标为准"
             )
         }
-        if (requestedModeType != currentConfig.modeType || (requestedTransitionMode ?: 0) != currentConfig.transitionMode) {
+        if (requestedModeType != currentConfig.modeType || (requestedTransitionMode ?: previousTransitionMode) != currentConfig.transitionMode) {
             logW(
-                "远端并发控制已按后台手动稳态语义归一化：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                "远端并发控制已按状态机语义归一化：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                     "请求 modeType（并发模式）=${formatDiffValue("modeType", requestedModeType)}，" +
-                    "请求 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", requestedTransitionMode ?: 0)}，" +
+                    "请求 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", requestedTransitionMode ?: previousTransitionMode)}，" +
                     "落地 modeType（并发模式）=${formatDiffValue("modeType", currentConfig.modeType)}，" +
                     "落地 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
-                    "highConcurrencyResidualDrain（高并发残留消化态）=${currentConfig.highConcurrencyResidualDrain}"
+                    "targetMode（并发切换目标）=${transitionTargetText(currentConfig.transitionMode)}，" +
+                    "highConcurrencyResidualDrain（高并发残留消化态）=${currentConfig.highConcurrencyResidualDrain}，" +
+                    "highConcurrencyAreaActive（高并发区域仍有残留）=$highConcurrencyAreaActive"
             )
         }
 
@@ -652,6 +694,7 @@ object DataManagementAPI {
                 "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                 "modeType（并发模式）=${formatDiffValue("modeType", previousModeType)}->${formatDiffValue("modeType", currentConfig.modeType)}，" +
                 "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", previousTransitionMode)}->${formatDiffValue("transitionMode", currentConfig.transitionMode)}，" +
+                "targetMode（并发切换目标）=${transitionTargetText(currentConfig.transitionMode)}，" +
                 "highConcurrencyResidualDrain（高并发残留消化态）=$previousResidualDrain->${currentConfig.highConcurrencyResidualDrain}"
         )
         return ConcurrencyControlApplyResult(
@@ -661,7 +704,7 @@ object DataManagementAPI {
             reason = "applied",
             modeType = currentConfig.modeType,
             transitionMode = currentConfig.transitionMode,
-            overrodeConflictingTransition = overrodeConflictingTransition
+            overrodeConflictingTransition = resolvedTarget.overrodeConflictingTransition
         )
     }
 

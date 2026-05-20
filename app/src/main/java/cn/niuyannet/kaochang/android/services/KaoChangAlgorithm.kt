@@ -600,6 +600,21 @@ object KaoChangAlgorithm {
         source: String
     ): Boolean {
         val previousResidualDrain = config.highConcurrencyResidualDrain
+        if (config.transitionMode == 1) {
+            if (previousResidualDrain == 0) {
+                return false
+            }
+            config.highConcurrencyResidualDrain = 0
+            AppConfig.saveAppConfig(config)
+            logI(
+                LOG_ALGORITHM,
+                "低转高过渡进行中，清理内部高并发残留消化标记：" +
+                    "source=$source，highConcurrencyResidualDrain（高并发残留消化态）=${residualDrainText(previousResidualDrain)}->${residualDrainText(config.highConcurrencyResidualDrain)}，" +
+                    "modeType（并发模式）=${modeText(config.modeType)}，transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}"
+            )
+            publishRuntimeStateOrFallback("runtime_state:low_to_high_residual_drain_cleared")
+            return true
+        }
         val targetResidualDrain = HighConcurrencyResidualDrainEvaluator.evaluate(
             modeType = config.modeType,
             kaoPanList = kaoPanList,
@@ -612,7 +627,7 @@ object KaoChangAlgorithm {
         AppConfig.saveAppConfig(config)
         logI(
             LOG_ALGORITHM,
-            "高并发残留消化态已更新：source=$source，" +
+            "内部高并发残留收口标记已更新：source=$source，" +
                 "highConcurrencyResidualDrain（高并发残留消化态）=${residualDrainText(previousResidualDrain)}->${residualDrainText(targetResidualDrain)}，" +
                 "modeType（并发模式）=${modeText(config.modeType)}，transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}"
         )
@@ -789,14 +804,14 @@ object KaoChangAlgorithm {
                 if (config.highConcurrencyResidualDrain == 1) {
                     logI(
                         LOG_ALGORITHM,
-                        "【调度保护】低并发高并发残留消化中，暂停新的低并发补热批次：" +
+                        "【调度保护】低并发内部高并发残留收口中，暂停新的低并发补热批次：" +
                             "highConcurrencyResidualDrain=${residualDrainText(config.highConcurrencyResidualDrain)}"
                     )
                     HighCurrentTrafficMode.drainHighConcurrencyResidual(
                         list = kaoPanList,
                         listBox = kaoPanBoxList,
                         schedulingEnabled = schedulingEnabled,
-                        reason = "低并发高并发残留消化态"
+                        reason = "后台/人工切低并发后的高并发残留内部收口"
                     )
                 } else {
                     LowCurrentTrafficMode.lowTrafficMode(
@@ -825,7 +840,7 @@ object KaoChangAlgorithm {
      * 用户下单后，从可售烤盘中选择一根烤肠出餐。
      * 当前策略：
      * 1. 低并发稳态且无残留时仅从 1~9 号前区选取；
-     * 2. 高并发、自然过渡态或高并发残留消化态从 1~21 号可售区选取；
+     * 2. 高并发、自然过渡态或内部高并发残留收口中从 1~21 号可售区选取；
      * 3. 按 holdingTime 最小值优先，即“最早进入保温的先卖”。
      */
     suspend fun purchase(

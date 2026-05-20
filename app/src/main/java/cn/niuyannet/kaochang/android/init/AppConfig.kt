@@ -369,7 +369,8 @@ object AppConfig {
     fun mergeRemoteConfig(
         jsonData: JSONObject?,
         rawContent: String?,
-        logPrefix: String
+        logPrefix: String,
+        preserveRuntimeConcurrencyState: Boolean = true
     ): RemoteConfigMergeResult {
         val config = getAppConfig()
         val oldModeTypeForTransitionDiagnostics = config.modeType
@@ -519,10 +520,32 @@ object AppConfig {
                 AppConfigBean.INSPECTION_MODE_NORMAL
             }
         }
-        mergeInt("concurrencyMode", "concurrencyMode") { config.modeType = it }
-        mergeInt("transitionMode", "transitionMode") { config.transitionMode = it }
-        mergeInt("highConcurrencyResidualDrain", "highConcurrencyResidualDrain") {
-            config.highConcurrencyResidualDrain = if (config.modeType == 1 && it == 1) 1 else 0
+        val shouldPreserveRuntimeConcurrencyState = preserveRuntimeConcurrencyState && hasValidDeviceConfig()
+        if (shouldPreserveRuntimeConcurrencyState) {
+            val remoteModeType = jsonData.getInteger("concurrencyMode")
+            val remoteTransitionMode = jsonData.getInteger("transitionMode")
+            val remoteResidualDrain = jsonData.getInteger("highConcurrencyResidualDrain")
+            val remoteDiffers =
+                (remoteModeType != null && remoteModeType != config.modeType) ||
+                    (remoteTransitionMode != null && remoteTransitionMode != config.transitionMode) ||
+                    (remoteResidualDrain != null && remoteResidualDrain != config.highConcurrencyResidualDrain)
+            if (remoteDiffers) {
+                LogUtils.w(
+                    "[$logPrefix] 远端配置中的并发运行态未覆盖本地实时状态：" +
+                        "source=AppConfig.mergeRemoteConfig，" +
+                        "远端 modeType（并发模式）=${remoteModeType ?: "缺省"}，本地 modeType（并发模式）=${config.modeType}，" +
+                        "远端 transitionMode（并发切换过渡态）=${remoteTransitionMode ?: "缺省"}，本地 transitionMode（并发切换过渡态）=${config.transitionMode}，" +
+                        "远端 highConcurrencyResidualDrain（高并发残留消化态）=${remoteResidualDrain ?: "缺省"}，" +
+                        "本地 highConcurrencyResidualDrain（高并发残留消化态）=${config.highConcurrencyResidualDrain}，" +
+                        "说明=并发主状态以本机实时状态和 concurrency_control 明确指令为准，避免 getDeviceInfo 旧值打断低转高/高转低过渡"
+                )
+            }
+        } else {
+            mergeInt("concurrencyMode", "concurrencyMode") { config.modeType = it }
+            mergeInt("transitionMode", "transitionMode") { config.transitionMode = it }
+            mergeInt("highConcurrencyResidualDrain", "highConcurrencyResidualDrain") {
+                config.highConcurrencyResidualDrain = if (config.modeType == 1 && it == 1) 1 else 0
+            }
         }
         mergeInt("errorStatus", "errorStatus") { config.errorStatus = it }
         mergeInt("available", "available") { config.available = it.toLong() }

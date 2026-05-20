@@ -12,12 +12,19 @@ class AlgorithmStateLogFormatterTest {
         assertEquals("低转高过渡态", AlgorithmStateLogFormatter.stateName(2, 1, 0, true))
         assertEquals("高并发稳态", AlgorithmStateLogFormatter.stateName(2, 0, 0, true))
         assertEquals("高转低过渡态", AlgorithmStateLogFormatter.stateName(2, 2, 0, true))
-        assertEquals("高并发残留消化态", AlgorithmStateLogFormatter.stateName(1, 0, 1, true))
+        assertEquals("低并发稳态", AlgorithmStateLogFormatter.stateName(1, 0, 1, true))
     }
 
     @Test
     fun stateName_shouldShowPausedWhenSchedulingDisabled() {
         assertEquals("算法关闭/暂停调度", AlgorithmStateLogFormatter.stateName(1, 0, 0, false))
+    }
+
+    @Test
+    fun targetText_shouldFollowTransitionModeOnly() {
+        assertEquals("无切换", AlgorithmStateLogFormatter.targetText(0))
+        assertEquals("高并发", AlgorithmStateLogFormatter.targetText(1))
+        assertEquals("低并发", AlgorithmStateLogFormatter.targetText(2))
     }
 
     @Test
@@ -41,6 +48,7 @@ class AlgorithmStateLogFormatterTest {
         assertTrue(log.contains("reason=低转高触发"))
         assertTrue(log.contains("modeType（并发模式）=2（高并发）"))
         assertTrue(log.contains("transitionMode（并发切换过渡态）=1（低转高过渡）"))
+        assertTrue(log.contains("targetMode（并发切换目标）=高并发"))
         assertTrue(log.contains("highConcurrencyResidualDrain（高并发残留消化态）=0（关闭）"))
         assertTrue(log.contains("onlineStatus（设备营业状态）=1（运营中）"))
         assertTrue(log.contains("homeQrHidden（首页二维码隐藏）=0（显示首页二维码）"))

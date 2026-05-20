@@ -350,7 +350,7 @@ object HighCurrentTrafficMode {
     }
 
     /**
-     * 低并发高并发残留消化态专用收尾。
+     * 低并发内部高并发残留收口专用收尾。
      *
      * 不向 25~33 补新肠；25~33 已有批次按实际存在数量整体烤熟后回搬 1~21，
      * 当 25~33 清空且 1~21 剩余不超过 9 根时，收拢回真正低并发。
@@ -620,7 +620,8 @@ object HighCurrentTrafficMode {
         SendServerHelper.publishServiceUpdateStatus()
         LogUtils.i(
             TAG,
-            "【并发切换】低转高过渡完成：modeType=${modeText(config.modeType)}，transitionMode=${transitionText(config.transitionMode)}"
+            "【并发切换】低转高完成 -> 高并发稳态：modeType=${modeText(config.modeType)}，" +
+                "transitionMode=${transitionText(config.transitionMode)}，targetMode（并发切换目标）=无切换"
         )
     }
 
@@ -832,12 +833,21 @@ object HighCurrentTrafficMode {
         resetSupplementTracking(reason)
         LogUtils.i(
             TAG,
-            "【并发切换】高转低/残留收拢完成：reason=$reason，" +
+            "【并发切换】${highToLowCloseoutCompleteText(reason)}：reason=$reason，" +
                 "modeType=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
                 "transitionMode=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "targetMode（并发切换目标）=无切换，" +
                 "highConcurrencyResidualDrain=$oldResidualDrain->${config.highConcurrencyResidualDrain}"
         )
         return true
+    }
+
+    private fun highToLowCloseoutCompleteText(reason: String): String {
+        return if (reason.contains("高并发残留消化")) {
+            "高并发残留消化完成 -> 低并发稳态"
+        } else {
+            "高转低完成 -> 低并发稳态"
+        }
     }
 
     /**
@@ -1339,6 +1349,7 @@ object HighCurrentTrafficMode {
             "【并发切换诊断】写入 transitionMode=2（高转低过渡）：source=HighCurrentTrafficMode.switchHighToLow，reason=$reason，" +
                 "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
                 "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "targetMode（并发切换目标）=低并发，" +
                 "1~21空位=${TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter { !it.isHasSausage }.map { it.positionSn }}，" +
                 "13~18状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList))}，" +
                 "25~33状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList))}"

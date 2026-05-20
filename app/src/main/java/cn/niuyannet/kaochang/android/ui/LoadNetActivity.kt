@@ -56,7 +56,12 @@ abstract class LoadNetActivity : BaseActivity() {
             val previousOnlineStatus = AppConfig.getAppConfig().onlineStatus
             val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
             val previousRestStatusSource = AppConfig.normalizeRestStatusSource(AppConfig.getAppConfig().restStatusSource)
-            val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, "启动配置")
+            val mergeResult = AppConfig.mergeRemoteConfig(
+                json.getJSONObject("data"),
+                content,
+                "启动配置",
+                preserveRuntimeConcurrencyState = false
+            )
             if (mergeResult.applied) {
                 DataManagementAPI.handleRemoteOnlineStatusTransition(
                     previousOnlineStatus = previousOnlineStatus,

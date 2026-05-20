@@ -21,6 +21,32 @@ class RemoteConcurrencyControlHelperTest {
     }
 
     @Test
+    fun resolveTarget_shouldPreserveLowToHighWhenBackendRepeatsHighTargetWithoutTransition() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            requestedModeType = 2,
+            requestedTransitionMode = null
+        )
+
+        assertEquals(2, resolved.modeType)
+        assertEquals(1, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveTarget_shouldAllowExplicitManualLowStableDuringLowToHigh() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            requestedModeType = 1,
+            requestedTransitionMode = 0
+        )
+
+        assertEquals(1, resolved.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
     fun resolveTarget_shouldInferHighToLowTransitionWhenBackendOnlySwitchesMode() {
         val resolved = RemoteConcurrencyControlHelper.resolveTarget(
             currentModeType = 2,

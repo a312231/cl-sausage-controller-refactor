@@ -150,8 +150,8 @@ object SendServerHelper {
         payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
-        payload["foodSafetyAlertCode"] = config.foodSafetyAlertCode ?: ""
-        payload["foodSafetyAlertReason"] = config.foodSafetyAlertReason ?: ""
+        payload["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
+        payload["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
         payload["pendingDiscardPositions"] = config.pendingDiscardPositions
         if (config.errorStatus != 0) {
             config.errorCode?.takeIf { it.isNotBlank() }?.let { payload["errorCode"] = it }

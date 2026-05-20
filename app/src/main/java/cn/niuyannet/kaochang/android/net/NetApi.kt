@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.mqtt.RuntimeStateSignatureBuilder
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
@@ -346,8 +347,8 @@ object NetApi {
         json["available"] = AppConfig.getAppConfig().available
         json["availableCountdownLatched"] = AppConfig.getAppConfig().availableCountdownLatched
         json["isEnable"] = AppConfig.getAlgorithmEnableFlag()
-        json["foodSafetyAlertCode"] = AppConfig.getAppConfig().foodSafetyAlertCode ?: ""
-        json["foodSafetyAlertReason"] = AppConfig.getAppConfig().foodSafetyAlertReason ?: ""
+        json["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(AppConfig.getAppConfig())
+        json["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(AppConfig.getAppConfig())
         json["pendingDiscardPositions"] = AppConfig.getAppConfig().pendingDiscardPositions
         LogUtils.d("【网络请求】开始更新设备信息：deviceCode=$deviceCode")
         OkGo.post<String>(updateDeviceInfo_url)

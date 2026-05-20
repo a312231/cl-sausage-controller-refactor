@@ -245,6 +245,18 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun resolveStaleLowToHighTransitionState_shouldKeepWhenHighHeatBatchIsInProgress() {
+        val resolved = resolveStaleLowToHighTransitionState(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            hasRealLowHeatLegacyBatch = false,
+            hasHighHeatSupplyInProgress = true
+        )
+
+        assertEquals(null, resolved)
+    }
+
+    @Test
     fun hasRealOldLowHeatLegacyBatch_shouldKeepMatureOldLowHeatWithReservedFrontTarget() {
         val oldLowHeatPans = listOf(
             oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 10_000L, status = 2)

@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services
 
 object AlgorithmStateLogFormatter {
 
+    @Suppress("UNUSED_PARAMETER")
     fun stateName(
         modeType: Int,
         transitionMode: Int,
@@ -10,9 +11,6 @@ object AlgorithmStateLogFormatter {
     ): String {
         if (!schedulingEnabled) {
             return "算法关闭/暂停调度"
-        }
-        if (highConcurrencyResidualDrain == 1) {
-            return "高并发残留消化态"
         }
         return when (transitionMode) {
             1 -> "低转高过渡态"
@@ -58,6 +56,7 @@ object AlgorithmStateLogFormatter {
         return "【烤制算法】$headline，reason=$reason，" +
             "modeType（并发模式）=${modeText(modeType)}，" +
             "transitionMode（并发切换过渡态）=${transitionText(transitionMode)}，" +
+            "targetMode（并发切换目标）=${targetText(transitionMode)}，" +
             "highConcurrencyResidualDrain（高并发残留消化态）=${residualDrainText(highConcurrencyResidualDrain)}，" +
             "isEnable（烤肠算法开关）=${isEnableText(isEnable)}，" +
             "onlineStatus（设备营业状态）=${onlineStatusText(onlineStatus)}，" +
@@ -80,9 +79,15 @@ object AlgorithmStateLogFormatter {
         "高转低过渡态" -> "高转低触发"
         "高并发稳态" -> "进入高并发稳态"
         "低并发稳态" -> "进入低并发稳态"
-        "高并发残留消化态" -> "进入高并发残留消化"
         "算法关闭/暂停调度" -> "调度暂停"
         else -> "状态切换"
+    }
+
+    fun targetText(transitionMode: Int): String = when (transitionMode) {
+        0 -> "无切换"
+        1 -> "高并发"
+        2 -> "低并发"
+        else -> "未知"
     }
 
     private fun transitionText(value: Int): String = when (value) {

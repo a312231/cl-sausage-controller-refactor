@@ -173,6 +173,7 @@ object LowCurrentTrafficMode {
                 "【并发切换】触发低转高：1~9空位=$p1_9，" +
                     "过保丢弃空位=$blockedFrontPositions，" +
                     "有效空位=${effectiveFrontEmptyPositions.size}，13~18 低并发补热批次在烤，" +
+                    "目标=高并发，" +
                     "modeType=${modeText(config.modeType)}->2(高并发)，" +
                     "transitionMode=${transitionText(config.transitionMode)}->1(低转高过渡)"
             )
@@ -582,6 +583,7 @@ object LowCurrentTrafficMode {
             "【并发切换诊断】写入 transitionMode=1（低转高过渡）：source=LowCurrentTrafficMode.switchLowToHigh，" +
                 "modeType（并发模式）=${modeText(oldModeType)}->${modeText(config.modeType)}，" +
                 "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "targetMode（并发切换目标）=高并发，" +
                 "1~21空位=${TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList).filter { !it.isHasSausage }.map { it.positionSn }}，" +
                 "13~18状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList))}，" +
                 "25~33状态=${panStatusSummary(TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList))}"

@@ -31,6 +31,17 @@ class SendServerHelperSignatureTest {
     }
 
     @Test
+    fun buildRuntimeStateSignature_shouldIgnoreKeepWarmExpiredAlert() {
+        val normal = baseConfig()
+        val expiredAlert = baseConfig().apply {
+            foodSafetyAlertCode = KeepWarmExpiredAlertCode
+            foodSafetyAlertReason = "过保/待丢弃扫描触发：source=高并发轮询"
+        }
+
+        assertEquals(RuntimeStateSignatureBuilder.build(normal), RuntimeStateSignatureBuilder.build(expiredAlert))
+    }
+
+    @Test
     fun buildRuntimeStateSignature_shouldChangeWhenPendingDiscardContentChanges() {
         val original = baseConfig().apply {
             pendingDiscardPositions.addAll(listOf(25, 26))
@@ -84,5 +95,6 @@ class SendServerHelperSignatureTest {
 
     private companion object {
         const val FaultAlertCode = "ANOMALY_TOO_LONG"
+        const val KeepWarmExpiredAlertCode = "KEEP_WARM_EXPIRED"
     }
 }
