@@ -83,7 +83,7 @@ class MaintenanceFragment : Fragment() {
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
-        0 -> "0（未启用）"
+        0 -> "0（待投运）"
         1 -> "1（运营中）"
         2 -> "2（休息中）"
         3 -> "3（维护中）"
@@ -624,7 +624,7 @@ class MaintenanceFragment : Fragment() {
                         val tip = when {
                             latestConfig.inspectionMode == 1 -> "设备当前处于检修模式，请先退出检修模式再开启算法"
                             latestConfig.errorStatus != 0 -> "设备当前存在故障，请先恢复设备状态再开启算法"
-                            latestConfig.onlineStatus == 0 -> "后台设备状态为未启用，请先启用后再开启算法"
+                            latestConfig.onlineStatus == 0 -> "后台设备状态为待投运，请先改为运营中后再开启算法"
                             latestConfig.onlineStatus == 2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
                             latestConfig.onlineStatus == 3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
                             else -> "后台设备状态不允许开启算法"

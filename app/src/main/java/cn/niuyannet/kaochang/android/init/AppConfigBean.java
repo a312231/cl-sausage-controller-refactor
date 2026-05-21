@@ -44,10 +44,10 @@ public class AppConfigBean implements Serializable {
     // 最近一次已应用的 runtime_control 序号，随 AppConfig JSON 持久化
     public long lastAppliedControlSeq = -1L;
 
-    // 设备启用状态：0=未启用，1=启用
+    // 历史本地兼容字段：0=未激活，1=已激活；不等同于后端 kc_device.status（0=正常/启用，1=停用）
     public int status;
 
-    // 设备营业状态：0=未启用，1=运营中，2=休息中，3=维护中，4=工作中/正在出餐
+    // 设备营业状态：0=待投运，1=运营中，2=休息中，3=维护中，4=工作中/正在出餐
     public int onlineStatus;
 
     // 补货状态：0=正常，1=售罄/待补货

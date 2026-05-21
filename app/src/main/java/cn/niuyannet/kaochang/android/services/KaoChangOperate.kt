@@ -130,7 +130,7 @@ object KaoChangOperate {
     }
 
     private fun onlineStatusDesc(status: Int): String = when (status) {
-        0 -> "0(未启用)"
+        0 -> "0(待投运)"
         1 -> "1(运营中)"
         2 -> "2(休息中)"
         3 -> "3(维护中)"
@@ -2963,7 +2963,7 @@ object KaoChangOperate {
     /**
      * 营业时间结束。
      * 只有当设备当前是"运营中（1）"时才切换为"休息中（2）"；
-     * 若后台已手动设为维护中/未启用，不覆盖。
+     * 若后台已手动设为维护中/待投运，不覆盖。
      */
     suspend fun endBusinessHours(config: AppConfigBean){
         if (config.errorStatus != 0) {

@@ -88,7 +88,7 @@ object KaoChangAlgorithm {
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
-        0 -> "0(未启用/离线)"
+        0 -> "0(待投运)"
         1 -> "1(运营中)"
         2 -> "2(休息中)"
         3 -> "3(维护中)"
@@ -182,7 +182,7 @@ object KaoChangAlgorithm {
                 false
             }
             0 -> {
-                logBusinessStartSkipOnce(source, "未启用", config)
+                logBusinessStartSkipOnce(source, "待投运", config)
                 false
             }
             3 -> {
@@ -675,7 +675,7 @@ object KaoChangAlgorithm {
         val isWithinBusinessHours = isWithinBusinessHours(getCurrentTime(), config.businessTime)
         if (!isWithinBusinessHours) {
             // 只有运营中（1）才需要执行停业收尾切换到休息中（2）；
-            // 维护中/未启用等后台管理员设置的状态，不触发自动切换
+            // 待投运/维护中等后台管理员设置的状态，不触发自动切换
             if (onlineStatus == 1) {
                 logD(LOG_ALGORITHM, "当前不在营业时间内，设备运营中，执行停业收尾")
                 KaoChangOperate.pauseBusiness()

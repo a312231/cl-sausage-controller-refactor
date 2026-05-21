@@ -480,7 +480,7 @@ object SendServerHelper {
     fun lastPublishedAvailableStateSeq(): Long = lastPublishedAvailableStateSeq
 
     private fun onlineStatusLabel(value: Int): String = when (value) {
-        0 -> "未启用/离线"
+        0 -> "待投运"
         1 -> "运营中"
         2 -> "休息中"
         3 -> "维护中"

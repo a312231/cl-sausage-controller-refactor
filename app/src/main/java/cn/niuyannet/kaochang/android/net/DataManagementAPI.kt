@@ -105,13 +105,13 @@ object DataManagementAPI {
         }
         return when (label) {
             "status" -> when ((value as? Number)?.toInt()) {
-                0 -> "0(未启用/离线)"
-                1 -> "1(启用/在线)"
+                0 -> "0(历史兼容/未激活)"
+                1 -> "1(历史兼容/已激活)"
                 else -> value.toString()
             }
 
             "onlineStatus" -> when ((value as? Number)?.toInt()) {
-                0 -> "0(未启用)"
+                0 -> "0(待投运)"
                 1 -> "1(运营中)"
                 2 -> "2(休息中)"
                 3 -> "3(维护中)"
@@ -206,7 +206,7 @@ object DataManagementAPI {
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
-        0 -> "0（未启用）"
+        0 -> "0（待投运）"
         1 -> "1（运营中）"
         2 -> "2（休息中）"
         3 -> "3（维护中）"
@@ -255,7 +255,7 @@ object DataManagementAPI {
      * 处理远端配置同步后的营业状态跃迁副作用。
      *
      * 约束：
-     * - 进入 0/2/3（未启用/休息中/维护中）：自动关闭算法，但当前硬件流程允许自然收尾
+     * - 进入 0/2/3（待投运/休息中/维护中）：自动关闭算法，但当前硬件流程允许自然收尾
      * - 离开维护中：若算法仍处于开启态且当前允许开启，则按烤盘现状恢复加热/保温
      */
     fun handleRemoteOnlineStatusTransition(

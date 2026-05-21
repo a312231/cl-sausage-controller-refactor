@@ -80,7 +80,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     }
 
     private fun onlineStatusLabelForLog(status: Int): String = when (status) {
-        0 -> "0（未启用/离线）"
+        0 -> "0（待投运）"
         1 -> "1（运营中）"
         2 -> "2（休息中）"
         3 -> "3（维护中）"
@@ -478,7 +478,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 }
                 else -> when (appConfigBean.onlineStatus) {
                 0 -> {
-                    binding.deviceStatusText.text = "未启用"
+                    binding.deviceStatusText.text = "待投运"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
                 }
                 1 -> {
@@ -505,7 +505,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             }
             }
         } else {
-            binding.deviceStatusText.text = "离线"
+            binding.deviceStatusText.text = if (appConfigBean.onlineStatus == 0) {
+                "待投运"
+            } else {
+                "离线"
+            }
             binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_offline))
         }
 
@@ -546,12 +550,12 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         }
 
         val statusText = when (appConfigBean.status) {
-            0 -> "0（未启用/离线）"
-            1 -> "1（启用/在线）"
+            0 -> "0（历史兼容/未激活）"
+            1 -> "1（历史兼容/已激活）"
             else -> "${appConfigBean.status}（未知）"
         }
         val onlineStatusText = when (appConfigBean.onlineStatus) {
-            0 -> "0（未启用）"
+            0 -> "0（待投运）"
             1 -> "1（运营中）"
             2 -> "2（休息中）"
             3 -> "3（维护中）"

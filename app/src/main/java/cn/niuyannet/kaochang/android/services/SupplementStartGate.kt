@@ -34,7 +34,7 @@ object SupplementStartGate {
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
-        0 -> "0（未启用）"
+        0 -> "0（待投运）"
         1 -> "1（运营中）"
         2 -> "2（休息中）"
         3 -> "3（维护中）"
