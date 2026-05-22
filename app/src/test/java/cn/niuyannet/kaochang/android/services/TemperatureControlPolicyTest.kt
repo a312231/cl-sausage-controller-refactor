@@ -84,7 +84,7 @@ class TemperatureControlPolicyTest {
     }
 
     @Test
-    fun decideZoneTemperatures_shouldClampTargetTemperatureToFourFHeatingRange() {
+    fun decideZoneTemperatures_shouldAllowTargetTemperatureAbove199AndClampNonPositiveToZero() {
         val result = TemperatureControlPolicy.decideZoneTemperatures(
             pans = pans(
                 pan(positionSn = 3, hasSausage = true, status = 1),
@@ -96,7 +96,7 @@ class TemperatureControlPolicyTest {
             heatingOffsetsByArea = mapOf(1 to 5, 2 to -250)
         )
 
-        assertEquals(listOf(199, 0, 199), result.map { it.targetTemperature })
+        assertEquals(listOf(203, 0, 250), result.map { it.targetTemperature })
     }
 
     @Test

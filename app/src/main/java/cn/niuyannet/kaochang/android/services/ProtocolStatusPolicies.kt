@@ -84,7 +84,6 @@ object FourFTemperaturePolicy {
     fun clampTargetTemperature(value: Int): Int {
         return when {
             value <= 0 -> 0
-            value > 199 -> 199
             else -> value
         }
     }

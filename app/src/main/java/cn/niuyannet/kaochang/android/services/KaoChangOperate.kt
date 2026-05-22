@@ -2849,7 +2849,7 @@ object KaoChangOperate {
             logW(
                 LOG_HEAT,
                 "温区目标温度已按 4F 限制归一化：source=$source，area=$area，" +
-                    "rawTemperature=$temperature，targetTemperature=$targetTemperature（1~199 加热，<=0 写0，>199 截到199）"
+                    "rawTemperature=$temperature，targetTemperature=$targetTemperature（>=1 按配置加热，<=0 写0）"
             )
         }
         logD(LOG_HEAT, "写入温区目标温度：source=$source，area=$area，temperature=$targetTemperature")

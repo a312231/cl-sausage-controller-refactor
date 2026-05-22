@@ -26,7 +26,7 @@ class RemoteRuntimeConfigPatchApplierTest {
     }
 
     @Test
-    fun apply_shouldClampRemoteTemperatureTargetsToFourFRange() {
+    fun apply_shouldAllowRemoteTemperatureTargetsAbove199AndClampNonPositiveToZero() {
         val config = AppConfigBean().apply {
             keepWarmTemperature = 60
             heatingTemperature = 160
@@ -41,11 +41,10 @@ class RemoteRuntimeConfigPatchApplierTest {
         assertTrue(result.hasApplied)
         assertTrue(result.isPartial)
         assertTrue(result.temperatureChanged)
-        assertEquals(199, config.keepWarmTemperature)
+        assertEquals(250, config.keepWarmTemperature)
         assertEquals(0, config.heatingTemperature)
         assertEquals(
             mapOf(
-                "keepWarmTemperature" to 199,
                 "heatingTemperature" to 0
             ),
             result.normalizedFields
