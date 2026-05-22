@@ -53,7 +53,7 @@ import kotlin.math.ceil
  */
 class MainActivity : OrderActivity(), ICameraStateCallBack {
     companion object {
-        private const val DEVICE_STATE_REFRESH_INTERVAL_MS = 15_000L
+        private const val DEVICE_STATE_REFRESH_INTERVAL_MS = 60_000L
 
         init {
             System.loadLibrary("UVCCamera")
