@@ -19,7 +19,15 @@ class VmAtomicModbusGateway(
         return if (result.isSuccess) {
             AtomicIoResult.Success
         } else {
-            AtomicIoResult.Failure("${result.status} ${result.message ?: ""}".trim())
+            AtomicIoResult.Failure(
+                VMModbusHelper.formatOperationDiagnosis(
+                    operationText = "写入",
+                    serverAddress = serverAddress,
+                    registerAddress = address,
+                    writeValue = value,
+                    result = result
+                )
+            )
         }
     }
 
@@ -27,13 +35,20 @@ class VmAtomicModbusGateway(
         if (operationDelayMs > 0L) {
             delay(operationDelayMs)
         }
-        val value = modbusOperationMutex.withLock {
-            VMModbusHelper.readHoldingRegisters(serverAddress, address)
+        val result = modbusOperationMutex.withLock {
+            VMModbusHelper.readHoldingRegisterWithDiagnosis(serverAddress, address)
         }
-        return if (value >= 0) {
-            AtomicReadResult.Success(value)
+        return if (result.isSuccess) {
+            AtomicReadResult.Success(result.value)
         } else {
-            AtomicReadResult.Failure("读取寄存器 $address 返回 $value")
+            AtomicReadResult.Failure(
+                VMModbusHelper.formatOperationDiagnosis(
+                    operationText = "读取",
+                    serverAddress = serverAddress,
+                    registerAddress = address,
+                    result = result.result
+                )
+            )
         }
     }
 
