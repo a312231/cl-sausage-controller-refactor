@@ -26,6 +26,7 @@ object LowCurrentTrafficMode {
     var TEMPERATURE_OFF = 0
 
     private var lastLowTrafficSnapshot: String? = null
+    private var lastLowInitializationDecisionLog: String? = null
 
     private fun modeText(value: Int): String = when (value) {
         1 -> "1(低并发)"
@@ -106,6 +107,17 @@ object LowCurrentTrafficMode {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             return totalEmpty
         }
+
+        logLowInitializationDecision(
+            frontEmpty = p1_9,
+            frontCapacity = list1_9.size,
+            heatEmpty = p13_18,
+            heatCapacity = list13_18.size,
+            schedulingEnabled = schedulingEnabled,
+            boxSupplyAvailable = boxSupplyAvailable,
+            errorStatus = config.errorStatus,
+            isBeforeCloseWindow = isBeforeCloseWindow
+        )
 
         if (totalEmpty == list1_9.size + list13_18.size) {
             if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
@@ -202,6 +214,32 @@ object LowCurrentTrafficMode {
         // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
         return totalEmpty
+    }
+
+    private fun logLowInitializationDecision(
+        frontEmpty: Int,
+        frontCapacity: Int,
+        heatEmpty: Int,
+        heatCapacity: Int,
+        schedulingEnabled: Boolean,
+        boxSupplyAvailable: Boolean,
+        errorStatus: Int,
+        isBeforeCloseWindow: Boolean
+    ) {
+        val message = LowTrafficDecisionLogFormatter.lowInitializationDecision(
+            frontEmpty = frontEmpty,
+            frontCapacity = frontCapacity,
+            heatEmpty = heatEmpty,
+            heatCapacity = heatCapacity,
+            schedulingEnabled = schedulingEnabled,
+            boxSupplyAvailable = boxSupplyAvailable,
+            errorStatus = errorStatus,
+            isBeforeCloseWindow = isBeforeCloseWindow
+        )
+        if (message != lastLowInitializationDecisionLog) {
+            LogUtils.i(TAG, message)
+            lastLowInitializationDecisionLog = message
+        }
     }
 
     private suspend fun resumeLowInitialization(

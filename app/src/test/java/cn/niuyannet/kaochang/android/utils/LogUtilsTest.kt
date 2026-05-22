@@ -29,6 +29,8 @@ class LogUtilsTest {
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【云端同步】云端已确认设备状态：工作中/正在出餐"))
         assertTrue(LogUtils.shouldWriteToFileForTest("W", "【取肠语音】音频焦点申请失败，继续尝试播放"))
         assertTrue(LogUtils.shouldWriteToFileForTest("I", "【烤制算法】状态变化：低并发稳态 -> 低转高过渡态"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("I", "【低并发调度】本轮未触发低并发初始化：原因=本地烤盘未全空"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("I", "【动作组通信】下发完成：动作=out3，命令寄存器=430"))
         assertTrue(LogUtils.shouldWriteToFileForTest("I", "【管理员操作】清空烤盘：页面=烤盘信息，操作结果=开始"))
     }
 

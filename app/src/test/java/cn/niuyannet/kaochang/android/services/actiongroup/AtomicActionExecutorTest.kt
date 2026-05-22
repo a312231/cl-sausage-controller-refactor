@@ -640,6 +640,54 @@ class AtomicActionExecutorTest {
     }
 
     @Test
+    fun execute_shouldLogCommunicationSummaryForSuccessfulAction() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(311 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = { logs += it },
+            diagnosisSnapshotProvider = { testSnapshot() },
+            modbusServerAddress = 7
+        )
+
+        val result = executor.execute(AtomicActions.in1, infoValue = 17)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertTrue(
+            logs.any {
+                it.contains("【动作组通信】启动前读取") &&
+                    it.contains("动作=in1") &&
+                    it.contains("结果寄存器=311") &&
+                    it.contains("结果值=0x0000")
+            }
+        )
+        assertTrue(
+            logs.any {
+                it.contains("【动作组通信】下发完成") &&
+                    it.contains("信息寄存器=312") &&
+                    it.contains("信息值=17") &&
+                    it.contains("命令寄存器=310") &&
+                    it.contains("命令值=0x0001")
+            }
+        )
+        assertTrue(
+            logs.any {
+                it.contains("【动作组通信】动作结束") &&
+                    it.contains("结果=成功") &&
+                    it.contains("结果值=0x0002（完成）")
+            }
+        )
+        val communicationLogs = logs.filter { it.contains("【动作组通信】") }
+        assertTrue(communicationLogs.isNotEmpty())
+        assertFalse(communicationLogs.any { it.contains("串口地址=") })
+        assertFalse(communicationLogs.any { it.contains("波特率=") })
+        assertFalse(communicationLogs.any { it.contains("从站地址=") })
+        assertFalse(communicationLogs.any { it.contains("连接状态=") })
+    }
+
+    @Test
     fun definitions_shouldUse300And400Registers() {
         assertEquals(AtomicActionSpec("in1", 310, 311, 312, 80_000L, 200L, "in1：移动到肠箱预推送位置"), AtomicActions.in1)
         assertEquals(AtomicActionSpec("in7", 370, 371, 372, 120_000L, 500L, "in7：上平台从升降台夹肠并放入烤盘"), AtomicActions.in7)

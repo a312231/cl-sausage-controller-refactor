@@ -137,6 +137,16 @@ class AtomicActionExecutor(
                 startedAtMs = startedAtMs
             )
             is AtomicReadResult.Success -> {
+                logger(
+                    buildCommunicationLog(
+                        title = "启动前读取",
+                        spec = spec,
+                        parts = listOf(
+                            "结果寄存器=${spec.resultRegister}",
+                            "结果值=${resultCodeDesc(current.value)}"
+                        )
+                    )
+                )
                 if (current.value == AtomicActionCodes.RUNNING) {
                     logger(
                         "接管原子动作轮询：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
@@ -257,6 +267,19 @@ class AtomicActionExecutor(
                 logger(
                     "写入命令寄存器成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                         "commandRegister（命令寄存器）=${spec.commandRegister}，commandValue（命令值）=1"
+                )
+                logger(
+                    buildCommunicationLog(
+                        title = "下发完成",
+                        spec = spec,
+                        parts = listOf(
+                            "信息寄存器=${spec.infoRegister}",
+                            "信息值=$infoValue",
+                            "命令寄存器=${spec.commandRegister}",
+                            "命令值=${commandValueDesc(AtomicActionCodes.RUNNING)}",
+                            "结果寄存器=${spec.resultRegister}"
+                        )
+                    )
                 )
                 onCommandDispatched?.invoke()
             }
@@ -705,6 +728,21 @@ class AtomicActionExecutor(
             "原子动作完成：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                 "success=${result == AtomicActionResult.Success}，result=${describeResult(result)}，elapsedMs=$elapsedMs"
         )
+        logger(
+            buildCommunicationLog(
+                title = "动作结束",
+                spec = spec,
+                parts = buildList {
+                    add("结果=${communicationResultText(result)}")
+                    if (result == AtomicActionResult.Success) {
+                        add("结果值=${resultCodeDesc(AtomicActionCodes.COMPLETED)}")
+                    }
+                    add("命令寄存器=${spec.commandRegister}")
+                    add("结果寄存器=${spec.resultRegister}")
+                    add("耗时=${formatElapsedSeconds(elapsedMs)}秒")
+                }
+            )
+        )
         val (errorCode, errorMessage) = when (result) {
             AtomicActionResult.Success -> null to null
             is AtomicActionResult.Failed -> result.errorCode to result.message
@@ -727,6 +765,28 @@ class AtomicActionExecutor(
             )
         )
         return result
+    }
+
+    private fun buildCommunicationLog(
+        title: String,
+        spec: AtomicActionSpec,
+        parts: List<String>
+    ): String {
+        return listOf(
+            "【动作组通信】$title",
+            "动作=${spec.name}",
+            "动作说明=${spec.description.substringAfter('：', spec.description)}"
+        ).plus(parts)
+            .joinToString("，")
+    }
+
+    private fun communicationResultText(result: AtomicActionResult): String {
+        return when (result) {
+            AtomicActionResult.Success -> "成功"
+            is AtomicActionResult.Failed -> "失败，错误码=${formatCode(result.errorCode)}"
+            is AtomicActionResult.ModbusError -> "Modbus通信异常"
+            is AtomicActionResult.Timeout -> "超时"
+        }
     }
 
     private fun describeResult(result: AtomicActionResult): String {
