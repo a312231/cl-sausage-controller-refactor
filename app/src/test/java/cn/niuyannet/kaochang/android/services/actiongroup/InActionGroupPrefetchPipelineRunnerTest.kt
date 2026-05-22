@@ -290,8 +290,8 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
                 AtomicActionResult.Timeout(
-                    "in4 动作未确认启动，疑似下位机复位/命令丢失：" +
-                        "resultRegister=341，commandRegister=340，currentCommand=0x0000，elapsedMs=3229"
+                    "初判责任=疑似下位机复位或命令丢失，失败阶段=启动确认超时，" +
+                        "动作=in4，命令寄存器=340，命令值=0x0000（空闲/已清零）"
                 )
             )
         )
@@ -306,9 +306,9 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(result is InActionGroupPipelineResult.Failed)
         assertTrue(
             failureLogs.any {
-                it.contains("【失败原因】补肠烤盘16 in4（升降台下降）启动失败") &&
-                    it.contains("疑似下位机复位/命令丢失") &&
-                    it.contains("命令寄存器340当前=0x0000（空闲/已清零）")
+                it.contains("【失败原因】补肠烤盘16 in4（升降台下降）失败：初判责任=疑似下位机复位或命令丢失") &&
+                    it.contains("命令寄存器=340") &&
+                    it.contains("命令值=0x0000（空闲/已清零）")
             }
         )
     }

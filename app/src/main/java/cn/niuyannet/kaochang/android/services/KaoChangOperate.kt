@@ -50,6 +50,26 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+internal fun formatActionGroupFailureReasonForUpload(
+    actionName: String,
+    result: ActionGroupResult,
+    resourceLocks: String
+): String {
+    val rawReason = when (result) {
+        ActionGroupResult.Success -> "$actionName 动作组失败：动作组完成，resourceLocks=$resourceLocks"
+        ActionGroupResult.Discarded -> "$actionName 动作组失败：历史兼容结果，resourceLocks=$resourceLocks"
+        is ActionGroupResult.Failed ->
+            "$actionName 动作组失败：${result.actionName}，${result.message}，resourceLocks=$resourceLocks"
+    }
+    return if (rawReason.length <= ACTION_GROUP_FAILURE_REASON_MAX_LENGTH) {
+        rawReason
+    } else {
+        rawReason.take(ACTION_GROUP_FAILURE_REASON_MAX_LENGTH - 3) + "..."
+    }
+}
+
+private const val ACTION_GROUP_FAILURE_REASON_MAX_LENGTH = 300
+
 /**
  * 上位机机械动作封装。
  *
@@ -604,7 +624,9 @@ object KaoChangOperate {
             telemetrySink = { telemetry ->
                 publishActionGroupTelemetry(telemetry)
                 onTelemetry(telemetry)
-            }
+            },
+            diagnosisSnapshotProvider = { VMModbusHelper.currentDiagnosisSnapshot() },
+            modbusServerAddress = modbus_address
         )
     }
 
@@ -669,8 +691,11 @@ object KaoChangOperate {
         }
         markDeviceErrorAndUpload(
             FaultCode.ACTION_GROUP_FAILED,
-            "$actionName 动作组失败：protocol=300_400，result=${actionGroupResultDesc(result)}，" +
-                "resourceLocks=${actionGroupLocks.snapshot()}"
+            formatActionGroupFailureReasonForUpload(
+                actionName = actionName,
+                result = result,
+                resourceLocks = actionGroupLocks.snapshot()
+            )
         )
     }
 

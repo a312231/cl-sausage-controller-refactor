@@ -11,6 +11,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetryContext
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
@@ -167,7 +168,9 @@ class TestFragment : Fragment() {
                         telemetryContext = ActionGroupTelemetryContext(
                             sessionId = sessionId,
                             resourceLocks = "TEST_PAGE"
-                        )
+                        ),
+                        diagnosisSnapshotProvider = { VMModbusHelper.currentDiagnosisSnapshot() },
+                        modbusServerAddress = KaoChangOperate.modbus_address
                     ).execute(item.spec, infoValue)
                 }
                 binding.tvAtomicActionResult.text = describeAtomicActionResult(result)

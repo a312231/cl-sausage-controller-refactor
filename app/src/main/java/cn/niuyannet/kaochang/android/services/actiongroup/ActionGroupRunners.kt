@@ -222,7 +222,7 @@ private suspend fun executeRetriableStep(
 private fun mapActionResult(step: ActionStep, result: AtomicActionResult): ActionGroupResult {
     return when {
         result == AtomicActionResult.Success -> ActionGroupResult.Success
-        else -> ActionGroupResult.Failed(step.spec.name, result, "${step.spec.description}失败：${describe(result)}")
+        else -> ActionGroupResult.Failed(step.spec.name, result, describe(result))
     }
 }
 
@@ -267,9 +267,9 @@ private fun isRetryable(result: AtomicActionResult, retryableErrorCode: Int): Bo
 private fun describe(result: AtomicActionResult): String {
     return when (result) {
         AtomicActionResult.Success -> "成功"
-        is AtomicActionResult.Failed -> "${AtomicActionExecutor.formatCode(result.errorCode)}（${result.message}）"
-        is AtomicActionResult.ModbusError -> "Modbus 读写失败：${result.message}"
-        is AtomicActionResult.Timeout -> "执行超时：${result.message}"
+        is AtomicActionResult.Failed -> result.message
+        is AtomicActionResult.ModbusError -> result.message
+        is AtomicActionResult.Timeout -> result.message
     }
 }
 
@@ -306,13 +306,7 @@ private fun formatOperationStepFailed(
     val prefix = "【失败原因】${context.subject?.let { "$it " } ?: ""}"
     val actionText = actionLabel(spec)
     val atomicResult = result.result
-    val reason = if (atomicResult is AtomicActionResult.Timeout &&
-        atomicResult.message.contains("未确认启动")
-    ) {
-        AtomicActionFailureFormatter.startupNotConfirmedText(actionText, spec.resultRegister, atomicResult.message)
-    } else {
-        "${actionText}失败：${describe(atomicResult)}"
-    }
+    val reason = "${actionText}失败：${describe(atomicResult)}"
     return "$prefix$reason"
 }
 

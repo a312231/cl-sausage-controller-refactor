@@ -1,7 +1,9 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -206,9 +208,9 @@ class AtomicActionExecutorTest {
 
         assertTrue(result is AtomicActionResult.Timeout)
         val timeout = result as AtomicActionResult.Timeout
-        assertTrue(timeout.message.contains("疑似下位机复位/命令丢失"))
-        assertTrue(timeout.message.contains("commandRegister=340"))
-        assertTrue(timeout.message.contains("currentCommand=0x0000"))
+        assertTrue(timeout.message.contains("初判责任=疑似下位机复位或命令丢失"))
+        assertTrue(timeout.message.contains("命令寄存器=340"))
+        assertTrue(timeout.message.contains("命令值=0x0000（空闲/已清零）"))
         assertTrue(
             logs.any {
                 it.contains("启动确认失败诊断") &&
@@ -330,7 +332,198 @@ class AtomicActionExecutorTest {
         val result = executor.execute(spec, infoValue = 2)
 
         assertTrue(result is AtomicActionResult.Timeout)
-        assertTrue(logs.any { it.contains("执行中后返回0x0000") })
+        assertTrue((result as AtomicActionResult.Timeout).message.contains("初判责任=下位机执行状态异常回退"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisWhenIdleAppearsAfterRunning() = runBlocking {
+        val spec = AtomicActionSpec("out3", 430, 431, 432, 80L, 10L, "out3：从穿签位放到预推送位置")
+        val gateway = FakeGateway(
+            reads = mapOf(431 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            diagnosisSnapshotProvider = {
+                VMModbusHelper.ModbusDiagnosisSnapshot(
+                    connected = true,
+                    port = "/dev/ttyS2",
+                    baudRate = 115200
+                )
+            }
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        val message = (result as AtomicActionResult.Timeout).message
+        assertTrue(message.startsWith("初判责任=下位机执行状态异常回退"))
+        assertTrue(message.contains("失败阶段=执行中后结果回退"))
+        assertTrue(message.contains("动作=out3"))
+        assertTrue(message.contains("结果寄存器=431"))
+        assertTrue(message.contains("结果值=0x0000（空闲/未启动）"))
+        assertTrue(message.contains("已观察到执行中=是"))
+        assertTrue(message.contains("连接状态=已连接"))
+        assertTrue(message.contains("串口地址=/dev/ttyS2"))
+        assertFalse(message.contains("信息值"))
+        assertTrue(message.length <= 300)
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisWhenStartupCommandStillPending() = runBlocking {
+        val spec = AtomicActionSpec("in4-test", 340, 341, 342, 80L, 10L, "in4：升降台下降")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                341 to repeatedQueue(AtomicActionCodes.IDLE, 20),
+                340 to repeatedQueue(AtomicActionCodes.RUNNING, 20)
+            )
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            startupConfirmTimeoutMs = 30L,
+            commandPendingConfirmTimeoutMs = 40L,
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        val message = (result as AtomicActionResult.Timeout).message
+        assertTrue(message.startsWith("初判责任=下位机长时间未接收命令"))
+        assertTrue(message.contains("命令寄存器=340"))
+        assertTrue(message.contains("命令值=0x0001（请求执行）"))
+        assertFalse(message.contains("信息值"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisWhenStartupCommandCleared() = runBlocking {
+        val spec = AtomicActionSpec("in4-test", 340, 341, 342, 80L, 10L, "in4：升降台下降")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                341 to repeatedQueue(AtomicActionCodes.IDLE, 20),
+                340 to repeatedQueue(AtomicActionCodes.IDLE, 20)
+            )
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            startupConfirmTimeoutMs = 30L,
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        val message = (result as AtomicActionResult.Timeout).message
+        assertTrue(message.startsWith("初判责任=疑似下位机复位或命令丢失"))
+        assertTrue(message.contains("命令值=0x0000（空闲/已清零）"))
+        assertFalse(message.contains("信息值"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisForWriteInfoFailureWithInfoValue() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE)),
+            writeResult = AtomicIoResult.Failure("操作=写入，寄存器地址=412")
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(spec, infoValue = 8)
+
+        assertTrue(result is AtomicActionResult.ModbusError)
+        val message = (result as AtomicActionResult.ModbusError).message
+        assertTrue(message.startsWith("初判责任=上位机写入下位机信息寄存器失败"))
+        assertTrue(message.contains("信息寄存器=412"))
+        assertTrue(message.contains("信息值=8"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisForKnownControllerErrorCode() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(351 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.IR_THROW_FAILED))
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(AtomicActions.in5, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Failed)
+        val message = (result as AtomicActionResult.Failed).message
+        assertTrue(message.startsWith("初判责任=下位机明确返回动作错误码"))
+        assertTrue(message.contains("错误说明=下平台抛肠后残肠红外失败"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisForUnknownResultCode() = runBlocking {
+        val spec = AtomicActionSpec("out2-test", 420, 421, 422, 1_000L, 10L, "out2：执行穿签")
+        val gateway = FakeGateway(
+            reads = mapOf(421 to queueOf(AtomicActionCodes.IDLE, 0x0003))
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.ModbusError)
+        val message = (result as AtomicActionResult.ModbusError).message
+        assertTrue(message.startsWith("初判责任=上下位机协议口径不一致"))
+        assertTrue(message.contains("结果值=0x0003（当前值）"))
+        assertFalse(message.contains("信息值"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisForTimeoutWithoutRunningObserved() = runBlocking {
+        val spec = AtomicActionSpec("out2-test", 420, 421, 422, 40L, 10L, "out2：执行穿签")
+        val gateway = FakeGateway(
+            reads = mapOf(421 to repeatedQueue(AtomicActionCodes.IDLE, 20))
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            startupConfirmTimeoutMs = 100L,
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        val message = (result as AtomicActionResult.Timeout).message
+        assertTrue(message.startsWith("初判责任=下位机未启动或未回写执行中"))
+        assertTrue(message.contains("已观察到执行中=否"))
+        assertFalse(message.contains("信息值"))
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisForTimeoutAfterRunningObserved() = runBlocking {
+        val spec = AtomicActionSpec("out2-test", 420, 421, 422, 40L, 10L, "out2：执行穿签")
+        val gateway = FakeGateway(
+            reads = mapOf(421 to repeatedQueue(AtomicActionCodes.RUNNING, 20))
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            diagnosisSnapshotProvider = { testSnapshot() }
+        )
+
+        val result = executor.execute(spec, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Timeout)
+        val message = (result as AtomicActionResult.Timeout).message
+        assertTrue(message.startsWith("初判责任=下位机执行超时未回写完成"))
+        assertTrue(message.contains("已观察到执行中=是"))
+        assertFalse(message.contains("信息值"))
     }
 
     @Test
@@ -374,7 +567,8 @@ class AtomicActionExecutorTest {
         assertTrue(result is AtomicActionResult.Failed)
         val failed = result as AtomicActionResult.Failed
         assertEquals(0x00E6, failed.errorCode)
-        assertEquals("下平台抛肠后残肠红外失败", failed.message)
+        assertTrue(failed.message.contains("初判责任=下位机明确返回动作错误码"))
+        assertTrue(failed.message.contains("错误说明=下平台抛肠后残肠红外失败"))
     }
 
     @Test
@@ -389,7 +583,8 @@ class AtomicActionExecutorTest {
         assertTrue(result is AtomicActionResult.Failed)
         val failed = result as AtomicActionResult.Failed
         assertEquals(0x00F0, failed.errorCode)
-        assertEquals("in3 的 X 复位失败", failed.message)
+        assertTrue(failed.message.contains("初判责任=下位机明确返回动作错误码"))
+        assertTrue(failed.message.contains("错误说明=in3 的 X 复位失败"))
     }
 
     @Test
@@ -476,5 +671,12 @@ class AtomicActionExecutorTest {
         fun queueOf(vararg values: Int): ArrayDeque<Int> = ArrayDeque<Int>().apply { addAll(values.toList()) }
         fun repeatedQueue(value: Int, count: Int): ArrayDeque<Int> =
             ArrayDeque<Int>().apply { repeat(count) { add(value) } }
+
+        fun testSnapshot(): VMModbusHelper.ModbusDiagnosisSnapshot =
+            VMModbusHelper.ModbusDiagnosisSnapshot(
+                connected = false,
+                port = "/dev/ttyS9",
+                baudRate = 9600
+            )
     }
 }

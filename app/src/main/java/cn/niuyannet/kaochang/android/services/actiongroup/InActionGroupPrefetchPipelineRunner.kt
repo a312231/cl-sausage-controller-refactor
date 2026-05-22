@@ -181,7 +181,7 @@ class InActionGroupPrefetchPipelineRunner(
 
             when (val in1 = executeLoggedAction(AtomicActions.in1, sourceBoxNo, task.targetPanNo, sourceBoxNo)) {
                 AtomicActionResult.Success -> Unit
-                else -> return PrefetchResult.Failed("in1", in1, "${AtomicActions.in1.description}失败：${describe(in1)}", sourceBoxNo)
+                else -> return PrefetchResult.Failed("in1", in1, describe(in1), sourceBoxNo)
             }
 
             when (val in2 = executeRetriableAction(
@@ -202,7 +202,7 @@ class InActionGroupPrefetchPipelineRunner(
                     val failed = PrefetchResult.Failed(
                         actionName = "in2",
                         result = in2,
-                        message = "${AtomicActions.in2.description}失败：${describe(in2)}",
+                        message = describe(in2),
                         sourceBoxNo = sourceBoxNo,
                         failedSourceBoxNos = failedSourceBoxNos
                     )
@@ -218,7 +218,7 @@ class InActionGroupPrefetchPipelineRunner(
                 else -> return PrefetchResult.Failed(
                     actionName = "in2",
                     result = in2,
-                    message = "${AtomicActions.in2.description}失败：${describe(in2)}",
+                    message = describe(in2),
                     sourceBoxNo = sourceBoxNo,
                     failedSourceBoxNos = failedPickSourceBoxNos.toList()
                 )
@@ -226,7 +226,7 @@ class InActionGroupPrefetchPipelineRunner(
 
             when (val in3 = executeLoggedAction(AtomicActions.in3, 0, task.targetPanNo, sourceBoxNo)) {
                 AtomicActionResult.Success -> return PrefetchResult.Success(sourceBoxNo)
-                else -> return PrefetchResult.Failed("in3", in3, "${AtomicActions.in3.description}失败：${describe(in3)}", sourceBoxNo)
+                else -> return PrefetchResult.Failed("in3", in3, describe(in3), sourceBoxNo)
             }
         }
 
@@ -354,18 +354,14 @@ class InActionGroupPrefetchPipelineRunner(
     private fun describe(result: AtomicActionResult): String {
         return when (result) {
             AtomicActionResult.Success -> "成功"
-            is AtomicActionResult.Failed -> "${AtomicActionExecutor.formatCode(result.errorCode)}（${result.message}）"
-            is AtomicActionResult.ModbusError -> "Modbus 读写失败：${result.message}"
-            is AtomicActionResult.Timeout -> "执行超时：${result.message}"
+            is AtomicActionResult.Failed -> result.message
+            is AtomicActionResult.ModbusError -> result.message
+            is AtomicActionResult.Timeout -> result.message
         }
     }
 
     private fun failureText(spec: AtomicActionSpec, result: AtomicActionResult): String {
-        return if (result is AtomicActionResult.Timeout && result.message.contains("未确认启动")) {
-            AtomicActionFailureFormatter.startupNotConfirmedText(actionLabel(spec), spec.resultRegister, result.message)
-        } else {
-            "${actionLabel(spec)}失败：${describe(result)}"
-        }
+        return "${actionLabel(spec)}失败：${describe(result)}"
     }
 
     private fun actionLabel(spec: AtomicActionSpec): String {

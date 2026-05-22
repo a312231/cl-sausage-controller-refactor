@@ -168,8 +168,8 @@ class ActionGroupRunnerTest {
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
                 AtomicActionResult.Timeout(
-                    "out3 动作未确认启动，疑似下位机复位/命令丢失：" +
-                        "resultRegister=431，commandRegister=430，currentCommand=0x0000，elapsedMs=3229"
+                    "初判责任=疑似下位机复位或命令丢失，失败阶段=启动确认超时，" +
+                        "动作=out3，命令寄存器=430，命令值=0x0000（空闲/已清零）"
                 )
             )
         )
@@ -188,9 +188,9 @@ class ActionGroupRunnerTest {
         assertTrue(result is ActionGroupResult.Failed)
         assertTrue(
             failureLogs.any {
-                it.contains("【失败原因】第2/3根 out3（从穿签位放到预推送位置）启动失败") &&
-                    it.contains("疑似下位机复位/命令丢失") &&
-                    it.contains("命令寄存器430当前=0x0000（空闲/已清零）")
+                it.contains("【失败原因】第2/3根 out3（从穿签位放到预推送位置）失败：初判责任=疑似下位机复位或命令丢失") &&
+                    !it.contains("执行超时：") &&
+                    !it.contains("Modbus 读写失败：")
             }
         )
     }

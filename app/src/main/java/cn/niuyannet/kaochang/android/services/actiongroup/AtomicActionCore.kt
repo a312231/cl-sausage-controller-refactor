@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.delay
 
 object AtomicActionCodes {
@@ -78,38 +79,6 @@ sealed class AtomicActionResult {
     data class ModbusError(val message: String) : AtomicActionResult()
 }
 
-object AtomicActionFailureFormatter {
-    fun startupNotConfirmedText(actionText: String, resultRegister: Int, message: String): String {
-        val resetHint = if (message.contains("疑似下位机复位/命令丢失")) {
-            "，疑似下位机复位/命令丢失"
-        } else {
-            ""
-        }
-        val commandDiagnostic = commandDiagnosticText(message)
-        return "${actionText}启动失败：下位机未确认执行，" +
-            "结果寄存器${resultRegister}未观察到0x0001（执行中）" +
-            resetHint +
-            commandDiagnostic
-    }
-
-    private fun commandDiagnosticText(message: String): String {
-        val commandRegister = Regex("commandRegister=(\\d+)").find(message)?.groupValues?.getOrNull(1)
-        val currentCommand = Regex("currentCommand=(0x[0-9A-Fa-f]{4})").find(message)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.uppercase()
-        if (commandRegister == null || currentCommand == null) {
-            return ""
-        }
-        val valueText = if (currentCommand == "0X0000") {
-            "0x0000（空闲/已清零）"
-        } else {
-            currentCommand.lowercase()
-        }
-        return "，命令寄存器${commandRegister}当前=$valueText"
-    }
-}
-
 interface AtomicModbusGateway {
     suspend fun writeRegister(address: Int, value: Int): AtomicIoResult
     suspend fun readRegister(address: Int): AtomicReadResult
@@ -133,7 +102,15 @@ class AtomicActionExecutor(
     private val telemetryContext: ActionGroupTelemetryContext = ActionGroupTelemetryContext(),
     private val telemetrySink: (ActionGroupTelemetry) -> Unit = {},
     private val startupConfirmTimeoutMs: Long = STARTUP_CONFIRM_TIMEOUT_MS,
-    private val commandPendingConfirmTimeoutMs: Long = COMMAND_PENDING_CONFIRM_TIMEOUT_MS
+    private val commandPendingConfirmTimeoutMs: Long = COMMAND_PENDING_CONFIRM_TIMEOUT_MS,
+    private val diagnosisSnapshotProvider: () -> VMModbusHelper.ModbusDiagnosisSnapshot = {
+        VMModbusHelper.ModbusDiagnosisSnapshot(
+            connected = VMModbusHelper.modbusMaster != null,
+            port = "未知",
+            baudRate = 0
+        )
+    },
+    private val modbusServerAddress: Int? = null
 ) : AtomicActionClient, AtomicActionStateReader {
 
     override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
@@ -150,7 +127,12 @@ class AtomicActionExecutor(
             is AtomicReadResult.Failure -> finishWithTelemetry(
                 spec = spec,
                 result = AtomicActionResult.ModbusError(
-                    "${spec.name} 启动前读取结果寄存器 ${spec.resultRegister} 失败：${current.message}"
+                    structuredFailureMessage(
+                        responsibility = "上位机与下位机通信读取异常",
+                        stage = "启动前读取结果寄存器失败",
+                        spec = spec,
+                        extraParts = listOf("异常信息=${current.message}")
+                    )
                 ),
                 startedAtMs = startedAtMs
             )
@@ -198,7 +180,14 @@ class AtomicActionExecutor(
             is AtomicIoResult.Failure -> finishWithTelemetry(
                 spec = spec,
                 result = AtomicActionResult.ModbusError(
-                    "${spec.name} 清理残留命令寄存器 ${spec.commandRegister}=0 失败：${writeClear.message}"
+                    structuredFailureMessage(
+                        responsibility = "上位机写入下位机命令寄存器失败",
+                        stage = "清理残留命令寄存器失败",
+                        spec = spec,
+                        commandValue = AtomicActionCodes.IDLE,
+                        resultValue = startupResultCode,
+                        extraParts = listOf("异常信息=${writeClear.message}")
+                    )
                 ),
                 startedAtMs = startedAtMs
             )
@@ -227,7 +216,13 @@ class AtomicActionExecutor(
                 return finishWithTelemetry(
                     spec = spec,
                     result = AtomicActionResult.ModbusError(
-                        "${spec.name} 写信息寄存器 ${spec.infoRegister} 失败：${writeInfo.message}"
+                        structuredFailureMessage(
+                            responsibility = "上位机写入下位机信息寄存器失败",
+                            stage = "写信息寄存器失败",
+                            spec = spec,
+                            infoValue = infoValue,
+                            extraParts = listOf("异常信息=${writeInfo.message}")
+                        )
                     ),
                     startedAtMs = startedAtMs
                 )
@@ -247,7 +242,13 @@ class AtomicActionExecutor(
                 return finishWithTelemetry(
                     spec = spec,
                     result = AtomicActionResult.ModbusError(
-                        "${spec.name} 写命令寄存器 ${spec.commandRegister} 失败：${writeCommand.message}"
+                        structuredFailureMessage(
+                            responsibility = "上位机写入下位机命令寄存器失败",
+                            stage = "写命令寄存器失败",
+                            spec = spec,
+                            commandValue = AtomicActionCodes.RUNNING,
+                            extraParts = listOf("异常信息=${writeCommand.message}")
+                        )
                     ),
                     startedAtMs = startedAtMs
                 )
@@ -287,7 +288,14 @@ class AtomicActionExecutor(
         while (System.currentTimeMillis() - startedAtMs <= spec.timeoutMs) {
             when (val read = gateway.readRegister(spec.resultRegister)) {
                 is AtomicReadResult.Failure -> return AtomicActionResult.ModbusError(
-                    "${spec.name} 读取结果寄存器 ${spec.resultRegister} 失败：${read.message}"
+                    structuredFailureMessage(
+                        responsibility = "上位机与下位机通信读取异常",
+                        stage = "轮询读取结果寄存器失败",
+                        spec = spec,
+                        elapsedMs = System.currentTimeMillis() - startedAtMs,
+                        hasObservedRunning = hasObservedRunning,
+                        extraParts = listOf("异常信息=${read.message}")
+                    )
                 ).let {
                     finishWithTelemetry(spec, it, startedAtMs)
                 }
@@ -374,8 +382,14 @@ class AtomicActionExecutor(
                             return finishWithTelemetry(
                                 spec,
                                 AtomicActionResult.Timeout(
-                                    "${spec.name} 执行中后返回${resultCodeDesc(code)}，" +
-                                        "未返回0x0002（完成）：resultRegister=${spec.resultRegister}，elapsedMs=$elapsedMs"
+                                    structuredFailureMessage(
+                                        responsibility = "下位机执行状态异常回退",
+                                        stage = "执行中后结果回退",
+                                        spec = spec,
+                                        elapsedMs = elapsedMs,
+                                        resultValue = code,
+                                        hasObservedRunning = true
+                                    )
                                 ),
                                 startedAtMs
                             )
@@ -395,6 +409,22 @@ class AtomicActionExecutor(
                                     "等待动作启动确认：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                                         "resultRegister（结果寄存器）=${spec.resultRegister}，当前结果=${resultCodeDesc(code)}，" +
                                         "startupConfirmTimeoutMs=$startupConfirmWindowMs"
+                                )
+                            }
+                            if (elapsedMs >= spec.timeoutMs) {
+                                return finishWithTelemetry(
+                                    spec,
+                                    AtomicActionResult.Timeout(
+                                        structuredFailureMessage(
+                                            responsibility = "下位机未启动或未回写执行中",
+                                            stage = "整体执行超时",
+                                            spec = spec,
+                                            elapsedMs = elapsedMs,
+                                            resultValue = code,
+                                            hasObservedRunning = false
+                                        )
+                                    ),
+                                    startedAtMs
                                 )
                             }
                             if (elapsedMs >= startupConfirmWindowMs) {
@@ -450,12 +480,32 @@ class AtomicActionExecutor(
                         }
                         code >= AtomicActionCodes.PARAM_ERROR -> return finishWithTelemetry(
                             spec,
-                            AtomicActionResult.Failed(code, messageOf(code)),
+                            AtomicActionResult.Failed(
+                                code,
+                                structuredFailureMessage(
+                                    responsibility = "下位机明确返回动作错误码",
+                                    stage = "结果寄存器返回下位机错误码",
+                                    spec = spec,
+                                    elapsedMs = elapsedMs,
+                                    resultValue = code,
+                                    hasObservedRunning = hasObservedRunning,
+                                    extraParts = listOf("错误说明=${messageOf(code)}")
+                                )
+                            ),
                             startedAtMs
                         )
                         else -> return finishWithTelemetry(
                             spec,
-                            AtomicActionResult.ModbusError("${spec.name} 未知结果码：${formatCode(code)}"),
+                            AtomicActionResult.ModbusError(
+                                structuredFailureMessage(
+                                    responsibility = "上下位机协议口径不一致",
+                                    stage = "结果寄存器返回未知状态码",
+                                    spec = spec,
+                                    elapsedMs = elapsedMs,
+                                    resultValue = code,
+                                    hasObservedRunning = hasObservedRunning
+                                )
+                            ),
                             startedAtMs
                         )
                     }
@@ -464,17 +514,36 @@ class AtomicActionExecutor(
         }
         val elapsedMs = System.currentTimeMillis() - startedAtMs
         if (requireFreshStateBeforeSuccess && !hasObservedFreshState) {
-            val message = buildStartupNotConfirmedMessage(spec, elapsedMs, AtomicActionCodes.IDLE)
-            logStartupNotConfirmedFailure(spec, elapsedMs, AtomicActionCodes.IDLE)
             return finishWithTelemetry(
                 spec,
-                AtomicActionResult.Timeout(message),
+                AtomicActionResult.Timeout(
+                    structuredFailureMessage(
+                        responsibility = "下位机未启动或未回写执行中",
+                        stage = "整体执行超时",
+                        spec = spec,
+                        elapsedMs = elapsedMs,
+                        resultValue = AtomicActionCodes.IDLE,
+                        hasObservedRunning = false
+                    )
+                ),
                 startedAtMs
             )
         }
         return finishWithTelemetry(
             spec,
-            AtomicActionResult.Timeout("${spec.name} 执行超时：timeoutMs=${spec.timeoutMs}"),
+            AtomicActionResult.Timeout(
+                structuredFailureMessage(
+                    responsibility = if (hasObservedRunning) {
+                        "下位机执行超时未回写完成"
+                    } else {
+                        "下位机未启动或未回写执行中"
+                    },
+                    stage = "整体执行超时",
+                    spec = spec,
+                    elapsedMs = elapsedMs,
+                    hasObservedRunning = hasObservedRunning
+                )
+            ),
             startedAtMs
         )
     }
@@ -495,7 +564,6 @@ class AtomicActionExecutor(
     ): String {
         return when (commandRead) {
             is AtomicReadResult.Success -> {
-                val currentCommand = formatCode(commandRead.value)
                 logger(
                     "启动确认失败诊断：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                         "commandRegister（命令寄存器）=${spec.commandRegister}，当前命令=${commandValueDesc(commandRead.value)}，" +
@@ -503,19 +571,37 @@ class AtomicActionExecutor(
                 )
                 when (commandRead.value) {
                     AtomicActionCodes.IDLE -> {
-                        "${spec.name} 动作未确认启动，疑似下位机复位/命令丢失：" +
-                            "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}，" +
-                            "currentCommand=$currentCommand，currentResult=${formatCode(resultCode)}，elapsedMs=$elapsedMs"
+                        structuredFailureMessage(
+                            responsibility = "疑似下位机复位或命令丢失",
+                            stage = "启动确认超时",
+                            spec = spec,
+                            elapsedMs = elapsedMs,
+                            commandValue = commandRead.value,
+                            resultValue = resultCode,
+                            hasObservedRunning = false
+                        )
                     }
                     AtomicActionCodes.RUNNING -> {
-                        "${spec.name} 动作未确认启动，下位机长时间未接收命令：" +
-                            "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}，" +
-                            "currentCommand=$currentCommand，currentResult=${formatCode(resultCode)}，elapsedMs=$elapsedMs"
+                        structuredFailureMessage(
+                            responsibility = "下位机长时间未接收命令",
+                            stage = "启动确认超时",
+                            spec = spec,
+                            elapsedMs = elapsedMs,
+                            commandValue = commandRead.value,
+                            resultValue = resultCode,
+                            hasObservedRunning = false
+                        )
                     }
                     else -> {
-                        "${spec.name} 动作未确认启动，未观察到0x0001（执行中）：" +
-                            "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}，" +
-                            "currentCommand=$currentCommand，currentResult=${formatCode(resultCode)}，elapsedMs=$elapsedMs"
+                        structuredFailureMessage(
+                            responsibility = "下位机未启动或未回写执行中",
+                            stage = "启动确认超时",
+                            spec = spec,
+                            elapsedMs = elapsedMs,
+                            commandValue = commandRead.value,
+                            resultValue = resultCode,
+                            hasObservedRunning = false
+                        )
                     }
                 }
             }
@@ -526,11 +612,75 @@ class AtomicActionExecutor(
                         "resultRegister（结果寄存器）=${spec.resultRegister}，当前结果=${resultCodeDesc(resultCode)}，" +
                         "message=${commandRead.message}，elapsedMs=$elapsedMs"
                 )
-                "${spec.name} 动作未确认启动，未观察到0x0001（执行中）：" +
-                    "resultRegister=${spec.resultRegister}，commandRegister=${spec.commandRegister}读取失败，" +
-                    "currentResult=${formatCode(resultCode)}，elapsedMs=$elapsedMs"
+                structuredFailureMessage(
+                    responsibility = "上位机与下位机通信读取异常",
+                    stage = "启动确认读取命令寄存器失败",
+                    spec = spec,
+                    elapsedMs = elapsedMs,
+                    resultValue = resultCode,
+                    hasObservedRunning = false,
+                    extraParts = listOf("异常信息=${commandRead.message}")
+                )
             }
         }
+    }
+
+    private fun structuredFailureMessage(
+        responsibility: String,
+        stage: String,
+        spec: AtomicActionSpec,
+        elapsedMs: Long? = null,
+        commandValue: Int? = null,
+        resultValue: Int? = null,
+        infoValue: Int? = null,
+        hasObservedRunning: Boolean? = null,
+        extraParts: List<String> = emptyList()
+    ): String {
+        val snapshot = diagnosisSnapshotProvider()
+        val parts = mutableListOf(
+            "初判责任=$responsibility",
+            "失败阶段=$stage",
+            "动作=${spec.name}",
+            "动作说明=${spec.description.substringAfter('：', spec.description)}"
+        )
+        if (commandValue != null) {
+            parts += "命令寄存器=${spec.commandRegister}"
+            parts += "命令值=${commandValueDesc(commandValue)}"
+        }
+        parts += "结果寄存器=${spec.resultRegister}"
+        if (resultValue != null) {
+            parts += "结果值=${resultCodeDesc(resultValue)}"
+        }
+        if (infoValue != null) {
+            parts += "信息寄存器=${spec.infoRegister}"
+            parts += "信息值=$infoValue"
+        }
+        if (hasObservedRunning != null) {
+            parts += "已观察到执行中=${if (hasObservedRunning) "是" else "否"}"
+        }
+        if (elapsedMs != null) {
+            parts += "耗时=${formatElapsedSeconds(elapsedMs)}秒"
+        }
+        parts += "连接状态=${if (snapshot.connected) "已连接" else "未连接"}"
+        parts += "串口地址=${snapshot.port.ifBlank { "未知" }}"
+        parts += "波特率=${snapshot.baudRate}"
+        if (modbusServerAddress != null) {
+            parts += "从站地址=$modbusServerAddress"
+        }
+        parts += extraParts
+        return truncateDiagnosis(parts.joinToString("，"))
+    }
+
+    private fun truncateDiagnosis(text: String): String {
+        return if (text.length <= MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH) {
+            text
+        } else {
+            text.take(MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH - 3) + "..."
+        }
+    }
+
+    private fun formatElapsedSeconds(elapsedMs: Long): String {
+        return String.format(java.util.Locale.US, "%.1f", elapsedMs / 1000.0)
     }
 
     private fun logStartupNotConfirmedFailure(spec: AtomicActionSpec, elapsedMs: Long, resultCode: Int) {
@@ -592,6 +742,7 @@ class AtomicActionExecutor(
         private const val RUNNING_PROGRESS_LOG_INTERVAL_MS = 5_000L
         private const val STARTUP_CONFIRM_TIMEOUT_MS = 3_000L
         private const val COMMAND_PENDING_CONFIRM_TIMEOUT_MS = 40_000L
+        private const val MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH = 300
 
         fun formatCode(code: Int): String = "0x${code.toString(16).uppercase().padStart(4, '0')}"
 

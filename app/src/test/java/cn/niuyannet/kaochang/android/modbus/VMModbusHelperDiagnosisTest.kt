@@ -125,6 +125,9 @@ class VMModbusHelperDiagnosisTest {
         val gatewaySource = sourceRoot
             .resolve("cn/niuyannet/kaochang/android/services/actiongroup/VmAtomicModbusGateway.kt")
             .readText()
+        val atomicActionCoreSource = sourceRoot
+            .resolve("cn/niuyannet/kaochang/android/services/actiongroup/AtomicActionCore.kt")
+            .readText()
         val diagnosisSnapshotBlock = helperSource
             .substringAfter("fun currentDiagnosisSnapshot()")
             .substringBefore("fun formatOperationDiagnosis(")
@@ -136,6 +139,10 @@ class VMModbusHelperDiagnosisTest {
         assertFalse(
             "VmAtomicModbusGateway 的失败诊断路径不能调用 connectStatus()",
             gatewaySource.contains("connectStatus()")
+        )
+        assertFalse(
+            "AtomicActionCore 的结构化失败诊断不能调用 connectStatus()",
+            atomicActionCoreSource.contains("connectStatus()")
         )
     }
 }
