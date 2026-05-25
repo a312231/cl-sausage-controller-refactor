@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.net
 
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -143,4 +145,48 @@ class RemoteConcurrencyControlHelperTest {
         assertEquals(1, resolved.transitionMode)
         assertTrue(resolved.overrodeConflictingTransition)
     }
+
+    @Test
+    fun resolveTarget_shouldCancelHighToLowWhenBackendRequestsHighWithoutTransition() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 2,
+            currentTransitionMode = 2,
+            requestedModeType = 2,
+            requestedTransitionMode = null
+        )
+
+        assertEquals(2, resolved.modeType)
+        assertEquals(0, resolved.transitionMode)
+        assertTrue(resolved.overrodeConflictingTransition)
+    }
+
+    @Test
+    fun resolveTarget_shouldRouteManualLowStableToResidualDrainWhenHighAreaIsActive() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 2,
+            currentTransitionMode = 1,
+            requestedModeType = 1,
+            requestedTransitionMode = 0,
+            highConcurrencyAreaActive = true
+        )
+        val residualDrain = HighConcurrencyResidualDrainEvaluator.evaluate(
+            modeType = resolved.modeType,
+            kaoPanList = highAreaResidualPans(),
+            includeLowHeatOverlapArea = true
+        )
+
+        assertEquals(1, resolved.modeType)
+        assertEquals(0, resolved.transitionMode)
+        assertEquals(1, residualDrain)
+    }
+
+    private fun highAreaResidualPans(): List<KaoPan> =
+        (1..33).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = position == 25
+                status = if (position == 25) 2 else 0
+                holdingTime = if (position == 25) 1_000L else 0L
+            }
+        }
 }

@@ -25,7 +25,12 @@ object RemoteConcurrencyControlHelper {
         val requestedMode = requestedModeType.takeIf { it == MODE_LOW || it == MODE_HIGH }
             ?: currentModeType.takeIf { it == MODE_LOW || it == MODE_HIGH }
             ?: MODE_LOW
+        val backendOnlyCancelsHighToLow =
+            requestedTransitionMode == null &&
+                requestedMode == MODE_HIGH &&
+                currentTransitionMode == TRANSITION_HIGH_TO_LOW
         val resolvedTransitionMode = when {
+            backendOnlyCancelsHighToLow -> TRANSITION_NONE
             requestedTransitionMode != null -> requestedTransitionMode
             currentModeType != requestedMode && requestedMode == MODE_HIGH -> TRANSITION_LOW_TO_HIGH
             currentModeType != requestedMode && requestedMode == MODE_LOW -> TRANSITION_HIGH_TO_LOW
