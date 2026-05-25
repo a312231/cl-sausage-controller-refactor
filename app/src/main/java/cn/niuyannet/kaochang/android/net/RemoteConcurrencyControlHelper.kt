@@ -28,6 +28,7 @@ object RemoteConcurrencyControlHelper {
         val backendOnlyCancelsHighToLow =
             requestedTransitionMode == null &&
                 requestedMode == MODE_HIGH &&
+                currentModeType == MODE_HIGH &&
                 currentTransitionMode == TRANSITION_HIGH_TO_LOW
         val resolvedTransitionMode = when {
             backendOnlyCancelsHighToLow -> TRANSITION_NONE

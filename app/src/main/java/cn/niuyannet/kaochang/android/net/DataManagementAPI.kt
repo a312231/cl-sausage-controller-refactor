@@ -641,16 +641,14 @@ object DataManagementAPI {
             highToLowEmptyResidualCanClear = emptyResidualDecision.canClear,
             preserveHighToLowTransition = previousTransitionMode == 2 && !emptyResidualDecision.canClear
         )
-        val resolvedResidualDrain = if (resolvedTarget.modeType == 1 && resolvedTarget.transitionMode == 0) {
-            HighConcurrencyResidualDrainEvaluator.evaluate(
-                modeType = resolvedTarget.modeType,
-                kaoPanList = kaoPanList,
-                includeLowHeatOverlapArea =
-                    previousModeType == 2 || previousTransitionMode != 0 || previousResidualDrain == 1
-            )
-        } else {
-            0
-        }
+        val resolvedResidualDrain = resolveConcurrencyResidualDrain(
+            resolvedModeType = resolvedTarget.modeType,
+            resolvedTransitionMode = resolvedTarget.transitionMode,
+            previousModeType = previousModeType,
+            previousTransitionMode = previousTransitionMode,
+            previousResidualDrain = previousResidualDrain,
+            kaoPanList = kaoPanList
+        )
 
         currentConfigBeforeApply.modeType = resolvedTarget.modeType
         currentConfigBeforeApply.transitionMode = resolvedTarget.transitionMode
@@ -705,6 +703,25 @@ object DataManagementAPI {
             modeType = currentConfig.modeType,
             transitionMode = currentConfig.transitionMode,
             overrodeConflictingTransition = resolvedTarget.overrodeConflictingTransition
+        )
+    }
+
+    internal fun resolveConcurrencyResidualDrain(
+        resolvedModeType: Int,
+        resolvedTransitionMode: Int,
+        previousModeType: Int,
+        previousTransitionMode: Int,
+        previousResidualDrain: Int,
+        kaoPanList: List<KaoPan>
+    ): Int {
+        if (resolvedModeType != 1 || resolvedTransitionMode != 0) {
+            return 0
+        }
+        return HighConcurrencyResidualDrainEvaluator.evaluate(
+            modeType = resolvedModeType,
+            kaoPanList = kaoPanList,
+            includeLowHeatOverlapArea =
+                previousModeType == 2 || previousTransitionMode != 0 || previousResidualDrain == 1
         )
     }
 

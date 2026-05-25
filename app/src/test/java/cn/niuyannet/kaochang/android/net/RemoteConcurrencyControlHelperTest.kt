@@ -161,6 +161,20 @@ class RemoteConcurrencyControlHelperTest {
     }
 
     @Test
+    fun resolveTarget_shouldNotCancelInvalidLowHighToLowWhenBackendRequestsHighWithoutTransition() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 1,
+            currentTransitionMode = 2,
+            requestedModeType = 2,
+            requestedTransitionMode = null
+        )
+
+        assertEquals(2, resolved.modeType)
+        assertEquals(1, resolved.transitionMode)
+        assertTrue(resolved.overrodeConflictingTransition)
+    }
+
+    @Test
     fun resolveTarget_shouldRouteManualLowStableToResidualDrainWhenHighAreaIsActive() {
         val resolved = RemoteConcurrencyControlHelper.resolveTarget(
             currentModeType = 2,
