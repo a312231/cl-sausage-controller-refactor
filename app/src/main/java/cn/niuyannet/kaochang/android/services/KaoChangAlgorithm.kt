@@ -353,8 +353,8 @@ object KaoChangAlgorithm {
      * 2. 前区没有可售烤肠时：
      *    - 若当前开盘批次仍在前区加热，则显示“最早能恢复可售”的开盘批次剩余时间；
      *    - 若只剩补肠批次在补热区加热，则显示“最早能恢复可售”的那一批剩余时间；
-     * 3. 当前批次全部进入保温后才一次性开放；
-     * 4. 小程序可售开关仍通过 availableCountdownLatched 控制。
+     * 3. 只要前区出现至少一根可售保温烤肠，就打开 availableCountdownLatched（二维码页预计时间锁存标记）；
+     * 4. 实际可售数量仍由服务端按烤盘、口味、商品和订单占用计算。
      */
     private fun checkAvailable(config: AppConfigBean, kaoPanList: List<KaoPan>) {
         val list_1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)

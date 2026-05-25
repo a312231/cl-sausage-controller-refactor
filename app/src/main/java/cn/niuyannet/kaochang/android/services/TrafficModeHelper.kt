@@ -13,6 +13,10 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 object TrafficModeHelper {
     private const val TAG = "KaoChangAlgorithm"
 
+    /**
+     * 可售候选排序：先卖 holdingTime（进入保温时间）最早的烤肠，同时间按烤盘位升序。
+     * 这里仅负责排序，不负责过滤生肠或待丢弃烤盘；调用方必须先用 KaoPanHelper.isSellable 做可售判定。
+     */
     private val oldestHoldingFirstComparator = compareBy<KaoPan>(
         { if (it.holdingTime > 0L) it.holdingTime else Long.MAX_VALUE },
         { it.positionSn }

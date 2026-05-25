@@ -2394,6 +2394,7 @@ object KaoChangOperate {
      * 当前 4F 业务语义：
      * - out4 返回 2（out4 收口成功）：返回 TAKEN_BY_USER，按 status=2（单次履约完成）推进
      * - 4F 当前无法区分“顾客正常取走”和“15 秒未取后下位机回收”
+     * - 历史兼容的 Discarded 结果也按 TAKEN_BY_USER/status=2 收口；当前 300/400 主流程不应再主动产生该结果
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
     suspend fun takeSausageResult(
@@ -2405,7 +2406,8 @@ object KaoChangOperate {
         // 说明：
         // - 订单流程会在整单开始时把 moveStatus 置为 2，表示“订单出餐进行中”。
         // - 这里不能再要求 moveStatus==0，否则会和整单锁冲突，导致出餐卡住。
-        // - 只需要等待与出餐冲突的动作（补肠/搬盘/丢弃）结束：1/3/4。
+        // - 只需要等待与出餐冲突的动作（补肠/搬盘/丢弃/自清洁）结束：1/3/4/5。
+        // - MQTT 订单入口已对 moveStatus=5（自清洁中）做新单拒绝；这里是动作层的二次竞态兜底。
         // - 如果当前是 0（例如非整单场景直接调用），这里临时占用为 2，结束后再恢复。
         if (!ensureModbusReady("出餐动作组恢复检查")) {
             enterActionGroupMaintenance(

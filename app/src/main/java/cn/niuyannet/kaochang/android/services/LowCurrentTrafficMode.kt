@@ -45,7 +45,7 @@ object LowCurrentTrafficMode {
         0 -> "0(无需补肠)"
         1 -> "1(补 13~15 补热区)"
         2 -> "2(补 16~18 补热区)"
-        3 -> "3(补热区已空，可关闭 2 区加热)"
+        3 -> "3(前区空位不足 3 且补热区已空，可关闭 2 区加热)"
         else -> "$value(未知)"
     }
 
@@ -57,7 +57,8 @@ object LowCurrentTrafficMode {
      * - p13_15：13~15 空位数
      * - p16_18：16~18 空位数
      * - supplementDecision：
-     *   0=无需补肠，1=补 13~15，2=补 16~18，3=补热区为空可关 2 区加热
+     *   0=无需补肠，1=补 13~15，2=补 16~18，
+     *   3=前区空位不足 3 且 13~18 补热区为空，可关 2 区加热
      */
     suspend fun lowTrafficMode(
         config: AppConfigBean,
@@ -303,7 +304,7 @@ object LowCurrentTrafficMode {
      * - 0：无需补肠
      * - 1：补 13~15
      * - 2：补 16~18
-     * - 3：补热区为空，可关 2 区加热
+     * - 3：前区空位不足 3 且 13~18 补热区为空，可关 2 区加热
      */
     private fun lowConcurrencyIntestinalSupplementation(
         p1_9: Int,
@@ -364,6 +365,7 @@ object LowCurrentTrafficMode {
     /**
      * 检查 13~15 补热区是否已经烤熟。
      * 烤熟后搬回前区同口味的待补位，并在搬运成功后才将目标位标记为可售。
+     * 若本轮回搬后 13~18 已空，会立即关闭 2 区加热，不等下一轮 supplementDecision 重算。
      */
     private suspend fun checkLowHeatSausage(list: List<KaoPan>) {
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
@@ -373,6 +375,7 @@ object LowCurrentTrafficMode {
     /**
      * 检查 16~18 补热区是否已经烤熟。
      * 烤熟后搬回前区同口味的待补位，并在搬运成功后才将目标位标记为可售。
+     * 若本轮回搬后 13~18 已空，会立即关闭 2 区加热，不等下一轮 supplementDecision 重算。
      */
     private suspend fun checkLowHeatSausage16_18(list: List<KaoPan>) {
         val list16_18 = TrafficModeHelper.getTrafficModePositions(16, 18, list)
