@@ -34,6 +34,34 @@ class DataManagementAPIConcurrencyControlResidualDrainTest {
         assertEquals(0, residualDrain)
     }
 
+    @Test
+    fun remoteHighRequest_shouldStartLowToHighAndClearResidualDrainWhenPreviousLowStableHasResidual() {
+        val previousModeType = 1
+        val previousTransitionMode = 0
+        val previousResidualDrain = 1
+        val residualPans = highAreaResidualPans()
+
+        val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = previousModeType,
+            currentTransitionMode = previousTransitionMode,
+            requestedModeType = 2,
+            requestedTransitionMode = null,
+            highConcurrencyAreaActive = true
+        )
+        val residualDrain = DataManagementAPI.resolveConcurrencyResidualDrain(
+            resolvedModeType = resolvedTarget.modeType,
+            resolvedTransitionMode = resolvedTarget.transitionMode,
+            previousModeType = previousModeType,
+            previousTransitionMode = previousTransitionMode,
+            previousResidualDrain = previousResidualDrain,
+            kaoPanList = residualPans
+        )
+
+        assertEquals(2, resolvedTarget.modeType)
+        assertEquals(1, resolvedTarget.transitionMode)
+        assertEquals(0, residualDrain)
+    }
+
     private fun highAreaResidualPans(): List<KaoPan> =
         (1..33).map { position ->
             KaoPan().apply {
