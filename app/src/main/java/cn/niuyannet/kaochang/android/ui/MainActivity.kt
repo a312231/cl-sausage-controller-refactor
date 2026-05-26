@@ -31,6 +31,7 @@ import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
+import cn.niuyannet.kaochang.android.updates.AppUpdateManager
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
 import com.bumptech.glide.Glide
@@ -163,11 +164,15 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             DataManagementAPI.uploadDataToServer()
             startDeviceStateRefreshLoop()
         }
+        if (shouldStartRuntime) {
+            AppUpdateManager.startAutoChecks(this)
+        }
     }
 
     override fun onResume() {
         super.onResume()
         CameraMonitor.instance.startService(applicationContext)
+        AppUpdateManager.onActivityResumed(this)
         HomeUiRefreshBridge.register(homeUiRefreshCallback)
         if (runtimeStarted) {
             setDataToView()
@@ -248,6 +253,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         when (json.getString("messageType").orEmpty()) {
             MqttProtocol.TYPE_RUNTIME_CONTROL -> handleRuntimeControlMessage(content)
             MqttProtocol.TYPE_CONCURRENCY_CONTROL -> handleConcurrencyControlMessage(content)
+            MqttProtocol.TYPE_APP_UPDATE_CHECK -> AppUpdateManager.handleMqttUpdateCheck(this, content)
             else -> LogUtils.w(
                 "【MQTT业务】收到未处理的 action=2 消息，已忽略：" +
                     "messageType=${json.getString("messageType").orEmpty().ifBlank { "unknown" }}"

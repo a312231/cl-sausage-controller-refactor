@@ -107,6 +107,16 @@ object SendServerHelper {
         val ackLatencyMs: Long?
     )
 
+    data class AppUpdateCheckResultPayload(
+        val triggerId: String,
+        val success: Boolean,
+        val hasUpdate: Boolean,
+        val targetVersionCode: Int?,
+        val targetVersionName: String?,
+        val forceUpdate: Boolean,
+        val reason: String
+    )
+
     /**
      * 通过 MQTT 上报订单动作事件（action=1）。
      * `status（订单事件状态）` 的含义仍保持不变：
@@ -478,6 +488,74 @@ object SendServerHelper {
 
     fun lastPublishedRuntimeStateSeq(): Long = lastPublishedRuntimeStateSeq
     fun lastPublishedAvailableStateSeq(): Long = lastPublishedAvailableStateSeq
+    fun lastAckedRuntimeStateSeq(): Long = lastAckedRuntimeStateSeq
+    fun pendingRuntimeAckCount(): Int = pendingRuntimeStateAcks.size
+    fun pendingAvailableAckCount(): Int = pendingAvailableStateAcks.size
+
+    fun publishAppUpgradeNotice(
+        currentVersionCode: Int,
+        currentVersionName: String,
+        targetVersionCode: Int,
+        targetVersionName: String,
+        forceUpdate: Boolean,
+        reason: String
+    ): Boolean {
+        val payload = JSONObject()
+        payload["messageType"] = "app_upgrade_notice"
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["currentVersionCode"] = currentVersionCode
+        payload["currentVersionName"] = currentVersionName
+        payload["targetVersionCode"] = targetVersionCode
+        payload["targetVersionName"] = targetVersionName
+        payload["forceUpdate"] = forceUpdate
+        payload["reason"] = reason
+        payload["reportedAt"] = System.currentTimeMillis()
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_DEVICE_LOG
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+    }
+
+    fun publishAppUpdateCheckAck(triggerId: String, strategyId: Long?, reason: String): Boolean {
+        val payload = JSONObject()
+        payload["messageType"] = MqttProtocol.TYPE_APP_UPDATE_CHECK_ACK
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["triggerId"] = triggerId
+        strategyId?.let { payload["strategyId"] = it }
+        payload["reason"] = reason
+        payload["ackTs"] = System.currentTimeMillis()
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+    }
+
+    fun publishAppUpdateCheckResult(result: AppUpdateCheckResultPayload): Boolean {
+        val payload = JSONObject()
+        payload["messageType"] = MqttProtocol.TYPE_APP_UPDATE_CHECK_RESULT
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["triggerId"] = result.triggerId
+        payload["success"] = result.success
+        payload["hasUpdate"] = result.hasUpdate
+        result.targetVersionCode?.let { payload["targetVersionCode"] = it }
+        result.targetVersionName?.let { payload["targetVersionName"] = it }
+        payload["forceUpdate"] = result.forceUpdate
+        payload["reason"] = result.reason
+        payload["reportedAt"] = System.currentTimeMillis()
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+    }
 
     private fun onlineStatusLabel(value: Int): String = when (value) {
         0 -> "待投运"

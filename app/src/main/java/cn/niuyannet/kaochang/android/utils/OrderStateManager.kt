@@ -85,6 +85,22 @@ object OrderStateManager {
         LogUtils.w("【订单状态机】拒止分流降阶 (RECEIVED_BUT_BUSY)：orderNo=$orderNo")
     }
 
+    fun hasProcessingOrder(): Boolean {
+        cleanExpiredStatesInMemory()
+        return memoryStates.values.any { it.state == STATE_ACCEPTED_PROCESSING }
+    }
+
+    fun hasRecentBusyOrder(windowMs: Long): Boolean {
+        if (windowMs <= 0L) {
+            return false
+        }
+        cleanExpiredStatesInMemory()
+        val now = System.currentTimeMillis()
+        return memoryStates.values.any {
+            it.state == STATE_RECEIVED_BUT_BUSY && now - it.timestamp in 0..windowMs
+        }
+    }
+
     /**
      * 对处理中途临时失败由于未到终态引发的废弃，提供安全退出的内存钩子。
      */

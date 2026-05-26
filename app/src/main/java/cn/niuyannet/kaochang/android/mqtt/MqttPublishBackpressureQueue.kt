@@ -91,6 +91,12 @@ class MqttPublishBackpressureQueue(
         }
     }
 
+    fun pendingCount(): Int {
+        return synchronized(lock) {
+            pendingCount
+        }
+    }
+
     private fun startDrainIfNeededLocked() {
         if (!connected || closed || pendingCount == 0 || drainJob?.isActive == true) {
             return

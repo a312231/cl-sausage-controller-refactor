@@ -59,6 +59,10 @@ open class VMMqtt {
         return mqttClient?.isConnected == true
     }
 
+    fun pendingPublishCount(): Int {
+        return publishQueue.pendingCount()
+    }
+
     /**
      * 重置连接执行状态标志位 (status = 0)
      * 主要用于在特殊情况下手动复位锁定状态。

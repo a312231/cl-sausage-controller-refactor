@@ -59,6 +59,10 @@ object SelfCleanManager {
         }
     }
 
+    fun hasOrderTracking(): Boolean {
+        return !currentOrderNo.isNullOrBlank()
+    }
+
     fun markZone3Dirty() {
         val config = AppConfig.getAppConfig()
         if (config.zone3Dirty == 1 && config.zone3CleanPending == 0) {

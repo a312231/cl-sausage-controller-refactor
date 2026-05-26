@@ -15,6 +15,10 @@ object MqttProtocol {
     const val TYPE_CONCURRENCY_CONTROL_ACK = "concurrency_control_ack"
     const val TYPE_ACTION_GROUP_TELEMETRY = "action_group_telemetry"
     const val TYPE_APP_LOG_ENTRY = "app_log_entry"
+    const val TYPE_APP_UPGRADE_NOTICE = "app_upgrade_notice"
+    const val TYPE_APP_UPDATE_CHECK = "app_update_check"
+    const val TYPE_APP_UPDATE_CHECK_ACK = "app_update_check_ack"
+    const val TYPE_APP_UPDATE_CHECK_RESULT = "app_update_check_result"
 
     const val SOURCE_MQTT_ACTION_2 = "mqtt-action=2"
 }

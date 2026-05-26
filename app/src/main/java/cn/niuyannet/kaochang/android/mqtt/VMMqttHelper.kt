@@ -141,6 +141,14 @@ object VMMqttHelper : VMMqtt() {
                 "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable"
             MqttProtocol.TYPE_CONCURRENCY_CONTROL ->
                 "收到并发控制：action=2（设备状态同步），controlSeq=$controlSeq, modeType=$modeType, transitionMode=$transitionMode"
+            MqttProtocol.TYPE_APP_UPDATE_CHECK -> {
+                val triggerId = content.getString("triggerId").orEmpty()
+                "收到应用更新检查触发：action=2（设备状态同步），triggerId=$triggerId, payloadLength=${payload.length}"
+            }
+            MqttProtocol.TYPE_APP_UPDATE_CHECK_ACK ->
+                "收到应用更新检查回执：action=2（设备状态同步），payloadLength=${payload.length}"
+            MqttProtocol.TYPE_APP_UPDATE_CHECK_RESULT ->
+                "收到应用更新检查结果：action=2（设备状态同步），payloadLength=${payload.length}"
             MqttProtocol.TYPE_RUNTIME_CONTROL_ACK ->
                 "收到运行时控制回执：action=2（设备状态同步），controlSeq=$controlSeq, payloadLength=${payload.length}"
             MqttProtocol.TYPE_RUNTIME_STATE_ACK -> {

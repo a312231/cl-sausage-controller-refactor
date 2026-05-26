@@ -37,6 +37,7 @@ object NetApi {
     var updateKaoPanList_url = "$API_URL_START/updateKaoPanList"
     var reportSnapshot_url = "$API_URL_START/reportSnapshot"
     var updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
+    var checkUpdate_url = "$API_URL_START/checkUpdate"
 
     // 广告与设备信息
     var ads_url = "$API_URL_START/ads"
@@ -363,6 +364,47 @@ object NetApi {
                     super.onError(response)
                     LogUtils.e("【网络请求】更新设备信息失败：deviceCode=$deviceCode, error=${response?.exception?.message}")
                     callback?.invoke(1, response?.body())
+                }
+            })
+    }
+
+    fun checkAppUpdate(
+        credential: String,
+        versionCode: Int,
+        versionName: String,
+        packageName: String,
+        channel: String,
+        callback: (code: Int, content: String?) -> Unit
+    ) {
+        val deviceCode = AppConfig.getDeviceId()
+        val json = JSONObject()
+        json["deviceCode"] = deviceCode
+        json["credential"] = credential
+        json["versionCode"] = versionCode
+        json["versionName"] = versionName
+        json["packageName"] = packageName
+        json["channel"] = channel
+        LogUtils.d(
+            "【应用更新】开始检查应用版本：" +
+                "deviceCode=$deviceCode，versionCode（当前版本号）=$versionCode，" +
+                "versionName（当前版本名）=$versionName，channel=$channel，" +
+                "credential（设备更新凭证）=已隐藏"
+        )
+        OkGo.post<String>(checkUpdate_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.d("【应用更新】检查应用版本请求成功：deviceCode=$deviceCode")
+                    callback(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【应用更新】检查应用版本请求失败：" +
+                            "deviceCode=$deviceCode，error=${response?.exception?.message}"
+                    )
+                    callback(1, response?.body())
                 }
             })
     }

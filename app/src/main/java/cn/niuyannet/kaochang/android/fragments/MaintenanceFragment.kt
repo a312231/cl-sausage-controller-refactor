@@ -30,6 +30,7 @@ import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
 import cn.niuyannet.kaochang.android.ui.endAdminBusy
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
+import cn.niuyannet.kaochang.android.updates.AppUpdateManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import com.blankj.utilcode.util.ToastUtils
@@ -183,6 +184,7 @@ class MaintenanceFragment : Fragment() {
         val versionName = requireContext().packageManager
             .getPackageInfo(requireContext().packageName, 0).versionName
         binding.versionNo.text = "版本号 v-$versionName"
+        binding.tvAppUpdateStatus.text = "更新：${AppUpdateManager.lastStatusText()}"
         MaintenanceUiRefreshBridge.register(maintenanceUiRefreshCallback)
         setupGrid()
         setupButtons()
@@ -805,6 +807,19 @@ class MaintenanceFragment : Fragment() {
             startActivity(Intent(requireContext(), LogViewActivity::class.java))
         }
 
+        binding.btnCheckAppUpdate.setOnClickListener {
+            binding.btnCheckAppUpdate.isEnabled = false
+            binding.tvAppUpdateStatus.text = "更新：正在检查..."
+            AppUpdateManager.checkNow(requireActivity(), manual = true)
+            lifecycleScope.launch {
+                delay(3_000L)
+                if (_binding != null) {
+                    binding.tvAppUpdateStatus.text = "更新：${AppUpdateManager.lastStatusText()}"
+                    binding.btnCheckAppUpdate.isEnabled = true
+                }
+            }
+        }
+
         binding.btnErroStatus.setOnClickListener {
             if (!manualRecoveryInProgress.compareAndSet(false, true)) {
                 ToastUtils.showShort("正在恢复设备状态，请稍候")
@@ -1020,6 +1035,7 @@ class MaintenanceFragment : Fragment() {
                     syncInspectionSwitchFromRuntimeState("5秒低频兜底同步")
                 }
                 updateManualSupplementConfirmButtonVisibility()
+                binding.tvAppUpdateStatus.text = "更新：${AppUpdateManager.lastStatusText()}"
                 binding.tvErroStatus.apply {
                     val isNormal = AppConfig.getAppConfig().errorStatus == 0
                     text = if (isNormal) "状态：正常" else "状态：错误"
