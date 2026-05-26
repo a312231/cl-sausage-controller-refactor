@@ -24,7 +24,9 @@ import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
-import cn.niuyannet.kaochang.android.services.TemperatureControlPolicy
+import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
@@ -323,10 +325,10 @@ class MaintenanceFragment : Fragment() {
 
     private suspend fun evaluateManualRecoveryHeating(
         targetOnlineStatus: Int
-    ): TemperatureControlPolicy.ManualRecoveryHeatingDecision {
+    ): ManualRecoveryGatePolicy.Decision {
         return withContext(Dispatchers.IO) {
             if (!VMModbusHelper.connectStatus()) {
-                return@withContext TemperatureControlPolicy.decideManualRecoveryHeating(
+                return@withContext ManualRecoveryGatePolicy.evaluate(
                     modbusConnected = false,
                     actionGroupReady = false,
                     legacyActionStatus201 = -1,
@@ -351,7 +353,7 @@ class MaintenanceFragment : Fragment() {
                 null
             }
 
-            TemperatureControlPolicy.decideManualRecoveryHeating(
+            ManualRecoveryGatePolicy.evaluate(
                 modbusConnected = true,
                 actionGroupReady = actionGroupReady,
                 legacyActionStatus201 = legacyActionStatus201,
@@ -359,6 +361,140 @@ class MaintenanceFragment : Fragment() {
                 panMoveResult203 = panMoveResult203,
                 targetOnlineStatus = targetOnlineStatus
             )
+        }
+    }
+
+    private suspend fun applyManualRecoveredState(
+        config: AppConfigBean,
+        previousOnlineStatus: Int,
+        previousErrorStatus: Int,
+        previousIsEnable: Int,
+        recoveredOnlineStatus: Int,
+        recoveryDecision: ManualRecoveryGatePolicy.Decision
+    ) {
+        config.errorStatus = 0
+        config.errorCode = null
+        config.errorCategory = null
+        config.errorReason = null
+        config.onlineStatus = recoveredOnlineStatus
+        config.isEnable = 0
+        withContext(Dispatchers.IO) {
+            AppConfig.saveAppConfig(config)
+            KaoChangOperate.stopHeatingForFault("维护页恢复正常状态后保持算法关闭，等待现场手动开启算法")
+        }
+        val runtimePublishOk = withContext(Dispatchers.IO) {
+            SendServerHelper.publishServiceUpdateStatus()
+        }
+        if (!runtimePublishOk) {
+            LogUtils.w(
+                "【维护操作】恢复正常状态 MQTT 发送队列拒绝，回退 HTTP 补偿：" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                    "errorStatus（设备故障状态）=${config.errorStatus}"
+            )
+            withContext(Dispatchers.IO) {
+                DataManagementAPI.uploadDeviceInfo()
+            }
+        }
+        ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
+        AdminOperationLogger.w(
+            action = "恢复正常状态",
+            page = AdminOperationLogger.PAGE_PAN,
+            result = AdminOperationLogger.RESULT_DONE,
+            detail = "设备营业状态=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
+                "设备故障状态=$previousErrorStatus->${config.errorStatus}（正常），" +
+                "烤肠算法开关=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
+                "恢复闸门=${recoveryDecision.reason}，后续动作=现场手动开启烤制算法"
+        )
+    }
+
+    private suspend fun handleManualRecoveryBlocked(
+        targetOnlineStatus: Int,
+        recoveryDecision: ManualRecoveryGatePolicy.Decision,
+        allowManualResidueClearPrompt: Boolean
+    ) {
+        val evidence = withContext(Dispatchers.IO) {
+            KaoChangOperate.buildActionGroupRecoveryResidueEvidence("维护页恢复正常状态被恢复闸门拦截")
+        }
+        val clearDecision = ActionGroupManualResidueClearPolicy.evaluate(evidence)
+        AdminOperationLogger.w(
+            action = "恢复正常状态",
+            page = AdminOperationLogger.PAGE_PAN,
+            result = AdminOperationLogger.RESULT_REJECT,
+            detail = "拒绝原因=${recoveryDecision.reason}，目标设备营业状态=${onlineStatusText(targetOnlineStatus)}，" +
+                "人工清理动作组残留允许=${clearDecision.canShowManualClear}，人工清理判断=${clearDecision.reason}，" +
+                "动作组证据=${evidence.summary()}"
+        )
+        if (allowManualResidueClearPrompt && clearDecision.canShowManualClear) {
+            showConfirmClearActionGroupResidueDialog(evidence)
+        } else {
+            ToastUtils.showLong("设备恢复检查未通过：${recoveryDecision.reason}")
+        }
+    }
+
+    private fun showConfirmClearActionGroupResidueDialog(evidence: ActionGroupRecoveryResidueEvidence) {
+        val session = evidence.session
+        val message = buildString {
+            append("检测到上位机存在补肠动作组本地残留，但下位机 300/400 结果寄存器均为空闲。\n\n")
+            append("仅在现场已确认下位机复位完成、机械臂/升降台/夹爪空闲、烤盘和肠箱实物状态已核对、售卖口无卡肠时继续。\n\n")
+            append("sessionId=${session?.sessionId ?: "无"}\n")
+            append("type=${session?.type ?: "无"}\n")
+            append("sourceNo=${session?.sourceNo ?: "无"}，targetNo=${session?.targetNo ?: "无"}")
+        }
+        AlertDialog.Builder(requireContext())
+            .setTitle("确认清理本地动作组残留")
+            .setMessage(message)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认清理本地动作组残留") { _, _ ->
+                retryManualRecoveryAfterClearingActionGroupResidue()
+            }
+            .show()
+    }
+
+    private fun retryManualRecoveryAfterClearingActionGroupResidue() {
+        if (!manualRecoveryInProgress.compareAndSet(false, true)) {
+            ToastUtils.showShort("正在恢复设备状态，请稍候")
+            return
+        }
+        binding.btnErroStatus.isEnabled = false
+        binding.tvCooldownHint.text = "正在清理动作组残留并恢复设备状态"
+        lifecycleScope.launch {
+            try {
+                val cleared = withContext(Dispatchers.IO) {
+                    KaoChangOperate.confirmClearActionGroupRecoveryResidue("维护页人工确认清理动作组残留")
+                }
+                if (!cleared) {
+                    ToastUtils.showLong("动作组残留清理条件已变化，请重新检查下位机状态")
+                    return@launch
+                }
+                val config = AppConfig.getAppConfig()
+                val previousOnlineStatus = config.onlineStatus
+                val previousErrorStatus = config.errorStatus
+                val previousIsEnable = config.isEnable
+                val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
+                val recoveryDecision = evaluateManualRecoveryHeating(recoveredOnlineStatus)
+                if (!recoveryDecision.canRecoverDeviceStatus) {
+                    handleManualRecoveryBlocked(
+                        targetOnlineStatus = recoveredOnlineStatus,
+                        recoveryDecision = recoveryDecision,
+                        allowManualResidueClearPrompt = false
+                    )
+                    return@launch
+                }
+                applyManualRecoveredState(
+                    config = config,
+                    previousOnlineStatus = previousOnlineStatus,
+                    previousErrorStatus = previousErrorStatus,
+                    previousIsEnable = previousIsEnable,
+                    recoveredOnlineStatus = recoveredOnlineStatus,
+                    recoveryDecision = recoveryDecision
+                )
+            } finally {
+                manualRecoveryInProgress.set(false)
+                binding.btnErroStatus.isEnabled = true
+                if (binding.tvCooldownHint.text.toString() == "正在清理动作组残留并恢复设备状态") {
+                    binding.tvCooldownHint.text = ""
+                }
+            }
         }
     }
 
@@ -857,37 +993,22 @@ class MaintenanceFragment : Fragment() {
                     val previousErrorStatus = config.errorStatus
                     val previousIsEnable = config.isEnable
                     val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
-                    config.errorStatus = 0
-                    config.errorCode = null
-                    config.errorCategory = null
-                    config.errorReason = null
-                    config.onlineStatus = recoveredOnlineStatus
-                    config.isEnable = 0
-                    withContext(Dispatchers.IO) {
-                        AppConfig.saveAppConfig(config)
-                        KaoChangOperate.stopHeatingForFault("维护页恢复正常状态后保持算法关闭，等待现场手动开启算法")
-                    }
-                    val runtimePublishOk = withContext(Dispatchers.IO) {
-                        SendServerHelper.publishServiceUpdateStatus()
-                    }
-                    if (!runtimePublishOk) {
-                        LogUtils.w(
-                            "【维护操作】恢复正常状态 MQTT 发送队列拒绝，回退 HTTP 补偿：" +
-                                "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
-                                "errorStatus（设备故障状态）=${config.errorStatus}"
+                    val recoveryDecision = evaluateManualRecoveryHeating(recoveredOnlineStatus)
+                    if (!recoveryDecision.canRecoverDeviceStatus) {
+                        handleManualRecoveryBlocked(
+                            targetOnlineStatus = recoveredOnlineStatus,
+                            recoveryDecision = recoveryDecision,
+                            allowManualResidueClearPrompt = true
                         )
-                        withContext(Dispatchers.IO) {
-                            DataManagementAPI.uploadDeviceInfo()
-                        }
+                        return@launch
                     }
-                    ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
-                    AdminOperationLogger.w(
-                        action = "恢复正常状态",
-                        page = AdminOperationLogger.PAGE_PAN,
-                        result = AdminOperationLogger.RESULT_DONE,
-                        detail = "设备营业状态=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
-                            "设备故障状态=$previousErrorStatus->${config.errorStatus}（正常），" +
-                            "烤肠算法开关=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，后续动作=现场手动开启烤制算法"
+                    applyManualRecoveredState(
+                        config = config,
+                        previousOnlineStatus = previousOnlineStatus,
+                        previousErrorStatus = previousErrorStatus,
+                        previousIsEnable = previousIsEnable,
+                        recoveredOnlineStatus = recoveredOnlineStatus,
+                        recoveryDecision = recoveryDecision
                     )
                 } finally {
                     manualRecoveryInProgress.set(false)

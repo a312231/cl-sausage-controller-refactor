@@ -25,7 +25,10 @@ class ActionGroupRecoveryBootstrapTest {
         val result = ActionGroupRecoveryBootstrap(FakeClient(), store, locks).recover()
 
         assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
-        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("疑似下位机复位"))
+        val maintenanceRequired = result as ActionGroupRecoveryResult.MaintenanceRequired
+        assertTrue(maintenanceRequired.reason.contains("疑似下位机复位"))
+        assertEquals("old", maintenanceRequired.recoverableResidueSession?.sessionId)
+        assertEquals(ActionGroupSessionType.IN_SUPPLEMENT, maintenanceRequired.recoverableResidueSession?.type)
         assertEquals("old", store.session?.sessionId)
         assertTrue(!locks.isIdle())
     }

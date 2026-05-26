@@ -18,14 +18,19 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventP
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderRecoveryDecision
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderRecoveryGatePolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOperationLogContext
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRegisterState
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSession
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupSessionType
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionStateReader
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetryContext
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionClient
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicReadResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.CompletedInActionGroupPipelineTask
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
@@ -873,7 +878,8 @@ object KaoChangOperate {
 
     suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
         if (!VMModbusHelper.connectStatus()) {
-            val detail = "动作组恢复早退：Modbus 未连接，reason=$reason"
+            val evidence = buildActionGroupRecoveryResidueEvidence(reason)
+            val detail = "动作组恢复早退：Modbus 未连接，reason=$reason，evidence=${evidence.summary()}"
             lastActionGroupRecoveryFailureReason = detail
             invalidateActionGroupRecoveryVerification(detail)
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
@@ -935,7 +941,12 @@ object KaoChangOperate {
                 true
             }
             is ActionGroupRecoveryResult.MaintenanceRequired -> {
-                val detail = "动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}"
+                val evidence = buildActionGroupRecoveryResidueEvidence(reason)
+                val manualClearDecision = ActionGroupManualResidueClearPolicy.evaluate(evidence)
+                val detail = "动作组恢复失败，设备进入维护：reason=$reason，detail=${result.reason}，" +
+                    "recoverableResidueSession=${result.recoverableResidueSession?.sessionId ?: "无"}，" +
+                    "manualClearAllowed=${manualClearDecision.canShowManualClear}，" +
+                    "manualClearReason=${manualClearDecision.reason}，evidence=${evidence.summary()}"
                 lastActionGroupRecoveryFailureReason = detail
                 invalidateActionGroupRecoveryVerification(detail)
                 enterActionGroupMaintenance(detail)
@@ -959,6 +970,72 @@ object KaoChangOperate {
                 handled
             }
         }
+    }
+
+    suspend fun buildActionGroupRecoveryResidueEvidence(reason: String): ActionGroupRecoveryResidueEvidence {
+        val modbusConnected = VMModbusHelper.connectStatus()
+        val config = AppConfig.getAppConfig()
+        val session = actionGroupSessionStore.load()
+        val legacyActionStatus201 = if (modbusConnected) {
+            VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        } else {
+            null
+        }
+        val reader = if (modbusConnected) createAtomicActionClient() as? AtomicActionStateReader else null
+        val resultStates = ActionGroupRecoveryBootstrap.allSpecs.map { spec ->
+            if (reader == null) {
+                ActionGroupRegisterState(
+                    actionName = spec.name,
+                    resultRegister = spec.resultRegister,
+                    value = null,
+                    errorMessage = if (modbusConnected) "AtomicActionClient 不支持读取结果寄存器" else "Modbus 未连接"
+                )
+            } else {
+                when (val result = reader.readResult(spec)) {
+                    is AtomicReadResult.Success -> ActionGroupRegisterState(
+                        actionName = spec.name,
+                        resultRegister = spec.resultRegister,
+                        value = result.value
+                    )
+                    is AtomicReadResult.Failure -> ActionGroupRegisterState(
+                        actionName = spec.name,
+                        resultRegister = spec.resultRegister,
+                        value = null,
+                        errorMessage = result.message
+                    )
+                }
+            }
+        }
+        return ActionGroupRecoveryResidueEvidence(
+            reason = reason,
+            modbusConnected = modbusConnected,
+            legacyActionStatus201 = legacyActionStatus201,
+            moveStatus = config.moveStatus,
+            session = session,
+            resultStates = resultStates
+        )
+    }
+
+    suspend fun confirmClearActionGroupRecoveryResidue(reason: String): Boolean {
+        val evidence = buildActionGroupRecoveryResidueEvidence(reason)
+        val decision = ActionGroupManualResidueClearPolicy.evaluate(evidence)
+        if (!decision.canShowManualClear) {
+            logW(LOG_ACTION_GROUP, "拒绝人工确认清理动作组残留：reason=$reason，拒绝原因=${decision.reason}，evidence=${evidence.summary()}")
+            return false
+        }
+        actionGroupSessionStore.clear()
+        actionGroupLocks.clear()
+        lastActionGroupRecoveryFailureReason = null
+        actionGroupRecoveryVerified = false
+        val config = AppConfig.getAppConfig()
+        if (config.moveStatus != 0) {
+            val oldMoveStatus = config.moveStatus
+            config.moveStatus = 0
+            AppConfig.saveAppConfig(config)
+            logW(LOG_ACTION_GROUP, "人工确认清理动作组残留后规整机械动作状态：moveStatus（机械动作状态）=$oldMoveStatus->0（空闲），reason=$reason")
+        }
+        logW(LOG_ACTION_GROUP, "人工确认清理动作组本地残留完成：reason=$reason，evidence=${evidence.summary()}")
+        return true
     }
 
     fun getLastActionGroupRecoveryFailureReason(): String? = lastActionGroupRecoveryFailureReason

@@ -18,7 +18,10 @@ sealed class ActionGroupRecoveryResult {
         val reason: String
     ) : ActionGroupRecoveryResult()
 
-    data class MaintenanceRequired(val reason: String) : ActionGroupRecoveryResult()
+    data class MaintenanceRequired(
+        val reason: String,
+        val recoverableResidueSession: ActionGroupSession? = null
+    ) : ActionGroupRecoveryResult()
 }
 
 class ActionGroupRecoveryBootstrap(
@@ -100,7 +103,8 @@ class ActionGroupRecoveryBootstrap(
                 }
                 return ActionGroupRecoveryResult.MaintenanceRequired(
                     "动作组恢复失败：本地仍存在动作会话但下位机结果寄存器全部空闲，疑似下位机复位/动作结果丢失，" +
-                        "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}，需人工确认物理位置"
+                        "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}，需人工确认物理位置",
+                    recoverableResidueSession = session.takeIf { it.type == ActionGroupSessionType.IN_SUPPLEMENT }
                 )
             }
             sessionStore.clear()
