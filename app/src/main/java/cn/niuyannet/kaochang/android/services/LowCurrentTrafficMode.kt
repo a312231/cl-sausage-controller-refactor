@@ -614,10 +614,22 @@ object LowCurrentTrafficMode {
         val config = AppConfig.getAppConfig()
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
-        config.apply {
-            modeType = 2
-            transitionMode = 1
+        val resolvedTransition = resolveAutomaticTrafficTransition(
+            currentModeType = oldModeType,
+            currentTransitionMode = oldTransitionMode,
+            requestedTransitionMode = 1
+        )
+        if (resolvedTransition == null) {
+            LogUtils.w(
+                TAG,
+                "【并发切换诊断】拒绝自动写入 transitionMode=1（低转高过渡）：source=LowCurrentTrafficMode.switchLowToHigh，" +
+                    "modeType（并发模式）=${modeText(oldModeType)}，transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}，" +
+                    "原因=自动算法只允许低并发稳态进入低转高过渡态"
+            )
+            return
         }
+        config.modeType = resolvedTransition.modeType
+        config.transitionMode = resolvedTransition.transitionMode
         AppConfig.saveAppConfig(config)
         LogUtils.i(
             TAG,

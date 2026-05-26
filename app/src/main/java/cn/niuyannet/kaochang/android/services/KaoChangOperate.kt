@@ -1416,6 +1416,15 @@ object KaoChangOperate {
             return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
         }
         if (!schedulingEnabled || !boxSupplyAvailable || AppConfig.getAppConfig().errorStatus != 0 || isBeforeCloseWindow) {
+            if (intent.type == SupplementBatchType.HIGH_INITIALIZATION_1_21 && !boxSupplyAvailable) {
+                supplementBatchIntentRepository.clear("高并发初始化部分开盘收口：烤肠箱无可用库存:$reason")
+                logW(
+                    LOG_SUPPLEMENT,
+                    "高并发初始化存在未完成补肠批次，但烤肠箱无可用库存，按部分开盘收口，不再阻塞已上盘烤肠成熟检查：" +
+                        "reason=$reason，batchId=${intent.batchId}，remaining=${intent.remainingTargets().map { it.positionSn }}"
+                )
+                return PendingSupplementBatchHandling.NONE
+            }
             logW(
                 LOG_SUPPLEMENT,
                 "检测到未完成补肠批次但当前不允许续补：reason=$reason，batchId=${intent.batchId}，" +
@@ -1443,15 +1452,37 @@ object KaoChangOperate {
             supplementBatchIntentRepository.clear("未完成批次已无剩余目标:$reason")
             return PendingSupplementBatchHandling.NONE
         }
+        val executableTargets = filterExecutableSupplementTargets(
+            targets = targets,
+            listBox = KaoPanHelper.getKaoPanBoxList()
+        )
+        if (executableTargets.isEmpty() && intent.type == SupplementBatchType.HIGH_INITIALIZATION_1_21) {
+            supplementBatchIntentRepository.clear("高并发初始化部分开盘收口：剩余目标无同口味可用库存:$reason")
+            logW(
+                LOG_SUPPLEMENT,
+                "高并发初始化未完成批次剩余目标无同口味可用库存，按部分开盘收口：" +
+                    "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}"
+            )
+            return PendingSupplementBatchHandling.NONE
+        }
+        if (executableTargets.isEmpty()) {
+            logW(
+                LOG_SUPPLEMENT,
+                "检测到未完成补肠批次但剩余目标当前无同口味可用库存，暂不续补：" +
+                    "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}"
+            )
+            return PendingSupplementBatchHandling.BLOCKED
+        }
 
         applyHeatingForSupplementBatch(intent.type)
         LogUtils.i(
             "【补肠批次恢复】检测到未完成补肠批次，人工确认后续补：reason=$reason，" +
                 "batchId=${intent.batchId}，type=${SupplementBatchIntentRepository.typeText(intent.type)}，" +
-                "目标烤盘=${targets.joinToString(",") { it.kaoPan.positionSn.toString() }}"
+                "目标烤盘=${executableTargets.joinToString(",") { it.kaoPan.positionSn.toString() }}，" +
+                "跳过不可执行目标=${(targets - executableTargets.toSet()).map { it.kaoPan.positionSn }}"
         )
         val movedCount = moveSausagesToKaoPansByTasteInternal(
-            targets = targets,
+            targets = executableTargets,
             existingBatchId = intent.batchId,
             createIntent = false,
             stageForSerial = "补肠批次恢复"
@@ -1529,6 +1560,26 @@ object KaoChangOperate {
         if (validTargets.isEmpty()) {
             return 0
         }
+        val executableTargets = filterExecutableSupplementTargets(
+            targets = validTargets,
+            listBox = KaoPanHelper.getKaoPanBoxList()
+        )
+        if (executableTargets.isEmpty()) {
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠批次无可执行目标：requestedTargets=${validTargets.map { it.kaoPan.positionSn }}，" +
+                    "原因=同口味烤肠箱库存不足或候选箱不可用"
+            )
+            return 0
+        }
+        if (executableTargets.size < validTargets.size) {
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠批次按当前库存部分开盘：requestedTargets=${validTargets.map { it.kaoPan.positionSn }}，" +
+                    "executableTargets=${executableTargets.map { it.kaoPan.positionSn }}，" +
+                    "skippedTargets=${validTargets.map { it.kaoPan.positionSn } - executableTargets.map { it.kaoPan.positionSn }.toSet()}"
+            )
+        }
         if (!ensureSupplementBatchStartAllowed("补肠批次入口")) {
             return 0
         }
@@ -1538,17 +1589,17 @@ object KaoChangOperate {
                 LOG_SUPPLEMENT,
                 "存在未完成补肠批次，拒绝启动新补肠批次：activeBatchId=${activeIntent.batchId}，" +
                     "activeType=${SupplementBatchIntentRepository.typeText(activeIntent.type)}，" +
-                    "newTargets=${validTargets.map { it.kaoPan.positionSn }}"
+                    "newTargets=${executableTargets.map { it.kaoPan.positionSn }}"
             )
             return 0
         }
-        if (AppConfig.getAppConfig().enableActionGroupPrefetch != 1 || validTargets.size <= 1) {
+        if (AppConfig.getAppConfig().enableActionGroupPrefetch != 1 || executableTargets.size <= 1) {
             val batchId = existingBatchId ?: if (createIntent) {
-                supplementBatchIntentRepository.begin(validTargets)?.batchId ?: return 0
+                supplementBatchIntentRepository.begin(executableTargets)?.batchId ?: return 0
             } else {
                 null
             }
-            return moveSausagesToKaoPansByTasteSerial(validTargets, stageForSerial, batchId)
+            return moveSausagesToKaoPansByTasteSerial(executableTargets, stageForSerial, batchId)
         }
         if (AppConfig.getAppConfig().errorStatus > 0) {
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠预取流水线")
@@ -1565,11 +1616,11 @@ object KaoChangOperate {
             return 0
         }
 
-        val plannedMoves = buildPipelineSupplementPlan(validTargets)
+        val plannedMoves = buildPipelineSupplementPlan(executableTargets)
         if (plannedMoves.size <= 1) {
             logD(
                 LOG_SUPPLEMENT,
-                "补肠预取流水线降级串行：有效计划数=${plannedMoves.size}，请求数=${validTargets.size}"
+                "补肠预取流水线降级串行：有效计划数=${plannedMoves.size}，请求数=${executableTargets.size}"
             )
             val batchId = existingBatchId ?: if (createIntent && plannedMoves.isNotEmpty()) {
                 supplementBatchIntentRepository.begin(plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) })?.batchId

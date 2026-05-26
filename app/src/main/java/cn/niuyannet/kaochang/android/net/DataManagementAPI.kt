@@ -99,6 +99,32 @@ object DataManagementAPI {
         }
     }
 
+    private fun reconcileActiveBakingTime(
+        logPrefix: String,
+        oldBakingTime: Int,
+        mergedConfig: AppConfigBean
+    ) {
+        val correctedCount = KaoPanHelper.refreshActiveBakingTime(mergedConfig.bakingTime)
+        if (correctedCount <= 0) {
+            return
+        }
+
+        val bakingTimeMillis = mergedConfig.bakingTime.coerceAtLeast(0) * 60L * 1000L
+        if (oldBakingTime != mergedConfig.bakingTime) {
+            LogUtils.d(
+                "[$logPrefix] 远端配置已更新烤制时间，并已回刷烤制中烤盘：" +
+                    "bakingTime=${oldBakingTime}分钟->${mergedConfig.bakingTime}分钟, " +
+                    "已修正烤盘数=$correctedCount, 新bakingTime=${bakingTimeMillis}ms"
+            )
+        } else {
+            LogUtils.w(
+                "[$logPrefix] 启动/同步时发现烤制中烤盘烤制时长与当前配置不一致，已自动回刷：" +
+                    "bakingTime=${mergedConfig.bakingTime}分钟, 已修正烤盘数=$correctedCount, " +
+                    "目标bakingTime=${bakingTimeMillis}ms"
+            )
+        }
+    }
+
     private fun formatDiffValue(label: String, value: Any?): String {
         if (value == null) {
             return "null"
@@ -1024,6 +1050,7 @@ object DataManagementAPI {
             }
 
             reconcileDiscardCloseTime(LOG_SYNC, oldDiscardTime, mergedConfig)
+            reconcileActiveBakingTime(LOG_SYNC, oldBakingTime, mergedConfig)
 
             handleRemoteOnlineStatusTransition(
                 previousOnlineStatus,
@@ -1059,6 +1086,7 @@ object DataManagementAPI {
         val oldQcodeUrl = appConfigBean.qcodeURL
         val oldAvailable = appConfigBean.available
         val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
+        val oldBakingTime = appConfigBean.bakingTime
         val oldDiscardTime = appConfigBean.discardTime
         val oldKeepWarmTemperature = appConfigBean.keepWarmTemperature
         val oldHeatingTemperature = appConfigBean.heatingTemperature
@@ -1147,6 +1175,7 @@ object DataManagementAPI {
                     oldZone2HeatingOffset != mergedConfig.zone2HeatingOffset ||
                     oldZone3HeatingOffset != mergedConfig.zone3HeatingOffset
             reconcileDiscardCloseTime(logPrefix, oldDiscardTime, mergedConfig)
+            reconcileActiveBakingTime(logPrefix, oldBakingTime, mergedConfig)
             handleRemoteOnlineStatusTransition(
                 oldOnlineStatus,
                 previousIsEnable,
@@ -1163,6 +1192,7 @@ object DataManagementAPI {
                     oldQcodeUrl != mergedConfig.qcodeURL ||
                     oldAvailable != mergedConfig.available ||
                     oldAvailableCountdownLatched != mergedConfig.availableCountdownLatched ||
+                    oldBakingTime != mergedConfig.bakingTime ||
                     temperatureConfigChanged
 
             if (changed) {
@@ -1176,6 +1206,7 @@ object DataManagementAPI {
                         "qrcodeChanged（二维码地址是否变化）=${oldQcodeUrl != mergedConfig.qcodeURL}，" +
                         "available（二维码页预计时间）=${oldAvailable}->${mergedConfig.available}，" +
                         "availableCountdownLatched（二维码页预计时间锁存标记）=${oldAvailableCountdownLatched}->${mergedConfig.availableCountdownLatched}，" +
+                        "bakingTime（烤制时长）=${oldBakingTime}分钟->${mergedConfig.bakingTime}分钟，" +
                         "keepWarmTemperature（保温温度）=${oldKeepWarmTemperature}℃->${mergedConfig.keepWarmTemperature}℃，" +
                         "heatingTemperature（加热温度）=${oldHeatingTemperature}℃->${mergedConfig.heatingTemperature}℃，" +
                         "zone1HeatingOffset（一区烤制补偿）=${oldZone1HeatingOffset}℃->${mergedConfig.zone1HeatingOffset}℃，" +

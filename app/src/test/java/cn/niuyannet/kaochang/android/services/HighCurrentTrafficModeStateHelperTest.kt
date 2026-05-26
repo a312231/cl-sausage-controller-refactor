@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -141,6 +142,89 @@ class HighCurrentTrafficModeStateHelperTest {
             shouldResumeIncompleteHighHeatBatch(
                 pitCount = 0,
                 hasIncompleteBatch = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldSwitchHighHeatAreaToKeepWarm_shouldTreatPartiallyOpenedFrontAreaAsReady() {
+        val nowMs = 31L * 60L * 1000L
+        val pans = (10..21).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = position <= 15
+                status = if (position <= 15) 1 else 0
+                startTime = if (position <= 15) 1_000L else 0L
+                bakingTime = 30L * 60L * 1000L
+            }
+        }
+
+        assertTrue(
+            shouldSwitchHighHeatAreaToKeepWarm(
+                pans = pans,
+                area = 2,
+                config = AppConfigBean(),
+                nowMs = nowMs + 1_000L
+            )
+        )
+    }
+
+    @Test
+    fun shouldSwitchHighHeatAreaToKeepWarm_shouldPauseEffectiveBakingTimeDuringFault() {
+        val config = AppConfigBean().apply {
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 20L * 60L * 1000L + 1_000L
+        }
+        val pan = KaoPan().apply {
+            positionSn = 1
+            isHasSausage = true
+            status = 1
+            startTime = 1_000L
+            bakingTime = 30L * 60L * 1000L
+        }
+
+        assertFalse(
+            shouldSwitchHighHeatAreaToKeepWarm(
+                pans = listOf(pan),
+                area = 1,
+                config = config,
+                nowMs = 60L * 60L * 1000L + 1_000L
+            )
+        )
+    }
+
+    @Test
+    fun resolveAutomaticTrafficTransition_shouldOnlyMoveToNextStateInOneWayCycle() {
+        assertEquals(
+            HighTrafficModeState(modeType = 2, transitionMode = 2),
+            resolveAutomaticTrafficTransition(
+                currentModeType = 2,
+                currentTransitionMode = 0,
+                requestedTransitionMode = 2
+            )
+        )
+        assertEquals(
+            HighTrafficModeState(modeType = 2, transitionMode = 1),
+            resolveAutomaticTrafficTransition(
+                currentModeType = 1,
+                currentTransitionMode = 0,
+                requestedTransitionMode = 1
+            )
+        )
+        assertEquals(
+            null,
+            resolveAutomaticTrafficTransition(
+                currentModeType = 2,
+                currentTransitionMode = 0,
+                requestedTransitionMode = 1
+            )
+        )
+        assertEquals(
+            null,
+            resolveAutomaticTrafficTransition(
+                currentModeType = 1,
+                currentTransitionMode = 0,
+                requestedTransitionMode = 2
             )
         )
     }

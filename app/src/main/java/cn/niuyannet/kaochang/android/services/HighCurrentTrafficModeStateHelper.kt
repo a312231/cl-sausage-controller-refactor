@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 
 internal data class HighTrafficSupplementTrackingState(
@@ -127,6 +128,52 @@ internal fun shouldResumeIncompleteHighHeatBatch(
     hasIncompleteBatch: Boolean
 ): Boolean {
     return hasIncompleteBatch && pitCount <= 0
+}
+
+internal fun shouldSwitchHighHeatAreaToKeepWarm(
+    pans: List<KaoPan>,
+    area: Int,
+    config: AppConfigBean,
+    nowMs: Long,
+    requireCompleteZone3Batch: Boolean = true
+): Boolean {
+    if (area == 3 && requireCompleteZone3Batch && HighHeatSupplementResumePlanner.hasIncompleteBatch(pans)) {
+        return false
+    }
+    var heatingCount = 0
+    pans.forEach { pan ->
+        if (pan.isHasSausage && pan.startTime > 0L) {
+            heatingCount += 1
+            if (FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) < pan.bakingTime) {
+                return false
+            }
+        }
+    }
+    return heatingCount > 0
+}
+
+internal fun resolveAutomaticTrafficTransition(
+    currentModeType: Int,
+    currentTransitionMode: Int,
+    requestedTransitionMode: Int
+): HighTrafficModeState? {
+    return when (requestedTransitionMode) {
+        1 -> {
+            if (currentModeType == 1 && currentTransitionMode == 0) {
+                HighTrafficModeState(modeType = 2, transitionMode = 1)
+            } else {
+                null
+            }
+        }
+        2 -> {
+            if (currentModeType == 2 && currentTransitionMode == 0) {
+                HighTrafficModeState(modeType = 2, transitionMode = 2)
+            } else {
+                null
+            }
+        }
+        else -> null
+    }
 }
 
 internal fun canReturnHighHeatBatchToFront(

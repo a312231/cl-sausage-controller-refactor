@@ -217,6 +217,15 @@ object HighCurrentTrafficMode {
                 val isBeforeCloseWindow =
                     KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
+                val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
+                val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
+                checkHighHeatEnd(list1_9, 1)
+                checkHighHeatEnd(list10_21, 2)
+                checkHighHeatEnd(list25_33, 3)
+                if (schedulingEnabled) {
+                    checkHighHeatSausage(list)
+                }
+
                 val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
                     allowedTypes = setOf(
                         SupplementBatchType.HIGH_INITIALIZATION_1_21,
@@ -317,8 +326,6 @@ object HighCurrentTrafficMode {
                     }
                 }
 
-                val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-                val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
                 checkHighHeatEnd(list1_9, 1)
                 checkHighHeatEnd(list10_21, 2)
                 if (schedulingEnabled) {
@@ -1245,19 +1252,8 @@ object HighCurrentTrafficMode {
                 return
             }
         }
-        var allFinished = true
-        var heatingCount = 0
         val nowMs = System.currentTimeMillis()
-        list.forEach { kaoPan ->
-            if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
-                heatingCount += 1
-                val heatTime = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, nowMs = nowMs)
-                if (heatTime < kaoPan.bakingTime) {
-                    allFinished = false
-                }
-            }
-        }
-        if (allFinished && heatingCount > 0) {
+        if (shouldSwitchHighHeatAreaToKeepWarm(list, area, AppConfig.getAppConfig(), nowMs, requireCompleteZone3Batch)) {
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             KaoChangOperate.stopHeating(area)
             KaoChangOperate.keepWarm(area)
@@ -1340,9 +1336,22 @@ object HighCurrentTrafficMode {
         val config = AppConfig.getAppConfig()
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
-        config.apply {
-            transitionMode = 2
+        val resolvedTransition = resolveAutomaticTrafficTransition(
+            currentModeType = oldModeType,
+            currentTransitionMode = oldTransitionMode,
+            requestedTransitionMode = 2
+        )
+        if (resolvedTransition == null) {
+            LogUtils.w(
+                TAG,
+                "【并发切换诊断】拒绝自动写入 transitionMode=2（高转低过渡）：source=HighCurrentTrafficMode.switchHighToLow，reason=$reason，" +
+                    "modeType（并发模式）=${modeText(oldModeType)}，transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}，" +
+                    "原因=自动算法只允许高并发稳态进入高转低过渡态"
+            )
+            return
         }
+        config.modeType = resolvedTransition.modeType
+        config.transitionMode = resolvedTransition.transitionMode
         KaoChangOperate.clearPendingSupplementBatchIntent("写入高转低过渡态后停止25~33未完成补肠意图")
         LogUtils.w(
             TAG,

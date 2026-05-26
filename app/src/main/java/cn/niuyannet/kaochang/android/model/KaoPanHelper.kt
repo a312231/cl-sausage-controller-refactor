@@ -271,6 +271,33 @@ object KaoPanHelper {
         return correctedCount
     }
 
+    fun refreshActiveBakingTime(pans: List<KaoPan>, bakingTimeMinutes: Int): Int {
+        val normalizedMinutes = bakingTimeMinutes.coerceAtLeast(0).toLong()
+        val bakingTimeMillis = normalizedMinutes * 60L * 1000L
+        var correctedCount = 0
+        pans.forEach { kaoPan ->
+            if (
+                kaoPan.isHasSausage &&
+                kaoPan.status == 1 &&
+                kaoPan.startTime > 0L &&
+                kaoPan.bakingTime != bakingTimeMillis
+            ) {
+                kaoPan.bakingTime = bakingTimeMillis
+                correctedCount += 1
+            }
+        }
+        return correctedCount
+    }
+
+    fun refreshActiveBakingTime(bakingTimeMinutes: Int): Int {
+        val currentPans = getKaoPanList()
+        val correctedCount = refreshActiveBakingTime(currentPans, bakingTimeMinutes)
+        if (correctedCount > 0) {
+            saveKaoPanList(currentPans)
+        }
+        return correctedCount
+    }
+
     fun normalizeKaoPanTasteMetadata(): Boolean {
         val currentPans = getKaoPanList()
         var changed = false
