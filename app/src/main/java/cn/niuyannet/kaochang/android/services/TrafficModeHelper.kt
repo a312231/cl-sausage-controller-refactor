@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
 /**
@@ -162,7 +163,12 @@ object TrafficModeHelper {
             return emptyList()
         }
         return listBox
-            .filter { it.tasteCode == tasteCode && it.num > 0 && SourceBoxPositionPolicy.isValidSourceBox(it.positionSn) }
+            .filter {
+                it.tasteCode == tasteCode &&
+                    it.num > 0 &&
+                    it.cmdStatusTake != AtomicActionCodes.IR_PICK_FAILED &&
+                    SourceBoxPositionPolicy.isValidSourceBox(it.positionSn)
+            }
             .sortedByDescending { it.positionSn }
     }
 

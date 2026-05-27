@@ -190,12 +190,17 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 AtomicActionResult.Success
             )
         )
-        val runner = InActionGroupPrefetchPipelineRunner(client)
+        val skippedPickFailureBoxes = mutableListOf<Int>()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client,
+            onPickFailureSkipped = { skippedPickFailureBoxes += it }
+        )
 
         val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17, 18), targetPanNo = 13)))
 
         assertTrue(result is InActionGroupPipelineResult.Success)
         assertEquals(18, (result as InActionGroupPipelineResult.Success).completed.single().sourceBoxNo)
+        assertEquals(listOf(17), skippedPickFailureBoxes)
         assertEquals(
             listOf(
                 "in1:17", "in2:17", "in2:17",
@@ -218,7 +223,11 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠")
             )
         )
-        val runner = InActionGroupPrefetchPipelineRunner(client)
+        val skippedPickFailureBoxes = mutableListOf<Int>()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client,
+            onPickFailureSkipped = { skippedPickFailureBoxes += it }
+        )
 
         val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17, 18), targetPanNo = 13)))
 
@@ -227,6 +236,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertEquals("in2", failed.actionName)
         assertEquals(18, failed.sourceBoxNo)
         assertEquals(listOf(17, 18), failed.failedSourceBoxNos)
+        assertEquals(listOf(17), skippedPickFailureBoxes)
         assertEquals(
             listOf("in1:17", "in2:17", "in2:17", "in1:18", "in2:18", "in2:18"),
             client.calls

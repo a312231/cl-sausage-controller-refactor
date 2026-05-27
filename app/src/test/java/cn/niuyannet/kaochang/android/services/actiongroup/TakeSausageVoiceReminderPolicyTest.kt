@@ -19,7 +19,7 @@ class TakeSausageVoiceReminderPolicyTest {
     }
 
     @Test
-    fun shouldSkipForLaterDeliveryOfSameOrder() {
+    fun shouldPlayForLaterDeliveriesOfValidOrder() {
         val orderContext = ActionGroupOrderContext(
             orderNo = "ORDER-1",
             itemId = 10,
@@ -27,7 +27,9 @@ class TakeSausageVoiceReminderPolicyTest {
             tasteCode = "A"
         )
 
-        assertFalse(TakeSausageVoiceReminderPolicy.shouldPlay(orderContext, deliveryIndex = 2))
+        assertTrue(TakeSausageVoiceReminderPolicy.shouldPlay(orderContext, deliveryIndex = 2))
+        assertTrue(TakeSausageVoiceReminderPolicy.shouldPlay(orderContext, deliveryIndex = 3))
+        assertTrue(TakeSausageVoiceReminderPolicy.shouldPlay(orderContext, deliveryIndex = 4))
     }
 
     @Test

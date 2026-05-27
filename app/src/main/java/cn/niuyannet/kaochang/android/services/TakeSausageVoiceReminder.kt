@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 object TakeSausageVoiceReminder {
     private const val LOG_PREFIX = "【取肠语音】"
     private const val RAW_RESOURCE_NAME = "take_sausage_reminder"
-    private const val PLAYER_VOLUME = 0.8f
+    private const val PLAYER_VOLUME = 1.0f
 
     private val reminderScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val playing = AtomicBoolean(false)
@@ -51,8 +51,8 @@ object TakeSausageVoiceReminder {
         }
 
         val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         val focusHandle = requestAudioFocus(context, audioAttributes)
         val player = MediaPlayer()
@@ -118,7 +118,7 @@ object TakeSausageVoiceReminder {
             @Suppress("DEPRECATION")
             val result = audioManager.requestAudioFocus(
                 null,
-                AudioManager.STREAM_NOTIFICATION,
+                AudioManager.STREAM_MUSIC,
                 AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
             )
             if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {

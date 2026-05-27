@@ -6,23 +6,26 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 
 object SupplementPickFailurePolicy {
 
-    data class EmptyBoxMarkResult(
+    data class IrPickFailureRecordResult(
         val boxNo: Int,
         val previousNum: Int,
         val remainingCandidateBoxNos: List<Int>
     )
 
-    fun markIrPickFailedBoxAsEmpty(
+    fun recordIrPickFailedBox(
         failedBox: KaoPanBox,
         allCandidates: List<KaoPanBox>
-    ): EmptyBoxMarkResult {
+    ): IrPickFailureRecordResult {
         val previousNum = failedBox.num
-        failedBox.num = 0
         failedBox.cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED
         val remainingCandidateBoxNos = allCandidates
-            .filter { it.positionSn != failedBox.positionSn && it.num > 0 }
+            .filter {
+                it.positionSn != failedBox.positionSn &&
+                    it.num > 0 &&
+                    it.cmdStatusTake != AtomicActionCodes.IR_PICK_FAILED
+            }
             .map { it.positionSn }
-        return EmptyBoxMarkResult(
+        return IrPickFailureRecordResult(
             boxNo = failedBox.positionSn,
             previousNum = previousNum,
             remainingCandidateBoxNos = remainingCandidateBoxNos

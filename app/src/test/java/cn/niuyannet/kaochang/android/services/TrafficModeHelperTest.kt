@@ -42,18 +42,16 @@ class TrafficModeHelperTest {
     }
 
     @Test
-    fun findSupplyBoxesByTaste_shouldReturnSameTasteStockBoxesByDescendingPosition_legacyExpectation() {
+    fun findSupplyBoxesByTaste_shouldSkipBoxesMarkedWithIrPickFailure() {
         val boxes = listOf(
-            box(positionSn = 1, tasteCode = "A", num = 0),
-            box(positionSn = 2, tasteCode = "B", num = 3),
             box(positionSn = 3, tasteCode = "A", num = 2),
-            box(positionSn = 8, tasteCode = "A", num = 1),
+            box(positionSn = 8, tasteCode = "A", num = 1, cmdStatusTake = 0x00E5),
             box(positionSn = 6, tasteCode = "A", num = 5)
         )
 
         val result = TrafficModeHelper.findSupplyBoxesByTaste(boxes, "A")
 
-        assertEquals(listOf(8, 6, 3), result.map { it.positionSn })
+        assertEquals(listOf(6, 3), result.map { it.positionSn })
     }
 
     @Test
@@ -138,11 +136,12 @@ class TrafficModeHelperTest {
         assertEquals("D", pans.first { it.positionSn == 11 }.taste.tasteCode)
     }
 
-    private fun box(positionSn: Int, tasteCode: String, num: Int): KaoPanBox {
+    private fun box(positionSn: Int, tasteCode: String, num: Int, cmdStatusTake: Int = 0): KaoPanBox {
         return KaoPanBox().apply {
             this.positionSn = positionSn
             this.tasteCode = tasteCode
             this.num = num
+            this.cmdStatusTake = cmdStatusTake
         }
     }
 

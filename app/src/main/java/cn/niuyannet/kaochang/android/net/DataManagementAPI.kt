@@ -13,6 +13,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
 import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -765,6 +766,7 @@ object DataManagementAPI {
             if (code == 0) {
                 val json = JSON.parseObject(content)
                 if (json?.getIntValue("code") == 200) {
+                    val localBoxByPosition = KaoPanHelper.getKaoPanBoxList().associateBy { it.positionSn }
                     val jsonData = json.getJSONArray("data")
                     for (i in 0 until jsonData.size) {
                         val item = jsonData.getJSONObject(i)
@@ -779,6 +781,9 @@ object DataManagementAPI {
                             tasteName = item.getString("tasteName")
                             cmdValueTake = item.getIntValue("cmdValueTake")
                             cmdStatusTake = item.getIntValue("cmdStatusTake")
+                        }
+                        if (localBoxByPosition[kaoPanBox.positionSn]?.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
+                            kaoPanBox.cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED
                         }
                         kaoPanBoxList.add(kaoPanBox)
                     }

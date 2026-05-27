@@ -9,17 +9,19 @@ import org.junit.Test
 class SupplementPickFailurePolicyTest {
 
     @Test
-    fun markIrPickFailedBoxAsEmpty_shouldClearStockAndKeepRemainingCandidates() {
+    fun recordIrPickFailedBox_shouldKeepStockAndExcludeFailedCandidates() {
         val box20 = box(positionSn = 20, num = 3)
         val box19 = box(positionSn = 19, num = 2)
-        val box18 = box(positionSn = 18, num = 0)
-        val result = SupplementPickFailurePolicy.markIrPickFailedBoxAsEmpty(
+        val box18 = box(positionSn = 18, num = 4).apply {
+            cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED
+        }
+        val result = SupplementPickFailurePolicy.recordIrPickFailedBox(
             failedBox = box20,
             allCandidates = listOf(box20, box19, box18)
         )
 
         assertEquals(3, result.previousNum)
-        assertEquals(0, box20.num)
+        assertEquals(3, box20.num)
         assertEquals(AtomicActionCodes.IR_PICK_FAILED, box20.cmdStatusTake)
         assertEquals(listOf(19), result.remainingCandidateBoxNos)
     }

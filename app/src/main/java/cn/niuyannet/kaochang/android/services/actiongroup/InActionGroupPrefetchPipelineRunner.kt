@@ -44,6 +44,7 @@ class InActionGroupPrefetchPipelineRunner(
     private val operationLogger: (String) -> Unit = {},
     private val failureLogger: (String) -> Unit = operationLogger,
     private val onTaskCompleted: (CompletedInActionGroupPipelineTask) -> Unit = {},
+    private val onPickFailureSkipped: (Int) -> Unit = {},
     private val shouldPauseAfterCurrentTask: () -> Boolean = { false },
     private val pauseReasonAfterCurrentTask: () -> String? = {
         if (shouldPauseAfterCurrentTask()) "检测到订单待出餐" else null
@@ -210,6 +211,7 @@ class InActionGroupPrefetchPipelineRunner(
                         logger("预取 in2 连续取肠失败，切换下一候选箱：sourceBox=$sourceBoxNo，targetPan=${task.targetPanNo}")
                         operationLogger("【补肠】烤盘${task.targetPanNo} in2（取肠、分料、避让）连续失败，切换下一候选烤肠箱：当前箱=$sourceBoxNo")
                         failedPickSourceBoxNos += sourceBoxNo
+                        onPickFailureSkipped(sourceBoxNo)
                         lastPickFailure = failed
                         return@forEachIndexed
                     }

@@ -217,6 +217,7 @@ class MaintenanceBoxFragment : Fragment() {
                     box.tasteName = null
                     box.checkStatus = false
                     box.num = 0
+                    box.cmdStatusTake = 0
                 }
                 showLoadingExt("设置中...")
                 NetApi.clearStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
@@ -424,6 +425,7 @@ class MaintenanceBoxFragment : Fragment() {
                 box.tasteName = "${selectedTaste.productName}(${selectedTaste.tasteName})"
                 box.checkStatus = false
                 box.num = boxRefillTargetNum
+                box.cmdStatusTake = 0
             }
 
             showLoadingExt("设置中...")

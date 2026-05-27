@@ -9,7 +9,6 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
-import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBootstrap
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResult
@@ -1358,28 +1357,15 @@ object KaoChangOperate {
             }
             if (box.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
                 irPickFailedBoxNos += box.positionSn
-                val markResult = SupplementPickFailurePolicy.markIrPickFailedBoxAsEmpty(box, candidates)
+                val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(box, candidates)
                 KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
-                NetApi.updateStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
-                    if (code == 0) {
-                        logD(
-                            LOG_SUPPLEMENT,
-                            "烤肠箱物理空箱库存已同步云端：box=${markResult.boxNo}，previousNum=${markResult.previousNum}->0，cloudResponse=$content"
-                        )
-                    } else {
-                        logW(
-                            LOG_SUPPLEMENT,
-                            "烤肠箱物理空箱库存同步云端失败，继续尝试同口味下一箱：box=${markResult.boxNo}，code=$code，content=$content"
-                        )
-                    }
-                }
                 val nextBoxNo = markResult.remainingCandidateBoxNos.firstOrNull()
                 logW(
                     LOG_SUPPLEMENT,
                     if (nextBoxNo != null) {
-                        "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），已标记为空箱并尝试同口味下一箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，nextBox=$nextBoxNo"
+                        "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），已记录失败标记并保留库存，继续尝试同口味下一箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode，nextBox=$nextBoxNo"
                     } else {
-                        "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），已标记为空箱；当前已无同口味可用候选箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
+                        "烤肠箱${box.positionSn} 连续取肠失败（0x00E5），已记录失败标记并保留库存；当前已无同口味可用候选箱：targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
                     }
                 )
             } else {
@@ -1826,6 +1812,12 @@ object KaoChangOperate {
                 operationLogger = { message -> LogUtils.i(message) },
                 failureLogger = { message -> LogUtils.e(message) },
                 onTaskCompleted = { completedTask -> applyCompletedPipelineTask(completedTask) },
+                onPickFailureSkipped = { sourceBoxNo ->
+                    recordIrPickFailureAndSave(
+                        sourceBoxNo = sourceBoxNo,
+                        reason = "补肠预取流水线连续取肠失败后跳过候选箱"
+                    )
+                },
                 pauseReasonAfterCurrentTask = {
                     when {
                         SupplementPauseController.shouldPauseForOrder() -> "检测到订单待出餐"
@@ -1939,6 +1931,17 @@ object KaoChangOperate {
         }
     }
 
+    private fun recordIrPickFailureAndSave(sourceBoxNo: Int, reason: String) {
+        val boxList = KaoPanHelper.getKaoPanBoxList()
+        val failedBox = boxList.firstOrNull { it.positionSn == sourceBoxNo } ?: return
+        val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
+        KaoPanHelper.saveKaoPanBoxList(boxList)
+        logW(
+            LOG_SUPPLEMENT,
+            "$reason：烤肠箱=${markResult.boxNo}，保留库存=${markResult.previousNum}，remainingCandidates=${markResult.remainingCandidateBoxNos}"
+        )
+    }
+
     private fun handlePipelineSupplementFailure(
         result: InActionGroupPipelineResult.Failed,
         taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
@@ -1954,10 +1957,6 @@ object KaoChangOperate {
         }
         plannedMove?.kaoPan?.cmdStatusMove = failureCode
         val sourceBoxNo = result.sourceBoxNo
-        val sourceBox = sourceBoxNo?.let { boxNo ->
-            KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == boxNo }
-        }
-        sourceBox?.cmdStatusTake = failureCode
 
         logE(
             LOG_SUPPLEMENT,
@@ -1980,25 +1979,15 @@ object KaoChangOperate {
             return
         }
         if (failureCode == AtomicActionCodes.IR_PICK_FAILED) {
-            if (sourceBox != null) {
-                val markResult = SupplementPickFailurePolicy.markIrPickFailedBoxAsEmpty(
-                    failedBox = sourceBox,
-                    allCandidates = listOf(sourceBox)
-                )
-                KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
-                NetApi.updateStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
-                    if (code == 0) {
-                        logD(
-                            LOG_SUPPLEMENT,
-                            "补肠预取流水线取肠失败箱位已标记为空并同步云端：box=${markResult.boxNo}，previousNum=${markResult.previousNum}->0，cloudResponse=$content"
-                        )
-                    } else {
-                        logW(
-                            LOG_SUPPLEMENT,
-                            "补肠预取流水线取肠失败箱位已标记为空，但同步云端失败：box=${markResult.boxNo}，code=$code，content=$content"
-                        )
-                    }
+            val failedBoxNos = (result.failedSourceBoxNos + sourceBoxNo).filterNotNull().distinct()
+            if (failedBoxNos.isNotEmpty()) {
+                val boxList = KaoPanHelper.getKaoPanBoxList()
+                failedBoxNos.mapNotNull { boxNo ->
+                    boxList.firstOrNull { it.positionSn == boxNo }
+                }.forEach { failedBox ->
+                    SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
                 }
+                KaoPanHelper.saveKaoPanBoxList(boxList)
             }
             enterActionGroupMaintenance(
                 "补肠预取流水线同口味候选箱取肠均失败（0x00E5），设备进入维护等待人工确认：" +
