@@ -6,6 +6,8 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +45,22 @@ object KaoPanHelper {
 
     /** 默认丢弃时长，6 小时后必须自动丢弃。 */
     val discardTime = 6 * 60 * 60 * 1000L
+
+    /**
+     * 自动补肠/调度口径下的可用库存。
+     *
+     * IR_PICK_FAILED 表示本地已跳过该箱自动取肠，物理库存 num 仍保留给维护和云端展示。
+     */
+    fun isSupplyBoxAvailableForAutoSupplement(box: KaoPanBox): Boolean {
+        return box.num > 0 &&
+            box.cmdStatusTake != AtomicActionCodes.IR_PICK_FAILED &&
+            !box.tasteCode.isNullOrBlank() &&
+            SourceBoxPositionPolicy.isValidSourceBox(box.positionSn)
+    }
+
+    fun availableSupplyNumForAutoSupplement(box: KaoPanBox): Int {
+        return if (isSupplyBoxAvailableForAutoSupplement(box)) box.num else 0
+    }
 
     /** 当前口味目录缓存。 */
     private var tasteList = mutableListOf<Taste>()
@@ -484,7 +502,7 @@ object KaoPanHelper {
     fun computeKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
+            .filter { isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 
@@ -566,7 +584,7 @@ object KaoPanHelper {
     fun computeKaoPamRatio_old(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
+            .filter { isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 
@@ -633,7 +651,7 @@ object KaoPanHelper {
     fun computeHighKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
+            .filter { isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 

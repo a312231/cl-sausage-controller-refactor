@@ -45,6 +45,7 @@ class SupplementPickFailurePolicyTest {
         return KaoPanBox().apply {
             this.positionSn = positionSn
             this.num = num
+            this.tasteCode = "A"
             this.cmdStatusTake = 0
         }
     }

@@ -2135,8 +2135,14 @@ object KaoChangOperate {
         }
 
         val moveSuccess = actionGroupResult == ActionGroupResult.Success
-        kaoPanBox.cmdStatusTake = if (moveSuccess) 0 else atomicFailureCode(actionGroupResult)
-        kaoPan.cmdStatusMove = if (moveSuccess) 0 else atomicFailureCode(actionGroupResult)
+        val failureCode = atomicFailureCode(actionGroupResult)
+        kaoPanBox.cmdStatusTake = when {
+            moveSuccess -> 0
+            failureCode == AtomicActionCodes.IR_PICK_FAILED -> failureCode
+            kaoPanBox.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED -> AtomicActionCodes.IR_PICK_FAILED
+            else -> failureCode
+        }
+        kaoPan.cmdStatusMove = if (moveSuccess) 0 else failureCode
         logD(
             LOG_SUPPLEMENT,
             "补肠动作组结束：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，" +

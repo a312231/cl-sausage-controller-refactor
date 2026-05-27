@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
@@ -21,8 +22,7 @@ object SupplementPickFailurePolicy {
         val remainingCandidateBoxNos = allCandidates
             .filter {
                 it.positionSn != failedBox.positionSn &&
-                    it.num > 0 &&
-                    it.cmdStatusTake != AtomicActionCodes.IR_PICK_FAILED
+                    KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it)
             }
             .map { it.positionSn }
         return IrPickFailureRecordResult(

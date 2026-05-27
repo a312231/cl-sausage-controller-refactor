@@ -483,7 +483,7 @@ object HighCurrentTrafficMode {
                 listBox = listBox
             )
             val availableStockByTaste = listBox
-                .filter { it.num > 0 && !it.tasteCode.isNullOrBlank() }
+                .filter { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
                 .groupBy { it.tasteCode.orEmpty() }
                 .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
             val targets = plannedTargets.map { target ->

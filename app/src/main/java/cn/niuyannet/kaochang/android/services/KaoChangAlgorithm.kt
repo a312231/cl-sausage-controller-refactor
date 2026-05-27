@@ -463,7 +463,7 @@ object KaoChangAlgorithm {
     ): SupplyRuntimeContext {
         val sellArea = getSellArea(config, kaoPanList)
         val trackedArea = getTrackedArea(config, kaoPanList)
-        val hasSupplyBoxesAvailable = kaoPanBoxList.any { it.num > 0 }
+        val hasSupplyBoxesAvailable = kaoPanBoxList.any { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) }
         val hasSellableSausage = sellArea.any { isHoldingPan(it) }
         val hasActiveBatch =
             trackedArea.any { it.isHasGrilling } ||
@@ -502,7 +502,7 @@ object KaoChangAlgorithm {
         kaoPanList: List<KaoPan>,
         kaoPanBoxList: List<cn.niuyannet.kaochang.android.model.bean.KaoPanBox>
     ): Boolean {
-        val hasSupplyBoxesAvailable = kaoPanBoxList.any { it.num > 0 }
+        val hasSupplyBoxesAvailable = kaoPanBoxList.any { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) }
         val decision = HighToLowEmptyResidualHelper.evaluate(
             transitionMode = config.transitionMode,
             onlineStatus = config.onlineStatus,

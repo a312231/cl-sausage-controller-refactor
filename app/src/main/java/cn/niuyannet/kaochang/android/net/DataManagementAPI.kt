@@ -656,7 +656,9 @@ object DataManagementAPI {
             onlineStatus = currentConfigBeforeApply.onlineStatus,
             errorStatus = currentConfigBeforeApply.errorStatus,
             moveStatus = currentConfigBeforeApply.moveStatus,
-            hasSupplyBoxesAvailable = KaoPanHelper.getKaoPanBoxList().any { it.num > 0 },
+            hasSupplyBoxesAvailable = KaoPanHelper.getKaoPanBoxList().any {
+                KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it)
+            },
             kaoPanList = kaoPanList
         )
         val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
@@ -821,7 +823,10 @@ object DataManagementAPI {
         }
         val stockPayload = JSON.toJSONString(kaoPanBoxList)
         val stockItemCount = kaoPanBoxList.size
-        val stockTotalCount = kaoPanBoxList.sumOf { box -> box.num }
+        val physicalStockTotalCount = kaoPanBoxList.sumOf { box -> box.num }
+        val availableStockTotalCount = kaoPanBoxList.sumOf { box ->
+            KaoPanHelper.availableSupplyNumForAutoSupplement(box)
+        }
         val sequence = CloudSnapshotSequenceStore.nextSequence()
         val reportTime = System.currentTimeMillis()
         val snapshotPayload = JSONObject()
@@ -833,7 +838,7 @@ object DataManagementAPI {
             "sequence（设备快照版本号）=$sequence, " +
                 "reportTime（设备本机上报时间）=$reportTime, " +
                 "烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
-                "箱位数=$stockItemCount, 总库存=$stockTotalCount"
+                "箱位数=$stockItemCount, 物理库存=$physicalStockTotalCount, 自动补肠可用库存=$availableStockTotalCount"
 
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
