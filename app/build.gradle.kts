@@ -13,6 +13,8 @@ android {
             storePassword = "a123456"
             keyAlias = "kaochang"
             keyPassword = "a123456"
+            // 后端 AppUpdateServiceImpl 使用 JDK JarFile 读取 APK 签名证书 SHA-256，依赖 v1 签名。
+            enableV1Signing = true
         }
     }
 
