@@ -69,4 +69,38 @@ class AppUpdateManagerTimingTest {
             )
         )
     }
+
+    @Test
+    fun shouldResetStaleChecking_onlyAfterCheckInProgressTimeout() {
+        val startedAtMs = 1_000L
+
+        assertFalse(
+            AppUpdateManager.shouldResetStaleChecking(
+                isChecking = false,
+                checkingStartedAtMs = startedAtMs,
+                nowMs = startedAtMs + AppUpdatePolicy.CHECK_IN_PROGRESS_TIMEOUT_MS + 1L
+            )
+        )
+        assertFalse(
+            AppUpdateManager.shouldResetStaleChecking(
+                isChecking = true,
+                checkingStartedAtMs = 0L,
+                nowMs = startedAtMs + AppUpdatePolicy.CHECK_IN_PROGRESS_TIMEOUT_MS + 1L
+            )
+        )
+        assertFalse(
+            AppUpdateManager.shouldResetStaleChecking(
+                isChecking = true,
+                checkingStartedAtMs = startedAtMs,
+                nowMs = startedAtMs + AppUpdatePolicy.CHECK_IN_PROGRESS_TIMEOUT_MS
+            )
+        )
+        assertTrue(
+            AppUpdateManager.shouldResetStaleChecking(
+                isChecking = true,
+                checkingStartedAtMs = startedAtMs,
+                nowMs = startedAtMs + AppUpdatePolicy.CHECK_IN_PROGRESS_TIMEOUT_MS + 1L
+            )
+        )
+    }
 }

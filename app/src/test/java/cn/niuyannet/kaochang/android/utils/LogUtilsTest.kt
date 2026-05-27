@@ -35,6 +35,12 @@ class LogUtilsTest {
     }
 
     @Test
+    fun shouldWriteToFileForTest_shouldKeepAppUpdateLogs() {
+        assertTrue(LogUtils.shouldWriteToFileForTest("I", "【应用更新】开始检查应用版本：deviceCode=CL1"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("I", "【应用更新】已是最新版本：v2.1.22(92)"))
+    }
+
+    @Test
     fun shouldWriteToFileForTest_shouldStillFilterUnrelatedDebugLogs() {
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "普通调试日志"))
     }

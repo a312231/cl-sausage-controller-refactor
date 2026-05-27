@@ -67,6 +67,8 @@ object AppUpdateManager {
     @Volatile
     private var checking = false
     @Volatile
+    private var checkingStartedAtMs = 0L
+    @Volatile
     private var downloadingVersionCode: Int? = null
 
     private var autoCheckJob: Job? = null
@@ -131,20 +133,32 @@ object AppUpdateManager {
 
     fun checkNow(activity: Activity, manual: Boolean, triggerId: String? = null) {
         latestActivityRef = WeakReference(activity)
+        val nowMs = timeSource.nowMs()
         if (checking) {
-            if (manual) ToastUtils.showShort("正在检查更新，请稍候")
-            triggerId?.let {
-                publishUpdateCheckResult(
-                    triggerId = it,
-                    success = false,
-                    hasUpdate = false,
-                    targetVersionCode = null,
-                    targetVersionName = null,
-                    forceUpdate = false,
-                    reason = "check_in_progress"
+            if (shouldResetStaleChecking(checking, checkingStartedAtMs, nowMs)) {
+                updateStatus(
+                    "检查更新状态超时，已复位并重新发起：checkingStartedAtMs=$checkingStartedAtMs，" +
+                        "elapsedMs=${nowMs - checkingStartedAtMs}"
                 )
+                checking = false
+                checkingStartedAtMs = 0L
+            } else {
+                val elapsedMs = if (checkingStartedAtMs > 0L) nowMs - checkingStartedAtMs else 0L
+                updateStatus("检查更新已跳过：已有检查进行中，elapsedMs=$elapsedMs")
+                if (manual) ToastUtils.showShort("正在检查更新，请稍候")
+                triggerId?.let {
+                    publishUpdateCheckResult(
+                        triggerId = it,
+                        success = false,
+                        hasUpdate = false,
+                        targetVersionCode = null,
+                        targetVersionName = null,
+                        forceUpdate = false,
+                        reason = "check_in_progress"
+                    )
+                }
+                return
             }
-            return
         }
         val credential = AppConfig.getAppConfig().mqttPassword
         if (credential.isNullOrBlank()) {
@@ -156,8 +170,15 @@ object AppUpdateManager {
             return
         }
         checking = true
+        checkingStartedAtMs = nowMs
         val currentVersionCode = BuildConfig.VERSION_CODE
         val currentVersionName = BuildConfig.VERSION_NAME
+        updateStatus(
+            "开始检查应用版本：deviceCode=${AppConfig.getDeviceId()}，" +
+                "versionCode（当前版本号）=$currentVersionCode，" +
+                "versionName（当前版本名）=$currentVersionName，channel=$CHANNEL，" +
+                "url=${NetApi.checkUpdate_url}"
+        )
         NetApi.checkAppUpdate(
             credential = credential,
             versionCode = currentVersionCode,
@@ -166,6 +187,7 @@ object AppUpdateManager {
             channel = CHANNEL
         ) { code, content ->
             checking = false
+            checkingStartedAtMs = 0L
             if (code != 0) {
                 updateStatus("检查更新失败：网络请求失败")
                 if (manual) ToastUtils.showShort("检查更新失败，请稍后重试")
@@ -176,6 +198,7 @@ object AppUpdateManager {
             }
             val info = parseUpdateInfo(content)
             if (info == null) {
+                updateStatus("检查应用版本请求成功但响应字段不完整")
                 updateStatus("检查更新失败：响应字段不完整")
                 if (manual) ToastUtils.showShort("检查更新失败：响应字段不完整")
                 triggerId?.let {
@@ -183,6 +206,10 @@ object AppUpdateManager {
                 }
                 return@checkAppUpdate
             }
+            updateStatus(
+                "检查应用版本请求成功：hasUpdate=${info.hasUpdate}，" +
+                    "remoteVersionCode=${info.versionCode}，currentVersionCode=$currentVersionCode"
+            )
             if (!AppUpdatePolicy.shouldUpdate(currentVersionCode, info.versionCode, info.hasUpdate)) {
                 clearForceUpdateFirstDetectedMarkers(activity)
                 updateStatus("已是最新版本：v$currentVersionName($currentVersionCode)")
@@ -236,6 +263,16 @@ object AppUpdateManager {
         recentUpdateTriggers[triggerId] = nowMs
         recentUpdateTriggers.entries.removeIf { nowMs - it.value > MQTT_TRIGGER_DEDUP_WINDOW_MS }
         return true
+    }
+
+    internal fun shouldResetStaleChecking(
+        isChecking: Boolean,
+        checkingStartedAtMs: Long,
+        nowMs: Long
+    ): Boolean {
+        return isChecking &&
+            checkingStartedAtMs > 0L &&
+            nowMs - checkingStartedAtMs > AppUpdatePolicy.CHECK_IN_PROGRESS_TIMEOUT_MS
     }
 
     private fun handleUpdate(activity: Activity, info: UpdateInfo, force: Boolean, manual: Boolean) {
