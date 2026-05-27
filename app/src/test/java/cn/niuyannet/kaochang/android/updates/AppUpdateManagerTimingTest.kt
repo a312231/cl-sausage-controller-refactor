@@ -103,4 +103,56 @@ class AppUpdateManagerTimingTest {
             )
         )
     }
+
+    @Test
+    fun validateDownloadedApkMetadata_rejectsWrongPackageOrVersion() {
+        assertEquals(
+            null,
+            AppUpdateManager.validateDownloadedApkMetadata(
+                apkPackageName = "cn.niuyannet.kaochang.android",
+                apkVersionCode = 93L,
+                currentPackageName = "cn.niuyannet.kaochang.android",
+                currentVersionCode = 92,
+                targetVersionCode = 93
+            )
+        )
+        assertEquals(
+            "更新包包名不一致：actual=wrong.package，expected=cn.niuyannet.kaochang.android",
+            AppUpdateManager.validateDownloadedApkMetadata(
+                apkPackageName = "wrong.package",
+                apkVersionCode = 93L,
+                currentPackageName = "cn.niuyannet.kaochang.android",
+                currentVersionCode = 92,
+                targetVersionCode = 93
+            )
+        )
+        assertEquals(
+            "更新包版本号不一致：actual=94，expected=93",
+            AppUpdateManager.validateDownloadedApkMetadata(
+                apkPackageName = "cn.niuyannet.kaochang.android",
+                apkVersionCode = 94L,
+                currentPackageName = "cn.niuyannet.kaochang.android",
+                currentVersionCode = 92,
+                targetVersionCode = 93
+            )
+        )
+        assertEquals(
+            "更新包版本未高于当前版本：apkVersionCode=92，currentVersionCode=92",
+            AppUpdateManager.validateDownloadedApkMetadata(
+                apkPackageName = "cn.niuyannet.kaochang.android",
+                apkVersionCode = 92L,
+                currentPackageName = "cn.niuyannet.kaochang.android",
+                currentVersionCode = 92,
+                targetVersionCode = 92
+            )
+        )
+    }
+
+    @Test
+    fun reportVersionRetryDelayMs_usesThreeStepBackoff() {
+        assertEquals(5_000L, AppUpdateManager.reportVersionRetryDelayMs(0))
+        assertEquals(15_000L, AppUpdateManager.reportVersionRetryDelayMs(1))
+        assertEquals(60_000L, AppUpdateManager.reportVersionRetryDelayMs(2))
+        assertEquals(null, AppUpdateManager.reportVersionRetryDelayMs(3))
+    }
 }

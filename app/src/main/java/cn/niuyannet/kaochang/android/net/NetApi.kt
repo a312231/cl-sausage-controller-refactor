@@ -38,6 +38,7 @@ object NetApi {
     var reportSnapshot_url = "$API_URL_START/reportSnapshot"
     var updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
     var checkUpdate_url = "$API_URL_START/checkUpdate"
+    var reportVersion_url = "$API_URL_START/reportVersion"
 
     // 广告与设备信息
     var ads_url = "$API_URL_START/ads"
@@ -402,6 +403,48 @@ object NetApi {
                     super.onError(response)
                     LogUtils.e(
                         "【应用更新】检查应用版本请求失败：" +
+                            "deviceCode=$deviceCode，error=${response?.exception?.message}"
+                    )
+                    callback(1, response?.body())
+                }
+            })
+    }
+
+    fun reportAppVersion(
+        credential: String,
+        versionCode: Int,
+        versionName: String,
+        packageName: String,
+        channel: String,
+        callback: (code: Int, content: String?) -> Unit
+    ) {
+        val deviceCode = AppConfig.getDeviceId()
+        val json = JSONObject()
+        json["deviceCode"] = deviceCode
+        json["credential"] = credential
+        json["versionCode"] = versionCode
+        json["versionName"] = versionName
+        json["packageName"] = packageName
+        json["channel"] = channel
+        json["reportedAt"] = System.currentTimeMillis()
+        LogUtils.d(
+            "【应用更新】开始上报当前应用版本：" +
+                "deviceCode=$deviceCode，versionCode（当前版本号）=$versionCode，" +
+                "versionName（当前版本名）=$versionName，channel=$channel，" +
+                "credential（设备更新凭证）=已隐藏"
+        )
+        OkGo.post<String>(reportVersion_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.d("【应用更新】当前应用版本上报成功：deviceCode=$deviceCode")
+                    callback(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【应用更新】当前应用版本上报失败：" +
                             "deviceCode=$deviceCode，error=${response?.exception?.message}"
                     )
                     callback(1, response?.body())

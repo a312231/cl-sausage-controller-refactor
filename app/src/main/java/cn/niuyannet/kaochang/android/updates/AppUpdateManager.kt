@@ -47,6 +47,7 @@ object AppUpdateManager {
     private const val ACK_POLL_INTERVAL_MS = 1_000L
     private const val BUSY_ORDER_WINDOW_MS = 5_000L
     private const val MQTT_TRIGGER_DEDUP_WINDOW_MS = 30_000L
+    private val REPORT_VERSION_RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 60_000L)
 
     interface TimeSource {
         fun nowMs(): Long
@@ -70,6 +71,8 @@ object AppUpdateManager {
     private var checkingStartedAtMs = 0L
     @Volatile
     private var downloadingVersionCode: Int? = null
+    @Volatile
+    private var reportVersionInvoked = false
 
     private var autoCheckJob: Job? = null
     private var pendingInstall: PendingInstall? = null
@@ -102,11 +105,14 @@ object AppUpdateManager {
     )
 
     fun startAutoChecks(activity: Activity) {
+        latestActivityRef = WeakReference(activity)
+        if (!reportVersionInvoked) {
+            reportVersionInvoked = true
+            reportVersionWithRetry(activity.applicationContext, attempt = 0)
+        }
         if (autoCheckJob?.isActive == true) {
-            latestActivityRef = WeakReference(activity)
             return
         }
-        latestActivityRef = WeakReference(activity)
         autoCheckJob = managerScope.launch {
             val acked = waitFirstRuntimeStateAck()
             if (acked) {
@@ -393,6 +399,7 @@ object AppUpdateManager {
                     if (verifyError != null) {
                         apkFile.delete()
                         updateStatus(verifyError)
+                        publishUpgradeNotice(info, force, "verify_failed:$verifyError")
                         ToastUtils.showLong(verifyError)
                         return
                     }
@@ -570,6 +577,11 @@ object AppUpdateManager {
             }.onFailure {
                 pendingUnknownSourceInstall = null
                 updateStatus("无法打开未知来源授权设置，请在系统设置中允许本应用安装未知应用")
+                publishUpgradeNotice(
+                    pending.info,
+                    pending.force,
+                    "unknown_source_settings_failed"
+                )
                 ToastUtils.showLong("无法打开授权设置，请联系运维在系统设置中允许本应用安装未知应用")
             }
             return
@@ -596,9 +608,45 @@ object AppUpdateManager {
         runCatching {
             activity.startActivity(intent)
         }.onFailure {
-            updateStatus("拉起系统安装器失败：${it.message ?: "未知错误"}")
+            val reason = it.message ?: "未知错误"
+            updateStatus("拉起系统安装器失败：$reason")
+            publishUpgradeNotice(pending.info, pending.force, "install_intent_failed:$reason")
             ToastUtils.showLong("无法打开系统安装器，请联系运维处理")
         }
+    }
+
+    private fun reportVersionWithRetry(context: Context, attempt: Int) {
+        val credential = AppConfig.getAppConfig().mqttPassword
+        if (credential.isNullOrBlank()) {
+            val delayMs = reportVersionRetryDelayMs(attempt)
+            if (delayMs == null) {
+                LogUtils.w("【应用更新】当前应用版本上报已放弃：设备凭证未就绪")
+                return
+            }
+            LogUtils.w("【应用更新】当前应用版本上报等待设备凭证：${delayMs / 1000}秒后重试")
+            managerScope.launch {
+                delay(delayMs)
+                reportVersionWithRetry(context, attempt + 1)
+            }
+            return
+        }
+        NetApi.reportAppVersion(
+            credential = credential,
+            versionCode = BuildConfig.VERSION_CODE,
+            versionName = BuildConfig.VERSION_NAME,
+            packageName = context.packageName,
+            channel = CHANNEL
+        ) { code, content ->
+            if (code == 0) {
+                LogUtils.i("【应用更新】当前应用版本上报完成：response=${content.orEmpty()}")
+            } else {
+                LogUtils.w("【应用更新】当前应用版本上报失败，将等待周期检查兜底")
+            }
+        }
+    }
+
+    internal fun reportVersionRetryDelayMs(attempt: Int): Long? {
+        return REPORT_VERSION_RETRY_DELAYS_MS.getOrNull(attempt)
     }
 
     private fun publishUpdateCheckResult(
@@ -763,7 +811,19 @@ object AppUpdateManager {
         if (!actualSha256.equals(info.apkSha256, ignoreCase = true)) {
             return "更新包 SHA-256 校验失败"
         }
-        val apkSignature = apkSignatureSha256(context, apkFile)
+        val apkPackageInfo = archivePackageInfo(context, apkFile)
+            ?: return "更新包包信息读取失败"
+        val metadataError = validateDownloadedApkMetadata(
+            apkPackageName = apkPackageInfo.packageName,
+            apkVersionCode = packageVersionCode(apkPackageInfo),
+            currentPackageName = context.packageName,
+            currentVersionCode = BuildConfig.VERSION_CODE,
+            targetVersionCode = info.versionCode
+        )
+        if (metadataError != null) {
+            return metadataError
+        }
+        val apkSignature = firstSignatureSha256(apkPackageInfo)
             ?: return "更新包签名读取失败"
         val expectedSignature = info.signatureSha256 ?: installedSignatureSha256(context)
             ?: return "当前应用签名读取失败"
@@ -773,15 +833,42 @@ object AppUpdateManager {
         return null
     }
 
-    private fun apkSignatureSha256(context: Context, apkFile: File): String? {
+    private fun archivePackageInfo(context: Context, apkFile: File): PackageInfo? {
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             PackageManager.GET_SIGNING_CERTIFICATES
         } else {
             @Suppress("DEPRECATION")
             PackageManager.GET_SIGNATURES
         }
-        val info = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags) ?: return null
-        return firstSignatureSha256(info)
+        return context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
+    }
+
+    internal fun validateDownloadedApkMetadata(
+        apkPackageName: String?,
+        apkVersionCode: Long,
+        currentPackageName: String,
+        currentVersionCode: Int,
+        targetVersionCode: Int
+    ): String? {
+        if (apkPackageName != currentPackageName) {
+            return "更新包包名不一致：actual=${apkPackageName ?: "null"}，expected=$currentPackageName"
+        }
+        if (apkVersionCode != targetVersionCode.toLong()) {
+            return "更新包版本号不一致：actual=$apkVersionCode，expected=$targetVersionCode"
+        }
+        if (apkVersionCode <= currentVersionCode.toLong()) {
+            return "更新包版本未高于当前版本：apkVersionCode=$apkVersionCode，currentVersionCode=$currentVersionCode"
+        }
+        return null
+    }
+
+    private fun packageVersionCode(info: PackageInfo): Long {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
     }
 
     private fun installedSignatureSha256(context: Context): String? {
@@ -827,6 +914,17 @@ object AppUpdateManager {
     private fun updatesDir(context: Context): File = File(context.getExternalFilesDir(null), "updates")
 
     private fun apkFileName(versionCode: Int): String = "app-update-$versionCode.apk"
+
+    private fun publishUpgradeNotice(info: UpdateInfo, force: Boolean, reason: String) {
+        SendServerHelper.publishAppUpgradeNotice(
+            currentVersionCode = BuildConfig.VERSION_CODE,
+            currentVersionName = BuildConfig.VERSION_NAME,
+            targetVersionCode = info.versionCode,
+            targetVersionName = info.versionName,
+            forceUpdate = force,
+            reason = reason
+        )
+    }
 
     private fun cleanupOldApks(dir: File, keepVersionCode: Int) {
         dir.listFiles()?.forEach { file ->
