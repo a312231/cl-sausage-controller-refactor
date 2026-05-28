@@ -1604,12 +1604,16 @@ object KaoChangOperate {
         return movedCount
     }
 
-    suspend fun moveSausagesToKaoPansByTaste(targets: List<SupplementTarget>): Int {
+    suspend fun moveSausagesToKaoPansByTaste(
+        targets: List<SupplementTarget>,
+        batchTypeOverride: SupplementBatchType? = null
+    ): Int {
         return moveSausagesToKaoPansByTasteInternal(
             targets = targets,
             existingBatchId = null,
             createIntent = targets.size > 1,
-            stageForSerial = "补肠串行动作"
+            stageForSerial = "补肠串行动作",
+            batchTypeOverride = batchTypeOverride
         )
     }
 
@@ -1617,7 +1621,8 @@ object KaoChangOperate {
         targets: List<SupplementTarget>,
         existingBatchId: String?,
         createIntent: Boolean,
-        stageForSerial: String
+        stageForSerial: String,
+        batchTypeOverride: SupplementBatchType? = null
     ): Int {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
@@ -1658,7 +1663,7 @@ object KaoChangOperate {
         }
         if (AppConfig.getAppConfig().enableActionGroupPrefetch != 1 || executableTargets.size <= 1) {
             val batchId = existingBatchId ?: if (createIntent) {
-                supplementBatchIntentRepository.begin(executableTargets)?.batchId ?: return 0
+                supplementBatchIntentRepository.begin(executableTargets, batchTypeOverride)?.batchId ?: return 0
             } else {
                 null
             }
@@ -1686,7 +1691,10 @@ object KaoChangOperate {
                 "补肠预取流水线降级串行：有效计划数=${plannedMoves.size}，请求数=${executableTargets.size}"
             )
             val batchId = existingBatchId ?: if (createIntent && plannedMoves.isNotEmpty()) {
-                supplementBatchIntentRepository.begin(plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) })?.batchId
+                supplementBatchIntentRepository.begin(
+                    plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) },
+                    batchTypeOverride
+                )?.batchId
                     ?: return 0
             } else {
                 existingBatchId
@@ -1698,7 +1706,10 @@ object KaoChangOperate {
             )
         }
         val batchId = existingBatchId ?: if (createIntent) {
-            supplementBatchIntentRepository.begin(plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) })?.batchId
+            supplementBatchIntentRepository.begin(
+                plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) },
+                batchTypeOverride
+            )?.batchId
                 ?: return 0
         } else {
             existingBatchId

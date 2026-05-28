@@ -91,7 +91,10 @@ class SupplementBatchIntentRepository(
         return intent
     }
 
-    fun begin(targets: List<KaoChangOperate.SupplementTarget>): SupplementBatchIntent? {
+    fun begin(
+        targets: List<KaoChangOperate.SupplementTarget>,
+        typeOverride: SupplementBatchType? = null
+    ): SupplementBatchIntent? {
         val active = loadActive()
         if (active != null) {
             warnLogger(
@@ -121,7 +124,7 @@ class SupplementBatchIntentRepository(
         val now = clock()
         val intent = SupplementBatchIntent(
             batchId = "supplement:$now:${normalizedTargets.joinToString("-") { it.positionSn.toString() }}",
-            type = inferType(normalizedTargets.map { it.positionSn }),
+            type = typeOverride ?: inferType(normalizedTargets.map { it.positionSn }),
             targets = normalizedTargets,
             createdAtMs = now,
             updatedAtMs = now

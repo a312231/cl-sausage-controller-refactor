@@ -260,7 +260,8 @@ object LowCurrentTrafficMode {
             "【低并发初始化】检测到 1~9 初始化未完成，续补剩余空位：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}"
         )
         val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
-            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
+            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) },
+            batchTypeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
         )
         LogUtils.i(
             TAG,
@@ -358,7 +359,8 @@ object LowCurrentTrafficMode {
         KaoChangOperate.moveSausagesToKaoPansByTaste(
             list1_9.map { kaoPan ->
                 KaoChangOperate.SupplementTarget(kaoPan, kaoPan.taste?.tasteCode)
-            }
+            },
+            batchTypeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
         )
     }
 

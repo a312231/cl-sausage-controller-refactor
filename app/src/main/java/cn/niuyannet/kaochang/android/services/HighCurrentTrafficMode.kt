@@ -416,7 +416,8 @@ object HighCurrentTrafficMode {
             "【高并发初始化】检测到 1~21 初始化未完成，续补剩余空位：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}"
         )
         val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
-            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
+            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) },
+            batchTypeOverride = SupplementBatchType.HIGH_INITIALIZATION_1_21
         )
         LogUtils.i(
             TAG,
@@ -498,7 +499,10 @@ object HighCurrentTrafficMode {
 
             val movedCount = if (targets.isNotEmpty()) {
                 KaoChangOperate.heating(3)
-                KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
+                KaoChangOperate.moveSausagesToKaoPansByTaste(
+                    targets,
+                    batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33
+                )
             } else {
                 0
             }
@@ -891,7 +895,8 @@ object HighCurrentTrafficMode {
         KaoChangOperate.moveSausagesToKaoPansByTaste(
             list1_21.map { kaoPan ->
                 KaoChangOperate.SupplementTarget(kaoPan, kaoPan.taste?.tasteCode)
-            }
+            },
+            batchTypeOverride = SupplementBatchType.HIGH_INITIALIZATION_1_21
         )
     }
 
@@ -929,7 +934,10 @@ object HighCurrentTrafficMode {
                     null
                 }
             }
-            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
+            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+                targets,
+                batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33
+            )
             repeat(movedCount) {
                 SelfCleanManager.markZone3Dirty()
             }
@@ -965,7 +973,8 @@ object HighCurrentTrafficMode {
         val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
             resumeTargets.map { target ->
                 KaoChangOperate.SupplementTarget(target.kaoPan, target.tasteCode)
-            }
+            },
+            batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33
         )
         if (movedCount > 0) {
             recordSupplementLaunch(

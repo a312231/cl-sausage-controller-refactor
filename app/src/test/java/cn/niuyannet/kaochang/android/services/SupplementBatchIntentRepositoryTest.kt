@@ -29,6 +29,45 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun begin_withoutOverride_shouldKeepLegacyInferenceForFullLowInitialization() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        val intent = repository.begin((1..9).map { target(it, "B") })
+
+        assertEquals(SupplementBatchType.LOW_INITIALIZATION_1_9, intent?.type)
+        assertEquals((1..9).toList(), store.intent?.targets?.map { it.positionSn })
+    }
+
+    @Test
+    fun begin_withLowInitializationOverride_shouldPersistPartialLowInitializationAsLowType() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        val intent = repository.begin(
+            (1..5).map { target(it, "A") },
+            typeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
+        )
+
+        assertEquals(SupplementBatchType.LOW_INITIALIZATION_1_9, intent?.type)
+        assertEquals((1..5).toList(), store.intent?.targets?.map { it.positionSn })
+    }
+
+    @Test
+    fun begin_withHighInitializationOverride_shouldPersistFilteredOneToNineAsHighType() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        val intent = repository.begin(
+            (1..9).map { target(it, "B") },
+            typeOverride = SupplementBatchType.HIGH_INITIALIZATION_1_21
+        )
+
+        assertEquals(SupplementBatchType.HIGH_INITIALIZATION_1_21, intent?.type)
+        assertEquals((1..9).toList(), store.intent?.targets?.map { it.positionSn })
+    }
+
+    @Test
     fun markFailure_shouldKeepAllTargetsRemainingAndRequireManualConfirmation() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)
