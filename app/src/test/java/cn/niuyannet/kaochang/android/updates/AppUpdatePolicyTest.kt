@@ -58,6 +58,12 @@ class AppUpdatePolicyTest {
     }
 
     @Test
+    fun updateStartAction_shouldAutoDownloadOnlyForForceUpdate() {
+        assertEquals(AppUpdateManager.UpdateStartAction.DownloadImmediately, AppUpdateManager.updateStartAction(force = true))
+        assertEquals(AppUpdateManager.UpdateStartAction.ShowDialog, AppUpdateManager.updateStartAction(force = false))
+    }
+
+    @Test
     fun constants_shouldMatchFinalUpgradePlan() {
         assertEquals(30_000L, AppUpdatePolicy.MQTT_DRAIN_TIMEOUT_MS)
         assertEquals(5 * 60_000L, AppUpdatePolicy.MQTT_DRAIN_RETRY_DELAY_MS)

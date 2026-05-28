@@ -63,6 +63,11 @@ object AppUpdateManager {
         data class RetryLater(val delayMs: Long) : InstallWaitAction()
     }
 
+    internal sealed class UpdateStartAction {
+        object ShowDialog : UpdateStartAction()
+        object DownloadImmediately : UpdateStartAction()
+    }
+
     @Volatile
     private var lastStatusText: String = "尚未检查更新"
     @Volatile
@@ -293,9 +298,13 @@ object AppUpdateManager {
         }
         if (force) {
             val readiness = currentReadiness(minimalGate = false)
-            if (!readiness.ok) {
-                LogUtils.w("【应用更新】检测到强制更新但设备未空闲，延后提示：${readiness.blockedBy}")
-                if (manual) ToastUtils.showLong("检测到强制更新，等待设备空闲后安装：${readiness.blockedBy}")
+            if (shouldAutoDownloadForceUpdate(force)) {
+                if (readiness.ok) {
+                    LogUtils.i("【应用更新】检测到强制更新，自动下载并准备安装")
+                } else {
+                    LogUtils.w("【应用更新】检测到强制更新但设备未空闲，先自动下载，安装等待门控：${readiness.blockedBy}")
+                    if (manual) ToastUtils.showLong("检测到强制更新，等待设备空闲后安装：${readiness.blockedBy}")
+                }
                 downloadAndPrepare(activity, info, force, showProgress = manual, firstDetectedAtMs = firstDetectedAtMs)
                 return
             }
@@ -563,10 +572,23 @@ object AppUpdateManager {
         return hasUpdate && remoteVersionCode == pendingVersionCode
     }
 
+    internal fun updateStartAction(force: Boolean): UpdateStartAction {
+        return if (force) UpdateStartAction.DownloadImmediately else UpdateStartAction.ShowDialog
+    }
+
+    internal fun shouldAutoDownloadForceUpdate(force: Boolean): Boolean {
+        return updateStartAction(force) == UpdateStartAction.DownloadImmediately
+    }
+
     private fun continueInstallAfterRevalidation(activity: Activity, pending: PendingInstall) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
             pendingUnknownSourceInstall = pending
             updateStatus("等待授权安装未知应用")
+            publishUpgradeNotice(
+                pending.info,
+                pending.force,
+                "unknown_source_permission_required"
+            )
             ToastUtils.showLong("请允许本应用安装更新包，返回后会继续安装")
             val intent = Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
