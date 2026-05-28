@@ -8,7 +8,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.R
-import cn.niuyannet.kaochang.android.fault.FaultCode
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
@@ -459,13 +458,10 @@ abstract class OrderActivity: BaseSauceDetection() {
                 }
                 LogUtils.e("【设备状态】单根出餐异常，已切到维护中并准备上报：${e.message}")
                 withContext(Dispatchers.Main) {
-                    val previousOnlineStatus = AppConfig.getAppConfig().onlineStatus
-                    AppConfig.getAppConfig().errorStatus = 2
-                    AppConfig.getAppConfig().onlineStatus = 3
-                    AppConfig.getAppConfig().errorCode = FaultCode.ORDER_DELIVERY_ERROR.name
-                    AppConfig.getAppConfig().errorCategory = FaultCode.ORDER_DELIVERY_ERROR.category.display
-                    AppConfig.getAppConfig().errorReason = "单根出餐未捕获异常：${e.javaClass.simpleName}：${e.message}"
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                    val config = AppConfig.getAppConfig()
+                    val previousOnlineStatus = config.onlineStatus
+                    OrderDeliveryFaultPolicy.applySingleDeliveryExceptionFault(config, e)
+                    AppConfig.saveAppConfig(config)
                     LogUtils.e(
                         "【状态切换】设备进入维护：onlineStatus（设备营业状态）=" +
                             "${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(3)}，" +

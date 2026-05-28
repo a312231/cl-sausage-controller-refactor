@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.mqtt.RuntimeStateSignatureBuilder
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -336,22 +337,8 @@ object NetApi {
      */
     fun updateDeviceInfo(callback: ((code: Int, content: String?) -> Unit)? = null) {
         val deviceCode = AppConfig.getDeviceId()
-        val json = JSONObject()
-        json["deviceCode"] = deviceCode
-        json["errorStatus"] = AppConfig.getAppConfig().errorStatus
-        json["onlineStatus"] = AppConfig.getAppConfig().onlineStatus
-        json["supplyStatus"] = AppConfig.getAppConfig().supplyStatus
-        json["homeQrHidden"] = AppConfig.getAppConfig().homeQrHidden
-        json["scanBlockStatus"] = AppConfig.getAppConfig().scanBlockStatus
-        json["inspectionMode"] = AppConfig.getAppConfig().inspectionMode
-        json["modeType"] = AppConfig.getAppConfig().modeType
-        json["transitionMode"] = AppConfig.getAppConfig().transitionMode
-        json["available"] = AppConfig.getAppConfig().available
-        json["availableCountdownLatched"] = AppConfig.getAppConfig().availableCountdownLatched
-        json["isEnable"] = AppConfig.getAlgorithmEnableFlag()
-        json["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(AppConfig.getAppConfig())
-        json["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(AppConfig.getAppConfig())
-        json["pendingDiscardPositions"] = AppConfig.getAppConfig().pendingDiscardPositions
+        val config = AppConfig.getAppConfig()
+        val json = buildUpdateDeviceInfoPayload(deviceCode, config)
         LogUtils.d("【网络请求】开始更新设备信息：deviceCode=$deviceCode")
         OkGo.post<String>(updateDeviceInfo_url)
             .upJson(json.toJSONString())
@@ -367,6 +354,37 @@ object NetApi {
                     callback?.invoke(1, response?.body())
                 }
             })
+    }
+
+    internal fun buildUpdateDeviceInfoPayload(deviceCode: String, config: AppConfigBean): JSONObject {
+        val json = JSONObject()
+        json["deviceCode"] = deviceCode
+        json["errorStatus"] = config.errorStatus
+        if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
+            putIfNotBlank(json, "errorCode", config.errorCode)
+            putIfNotBlank(json, "errorCategory", config.errorCategory)
+            putIfNotBlank(json, "errorReason", config.errorReason)
+        }
+        json["onlineStatus"] = config.onlineStatus
+        json["supplyStatus"] = config.supplyStatus
+        json["homeQrHidden"] = config.homeQrHidden
+        json["scanBlockStatus"] = config.scanBlockStatus
+        json["inspectionMode"] = config.inspectionMode
+        json["modeType"] = config.modeType
+        json["transitionMode"] = config.transitionMode
+        json["available"] = config.available
+        json["availableCountdownLatched"] = config.availableCountdownLatched
+        json["isEnable"] = if (config.isEnable == 1) 1 else 0
+        json["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
+        json["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
+        json["pendingDiscardPositions"] = config.pendingDiscardPositions
+        return json
+    }
+
+    private fun putIfNotBlank(json: JSONObject, key: String, value: String?) {
+        if (!value.isNullOrBlank()) {
+            json[key] = value
+        }
     }
 
     fun checkAppUpdate(
