@@ -2,6 +2,7 @@
 
 import android.provider.Settings
 import cn.niuyannet.kaochang.android.MyApp
+import cn.niuyannet.kaochang.android.fault.FaultCode
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.services.FourFTemperaturePolicy
@@ -44,6 +45,29 @@ object AppConfig {
         val message: String
     )
 
+    data class FaultRuntimeSnapshot(
+        val onlineStatus: Int,
+        val errorStatus: Int,
+        val errorCode: String?,
+        val isEnable: Int
+    ) {
+        val isFaultLatched: Boolean =
+            errorStatus != AppConfigBean.ERROR_STATUS_NORMAL
+
+        val isNonModbusAutoRecoverableFault: Boolean =
+            isFaultLatched && errorCode != FaultCode.MODBUS_DISCONNECT.name
+
+        companion object {
+            fun from(config: AppConfigBean): FaultRuntimeSnapshot =
+                FaultRuntimeSnapshot(
+                    onlineStatus = config.onlineStatus,
+                    errorStatus = config.errorStatus,
+                    errorCode = config.errorCode,
+                    isEnable = config.isEnable
+                )
+        }
+    }
+
     data class InspectionSnapshot(
         val savedAt: Long,
         val configJson: String,
@@ -76,6 +100,39 @@ object AppConfig {
             2 -> normalizeRestStatusSource(config.restStatusSource)
             else -> AppConfigBean.REST_SOURCE_NONE
         }
+    }
+
+    fun applyFaultLatchedRemoteStatusGuard(
+        config: AppConfigBean,
+        snapshot: FaultRuntimeSnapshot,
+        field: String,
+        remoteValue: Int,
+        logPrefix: String,
+        emitLogs: Boolean = true,
+        setter: (Int) -> Unit
+    ): Boolean {
+        val preserve = snapshot.isNonModbusAutoRecoverableFault && when (field) {
+            "onlineStatus" -> remoteValue != 3
+            "errorStatus" -> remoteValue == AppConfigBean.ERROR_STATUS_NORMAL
+            else -> false
+        }
+        if (!preserve) {
+            setter(remoteValue)
+            return false
+        }
+        if (emitLogs) {
+            LogUtils.w(
+                "[$logPrefix] 本地非断连故障锁存中，远端状态字段未覆盖本地故障态：" +
+                    "field=$field，remoteValue=$remoteValue，localOnlineStatus=${snapshot.onlineStatus}，" +
+                    "localErrorStatus=${snapshot.errorStatus}，localErrorCode=${snapshot.errorCode ?: "null"}，" +
+                    "localIsEnable=${snapshot.isEnable}"
+            )
+        }
+        when (field) {
+            "onlineStatus" -> config.onlineStatus = snapshot.onlineStatus
+            "errorStatus" -> config.errorStatus = snapshot.errorStatus
+        }
+        return true
     }
 
     fun getTopicDeviceIdUrl(url: String): String {
@@ -375,6 +432,7 @@ object AppConfig {
         val config = getAppConfig()
         val oldModeTypeForTransitionDiagnostics = config.modeType
         val oldTransitionModeForTransitionDiagnostics = config.transitionMode
+        val faultRuntimeSnapshot = FaultRuntimeSnapshot.from(config)
         if (jsonData == null) {
             val hasFallback = hasValidDeviceConfig()
             val message = "远端配置数据为空，responseLength=${rawContent?.length ?: 0}"
@@ -417,6 +475,29 @@ object AppConfig {
                 return
             }
             setter(jsonData.getIntValue(key))
+        }
+
+        fun mergeGuardedRuntimeInt(
+            key: String,
+            fieldLabel: String,
+            setter: (Int) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            val remoteValue = jsonData.getIntValue(key)
+            val preserved = applyFaultLatchedRemoteStatusGuard(
+                config = config,
+                snapshot = faultRuntimeSnapshot,
+                field = fieldLabel,
+                remoteValue = remoteValue,
+                logPrefix = logPrefix,
+                setter = setter
+            )
+            if (preserved) {
+                preservedFields.add("$fieldLabel(fault_latched_local)")
+            }
         }
 
         fun mergeLong(
@@ -504,7 +585,7 @@ object AppConfig {
         }
 
         mergeInt("status", "status") { config.status = it }
-        mergeInt("onlineStatus", "onlineStatus") { config.onlineStatus = it }
+        mergeGuardedRuntimeInt("onlineStatus", "onlineStatus") { config.onlineStatus = it }
         mergeInt("supplyStatus", "supplyStatus") {
             config.supplyStatus = if (it == AppConfigBean.SUPPLY_STATUS_SOLD_OUT) {
                 AppConfigBean.SUPPLY_STATUS_SOLD_OUT
@@ -547,7 +628,7 @@ object AppConfig {
                 config.highConcurrencyResidualDrain = if (config.modeType == 1 && it == 1) 1 else 0
             }
         }
-        mergeInt("errorStatus", "errorStatus") { config.errorStatus = it }
+        mergeGuardedRuntimeInt("errorStatus", "errorStatus") { config.errorStatus = it }
         mergeInt("available", "available") { config.available = it.toLong() }
         mergeInt("availableCountdownLatched", "availableCountdownLatched") { config.availableCountdownLatched = it }
         mergeInt("keepWarmTemperature", "keepWarmTemperature") {

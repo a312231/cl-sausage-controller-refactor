@@ -204,6 +204,10 @@ object KaoChangAlgorithm {
         isEnabled = AppConfig.getAppConfig().isEnable == 1
     }
 
+    fun isModbusAutoRecoverableFault(errorCode: String?): Boolean {
+        return errorCode == FaultCode.MODBUS_DISCONNECT.name
+    }
+
     /**
      * 启动烤肠算法主循环。
      * 当前只保留状态变化日志，避免每轮轮询刷屏。
@@ -214,7 +218,12 @@ object KaoChangAlgorithm {
         isRunning = true
         val config = AppConfig.getAppConfig()
         rememberRecoverableOnlineStatus(config.onlineStatus)
-        if (config.onlineStatus == 3 && config.errorStatus == 2 && !VMModbusHelper.connectStatus()) {
+        if (
+            config.onlineStatus == 3 &&
+            config.errorStatus == 2 &&
+            isModbusAutoRecoverableFault(config.errorCode) &&
+            !VMModbusHelper.connectStatus()
+        ) {
             modbusReportedUnavailable = true
         }
         logD(LOG_ALGORITHM, "算法准备0：moveStatus=${config.moveStatus}")
@@ -956,7 +965,18 @@ object KaoChangAlgorithm {
                     }
 
                     if (modbusReportedUnavailable) {
-                        if (modbusReconnectSinceMs == null) {
+                        if (!isModbusAutoRecoverableFault(config.errorCode)) {
+                            modbusReportedUnavailable = false
+                            modbusReconnectSinceMs = null
+                            if (config.onlineStatus == 3 && config.errorStatus != 0 && !loggedManualRecoveryRequiredAfterReconnect) {
+                                loggedManualRecoveryRequiredAfterReconnect = true
+                                logW(
+                                    LOG_COMM,
+                                    "检测到modbus已恢复，但当前故障来源不允许自动恢复：" +
+                                        "errorCode=${config.errorCode ?: "null"}，errorStatus=${config.errorStatus}，需人工恢复"
+                                )
+                            }
+                        } else if (modbusReconnectSinceMs == null) {
                             modbusReconnectSinceMs = now
                             logI(LOG_COMM, "【Modbus】检测到下位机重新连接，开始稳定性观察 | port=${AppConfig.getAppConfig().modbusAddress}")
                         } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {

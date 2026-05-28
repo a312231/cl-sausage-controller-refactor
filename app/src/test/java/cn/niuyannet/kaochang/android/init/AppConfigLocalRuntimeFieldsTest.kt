@@ -86,4 +86,65 @@ class AppConfigLocalRuntimeFieldsTest {
         assertEquals(1, config.zone3CleanSuppressedFor4F)
         assertEquals(60_000L, config.faultBakingPauseAbortMs)
     }
+
+    @Test
+    fun applyFaultLatchedRemoteStatusGuard_shouldPreserveActionGroupFaultFromRemoteNormalState() {
+        val config = AppConfigBean().apply {
+            onlineStatus = 3
+            errorStatus = 2
+            errorCode = "ACTION_GROUP_FAILED"
+            errorCategory = "流程类"
+            errorReason = "in7 动作组失败"
+            isEnable = 0
+        }
+        val snapshot = AppConfig.FaultRuntimeSnapshot.from(config)
+
+        val preservedOnlineStatus = AppConfig.applyFaultLatchedRemoteStatusGuard(
+            config = config,
+            snapshot = snapshot,
+            field = "onlineStatus",
+            remoteValue = 1,
+            logPrefix = "unit-test",
+            emitLogs = false
+        ) { config.onlineStatus = it }
+        val preservedErrorStatus = AppConfig.applyFaultLatchedRemoteStatusGuard(
+            config = config,
+            snapshot = snapshot,
+            field = "errorStatus",
+            remoteValue = 0,
+            logPrefix = "unit-test",
+            emitLogs = false
+        ) { config.errorStatus = it }
+
+        assertTrue(preservedOnlineStatus)
+        assertTrue(preservedErrorStatus)
+        assertEquals(3, config.onlineStatus)
+        assertEquals(2, config.errorStatus)
+        assertEquals(0, config.isEnable)
+        assertEquals("ACTION_GROUP_FAILED", config.errorCode)
+    }
+
+    @Test
+    fun applyFaultLatchedRemoteStatusGuard_shouldAllowRemoteMaintenanceAndAlgorithmOff() {
+        val config = AppConfigBean().apply {
+            onlineStatus = 3
+            errorStatus = 2
+            errorCode = "ACTION_GROUP_FAILED"
+            isEnable = 0
+        }
+        val snapshot = AppConfig.FaultRuntimeSnapshot.from(config)
+
+        val preservedOnlineStatus = AppConfig.applyFaultLatchedRemoteStatusGuard(
+            config = config,
+            snapshot = snapshot,
+            field = "onlineStatus",
+            remoteValue = 3,
+            logPrefix = "unit-test",
+            emitLogs = false
+        ) { config.onlineStatus = it }
+
+        assertFalse(preservedOnlineStatus)
+        assertEquals(3, config.onlineStatus)
+        assertEquals(0, config.isEnable)
+    }
 }

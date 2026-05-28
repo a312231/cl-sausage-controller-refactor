@@ -61,6 +61,17 @@ class UpdateDeviceInfoPayloadBuilderTest {
         assertTrue(payload.containsKey("errorReason"))
     }
 
+    @Test
+    fun buildUpdateDeviceInfoPayload_shouldIncludeSourceWhenProvided() {
+        val payload = NetApi.buildUpdateDeviceInfoPayload(
+            deviceCode = "device-001",
+            config = baseConfig(),
+            source = "runtime_state:manual_recovery"
+        )
+
+        assertEquals("runtime_state:manual_recovery", payload.getString("source"))
+    }
+
     private fun baseConfig(): AppConfigBean =
         AppConfigBean().apply {
             errorStatus = 0

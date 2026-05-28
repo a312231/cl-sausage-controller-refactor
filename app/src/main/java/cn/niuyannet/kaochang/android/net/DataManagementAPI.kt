@@ -74,6 +74,17 @@ object DataManagementAPI {
     private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
     private fun logCloudSyncFile(message: String) = LogUtils.i("【$LOG_SYNC】$message")
 
+    private fun readRequestedInt(patch: JSONObject, field: String): Int? {
+        if (!patch.containsKey(field) || patch.get(field) == null) {
+            return null
+        }
+        return when (val value = patch.get(field)) {
+            is Number -> value.toInt()
+            is String -> value.trim().toIntOrNull()
+            else -> null
+        }
+    }
+
     private fun reconcileDiscardCloseTime(
         logPrefix: String,
         oldDiscardTime: Int,
@@ -382,6 +393,11 @@ object DataManagementAPI {
         val controlSeq = json.getLongValue("controlSeq").takeIf { it > 0 } ?: json.getLongValue("ts")
         val incomingConfigVersion = json.getLong("configVersion")
         val runtimePatch = JSONObject()
+        val requestedErrorStatus = if (json.containsKey("errorStatus")) {
+            readRequestedInt(json, "errorStatus")
+        } else {
+            readRequestedInt(json.getJSONObject("configPatch") ?: JSONObject(), "errorStatus")
+        }
         listOf(
             "onlineStatus",
             "isEnable",
@@ -419,6 +435,37 @@ object DataManagementAPI {
         }
 
         val currentConfigBeforeApply = AppConfig.getAppConfig()
+        val faultRestoreRejectReason = RemoteRuntimeControlGuard.rejectFaultLatchedRestoreReason(
+            snapshot = AppConfig.FaultRuntimeSnapshot.from(currentConfigBeforeApply),
+            requestedOnlineStatus = readRequestedInt(runtimePatch, "onlineStatus"),
+            requestedErrorStatus = requestedErrorStatus,
+            requestedIsEnable = readRequestedInt(runtimePatch, "isEnable")
+        )
+        if (faultRestoreRejectReason != null) {
+            logW(
+                "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "reason=$faultRestoreRejectReason，" +
+                    "localOnlineStatus（设备营业状态）=${onlineStatusText(currentConfigBeforeApply.onlineStatus)}，" +
+                    "localErrorStatus（设备故障状态）=${currentConfigBeforeApply.errorStatus}，" +
+                    "localErrorCode（故障码）=${currentConfigBeforeApply.errorCode ?: "null"}，" +
+                    "requestedOnlineStatus=${runtimePatch.get("onlineStatus") ?: "缺省"}，" +
+                    "requestedErrorStatus=${requestedErrorStatus ?: "缺省"}，" +
+                    "requestedIsEnable=${runtimePatch.get("isEnable") ?: "缺省"}"
+            )
+            return RuntimeControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = faultRestoreRejectReason,
+                onlineStatus = currentConfigBeforeApply.onlineStatus,
+                supplyStatus = currentConfigBeforeApply.supplyStatus,
+                homeQrHidden = currentConfigBeforeApply.homeQrHidden,
+                inspectionMode = currentConfigBeforeApply.inspectionMode,
+                isEnable = currentConfigBeforeApply.isEnable,
+                restStatusSource = currentConfigBeforeApply.restStatusSource,
+                configVersion = currentConfigBeforeApply.configVersion
+            )
+        }
         val rejectReason = RemoteRuntimeControlGuard.rejectReason(
             controlSeq = controlSeq,
             lastAppliedControlSeq = currentConfigBeforeApply.lastAppliedControlSeq,
@@ -1256,7 +1303,7 @@ object DataManagementAPI {
         }
     }
 
-    fun uploadDeviceInfo(callback: ((code: Int, content: String?) -> Unit)? = null) {
-        NetApi.updateDeviceInfo(callback)
+    fun uploadDeviceInfo(source: String? = null, callback: ((code: Int, content: String?) -> Unit)? = null) {
+        NetApi.updateDeviceInfo(callback, source)
     }
 }

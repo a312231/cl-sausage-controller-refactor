@@ -383,7 +383,7 @@ class MaintenanceFragment : Fragment() {
             KaoChangOperate.stopHeatingForFault("维护页恢复正常状态后保持算法关闭，等待现场手动开启算法")
         }
         val runtimePublishOk = withContext(Dispatchers.IO) {
-            SendServerHelper.publishServiceUpdateStatus()
+            SendServerHelper.publishServiceUpdateStatus("runtime_state:manual_recovery")
         }
         if (!runtimePublishOk) {
             LogUtils.w(
@@ -392,7 +392,7 @@ class MaintenanceFragment : Fragment() {
                     "errorStatus（设备故障状态）=${config.errorStatus}"
             )
             withContext(Dispatchers.IO) {
-                DataManagementAPI.uploadDeviceInfo()
+                DataManagementAPI.uploadDeviceInfo(source = "runtime_state:manual_recovery")
             }
         }
         ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")

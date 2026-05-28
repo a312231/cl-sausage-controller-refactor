@@ -335,10 +335,10 @@ object NetApi {
      * 更新设备营业状态和基础控制参数。
      * 这是 HTTP 同步通道，和 MQTT 的 action=2 状态上报互为补充。
      */
-    fun updateDeviceInfo(callback: ((code: Int, content: String?) -> Unit)? = null) {
+    fun updateDeviceInfo(callback: ((code: Int, content: String?) -> Unit)? = null, source: String? = null) {
         val deviceCode = AppConfig.getDeviceId()
         val config = AppConfig.getAppConfig()
-        val json = buildUpdateDeviceInfoPayload(deviceCode, config)
+        val json = buildUpdateDeviceInfoPayload(deviceCode, config, source)
         LogUtils.d("【网络请求】开始更新设备信息：deviceCode=$deviceCode")
         OkGo.post<String>(updateDeviceInfo_url)
             .upJson(json.toJSONString())
@@ -356,9 +356,14 @@ object NetApi {
             })
     }
 
-    internal fun buildUpdateDeviceInfoPayload(deviceCode: String, config: AppConfigBean): JSONObject {
+    internal fun buildUpdateDeviceInfoPayload(
+        deviceCode: String,
+        config: AppConfigBean,
+        source: String? = null
+    ): JSONObject {
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putIfNotBlank(json, "source", source)
         json["errorStatus"] = config.errorStatus
         if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
             putIfNotBlank(json, "errorCode", config.errorCode)

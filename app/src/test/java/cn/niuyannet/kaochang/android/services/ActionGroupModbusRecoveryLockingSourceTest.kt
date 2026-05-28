@@ -82,6 +82,36 @@ class ActionGroupModbusRecoveryLockingSourceTest {
     }
 
     @Test
+    fun runServer_shouldOnlyRearmModbusAutoRecoveryForModbusDisconnectFault() {
+        val source = algorithmSourceText()
+        val runServerStart = source.indexOf("fun runServer()")
+        assertTrue("必须存在 runServer", runServerStart >= 0)
+        val runServerEnd = source.indexOf("private fun logBusinessStartSkipOnce", runServerStart)
+            .let { if (it >= 0) it else source.length }
+        val runServerBlock = source.substring(runServerStart, runServerEnd)
+
+        assertTrue(
+            "启动时重新武装 modbusReportedUnavailable 必须校验 errorCode 是 MODBUS_DISCONNECT",
+            runServerBlock.contains("isModbusAutoRecoverableFault(config.errorCode)")
+        )
+    }
+
+    @Test
+    fun modbusStableRecovery_shouldGuardAutoRecoveryByFaultCode() {
+        val source = algorithmSourceText()
+        val recoveryStart = source.indexOf("if (modbusReportedUnavailable)")
+        assertTrue("必须存在 Modbus 自动恢复分支", recoveryStart >= 0)
+        val recoveryEnd = source.indexOf("} else {", recoveryStart)
+            .let { if (it >= 0) it else source.length }
+        val recoveryBlock = source.substring(recoveryStart, recoveryEnd)
+
+        assertTrue(
+            "Modbus 稳定恢复写 errorStatus=0 前必须校验 errorCode 是 MODBUS_DISCONNECT",
+            recoveryBlock.contains("isModbusAutoRecoverableFault(config.errorCode)")
+        )
+    }
+
+    @Test
     fun actionGroupFaultLock_shouldInvalidateOrderRecoveryVerification() {
         val source = sourceText()
         val faultStart = source.indexOf("private fun markDeviceErrorAndUpload(")
