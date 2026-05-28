@@ -149,7 +149,7 @@ INSERT INTO `gen_table_column` VALUES (554, 47, 'total_sales_amount', '累计销
 INSERT INTO `gen_table_column` VALUES (555, 47, 'create_time', '创建时间', 'datetime', 'Date', 'createTime', '0', '0', '1', '1', NULL, NULL, NULL, 'EQ', 'datetime', '', 19, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:41');
 INSERT INTO `gen_table_column` VALUES (556, 47, 'update_time', '更新时间', 'datetime', 'Date', 'updateTime', '0', '0', '0', '1', '1', NULL, NULL, 'EQ', 'datetime', '', 20, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:41');
 INSERT INTO `gen_table_column` VALUES (557, 47, 'status', '状态（0正常 1停用）', 'char(1)', 'String', 'status', '0', '0', '0', '1', '1', '1', '1', 'EQ', 'radio', '', 21, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:41');
-INSERT INTO `gen_table_column` VALUES (558, 47, 'online_status', '在线状态（0离线 1运营中 2休息中 3维护中）', 'char(1)', 'String', 'onlineStatus', '0', '0', '0', '1', '1', '1', '1', 'EQ', 'radio', '', 22, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:41');
+INSERT INTO `gen_table_column` VALUES (558, 47, 'online_status', '营业状态（0待投运 1运营中 2休息中 3维护中 4工作中/正在出餐）', 'char(1)', 'String', 'onlineStatus', '0', '0', '0', '1', '1', '1', '1', 'EQ', 'radio', '', 22, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:41');
 INSERT INTO `gen_table_column` VALUES (559, 48, 'id', '广告ID', 'bigint', 'Long', 'id', '1', '1', '0', '1', NULL, NULL, NULL, 'EQ', 'input', '', 1, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:11');
 INSERT INTO `gen_table_column` VALUES (560, 48, 'title', '标题', 'varchar(100)', 'String', 'title', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 2, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:11');
 INSERT INTO `gen_table_column` VALUES (561, 48, 'media_url', '媒体地址（图片/视频）', 'varchar(255)', 'String', 'mediaUrl', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 3, 'admin', '2025-05-12 08:54:59', '', '2025-05-12 09:42:11');
@@ -370,12 +370,12 @@ INSERT INTO `gen_table_column` VALUES (775, 67, 'id', '主键ID', 'int', 'Long',
 INSERT INTO `gen_table_column` VALUES (776, 67, 'device_id', '设备ID', 'varchar(50)', 'String', 'deviceId', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 2, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (777, 67, 'product_id', '产品ID', 'bigint', 'Long', 'productId', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 3, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (778, 67, 'sku_id', 'SKU ID', 'varchar(50)', 'String', 'skuId', '0', '0', '0', '1', '1', '1', '1', 'EQ', 'input', '', 4, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
-INSERT INTO `gen_table_column` VALUES (779, 67, 'position_sn', '位置序号 1-12', 'int', 'Long', 'positionSn', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 5, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
+INSERT INTO `gen_table_column` VALUES (779, 67, 'position_sn', '位置序号 1-22', 'int', 'Long', 'positionSn', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 5, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (780, 67, 'last_position_sn', '上一次取的位置', 'int', 'Long', 'lastPositionSn', '0', '0', '0', '1', '1', '1', '1', 'EQ', 'input', '', 6, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
-INSERT INTO `gen_table_column` VALUES (781, 67, 'num', '最大值14', 'int', 'Long', 'num', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 7, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
+INSERT INTO `gen_table_column` VALUES (781, 67, 'num', '箱位库存数量', 'int', 'Long', 'num', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 7, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (782, 67, 'taste_code', '口味CODE', 'varchar(50)', 'String', 'tasteCode', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 8, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (783, 67, 'taste_name', '口味名称', 'varchar(100)', 'String', 'tasteName', '0', '0', '1', '1', '1', '1', '1', 'LIKE', 'input', '', 9, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
-INSERT INTO `gen_table_column` VALUES (784, 67, 'cmd_value_take', '从烤肠箱取出烤肠cmd值【201-212】', 'int', 'Long', 'cmdValueTake', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 10, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
+INSERT INTO `gen_table_column` VALUES (784, 67, 'cmd_value_take', '从烤肠箱取出烤肠cmd值【201-222】', 'int', 'Long', 'cmdValueTake', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 10, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (785, 67, 'cmd_status_take', '命令执行状态 （无符号16位整型，0为正常，1为运动中，其余为错误码）', 'int', 'Long', 'cmdStatusTake', '0', '0', '1', '1', '1', '1', '1', 'EQ', 'input', '', 11, 'admin', '2025-05-14 10:18:52', '', '2025-05-14 10:21:20');
 INSERT INTO `gen_table_column` VALUES (786, 67, 'is_check_status', '是否选中', 'tinyint(1)', 'Integer', 'isCheckStatus', '0', '0', '0', '1', '1', '1', '1', 'EQ', 'radio', '', 12, 'admin', '2025-05-14 10:18:53', '', '2025-05-14 10:21:21');
 INSERT INTO `gen_table_column` VALUES (787, 67, 'create_time', '创建时间', 'datetime', 'Date', 'createTime', '0', '0', '1', '1', NULL, NULL, NULL, 'EQ', 'datetime', '', 13, 'admin', '2025-05-14 10:18:53', '', '2025-05-14 10:21:21');
@@ -468,8 +468,8 @@ CREATE TABLE `kc_device`  (
   `total_sales_amount` decimal(10, 2) NULL DEFAULT 0.00 COMMENT '累计销量金额',
   `create_time` datetime NOT NULL COMMENT '创建时间',
   `update_time` datetime NULL DEFAULT NULL COMMENT '更新时间',
-  `status` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '0' COMMENT '状态（0离线 1在线）',
-  `online_status` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '0' COMMENT '在线状态（0未启用 1运营中 2休息中 3维护中 4工作中（正在出烤肠））',
+  `status` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '0' COMMENT '后台启停状态（0正常/启用 1停用）',
+  `online_status` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '0' COMMENT '营业状态（0待投运 1运营中 2休息中 3维护中 4工作中/正在出餐）',
   `concurrency_mode` tinyint(1) NULL DEFAULT 1 COMMENT '1低并发模式，2高并发模式',
   `transition_mode` tinyint(1) NULL DEFAULT 0 COMMENT '0是默认，1是低并发过渡到高并发，2是高并发过渡到低并发',
   PRIMARY KEY (`id`) USING BTREE,
@@ -598,12 +598,12 @@ CREATE TABLE `kc_device_stock`  (
   `device_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备ID',
   `product_id` bigint NULL DEFAULT 0 COMMENT '产品ID',
   `sku_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'SKU ID',
-  `position_sn` int NOT NULL COMMENT '位置序号 1-12',
+  `position_sn` int NOT NULL COMMENT '位置序号 1-22',
   `last_position_sn` int NULL DEFAULT NULL COMMENT '上一次取的位置',
-  `num` int NOT NULL COMMENT '最大值14',
+  `num` int NOT NULL COMMENT '箱位库存数量',
   `taste_code` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '口味CODE',
   `taste_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '口味名称',
-  `cmd_value_take` int NOT NULL COMMENT '从烤肠箱取出烤肠cmd值【201-212】',
+  `cmd_value_take` int NOT NULL COMMENT '从烤肠箱取出烤肠cmd值【201-222】',
   `cmd_status_take` int NOT NULL DEFAULT 0 COMMENT '命令执行状态 （无符号16位整型，0为正常，1为运动中，其余为错误码）',
   `is_check_status` tinyint(1) NULL DEFAULT 0 COMMENT '是否选中',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',

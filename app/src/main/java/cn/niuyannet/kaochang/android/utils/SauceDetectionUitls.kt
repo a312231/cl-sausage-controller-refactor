@@ -37,10 +37,11 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * 售卖口视觉识别工具。
+ * 售卖口视觉识别遗留工具。
  *
- * 当前主链路使用后台拍照服务统一排队拍照与识别；
- * 旧版 CameraX 直拍路径仅保留作兼容兜底，避免历史流程直接失效。
+ * 当前售货主链路不再调用视觉识别判断有无烤肠或出餐收口；
+ * 有无烤肠以光电/红外、下位机结果寄存器、动作组返回码和本地烤盘状态为准。
+ * 本工具仅为历史页面或显式视觉联调任务保留。
  */
 object SauceDetectionUitls {
     private const val DETECT_LOG_WINDOW_MS = 10_000L
