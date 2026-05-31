@@ -331,8 +331,9 @@ object HighCurrentTrafficMode {
                 if (schedulingEnabled) {
                     checkHighHeatDiscard()
                 }
-                if (schedulingEnabled && boxSupplyAvailable) {
-                    checkSwitchToLow(list)
+                // 高转低收口不依赖烤肠箱库存；箱空时更应进入消化收口。
+                if (schedulingEnabled) {
+                    checkSwitchToLow(list, boxSupplyAvailable)
                 }
                 if (schedulingEnabled) {
                     SelfCleanManager.maybeRunZone3SelfClean(list)
@@ -1295,7 +1296,10 @@ object HighCurrentTrafficMode {
      * 1. 接近营业结束；
      * 2. 距离上次高并发补肠已超过高转低间隔阈值。
      */
-    private fun checkSwitchToLow(kaoPanList: List<KaoPan>) {
+    private fun checkSwitchToLow(
+        kaoPanList: List<KaoPan>,
+        boxSupplyAvailable: Boolean
+    ) {
         val businessTime = AppConfig.getAppConfig().businessTime
         if (businessTime != null) {
             val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
@@ -1311,7 +1315,7 @@ object HighCurrentTrafficMode {
         if (lastFillPitTime <= 0L) {
             applySupplementTrackingState(
                 nextState = currentSupplementTrackingState().copy(lastFillPitTime = currentTime),
-                reason = "高并发稳态建立高转低计时锚点"
+                reason = "高并发稳态建立高转低计时锚点，boxSupplyAvailable=$boxSupplyAvailable"
             )
             return
         }
@@ -1320,9 +1324,16 @@ object HighCurrentTrafficMode {
         if (shouldSwitchHighToLowByTimeout(lastFillPitTime, currentTime, timeThresholdLowMinutes)) {
             LogUtils.w(
                 TAG,
-                "【并发切换】高并发补肠间隔超时判定成立：lastFillPitTime=$lastFillPitTime，currentTime=$currentTime，elapsedMs=$timeSinceLastFill，timeThresholdLow=${timeThresholdLowMinutes}分钟"
+                "【并发切换】高并发补肠间隔超时判定成立：lastFillPitTime=$lastFillPitTime，currentTime=$currentTime，" +
+                    "elapsedMs=$timeSinceLastFill，timeThresholdLow=${timeThresholdLowMinutes}分钟，" +
+                    "boxSupplyAvailable=$boxSupplyAvailable，高转低间隔不再依赖箱库存"
             )
-            switchHighToLow("高并发补肠间隔超时", kaoPanList)
+            val reason = if (boxSupplyAvailable) {
+                "高并发补肠间隔超时"
+            } else {
+                "高并发补肠间隔超时（箱内无可用库存）"
+            }
+            switchHighToLow(reason, kaoPanList)
         }
     }
 

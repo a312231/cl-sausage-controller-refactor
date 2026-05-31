@@ -16,8 +16,8 @@ object AppConfig {
     const val DEFAULT_BOX_REFILL_TARGET_NUM = 10
     const val MIN_BOX_REFILL_TARGET_NUM = 1
     const val MAX_BOX_REFILL_TARGET_NUM = 15
-    const val MIN_HEATING_OFFSET = -20
-    const val MAX_HEATING_OFFSET = 20
+    const val MIN_HEATING_OFFSET = -30
+    const val MAX_HEATING_OFFSET = 30
     const val DEFAULT_FAULT_BAKING_PAUSE_ABORT_MS = 2L * 60L * 60L * 1000L
     const val DEFAULT_FAULT_PAUSE_ANOMALY_MS = 4L * 60L * 60L * 1000L
     const val DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS = 30_000L

@@ -89,7 +89,7 @@ class RemoteRuntimeConfigPatchApplierTest {
             zone1HeatingOffset = 0
         }
         val patch = JSONObject().apply {
-            put("zone1HeatingOffset", 25)
+            put("zone1HeatingOffset", 35)
         }
 
         val result = RemoteRuntimeConfigPatchApplier.apply(config, patch)
@@ -97,8 +97,8 @@ class RemoteRuntimeConfigPatchApplierTest {
         assertTrue(result.hasApplied)
         assertTrue(result.isPartial)
         assertTrue(result.temperatureChanged)
-        assertEquals(20, config.zone1HeatingOffset)
-        assertEquals(mapOf("zone1HeatingOffset" to 20), result.normalizedFields)
+        assertEquals(30, config.zone1HeatingOffset)
+        assertEquals(mapOf("zone1HeatingOffset" to 30), result.normalizedFields)
     }
 
     @Test

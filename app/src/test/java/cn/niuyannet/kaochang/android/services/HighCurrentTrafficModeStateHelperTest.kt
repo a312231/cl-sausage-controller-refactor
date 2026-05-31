@@ -268,6 +268,34 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun shouldSwitchHighToLowByTimeout_shouldReturnFalseAtExactThreshold() {
+        val lastFillPitTime = 10_000L
+        val thresholdMs = 40 * 60 * 1000L
+
+        assertFalse(
+            shouldSwitchHighToLowByTimeout(
+                lastFillPitTime = lastFillPitTime,
+                now = lastFillPitTime + thresholdMs,
+                timeThresholdLowMinutes = 40
+            )
+        )
+    }
+
+    @Test
+    fun shouldSwitchHighToLowByTimeout_shouldReturnTrueAfterFortyMinuteThreshold() {
+        val lastFillPitTime = 10_000L
+        val thresholdMs = 40 * 60 * 1000L
+
+        assertTrue(
+            shouldSwitchHighToLowByTimeout(
+                lastFillPitTime = lastFillPitTime,
+                now = lastFillPitTime + thresholdMs + 1,
+                timeThresholdLowMinutes = 40
+            )
+        )
+    }
+
+    @Test
     fun canFinishHighToLowDrain_shouldAllowCloseoutWhenFrontHasNineAndZone3IsEmpty() {
         assertTrue(
             canFinishHighToLowDrain(
