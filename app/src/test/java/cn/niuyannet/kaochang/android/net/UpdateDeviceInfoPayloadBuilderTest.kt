@@ -72,6 +72,20 @@ class UpdateDeviceInfoPayloadBuilderTest {
         assertEquals("runtime_state:manual_recovery", payload.getString("source"))
     }
 
+    @Test
+    fun buildUpdateDeviceInfoPayload_shouldIncludeHighConcurrencyResidualDrainForHttpCompensation() {
+        val payload = NetApi.buildUpdateDeviceInfoPayload(
+            deviceCode = "device-001",
+            config = baseConfig().apply {
+                modeType = 1
+                highConcurrencyResidualDrain = 1
+            },
+            source = "maintenance:点击清空烤盘"
+        )
+
+        assertEquals(1, payload.getIntValue("highConcurrencyResidualDrain"))
+    }
+
     private fun baseConfig(): AppConfigBean =
         AppConfigBean().apply {
             errorStatus = 0

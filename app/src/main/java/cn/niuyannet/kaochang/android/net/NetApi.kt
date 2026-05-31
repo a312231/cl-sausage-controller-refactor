@@ -377,6 +377,7 @@ object NetApi {
         json["inspectionMode"] = config.inspectionMode
         json["modeType"] = config.modeType
         json["transitionMode"] = config.transitionMode
+        json["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         json["available"] = config.available
         json["availableCountdownLatched"] = config.availableCountdownLatched
         json["isEnable"] = if (config.isEnable == 1) 1 else 0

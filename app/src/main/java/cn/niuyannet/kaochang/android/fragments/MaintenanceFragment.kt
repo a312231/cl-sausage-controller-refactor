@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
@@ -104,6 +105,12 @@ class MaintenanceFragment : Fragment() {
         0 -> "0（无过渡态）"
         1 -> "1（低转高过渡）"
         2 -> "2（高转低过渡）"
+        else -> "$value（未知）"
+    }
+
+    private fun residualDrainText(value: Int): String = when (value) {
+        0 -> "0（无残留）"
+        1 -> "1（高并发残留消化中）"
         else -> "$value（未知）"
     }
 
@@ -197,33 +204,26 @@ class MaintenanceFragment : Fragment() {
 
     private fun clearRuntimeStateAfterManualPanReset(reason: String) {
         val config = AppConfig.getAppConfig()
-        val oldAvailable = config.available
-        val oldAvailableCountdownLatched = config.availableCountdownLatched
-        val oldTransitionMode = config.transitionMode
-        val needReset =
-            oldAvailable != 0L ||
-                oldAvailableCountdownLatched != 0 ||
-                oldTransitionMode != 0
-        if (!needReset) {
+        val resetResult = ManualPanResetRuntimeStateHelper.apply(config)
+        if (!resetResult.changed) {
             LogUtils.d(
                 "【维护操作】$reason，运行态已完成必要收口，保持原并发模式：" +
                     "available=0，availableCountdownLatched=0，" +
                     "modeType（并发模式）=${modeText(config.modeType)}，" +
-                    "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}"
+                    "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}，" +
+                    "highConcurrencyResidualDrain（高并发残留消化态）=${residualDrainText(config.highConcurrencyResidualDrain)}"
             )
             return
         }
 
-        config.available = 0L
-        config.availableCountdownLatched = 0
-        config.transitionMode = 0
         AppConfig.saveAppConfig(config)
         LogUtils.i(
             "【维护操作】$reason，已重置运行态：" +
-                "available（二维码页预计时间）=$oldAvailable->0，" +
-                "availableCountdownLatched（二维码页预计时间锁存标记）=$oldAvailableCountdownLatched->0，" +
+                "available（二维码页预计时间）=${resetResult.oldAvailable}->0，" +
+                "availableCountdownLatched（二维码页预计时间锁存标记）=${resetResult.oldAvailableCountdownLatched}->0，" +
                 "modeType（并发模式）保持=${modeText(config.modeType)}，" +
-                "transitionMode（并发切换过渡态）=${transitionText(oldTransitionMode)}->${transitionText(config.transitionMode)}"
+                "transitionMode（并发切换过渡态）=${transitionText(resetResult.oldTransitionMode)}->${transitionText(config.transitionMode)}，" +
+                "highConcurrencyResidualDrain（高并发残留消化态）=${residualDrainText(resetResult.oldHighConcurrencyResidualDrain)}->${residualDrainText(config.highConcurrencyResidualDrain)}"
         )
         val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
         val availablePublishOk = SendServerHelper.publishAvailableState("maintenance:$reason")
