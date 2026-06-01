@@ -21,6 +21,12 @@ object CloudSnapshotReportResponseParser {
 
         val code = json.getIntValue("code")
         val message = json.getString("msg") ?: json.getString("message") ?: ""
+        val data = json.getJSONObject("data")
+        val ignored = data?.getBoolean("ignored") == true
+        val ignoredReason = data?.getString("reason").orEmpty()
+        if (code == 200 && ignored && ignoredReason == "same_hash") {
+            return Result(true, "云端已确认相同快照：reason=$ignoredReason，message=$message")
+        }
         val messageIndicatesIgnoredSnapshot =
             message.contains("忽略") ||
                 message.contains("旧快照") ||

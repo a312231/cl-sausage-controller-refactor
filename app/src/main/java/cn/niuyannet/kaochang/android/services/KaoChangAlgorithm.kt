@@ -238,8 +238,8 @@ object KaoChangAlgorithm {
             while (isRunning) {
                 pollKaoPanStatus()
                 if (!isRunning) break
-                // 每轮同步一次烤盘状态和烤肠箱库存到服务端，确保小程序看到的数据实时
-                DataManagementAPI.uploadDataToServer()
+                // 每轮 poll 后只在可售/库存投影变化或兜底到期时同步完整快照。
+                SnapshotSyncPolicy.maybeUploadSnapshot(reason = "poll_loop")
                 delay(10 * 1000)
             }
         }

@@ -261,6 +261,9 @@ object NetApi {
         stockList: String,
         sequence: Long,
         reportTime: Long,
+        snapshotHash: String? = null,
+        snapshotReason: String? = null,
+        forceFullSnapshot: Boolean = false,
         callback: ((code: Int, content: String?) -> Unit)? = null
     ) {
         val deviceCode = AppConfig.getDeviceId()
@@ -270,6 +273,9 @@ object NetApi {
         json["reportTime"] = reportTime
         json["kaoPanList"] = kaoPanList
         json["stockList"] = stockList
+        snapshotHash?.let { json["snapshotHash"] = it }
+        snapshotReason?.let { json["snapshotReason"] = it }
+        json["forceFullSnapshot"] = forceFullSnapshot
         val snapshotContext = buildSnapshotContext(deviceCode, sequence, reportTime, kaoPanList, stockList)
         LogUtils.d("【网络请求】开始上报设备数据快照：$snapshotContext")
         OkGo.post<String>(reportSnapshot_url)

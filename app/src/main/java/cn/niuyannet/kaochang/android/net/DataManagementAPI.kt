@@ -850,7 +850,12 @@ object DataManagementAPI {
         }
     }
 
-    fun uploadDataToServer() {
+    fun uploadDataToServer(
+        snapshotHash: String? = null,
+        snapshotReason: String? = null,
+        forceFullSnapshot: Boolean = false,
+        onResult: ((Boolean) -> Unit)? = null
+    ) {
         val metadataNormalized = KaoPanHelper.normalizeKaoPanTasteMetadata()
         if (metadataNormalized) {
             logD("上传前已统一烤盘口味元数据")
@@ -866,6 +871,7 @@ object DataManagementAPI {
         if (shouldSkipSnapshotUploadForMissingStockCache(kaoPanBoxList.size)) {
             logW("设备数据快照暂缓同步：本地烤肠箱缓存为空，可能是首次安装后云端库存尚未落盘；已触发库存补拉，避免空库存覆盖云端")
             refreshStockData(logPrefix = "$LOG_SYNC-stock-before-snapshot")
+            onResult?.invoke(false)
             return
         }
         val stockPayload = JSON.toJSONString(kaoPanBoxList)
@@ -881,11 +887,15 @@ object DataManagementAPI {
         snapshotPayload["reportTime"] = reportTime
         snapshotPayload["kaoPanList"] = kaoPanPayload
         snapshotPayload["stockList"] = stockPayload
+        snapshotHash?.let { snapshotPayload["snapshotHash"] = it }
+        snapshotReason?.let { snapshotPayload["snapshotReason"] = it }
+        snapshotPayload["forceFullSnapshot"] = forceFullSnapshot
         val snapshotSummary =
             "sequence（设备快照版本号）=$sequence, " +
                 "reportTime（设备本机上报时间）=$reportTime, " +
                 "烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
-                "箱位数=$stockItemCount, 物理库存=$physicalStockTotalCount, 自动补肠可用库存=$availableStockTotalCount"
+                "箱位数=$stockItemCount, 物理库存=$physicalStockTotalCount, 自动补肠可用库存=$availableStockTotalCount, " +
+                "snapshotHash=$snapshotHash, snapshotReason=$snapshotReason, forceFullSnapshot=$forceFullSnapshot"
 
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
@@ -894,7 +904,10 @@ object DataManagementAPI {
             kaoPanList = kaoPanPayload,
             stockList = stockPayload,
             sequence = sequence,
-            reportTime = reportTime
+            reportTime = reportTime,
+            snapshotHash = snapshotHash,
+            snapshotReason = snapshotReason,
+            forceFullSnapshot = forceFullSnapshot
         ) { code, content ->
             if (code != 0) {
                 recordCloudSyncFailure(
@@ -906,6 +919,7 @@ object DataManagementAPI {
                     "设备数据快照同步失败：" +
                         "$snapshotSummary, code=$code, cloudResponse（云端原始响应）=$content"
                 )
+                onResult?.invoke(false)
             } else {
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
@@ -914,6 +928,7 @@ object DataManagementAPI {
                     "设备数据快照已同步：" +
                         "$snapshotSummary, cloudResponse（云端原始响应）=$content"
                 )
+                onResult?.invoke(true)
             }
         }
     }

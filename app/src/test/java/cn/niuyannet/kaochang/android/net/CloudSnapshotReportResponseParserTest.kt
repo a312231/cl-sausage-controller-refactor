@@ -21,6 +21,15 @@ class CloudSnapshotReportResponseParserTest {
     }
 
     @Test
+    fun parse_shouldAcceptSameHashIgnoredResponse() {
+        val result = CloudSnapshotReportResponseParser.parse(
+            """{"code":200,"msg":"相同快照已忽略","data":{"ignored":true,"reason":"same_hash"}}"""
+        )
+
+        assertTrue(result.accepted)
+    }
+
+    @Test
     fun parse_shouldRejectIncomingSequenceBehindCurrentSequenceResponse() {
         val result = CloudSnapshotReportResponseParser.parse(
             """{"code":200,"msg":"incomingSequence < currentSequence, snapshot ignored"}"""
