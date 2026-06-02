@@ -835,8 +835,7 @@ object HighCurrentTrafficMode {
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         val oldResidualDrain = config.highConcurrencyResidualDrain
-        KaoChangOperate.stopHeating(2)
-        KaoChangOperate.stopHeating(3)
+        KaoChangOperate.applyConfiguredTemperatureByPanState("高转低/残留收拢完成后刷新温控")
         config.transitionMode = 0
         config.modeType = 1
         config.highConcurrencyResidualDrain = 0

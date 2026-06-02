@@ -40,6 +40,32 @@ class TemperatureControlPolicyTest {
     }
 
     @Test
+    fun decideZoneTemperatures_shouldKeepWarmZoneOneAndStopEmptyZonesAfterHighToLowCloseout() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(
+                pan(positionSn = 1, hasSausage = true, status = 2, holdingTime = 100L),
+                pan(positionSn = 9, hasSausage = true, status = 2, holdingTime = 100L)
+            ),
+            keepWarmTemperature = 100,
+            heatingTemperature = 180
+        )
+
+        assertEquals(listOf(100, 0, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldIgnorePendingDiscardPansWhenRefreshingTemperature() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(pan(positionSn = 8, hasSausage = true, status = 2, holdingTime = 100L)),
+            keepWarmTemperature = 100,
+            heatingTemperature = 180,
+            pendingDiscardPositions = listOf(8)
+        )
+
+        assertEquals(listOf(0, 0, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
     fun decideZoneTemperatures_shouldPreferHeatingWhenZoneHasBakingAndHoldingSausage() {
         val result = TemperatureControlPolicy.decideZoneTemperatures(
             pans = pans(
