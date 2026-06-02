@@ -31,6 +31,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.lang.ref.WeakReference
 import java.security.MessageDigest
@@ -47,6 +48,14 @@ object AppUpdateManager {
     private const val ACK_POLL_INTERVAL_MS = 1_000L
     private const val BUSY_ORDER_WINDOW_MS = 5_000L
     private const val MQTT_TRIGGER_DEDUP_WINDOW_MS = 30_000L
+    private const val ROOT_INSTALL_STARTED_FLUSH_TIMEOUT_MS = 3_000L
+    private const val ROOT_INSTALL_STARTED_FLUSH_POLL_MS = 100L
+    private const val REASON_ROOT_INSTALL_STARTED = "root_install_started"
+    private const val REASON_ROOT_INSTALL_LAUNCH_FAILED = "root_install_launch_failed"
+    private const val REASON_ROOT_INSTALL_RECONCILED_SUCCESS = "root_install_reconciled_success"
+    private const val REASON_ROOT_INSTALL_RECONCILE_TIMEOUT = "root_install_reconcile_timeout"
+    private const val REASON_ROOT_NOT_AVAILABLE = "root_not_available"
+    private const val REASON_MANUAL_FALLBACK_REQUIRED = "manual_fallback_required"
     private val REPORT_VERSION_RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 60_000L)
 
     interface TimeSource {
@@ -106,13 +115,15 @@ object AppUpdateManager {
         val info: UpdateInfo,
         val apkFile: File,
         val force: Boolean,
-        val firstDetectedAtMs: Long
+        val firstDetectedAtMs: Long,
+        val triggerId: String?
     )
 
     fun startAutoChecks(activity: Activity) {
         latestActivityRef = WeakReference(activity)
         if (!reportVersionInvoked) {
             reportVersionInvoked = true
+            reconcilePendingRootInstall(activity.applicationContext)
             reportVersionWithRetry(activity.applicationContext, attempt = 0)
         }
         if (autoCheckJob?.isActive == true) {
@@ -238,7 +249,7 @@ object AppUpdateManager {
             triggerId?.let {
                 publishUpdateCheckResult(it, true, true, info.versionCode, info.versionName, force, "update_found")
             }
-            handleUpdate(activity, info, force, manual)
+            handleUpdate(activity, info, force, manual, triggerId)
         }
     }
 
@@ -286,7 +297,7 @@ object AppUpdateManager {
             nowMs - checkingStartedAtMs > AppUpdatePolicy.CHECK_IN_PROGRESS_TIMEOUT_MS
     }
 
-    private fun handleUpdate(activity: Activity, info: UpdateInfo, force: Boolean, manual: Boolean) {
+    private fun handleUpdate(activity: Activity, info: UpdateInfo, force: Boolean, manual: Boolean, triggerId: String?) {
         updateStatus(
             "发现新版本：v${info.versionName}(${info.versionCode})，" +
                 "forceUpdate（是否强制更新）=$force"
@@ -305,10 +316,14 @@ object AppUpdateManager {
                     LogUtils.w("【应用更新】检测到强制更新但设备未空闲，先自动下载，安装等待门控：${readiness.blockedBy}")
                     if (manual) ToastUtils.showLong("检测到强制更新，等待设备空闲后安装：${readiness.blockedBy}")
                 }
-                downloadAndPrepare(activity, info, force, showProgress = manual, firstDetectedAtMs = firstDetectedAtMs)
+                downloadAndPrepare(activity, info, force, showProgress = manual, firstDetectedAtMs = firstDetectedAtMs, triggerId = triggerId)
                 return
             }
             showUpdateDialog(activity, info, force, firstDetectedAtMs)
+            return
+        }
+        if (!manual) {
+            downloadAndPrepare(activity, info, force, showProgress = false, firstDetectedAtMs = firstDetectedAtMs, triggerId = triggerId)
             return
         }
         showUpdateDialog(activity, info, force, firstDetectedAtMs)
@@ -340,7 +355,8 @@ object AppUpdateManager {
         info: UpdateInfo,
         force: Boolean,
         showProgress: Boolean,
-        firstDetectedAtMs: Long
+        firstDetectedAtMs: Long,
+        triggerId: String? = null
     ) {
         if (downloadingVersionCode == info.versionCode) {
             if (showProgress) ToastUtils.showShort("正在下载更新包")
@@ -366,7 +382,7 @@ object AppUpdateManager {
         } else {
             null
         }
-        downloadWithRetry(activity, info, updatesDir, fileName, progressDialog, force, firstDetectedAtMs, attempt = 0)
+        downloadWithRetry(activity, info, updatesDir, fileName, progressDialog, force, firstDetectedAtMs, triggerId, attempt = 0)
     }
 
     private fun downloadWithRetry(
@@ -377,6 +393,7 @@ object AppUpdateManager {
         progressDialog: AlertDialog?,
         force: Boolean,
         firstDetectedAtMs: Long,
+        triggerId: String?,
         attempt: Int
     ) {
         OkGo.get<File>(info.apkUrl)
@@ -399,6 +416,7 @@ object AppUpdateManager {
                             progressDialog,
                             force,
                             firstDetectedAtMs,
+                            triggerId,
                             attempt,
                             "下载文件为空"
                         )
@@ -416,7 +434,8 @@ object AppUpdateManager {
                         info = info,
                         apkFile = apkFile,
                         force = force,
-                        firstDetectedAtMs = firstDetectedAtMs
+                        firstDetectedAtMs = firstDetectedAtMs,
+                        triggerId = triggerId
                     )
                     pendingInstall = pending
                     waitForReadinessAndInstall(activity, pending)
@@ -432,6 +451,7 @@ object AppUpdateManager {
                         progressDialog,
                         force,
                         firstDetectedAtMs,
+                        triggerId,
                         attempt,
                         response?.exception?.message ?: "未知错误"
                     )
@@ -447,6 +467,7 @@ object AppUpdateManager {
         progressDialog: AlertDialog?,
         force: Boolean,
         firstDetectedAtMs: Long,
+        triggerId: String?,
         attempt: Int,
         reason: String
     ) {
@@ -458,7 +479,7 @@ object AppUpdateManager {
             progressDialog?.setMessage(retryText)
             managerScope.launch {
                 delay(delayMs)
-                downloadWithRetry(activity, info, updatesDir, fileName, progressDialog, force, firstDetectedAtMs, attempt + 1)
+                downloadWithRetry(activity, info, updatesDir, fileName, progressDialog, force, firstDetectedAtMs, triggerId, attempt + 1)
             }
         } else {
             downloadingVersionCode = null
@@ -581,6 +602,10 @@ object AppUpdateManager {
     }
 
     private fun continueInstallAfterRevalidation(activity: Activity, pending: PendingInstall) {
+        startRootSilentInstall(activity, pending)
+    }
+
+    private fun startSystemInstallerFallback(activity: Activity, pending: PendingInstall) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
             pendingUnknownSourceInstall = pending
             updateStatus("等待授权安装未知应用")
@@ -663,6 +688,168 @@ object AppUpdateManager {
                 LogUtils.i("【应用更新】当前应用版本上报完成：response=${content.orEmpty()}")
             } else {
                 LogUtils.w("【应用更新】当前应用版本上报失败，将等待周期检查兜底")
+            }
+        }
+    }
+
+    private fun startRootSilentInstall(activity: Activity, pending: PendingInstall) {
+        managerScope.launch {
+            val rootAvailable = withContext(Dispatchers.IO) {
+                RootSilentInstaller.isRootAvailable()
+            }
+            if (!rootAvailable) {
+                publishUpgradeNotice(
+                    pending.info,
+                    pending.force,
+                    REASON_ROOT_NOT_AVAILABLE,
+                    pending.triggerId,
+                    "su 0 id 未返回 uid=0"
+                )
+                if (pending.force) {
+                    publishUpgradeNotice(
+                        pending.info,
+                        pending.force,
+                        REASON_MANUAL_FALLBACK_REQUIRED,
+                        pending.triggerId,
+                        "root 不可用，强制更新降级为人工系统安装器兜底"
+                    )
+                    startSystemInstallerFallback(activity, pending)
+                } else {
+                    updateStatus("root 静默安装不可用，普通更新不降级系统安装器")
+                }
+                return@launch
+            }
+
+            val pendingRootInstall = PendingRootInstall(
+                targetVersionCode = pending.info.versionCode,
+                targetVersionName = pending.info.versionName,
+                forceUpdate = pending.force,
+                triggerId = pending.triggerId,
+                apkSha256 = pending.info.apkSha256,
+                startedAtMs = timeSource.nowMs(),
+                firstDetectedAtMs = pending.firstDetectedAtMs
+            )
+            val saved = withContext(Dispatchers.IO) {
+                PendingRootInstallStore.save(activity.applicationContext, pendingRootInstall)
+            }
+            if (!saved) {
+                publishUpgradeNotice(
+                    pending.info,
+                    pending.force,
+                    REASON_ROOT_INSTALL_LAUNCH_FAILED,
+                    pending.triggerId,
+                    "pending_root_install 落盘失败"
+                )
+                if (pending.force) {
+                    publishUpgradeNotice(
+                        pending.info,
+                        pending.force,
+                        REASON_MANUAL_FALLBACK_REQUIRED,
+                        pending.triggerId,
+                        "pending_root_install 落盘失败，强制更新降级为人工系统安装器兜底"
+                    )
+                    startSystemInstallerFallback(activity, pending)
+                }
+                return@launch
+            }
+
+            val startedNoticeQueued = publishUpgradeNotice(
+                pending.info,
+                pending.force,
+                REASON_ROOT_INSTALL_STARTED,
+                pending.triggerId,
+                PendingRootInstallCodec.encode(pendingRootInstall)
+            )
+            val drained = withContext(Dispatchers.IO) {
+                waitForMqttPublishDrain(ROOT_INSTALL_STARTED_FLUSH_TIMEOUT_MS)
+            }
+            if (!startedNoticeQueued) {
+                LogUtils.w("【应用更新】root_install_started 未能进入 MQTT 队列，仍继续发起 root 安装")
+            } else if (!drained) {
+                LogUtils.w("【应用更新】root_install_started 等待 MQTT 队列清空超时，仍继续发起 root 安装")
+            }
+            when (val result = withContext(Dispatchers.IO) {
+                RootSilentInstaller.launchInstall(pending.apkFile, pending.info.versionCode)
+            }) {
+                RootSilentInstaller.LaunchResult.Started -> {
+                    updateStatus("已发起 root 静默安装：v${pending.info.versionName}(${pending.info.versionCode})")
+                }
+                is RootSilentInstaller.LaunchResult.Failed -> {
+                    withContext(Dispatchers.IO) {
+                        PendingRootInstallStore.clear(activity.applicationContext)
+                    }
+                    publishUpgradeNotice(
+                        pending.info,
+                        pending.force,
+                        REASON_ROOT_INSTALL_LAUNCH_FAILED,
+                        pending.triggerId,
+                        "reason=${result.reason}, output=${result.output}"
+                    )
+                    if (pending.force) {
+                        publishUpgradeNotice(
+                            pending.info,
+                            pending.force,
+                            REASON_MANUAL_FALLBACK_REQUIRED,
+                            pending.triggerId,
+                            "root 静默安装启动失败，强制更新降级为人工系统安装器兜底"
+                        )
+                        startSystemInstallerFallback(activity, pending)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun waitForMqttPublishDrain(timeoutMs: Long): Boolean {
+        val deadline = timeSource.nowMs() + timeoutMs
+        while (timeSource.nowMs() < deadline) {
+            if (VMMqttHelper.pendingPublishCount() == 0) {
+                return true
+            }
+            Thread.sleep(ROOT_INSTALL_STARTED_FLUSH_POLL_MS)
+        }
+        return VMMqttHelper.pendingPublishCount() == 0
+    }
+
+    private fun reconcilePendingRootInstall(context: Context) {
+        val pending = PendingRootInstallStore.load(context) ?: return
+        when (
+            PendingRootInstallPolicy.reconcileAction(
+                pending,
+                currentVersionCode = BuildConfig.VERSION_CODE,
+                nowMs = timeSource.nowMs(),
+                timeoutMs = AppUpdatePolicy.ROOT_INSTALL_RECONCILE_TIMEOUT_MS
+            )
+        ) {
+            PendingRootInstallPolicy.ReconcileAction.Success -> {
+                SendServerHelper.publishAppUpgradeNotice(
+                    currentVersionCode = BuildConfig.VERSION_CODE,
+                    currentVersionName = BuildConfig.VERSION_NAME,
+                    targetVersionCode = pending.targetVersionCode,
+                    targetVersionName = pending.targetVersionName,
+                    forceUpdate = pending.forceUpdate,
+                    reason = REASON_ROOT_INSTALL_RECONCILED_SUCCESS,
+                    triggerId = pending.triggerId,
+                    rawPayload = PendingRootInstallCodec.encode(pending)
+                )
+                PendingRootInstallStore.clear(context)
+                clearForceUpdateFirstDetectedMarkers(context)
+            }
+            PendingRootInstallPolicy.ReconcileAction.Timeout -> {
+                SendServerHelper.publishAppUpgradeNotice(
+                    currentVersionCode = BuildConfig.VERSION_CODE,
+                    currentVersionName = BuildConfig.VERSION_NAME,
+                    targetVersionCode = pending.targetVersionCode,
+                    targetVersionName = pending.targetVersionName,
+                    forceUpdate = pending.forceUpdate,
+                    reason = if (pending.forceUpdate) REASON_MANUAL_FALLBACK_REQUIRED else REASON_ROOT_INSTALL_RECONCILE_TIMEOUT,
+                    triggerId = pending.triggerId,
+                    rawPayload = PendingRootInstallCodec.encode(pending)
+                )
+                PendingRootInstallStore.clear(context)
+            }
+            PendingRootInstallPolicy.ReconcileAction.Wait -> {
+                LogUtils.w("【应用更新】存在未对账 root 安装任务，继续等待：targetVersionCode=${pending.targetVersionCode}")
             }
         }
     }
@@ -937,14 +1124,22 @@ object AppUpdateManager {
 
     private fun apkFileName(versionCode: Int): String = "app-update-$versionCode.apk"
 
-    private fun publishUpgradeNotice(info: UpdateInfo, force: Boolean, reason: String) {
-        SendServerHelper.publishAppUpgradeNotice(
+    private fun publishUpgradeNotice(
+        info: UpdateInfo,
+        force: Boolean,
+        reason: String,
+        triggerId: String? = null,
+        rawPayload: String? = null
+    ): Boolean {
+        return SendServerHelper.publishAppUpgradeNotice(
             currentVersionCode = BuildConfig.VERSION_CODE,
             currentVersionName = BuildConfig.VERSION_NAME,
             targetVersionCode = info.versionCode,
             targetVersionName = info.versionName,
             forceUpdate = force,
-            reason = reason
+            reason = reason,
+            triggerId = triggerId,
+            rawPayload = rawPayload
         )
     }
 

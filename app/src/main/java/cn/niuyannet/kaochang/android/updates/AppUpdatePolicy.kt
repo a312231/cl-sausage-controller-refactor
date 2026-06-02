@@ -7,6 +7,7 @@ object AppUpdatePolicy {
     const val MQTT_DRAIN_RETRY_DELAY_MS = 5 * 60_000L
     const val CHECK_IN_PROGRESS_TIMEOUT_MS = 60_000L
     const val FORCE_UPDATE_MINIMAL_GATE_AFTER_MS = 24 * 60 * 60_000L
+    const val ROOT_INSTALL_RECONCILE_TIMEOUT_MS = 15 * 60_000L
     val DOWNLOAD_RETRY_DELAYS_MS = listOf(30_000L, 2 * 60_000L, 10 * 60_000L)
 
     fun shouldUpdate(

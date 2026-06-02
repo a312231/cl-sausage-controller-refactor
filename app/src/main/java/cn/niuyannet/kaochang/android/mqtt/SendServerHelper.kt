@@ -498,17 +498,21 @@ object SendServerHelper {
         targetVersionCode: Int,
         targetVersionName: String,
         forceUpdate: Boolean,
-        reason: String
+        reason: String,
+        triggerId: String? = null,
+        rawPayload: String? = null
     ): Boolean {
         val payload = JSONObject()
         payload["messageType"] = "app_upgrade_notice"
         payload["deviceCode"] = AppConfig.getDeviceId()
+        triggerId?.let { payload["triggerId"] = it }
         payload["currentVersionCode"] = currentVersionCode
         payload["currentVersionName"] = currentVersionName
         payload["targetVersionCode"] = targetVersionCode
         payload["targetVersionName"] = targetVersionName
         payload["forceUpdate"] = forceUpdate
         payload["reason"] = reason
+        rawPayload?.let { payload["rawPayload"] = it }
         payload["reportedAt"] = System.currentTimeMillis()
         return VMMqttHelper.publishService(
             TopicMessage().apply {
