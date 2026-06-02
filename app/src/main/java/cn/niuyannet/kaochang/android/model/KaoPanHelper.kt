@@ -52,10 +52,24 @@ object KaoPanHelper {
      * IR_PICK_FAILED 表示本地已跳过该箱自动取肠，物理库存 num 仍保留给维护和云端展示。
      */
     fun isSupplyBoxAvailableForAutoSupplement(box: KaoPanBox): Boolean {
-        return box.num > 0 &&
-            box.cmdStatusTake != AtomicActionCodes.IR_PICK_FAILED &&
-            !box.tasteCode.isNullOrBlank() &&
-            SourceBoxPositionPolicy.isValidSourceBox(box.positionSn)
+        return supplyBoxAutoSupplementExclusionReasons(box).isEmpty()
+    }
+
+    internal fun supplyBoxAutoSupplementExclusionReasons(box: KaoPanBox): List<String> {
+        val reasons = mutableListOf<String>()
+        if (box.num <= 0) {
+            reasons += "num<=0"
+        }
+        if (box.tasteCode.isNullOrBlank()) {
+            reasons += "tasteCode空"
+        }
+        if (box.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
+            reasons += "IR_PICK_FAILED"
+        }
+        if (!SourceBoxPositionPolicy.isValidSourceBox(box.positionSn)) {
+            reasons += "非法源箱位"
+        }
+        return reasons
     }
 
     fun availableSupplyNumForAutoSupplement(box: KaoPanBox): Int {
@@ -500,22 +514,26 @@ object KaoPanHelper {
      * list_size 烤盘工位数
      */
     fun computeKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
+        logAutoSupplementRatioInput("computeKaoPamRatio", listPanBox, list_size)
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
+            .filter { isSupplyBoxAvailableForAutoSupplement(it) }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
+        logAutoSupplementRatioEffectiveStock("computeKaoPamRatio", flavorTypes2)
 
         // 2. 检查是否可分配
         if (flavorTypes2.size > list_size) {
             LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
         }
         if (list_size <= 0 || flavorTypes2.isEmpty()) {
+            logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, emptyMap())
             return mutableMapOf()
         }
         //烤箱库存总数
         val totalCount = flavorTypes2.values.sum().toFloat()
         if (totalCount <= 0f) {
+            logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, emptyMap())
             return mutableMapOf()
         }
 
@@ -570,6 +588,7 @@ object KaoPanHelper {
             }
         }
 
+        logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, allocation)
         return allocation
     }
 
@@ -649,22 +668,26 @@ object KaoPanHelper {
      * list_size 烤盘工位数
      */
     fun computeHighKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
+        logAutoSupplementRatioInput("computeHighKaoPamRatio", listPanBox, list_size)
         // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
-            .filter { isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
+            .filter { isSupplyBoxAvailableForAutoSupplement(it) }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
+        logAutoSupplementRatioEffectiveStock("computeHighKaoPamRatio", flavorTypes2)
 
         // 2. 检查是否可分配
         if (flavorTypes2.size > list_size) {
             LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
         }
         if (list_size <= 0 || flavorTypes2.isEmpty()) {
+            logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, emptyMap())
             return mutableMapOf()
         }
         //烤箱库存总数
         val totalCount = flavorTypes2.values.sum().toFloat()
         if (totalCount <= 0f) {
+            logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, emptyMap())
             return mutableMapOf()
         }
 
@@ -701,7 +724,55 @@ object KaoPanHelper {
             }
         }
 
+        logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, allocation)
         return allocation
+    }
+
+    private fun logAutoSupplementRatioInput(
+        source: String,
+        boxes: List<KaoPanBox>,
+        targetPanCount: Int
+    ) {
+        val rawBoxes = boxes
+            .sortedBy { it.positionSn }
+            .joinToString("；") { box ->
+                val validSourceBox = SourceBoxPositionPolicy.isValidSourceBox(box.positionSn)
+                val exclusionReasons = supplyBoxAutoSupplementExclusionReasons(box)
+                    .joinToString("|")
+                    .ifBlank { "无" }
+                "箱${box.positionSn}(num=${box.num},tasteCode=${box.tasteCode ?: "null"}," +
+                    "cmdStatusTake=${box.cmdStatusTake},validSourceBox=$validSourceBox," +
+                    "排除原因=$exclusionReasons)"
+            }
+            .ifBlank { "空" }
+        safeLogInfo("【补肠】比例计算入口：source=$source，目标烤盘数=$targetPanCount，原始箱列表=$rawBoxes")
+    }
+
+    private fun logAutoSupplementRatioEffectiveStock(
+        source: String,
+        effectiveStockByTaste: Map<String, Int>
+    ) {
+        val effectiveStock = effectiveStockByTaste.entries
+            .sortedBy { it.key }
+            .joinToString(",") { (tasteCode, count) -> "$tasteCode=$count" }
+            .ifBlank { "空" }
+        safeLogInfo("【补肠】比例计算有效库存：source=$source，按口味库存=$effectiveStock")
+    }
+
+    private fun logAutoSupplementRatioAllocation(
+        source: String,
+        targetPanCount: Int,
+        allocation: Map<String, Int>
+    ) {
+        val allocationText = allocation.entries
+            .sortedBy { it.key }
+            .joinToString(",") { (tasteCode, count) -> "$tasteCode=$count" }
+            .ifBlank { "空" }
+        safeLogInfo("【补肠】比例计算结果：source=$source，目标烤盘数=$targetPanCount，分配=$allocationText")
+    }
+
+    private fun safeLogInfo(message: String) {
+        runCatching { LogUtils.i(message) }
     }
 
 

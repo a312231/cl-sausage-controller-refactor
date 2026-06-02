@@ -1808,9 +1808,18 @@ object KaoChangOperate {
                 "补肠预取流水线开始：protocol=300_400，targetCount=${plannedMoves.size}，" +
                     "resourceLocks=${actionGroupLocks.snapshot()}"
             )
+            val tasteSummary = plannedMoves
+                .map { it.tasteCode?.takeIf { tasteCode -> tasteCode.isNotBlank() } ?: "未知" }
+                .groupingBy { it }
+                .eachCount()
+                .entries
+                .sortedBy { it.key }
+                .joinToString(",") { (tasteCode, count) -> "$tasteCode=$count" }
+                .ifBlank { "空" }
             LogUtils.i(
                 "【补肠】开始批量补肠：目标烤盘=${plannedMoves.joinToString(",") { it.task.targetPanNo.toString() }}，" +
-                    "口味=${plannedMoves.mapNotNull { it.tasteCode }.distinct().joinToString(",").ifBlank { "未知" }}"
+                    "口味=${plannedMoves.mapNotNull { it.tasteCode }.distinct().joinToString(",").ifBlank { "未知" }}，" +
+                    "口味数量=$tasteSummary"
             )
             InActionGroupPrefetchPipelineRunner(
                 client = createAtomicActionClient(
@@ -2826,10 +2835,43 @@ object KaoChangOperate {
      * 加热温度 160
      */
     fun heating(area: Int) {
-        val heatingTemperature = AppConfig.getAppConfig().heatingTemperature
-        logD(LOG_HEAT, "开始加热：temperature=$heatingTemperature")
+        val config = AppConfig.getAppConfig()
+        val heatingTemperature = targetHeatingTemperature(
+            area = area,
+            heatingTemperature = config.heatingTemperature,
+            zone1HeatingOffset = config.zone1HeatingOffset,
+            zone2HeatingOffset = config.zone2HeatingOffset,
+            zone3HeatingOffset = config.zone3HeatingOffset
+        )
+        val offset = when (area) {
+            1 -> config.zone1HeatingOffset
+            2 -> config.zone2HeatingOffset
+            3 -> config.zone3HeatingOffset
+            else -> 0
+        }
+        logD(
+            LOG_HEAT,
+            "开始加热：area=$area，baseTemperature=${config.heatingTemperature}，" +
+                "heatingOffset=$offset，targetTemperature=$heatingTemperature"
+        )
         //加热管开始工作
         setAreaTargetTemperature(area, heatingTemperature, "heating")
+    }
+
+    internal fun targetHeatingTemperature(
+        area: Int,
+        heatingTemperature: Int,
+        zone1HeatingOffset: Int,
+        zone2HeatingOffset: Int,
+        zone3HeatingOffset: Int
+    ): Int {
+        val offset = when (area) {
+            1 -> zone1HeatingOffset
+            2 -> zone2HeatingOffset
+            3 -> zone3HeatingOffset
+            else -> 0
+        }
+        return FourFTemperaturePolicy.clampTargetTemperature(heatingTemperature + offset)
     }
     /**
      *

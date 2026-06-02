@@ -49,6 +49,35 @@ class KaoPanHelperRatioTest {
     }
 
     @Test
+    fun computeKaoPamRatio_shouldKeepMultiTasteInventoryRatio() {
+        val boxes = listOf(
+            box(positionSn = 17, tasteCode = "A", num = 8),
+            box(positionSn = 20, tasteCode = "A", num = 8),
+            box(positionSn = 18, tasteCode = "B", num = 8),
+            box(positionSn = 19, tasteCode = "B", num = 8),
+            box(positionSn = 21, tasteCode = "B", num = 8)
+        )
+
+        val allocation = KaoPanHelper.computeKaoPamRatio(boxes, 21)
+
+        assertEquals(8, allocation["A"])
+        assertEquals(13, allocation["B"])
+    }
+
+    @Test
+    fun supplyBoxAutoSupplementExclusionReasons_shouldExplainEveryFilterCondition() {
+        val emptyBox = box(positionSn = 1, tasteCode = "A", num = 0)
+        val blankTasteBox = box(positionSn = 2, tasteCode = "", num = 8)
+        val irFailedBox = box(positionSn = 3, tasteCode = "B", num = 8, cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED)
+        val reservedBox = box(positionSn = 22, tasteCode = "C", num = 8)
+
+        assertEquals(listOf("num<=0"), KaoPanHelper.supplyBoxAutoSupplementExclusionReasons(emptyBox))
+        assertEquals(listOf("tasteCode空"), KaoPanHelper.supplyBoxAutoSupplementExclusionReasons(blankTasteBox))
+        assertEquals(listOf("IR_PICK_FAILED"), KaoPanHelper.supplyBoxAutoSupplementExclusionReasons(irFailedBox))
+        assertEquals(listOf("非法源箱位"), KaoPanHelper.supplyBoxAutoSupplementExclusionReasons(reservedBox))
+    }
+
+    @Test
     fun computeHighKaoPamRatio_shouldReturnEmptyWhenBoxHasNoAvailableTasteStock() {
         val allocation = KaoPanHelper.computeHighKaoPamRatio(emptyList(), 6)
 
