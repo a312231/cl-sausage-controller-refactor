@@ -10,7 +10,9 @@ import cn.niuyannet.kaochang.android.MyApp
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -18,21 +20,27 @@ object TakeSausageVoiceReminder {
     private const val LOG_PREFIX = "【取肠语音】"
     private const val RAW_RESOURCE_NAME = "take_sausage_reminder"
     private const val PLAYER_VOLUME = 1.0f
+    private const val PLAYBACK_TIMEOUT_MS = 10_000L
 
     private val reminderScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val playing = AtomicBoolean(false)
+    private val playbackRegistry = TakeSausageVoicePlaybackRegistry()
+    private var currentSession: PlaybackSession? = null
+    private var timeoutJob: Job? = null
 
     fun play() {
-        if (!playing.compareAndSet(false, true)) {
-            LogUtils.d("$LOG_PREFIX 已有取肠提醒正在播放，跳过本次重复请求")
-            return
-        }
+        val requestedWhilePlaying = !playing.compareAndSet(false, true)
         reminderScope.launch {
             try {
+                if (requestedWhilePlaying || currentSession != null || playbackRegistry.hasActive()) {
+                    LogUtils.d("$LOG_PREFIX 已有取肠提醒正在播放，新请求覆盖旧播放")
+                    releaseCurrent("replaced_by_new_request")
+                    playing.set(true)
+                }
                 playOnMainThread()
             } catch (t: Throwable) {
                 LogUtils.e("$LOG_PREFIX 播放协程异常：message=${t.message ?: t.javaClass.simpleName}", t)
-                playing.set(false)
+                releaseCurrent("coroutine_exception")
             }
         }
     }
@@ -56,11 +64,13 @@ object TakeSausageVoiceReminder {
             .build()
         val focusHandle = requestAudioFocus(context, audioAttributes)
         val player = MediaPlayer()
+        val token = playbackRegistry.begin()
+        currentSession = PlaybackSession(token, player, focusHandle)
         try {
             val afd = context.resources.openRawResourceFd(resId)
             if (afd == null) {
                 LogUtils.w("$LOG_PREFIX 打开音频资源失败：raw/$RAW_RESOURCE_NAME")
-                releasePlayer(player, focusHandle)
+                releasePlayer(token, player, focusHandle, "open_raw_resource_failed")
                 return
             }
             afd.use {
@@ -69,27 +79,44 @@ object TakeSausageVoiceReminder {
             }
             player.setVolume(PLAYER_VOLUME, PLAYER_VOLUME)
             player.setOnPreparedListener {
+                if (!playbackRegistry.isActive(token)) {
+                    releaseStalePlayer(it, focusHandle, "prepared_after_replaced")
+                    return@setOnPreparedListener
+                }
                 try {
                     it.start()
+                    scheduleTimeout(token)
                     LogUtils.i("$LOG_PREFIX 已开始播放取肠提醒：resource=raw/$RAW_RESOURCE_NAME，volume=$PLAYER_VOLUME")
                 } catch (t: Throwable) {
                     LogUtils.e("$LOG_PREFIX 启动播放失败：message=${t.message ?: t.javaClass.simpleName}", t)
-                    releasePlayer(it, focusHandle)
+                    releasePlayer(token, it, focusHandle, "start_failed")
                 }
             }
             player.setOnCompletionListener {
                 LogUtils.d("$LOG_PREFIX 取肠提醒播放完成")
-                releasePlayer(it, focusHandle)
+                releasePlayer(token, it, focusHandle, "completed")
             }
             player.setOnErrorListener { mp, what, extra ->
                 LogUtils.e("$LOG_PREFIX 播放失败：what=$what，extra=$extra")
-                releasePlayer(mp, focusHandle)
+                releasePlayer(token, mp, focusHandle, "error_what_${what}_extra_$extra")
                 true
             }
             player.prepareAsync()
         } catch (t: Throwable) {
             LogUtils.e("$LOG_PREFIX 初始化播放失败：message=${t.message ?: t.javaClass.simpleName}", t)
-            releasePlayer(player, focusHandle)
+            releasePlayer(token, player, focusHandle, "init_failed")
+        }
+    }
+
+    private fun scheduleTimeout(token: Long) {
+        timeoutJob?.cancel()
+        timeoutJob = reminderScope.launch {
+            delay(PLAYBACK_TIMEOUT_MS)
+            val session = currentSession
+            if (session?.token == token && playbackRegistry.isActive(token)) {
+                LogUtils.w("$LOG_PREFIX 播放超时兜底释放：timeoutMs=$PLAYBACK_TIMEOUT_MS")
+                releasePlayer(token, session.player, session.focusHandle, "timeout")
+            }
         }
     }
 
@@ -130,11 +157,52 @@ object TakeSausageVoiceReminder {
         }
     }
 
-    private fun releasePlayer(player: MediaPlayer, focusHandle: AudioFocusHandle?) {
+    private fun releaseCurrent(reason: String) {
+        val session = currentSession
+        if (session == null) {
+            timeoutJob?.cancel()
+            timeoutJob = null
+            playbackRegistry.clearActive()
+            playing.set(false)
+            return
+        }
+        releasePlayer(session.token, session.player, session.focusHandle, reason)
+    }
+
+    private fun releasePlayer(
+        token: Long,
+        player: MediaPlayer,
+        focusHandle: AudioFocusHandle?,
+        reason: String
+    ) {
+        val active = playbackRegistry.finishIfActive(token)
+        if (active) {
+            timeoutJob?.cancel()
+            timeoutJob = null
+            if (currentSession?.token == token) {
+                currentSession = null
+            }
+            abandonAudioFocus(focusHandle)
+            playing.set(false)
+            LogUtils.d("$LOG_PREFIX 播放资源已释放：reason=$reason")
+        } else {
+            LogUtils.d("$LOG_PREFIX 忽略过期播放回调：reason=$reason，token=$token")
+        }
         runCatching { player.reset() }
         runCatching { player.release() }
-        abandonAudioFocus(focusHandle)
-        playing.set(false)
+    }
+
+    private fun releaseStalePlayer(
+        player: MediaPlayer,
+        focusHandle: AudioFocusHandle?,
+        reason: String
+    ) {
+        runCatching { player.reset() }
+        runCatching { player.release() }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && focusHandle?.request is AudioFocusRequest) {
+            abandonAudioFocus(focusHandle)
+        }
+        LogUtils.d("$LOG_PREFIX 释放过期播放器：reason=$reason")
     }
 
     private fun abandonAudioFocus(focusHandle: AudioFocusHandle?) {
@@ -152,5 +220,11 @@ object TakeSausageVoiceReminder {
     private data class AudioFocusHandle(
         val audioManager: AudioManager,
         val request: Any?
+    )
+
+    private data class PlaybackSession(
+        val token: Long,
+        val player: MediaPlayer,
+        val focusHandle: AudioFocusHandle?
     )
 }
