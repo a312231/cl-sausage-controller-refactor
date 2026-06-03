@@ -239,17 +239,75 @@ class MaintenanceFragment : Fragment() {
     private fun setMaintenanceActionButtonsEnabled(enabled: Boolean) {
         binding.btnCz.isEnabled = enabled
         binding.btnClearAll.isEnabled = enabled
+        binding.btnRefillStickFull.isEnabled = enabled
+        binding.btnClearWasteBucket.isEnabled = enabled
         binding.swKzAlgorithm.isEnabled = enabled
     }
 
     private fun setMaintenanceButtonsEnabled(enabled: Boolean) {
         binding.btnCz.isEnabled = enabled
         binding.btnClearAll.isEnabled = enabled
+        binding.btnRefillStickFull.isEnabled = enabled
+        binding.btnClearWasteBucket.isEnabled = enabled
     }
 
     private fun updateManualSupplementConfirmButtonVisibility() {
         binding.btnConfirmSupplementSafety.visibility =
             if (KaoChangOperate.pendingSupplementBatchRequiresManualConfirm() != null) View.VISIBLE else View.GONE
+    }
+
+    private fun setConsumableManualButtonsEnabled(enabled: Boolean) {
+        binding.btnRefillStickFull.isEnabled = enabled
+        binding.btnClearWasteBucket.isEnabled = enabled
+    }
+
+    private fun handleConsumableManualAction(
+        actionName: String,
+        confirmMessage: String,
+        successMessage: String,
+        apiCall: (((code: Int, content: String?) -> Unit)?) -> Unit
+    ) {
+        AlertDialog.Builder(requireContext())
+            .setTitle(actionName)
+            .setMessage(confirmMessage)
+            .setPositiveButton("确认") { _, _ ->
+                AdminOperationLogger.i(
+                    action = actionName,
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_START,
+                    detail = "deviceCode=${AppConfig.getDeviceId()}，说明=现场耗材处理确认"
+                )
+                setConsumableManualButtonsEnabled(false)
+                binding.tvCooldownHint.text = "正在上报$actionName"
+                apiCall { code, content ->
+                    activity?.runOnUiThread {
+                        if (!isAdded || _binding == null) {
+                            return@runOnUiThread
+                        }
+                        setConsumableManualButtonsEnabled(true)
+                        binding.tvCooldownHint.text = ""
+                        if (code == 0) {
+                            AdminOperationLogger.i(
+                                action = actionName,
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "deviceCode=${AppConfig.getDeviceId()}"
+                            )
+                            ToastUtils.showLong(successMessage)
+                        } else {
+                            AdminOperationLogger.w(
+                                action = actionName,
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "deviceCode=${AppConfig.getDeviceId()}，response=${content ?: "无"}"
+                            )
+                            ToastUtils.showLong("$actionName 失败，请稍后重试")
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun setAlgorithmSwitchCheckedSilently(checked: Boolean) {
@@ -548,6 +606,24 @@ class MaintenanceFragment : Fragment() {
     }
 
     private fun setupButtons() {
+        binding.btnRefillStickFull.setOnClickListener {
+            handleConsumableManualAction(
+                actionName = "补满竹签",
+                confirmMessage = "请确认已现场补满竹签到容量上限。\n\n确认后系统会把竹签库存重置为后端配置容量，默认 500。",
+                successMessage = "竹签已记录为补满",
+                apiCall = DataManagementAPI::refillStickFull
+            )
+        }
+
+        binding.btnClearWasteBucket.setOnClickListener {
+            handleConsumableManualAction(
+                actionName = "清空垃圾桶",
+                confirmMessage = "请确认已现场清空垃圾桶。\n\n确认后系统会把弃肠计数重置为 0。",
+                successMessage = "垃圾桶已记录为清空",
+                apiCall = DataManagementAPI::clearWasteBucket
+            )
+        }
+
         binding.btnClearAll.setOnClickListener {
             if (clearPanCooldownJob?.isActive == true) return@setOnClickListener
 

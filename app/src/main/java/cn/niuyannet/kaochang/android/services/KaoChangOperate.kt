@@ -7,6 +7,7 @@ import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
+import cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
@@ -2785,6 +2786,15 @@ object KaoChangOperate {
             kaoPan.holdingTime=0
             kaoPan.startTime=0
             kaoPan.status=0
+            SendServerHelper.publishConsumableEvent(
+                ConsumableEventPayloadBuilder.nextEvent(
+                    consumableType = "WASTE",
+                    eventType = "WASTE_DISCARD_EXPIRED",
+                    deltaValue = 1L,
+                    source = "discardSausage_success",
+                    detail = "source=$source, pan=${kaoPan.positionSn}, taste=$tasteLabel"
+                )
+            )
             handleSuccessfulDiscardDemandGate(kaoPan.positionSn, source)
             FaultHeatPauseManager.clearDiscardPositionAndAlertIfFinished(kaoPan.positionSn)
             LogUtils.i(
@@ -3204,6 +3214,7 @@ object KaoChangOperate {
         SendServerHelper.publishServiceUpdateStatus()
         //执行丢弃操作
         try {
+            val businessCloseResidualCount = KaoPanHelper.getKaoPanList().count { it.isHasSausage }
             KaoChangAlgorithm.resetKaoPan()
             val selfCleanResult = runPanSelfCleanSequence(
                 positionSnList = (1..33).toList(),
@@ -3238,6 +3249,17 @@ object KaoChangOperate {
             config.zone3CleanPending = 0
             config.zone3CleanSuppressedFor4F = 0
             AppConfig.saveAppConfig(config)
+            if (ConsumableEventPayloadBuilder.shouldReportBusinessCloseWaste(businessCloseResidualCount, selfCleanResult.success)) {
+                SendServerHelper.publishConsumableEvent(
+                    ConsumableEventPayloadBuilder.nextEvent(
+                        consumableType = "WASTE",
+                        eventType = "WASTE_DISCARD_BUSINESS_CLOSE",
+                        deltaValue = businessCloseResidualCount.toLong(),
+                        source = "business_close_self_clean_success",
+                        detail = "residualCount=$businessCloseResidualCount"
+                    )
+                )
+            }
             logI(
                 LOG_SELF_CLEAN,
                 "营业结束全量自清洁完成：onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}"

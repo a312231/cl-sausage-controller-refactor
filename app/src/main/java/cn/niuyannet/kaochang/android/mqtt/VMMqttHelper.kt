@@ -127,6 +127,33 @@ object VMMqttHelper : VMMqtt() {
         return true
     }
 
+    private fun consumeConsumableEventAckIfNeeded(topicMessage: TopicMessage): Boolean {
+        if (topicMessage.action != MqttProtocol.ACTION_SERVICE_STATE) {
+            return false
+        }
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        if (content.getString("messageType").orEmpty() != MqttProtocol.TYPE_CONSUMABLE_EVENT_ACK) {
+            return false
+        }
+        val sourceEventKey = content.getString("sourceEventKey")
+        val applied = content.getBooleanValue("applied")
+        val reason = content.getString("reason").orEmpty()
+        val ackResult = SendServerHelper.markConsumableEventAcked(sourceEventKey)
+        if (applied) {
+            LogUtils.i(
+                "【耗材事件】服务端已确认耗材事件：" +
+                    "sourceEventKey=$sourceEventKey，freshAck=${ackResult.freshAck}，" +
+                    "ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，reason=$reason"
+            )
+        } else {
+            LogUtils.w(
+                "【耗材事件】服务端未应用耗材事件：" +
+                    "sourceEventKey=$sourceEventKey，freshAck=${ackResult.freshAck}，reason=$reason"
+            )
+        }
+        return true
+    }
+
     private fun summarizeServiceStateMessage(payload: String): String {
         val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
         val content = JSON.parseObject(topicMessage.content ?: "{}")
@@ -237,6 +264,9 @@ object VMMqttHelper : VMMqtt() {
                             return
                         }
                         if (consumeAvailableStateAckIfNeeded(bean)) {
+                            return
+                        }
+                        if (consumeConsumableEventAckIfNeeded(bean)) {
                             return
                         }
                         LogUtils.d(

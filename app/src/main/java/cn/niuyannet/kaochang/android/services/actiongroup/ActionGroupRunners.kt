@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.delay
 
@@ -183,6 +185,17 @@ private suspend fun executeSteps(
                 ActionGroupResult.Discarded -> operationLogger(formatOperationStepFinished(context, step.spec, elapsedMs))
                 is ActionGroupResult.Failed -> failureLogger(formatOperationStepFailed(context, step.spec, result))
             }
+        }
+        if (step.spec == AtomicActions.out2 && result == ActionGroupResult.Success) {
+            SendServerHelper.publishConsumableEvent(
+                ConsumableEventPayloadBuilder.nextEvent(
+                    consumableType = "STICK",
+                    eventType = "STICK_CONSUME",
+                    deltaValue = -1L,
+                    source = "out2_success",
+                    detail = "action=${step.spec.name}, elapsedMs=$elapsedMs"
+                )
+            )
         }
         if (step.spec == AtomicActions.out4 && result == ActionGroupResult.Success) {
             if (windowOpenBufferMs > 0L) {

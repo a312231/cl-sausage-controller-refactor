@@ -38,6 +38,9 @@ object NetApi {
     var updateKaoPanList_url = "$API_URL_START/updateKaoPanList"
     var reportSnapshot_url = "$API_URL_START/reportSnapshot"
     var updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
+    var consumableEvent_url = "$API_URL_START/consumable/event"
+    var consumableRefillStickFull_url = "$API_URL_START/consumable/refillStickFull"
+    var consumableClearWaste_url = "$API_URL_START/consumable/clearWaste"
     var checkUpdate_url = "$API_URL_START/checkUpdate"
     var reportVersion_url = "$API_URL_START/reportVersion"
 
@@ -357,6 +360,82 @@ object NetApi {
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
                     LogUtils.e("【网络请求】更新设备信息失败：deviceCode=$deviceCode, error=${response?.exception?.message}")
+                    callback?.invoke(1, response?.body())
+                }
+            })
+    }
+
+    fun uploadConsumableEvent(
+        event: cn.niuyannet.kaochang.android.mqtt.ConsumableEvent,
+        callback: ((code: Int, content: String?) -> Unit)? = null
+    ) {
+        val json = cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder.buildPayload(event)
+        LogUtils.d(
+            "【耗材事件】开始 HTTP 兜底上报耗材事件：" +
+                "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}，delta=${event.deltaValue}"
+        )
+        OkGo.post<String>(consumableEvent_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.i(
+                        "【耗材事件】HTTP 兜底上报成功：" +
+                            "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}"
+                    )
+                    callback?.invoke(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【耗材事件】HTTP 兜底上报失败：" +
+                            "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}，" +
+                            "error=${response?.exception?.message}"
+                    )
+                    callback?.invoke(1, response?.body())
+                }
+            })
+    }
+
+    fun refillStickFull(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        postConsumableManualAction(
+            url = consumableRefillStickFull_url,
+            actionName = "补满竹签",
+            callback = callback
+        )
+    }
+
+    fun clearWasteBucket(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        postConsumableManualAction(
+            url = consumableClearWaste_url,
+            actionName = "清空垃圾桶",
+            callback = callback
+        )
+    }
+
+    private fun postConsumableManualAction(
+        url: String,
+        actionName: String,
+        callback: ((code: Int, content: String?) -> Unit)? = null
+    ) {
+        val deviceCode = AppConfig.getDeviceId()
+        val json = JSONObject()
+        json["deviceCode"] = deviceCode
+        LogUtils.i("【耗材现场操作】开始上报$actionName：deviceCode=$deviceCode")
+        OkGo.post<String>(url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.i("【耗材现场操作】$actionName 上报成功：deviceCode=$deviceCode")
+                    callback?.invoke(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【耗材现场操作】$actionName 上报失败：" +
+                            "deviceCode=$deviceCode，error=${response?.exception?.message}"
+                    )
                     callback?.invoke(1, response?.body())
                 }
             })

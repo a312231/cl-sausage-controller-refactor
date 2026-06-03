@@ -15,6 +15,7 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 object SendServerHelper {
     private const val RUNTIME_STATE_ACK_TIMEOUT_MS = 8_000L
     private const val AVAILABLE_STATE_ACK_TIMEOUT_MS = 8_000L
+    private const val CONSUMABLE_EVENT_ACK_TIMEOUT_MS = 8_000L
 
     private val runtimeStateSeq = AtomicLong(System.currentTimeMillis())
     private val runtimeStateAckHandler = Handler(Looper.getMainLooper())
@@ -23,6 +24,8 @@ object SendServerHelper {
     private val availableStateSeq = AtomicLong(System.currentTimeMillis())
     private val availableStateAckHandler = Handler(Looper.getMainLooper())
     private val pendingAvailableStateAcks = ConcurrentHashMap<Long, AvailableStatePublishSnapshot>()
+    private val consumableEventAckHandler = Handler(Looper.getMainLooper())
+    private val pendingConsumableEventAcks = ConcurrentHashMap<String, ConsumableEventPublishSnapshot>()
     @Volatile
     private var lastPublishedRuntimeStateSeq: Long = -1L
     @Volatile
@@ -104,6 +107,17 @@ object SendServerHelper {
     data class AvailableStateAckResult(
         val freshAck: Boolean,
         val snapshot: AvailableStatePublishSnapshot?,
+        val ackLatencyMs: Long?
+    )
+
+    data class ConsumableEventPublishSnapshot(
+        val event: ConsumableEvent,
+        val publishedAt: Long
+    )
+
+    data class ConsumableEventAckResult(
+        val freshAck: Boolean,
+        val snapshot: ConsumableEventPublishSnapshot?,
         val ackLatencyMs: Long?
     )
 
@@ -367,6 +381,33 @@ object SendServerHelper {
         return ok
     }
 
+    fun publishConsumableEvent(event: ConsumableEvent): Boolean {
+        val payload = ConsumableEventPayloadBuilder.buildPayload(event)
+        val ok = VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+        if (ok) {
+            val snapshot = ConsumableEventPublishSnapshot(event, System.currentTimeMillis())
+            pendingConsumableEventAcks[event.sourceEventKey] = snapshot
+            scheduleConsumableEventAckTimeout(snapshot)
+            LogUtils.i(
+                "【耗材事件】耗材事件已进入 MQTT 发送队列：" +
+                    "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}，delta=${event.deltaValue}"
+            )
+        } else {
+            LogUtils.w(
+                "【耗材事件】耗材事件进入 MQTT 队列失败，触发 HTTP 兜底：" +
+                    "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}"
+            )
+            DataManagementAPI.uploadConsumableEvent(event)
+        }
+        return ok
+    }
+
     private fun scheduleRuntimeStateAckTimeout(snapshot: RuntimeStatePublishSnapshot) {
         runtimeStateAckHandler.postDelayed({
             val pending = pendingRuntimeStateAcks[snapshot.runtimeSeq] ?: return@postDelayed
@@ -423,6 +464,21 @@ object SendServerHelper {
         }, AVAILABLE_STATE_ACK_TIMEOUT_MS)
     }
 
+    private fun scheduleConsumableEventAckTimeout(snapshot: ConsumableEventPublishSnapshot) {
+        consumableEventAckHandler.postDelayed({
+            val pending = pendingConsumableEventAcks[snapshot.event.sourceEventKey] ?: return@postDelayed
+            if (pending.publishedAt != snapshot.publishedAt) {
+                return@postDelayed
+            }
+            val ageMs = System.currentTimeMillis() - pending.publishedAt
+            LogUtils.w(
+                "【耗材事件】耗材事件上报后仍未收到服务端确认，触发 HTTP 兜底：" +
+                    "sourceEventKey=${pending.event.sourceEventKey}，eventType=${pending.event.eventType}，ageMs=$ageMs"
+            )
+            DataManagementAPI.uploadConsumableEvent(pending.event)
+        }, CONSUMABLE_EVENT_ACK_TIMEOUT_MS)
+    }
+
     fun markAvailableStateAcked(availableSeq: Long): AvailableStateAckResult {
         if (availableSeq <= 0L) {
             return AvailableStateAckResult(
@@ -444,6 +500,15 @@ object SendServerHelper {
             snapshot = snapshot,
             ackLatencyMs = ackLatencyMs
         )
+    }
+
+    fun markConsumableEventAcked(sourceEventKey: String?): ConsumableEventAckResult {
+        if (sourceEventKey.isNullOrBlank()) {
+            return ConsumableEventAckResult(false, null, null)
+        }
+        val snapshot = pendingConsumableEventAcks.remove(sourceEventKey)
+        val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
+        return ConsumableEventAckResult(snapshot != null, snapshot, ackLatencyMs)
     }
 
     fun markRuntimeStateAcked(runtimeSeq: Long): RuntimeStateAckResult {

@@ -3,6 +3,7 @@
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
+import cn.niuyannet.kaochang.android.mqtt.ConsumableEvent
 import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
@@ -1320,5 +1321,17 @@ object DataManagementAPI {
 
     fun uploadDeviceInfo(source: String? = null, callback: ((code: Int, content: String?) -> Unit)? = null) {
         NetApi.updateDeviceInfo(callback, source)
+    }
+
+    fun uploadConsumableEvent(event: ConsumableEvent, callback: ((code: Int, content: String?) -> Unit)? = null) {
+        NetApi.uploadConsumableEvent(event, callback)
+    }
+
+    fun refillStickFull(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        NetApi.refillStickFull(callback)
+    }
+
+    fun clearWasteBucket(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        NetApi.clearWasteBucket(callback)
     }
 }
