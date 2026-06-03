@@ -749,6 +749,7 @@ object KaoChangAlgorithm {
             OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "pending_discard_priority")
             return
         }
+        settleMaturedZonesBeforeDispatch(config, kaoPanList)
 
         val pollStateSnapshot =
             "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},homeQrHidden=${config.homeQrHidden},inspection=${config.inspectionMode},isEnable=${config.isEnable},enable=$schedulingEnabled"
@@ -843,6 +844,40 @@ object KaoChangAlgorithm {
                 )
             }
         }
+    }
+
+    private fun settleMaturedZonesBeforeDispatch(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ): Boolean {
+        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val settlements = MaturedZoneKeepWarmSettler.settleMaturedZones(
+            pans = kaoPanList,
+            config = config,
+            nowMs = System.currentTimeMillis()
+        ) { area ->
+            KaoChangOperate.stopHeating(area)
+            KaoChangOperate.keepWarm(area)
+        }
+        if (settlements.isEmpty()) {
+            return false
+        }
+
+        logI(
+            LOG_ALGORITHM,
+            "【加热控制】机械调度前整区成熟收口：${
+                settlements.joinToString("；") { settlement ->
+                    "${settlement.area}区转保温，positions=${settlement.positions}"
+                }
+            }"
+        )
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+            beforeSellable,
+            KaoPanHelper.getKaoPanList(),
+            "机械门禁前整区成熟转保温"
+        )
+        return true
     }
 
     /**
