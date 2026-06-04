@@ -668,6 +668,7 @@ object KaoChangAlgorithm {
                 "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
                 "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}"
         )
+        HomeUiRefreshBridge.requestRefresh("algorithm_fault:$reason")
     }
 
     /**
@@ -1022,6 +1023,7 @@ object KaoChangAlgorithm {
                             config.errorReason = null
                             config.onlineStatus = restoredOnlineStatus
                             AppConfig.saveAppConfig(config)
+                            HomeUiRefreshBridge.requestRefresh("modbus_auto_recovery:restored")
                             KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
                             rememberRecoverableOnlineStatus(restoredOnlineStatus)
                             modbusReportedUnavailable = false

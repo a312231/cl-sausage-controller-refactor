@@ -478,6 +478,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     binding.deviceStatusText.text = "检修中"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_maintaining))
                 }
+                appConfigBean.onlineStatus == 3 -> {
+                    binding.deviceStatusText.text = "维护中"
+                    binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_maintaining))
+                }
                 isHomeQrHidden -> {
                     binding.deviceStatusText.text = "首页码隐藏"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_working))
@@ -500,10 +504,6 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     binding.deviceStatusText.text = "休息中"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_resting))
                 }
-                3 -> {
-                    binding.deviceStatusText.text = "维护中"
-                    binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_maintaining))
-                }
                 4 -> {
                     binding.deviceStatusText.text = "正在出烤肠"
                     binding.deviceStatusText.setTextColor(resources.getColor(R.color.status_working))
@@ -521,10 +521,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
         if (isInspectionMode) {
             binding.tvScanTip.text = "设备检修中"
-        } else if (isHomeQrHidden) {
-            binding.tvScanTip.text = "首页二维码已隐藏"
         } else if (appConfigBean.onlineStatus == 3) {
             binding.tvScanTip.text = "设备维护中"
+        } else if (isHomeQrHidden) {
+            binding.tvScanTip.text = "首页二维码已隐藏"
         } else if (isSupplySoldOut) {
             binding.tvScanTip.text = "售罄/补货中"
         } else {

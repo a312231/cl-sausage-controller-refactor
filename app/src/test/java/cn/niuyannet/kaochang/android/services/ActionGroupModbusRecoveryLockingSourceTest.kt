@@ -126,6 +126,51 @@ class ActionGroupModbusRecoveryLockingSourceTest {
         )
     }
 
+    @Test
+    fun actionGroupFaultLock_shouldRefreshHomeUiAfterMaintenanceStatusWritten() {
+        val source = sourceText()
+        val faultStart = source.indexOf("private fun markDeviceErrorAndUpload(")
+        assertTrue("必须存在动作组故障锁存入口", faultStart >= 0)
+        val faultEnd = source.indexOf("private fun armPostSellSupplementGuard", faultStart)
+            .let { if (it >= 0) it else source.length }
+        val faultBlock = source.substring(faultStart, faultEnd)
+
+        assertTrue(
+            "动作组/硬件故障锁存进入维护后必须刷新首页，否则二维码会等到 onResume/周期刷新才隐藏",
+            faultBlock.contains("HomeUiRefreshBridge.requestRefresh(")
+        )
+    }
+
+    @Test
+    fun algorithmFaultStop_shouldRefreshHomeUiAfterMaintenanceStatusWritten() {
+        val source = algorithmSourceText()
+        val faultStart = source.indexOf("private fun stopHeatingAndDispatchForFault(")
+        assertTrue("必须存在算法故障停热收口入口", faultStart >= 0)
+        val faultEnd = source.indexOf("private fun evaluateModbusAutoRecovery", faultStart)
+            .let { if (it >= 0) it else source.length }
+        val faultBlock = source.substring(faultStart, faultEnd)
+
+        assertTrue(
+            "算法监控检测到下位机故障并进入维护后必须刷新首页，否则二维码会等到 onResume/周期刷新才隐藏",
+            faultBlock.contains("HomeUiRefreshBridge.requestRefresh(")
+        )
+    }
+
+    @Test
+    fun modbusAutoRecovery_shouldRefreshHomeUiAfterOnlineStatusRestored() {
+        val source = algorithmSourceText()
+        val restoreIndex = source.indexOf("config.onlineStatus = restoredOnlineStatus")
+        assertTrue("必须存在 Modbus 自动恢复 onlineStatus 写入", restoreIndex >= 0)
+        val restoreBlockEnd = source.indexOf("uploadDeviceStatus(", restoreIndex)
+            .let { if (it >= 0) it else source.length }
+        val restoreBlock = source.substring(restoreIndex, restoreBlockEnd)
+
+        assertTrue(
+            "Modbus 自动恢复 onlineStatus 后必须刷新首页，否则二维码/维护文案会延迟更新",
+            restoreBlock.contains("HomeUiRefreshBridge.requestRefresh(")
+        )
+    }
+
     private fun assertEntry(
         source: String,
         ensureActionName: String,

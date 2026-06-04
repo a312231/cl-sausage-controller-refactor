@@ -291,7 +291,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     } else {
                         Toast.makeText(this@OrderActivity, "订单未完成，请联系维护人员", Toast.LENGTH_LONG).show()
                     }
-                    // 鏄剧ずQRCode
+                    // 订单结束后刷新首页二维码、状态文案和预计时间。
                     setDataToView()
                 }
             } finally {

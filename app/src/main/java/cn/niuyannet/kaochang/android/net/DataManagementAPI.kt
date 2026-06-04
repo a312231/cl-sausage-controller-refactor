@@ -17,6 +17,7 @@ import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
@@ -1033,6 +1034,11 @@ object DataManagementAPI {
             val oldSupplyStatus = appConfigBean.supplyStatus
             val oldHomeQrHidden = appConfigBean.homeQrHidden
             val oldInspectionMode = appConfigBean.inspectionMode
+            val oldQcodeUrl = appConfigBean.qcodeURL
+            val oldDeviceName = appConfigBean.deviceName
+            val oldDeviceCode = appConfigBean.deviceCode
+            val oldAvailable = appConfigBean.available
+            val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
             val oldModeType = appConfigBean.modeType
             val oldTransitionMode = appConfigBean.transitionMode
             val oldKeepWarmTemperature = appConfigBean.keepWarmTemperature
@@ -1122,6 +1128,21 @@ object DataManagementAPI {
                 logD("远端配置已更新：${changes.joinToString(", ")}")
             }
 
+            val homeDisplayChanged =
+                oldStatus != mergedConfig.status ||
+                    oldOnlineStatus != mergedConfig.onlineStatus ||
+                    oldSupplyStatus != mergedConfig.supplyStatus ||
+                    oldHomeQrHidden != mergedConfig.homeQrHidden ||
+                    oldInspectionMode != mergedConfig.inspectionMode ||
+                    oldQcodeUrl != mergedConfig.qcodeURL ||
+                    oldDeviceName != mergedConfig.deviceName ||
+                    oldDeviceCode != mergedConfig.deviceCode ||
+                    oldAvailable != mergedConfig.available ||
+                    oldAvailableCountdownLatched != mergedConfig.availableCountdownLatched
+            if (homeDisplayChanged) {
+                HomeUiRefreshBridge.requestRefresh("getDeviceInfo:home_display_changed")
+            }
+
             reconcileDiscardCloseTime(LOG_SYNC, oldDiscardTime, mergedConfig)
             reconcileActiveBakingTime(LOG_SYNC, oldBakingTime, mergedConfig)
 
@@ -1157,6 +1178,8 @@ object DataManagementAPI {
         val oldHomeQrHidden = appConfigBean.homeQrHidden
         val oldInspectionMode = appConfigBean.inspectionMode
         val oldQcodeUrl = appConfigBean.qcodeURL
+        val oldDeviceName = appConfigBean.deviceName
+        val oldDeviceCode = appConfigBean.deviceCode
         val oldAvailable = appConfigBean.available
         val oldAvailableCountdownLatched = appConfigBean.availableCountdownLatched
         val oldBakingTime = appConfigBean.bakingTime
@@ -1263,6 +1286,8 @@ object DataManagementAPI {
                     oldHomeQrHidden != mergedConfig.homeQrHidden ||
                     oldInspectionMode != mergedConfig.inspectionMode ||
                     oldQcodeUrl != mergedConfig.qcodeURL ||
+                    oldDeviceName != mergedConfig.deviceName ||
+                    oldDeviceCode != mergedConfig.deviceCode ||
                     oldAvailable != mergedConfig.available ||
                     oldAvailableCountdownLatched != mergedConfig.availableCountdownLatched ||
                     oldBakingTime != mergedConfig.bakingTime ||
@@ -1277,6 +1302,8 @@ object DataManagementAPI {
                         "homeQrHidden（首页二维码隐藏）=${homeQrHiddenText(oldHomeQrHidden)}->${homeQrHiddenText(mergedConfig.homeQrHidden)}，" +
                         "inspectionMode（检修模式）=${inspectionModeText(oldInspectionMode)}->${inspectionModeText(mergedConfig.inspectionMode)}，" +
                         "qrcodeChanged（二维码地址是否变化）=${oldQcodeUrl != mergedConfig.qcodeURL}，" +
+                        "deviceNameChanged（设备名称是否变化）=${oldDeviceName != mergedConfig.deviceName}，" +
+                        "deviceCodeChanged（设备编号是否变化）=${oldDeviceCode != mergedConfig.deviceCode}，" +
                         "available（二维码页预计时间）=${oldAvailable}->${mergedConfig.available}，" +
                         "availableCountdownLatched（二维码页预计时间锁存标记）=${oldAvailableCountdownLatched}->${mergedConfig.availableCountdownLatched}，" +
                         "bakingTime（烤制时长）=${oldBakingTime}分钟->${mergedConfig.bakingTime}分钟，" +

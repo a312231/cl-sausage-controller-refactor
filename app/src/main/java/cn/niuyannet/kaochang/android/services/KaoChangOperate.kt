@@ -299,6 +299,7 @@ object KaoChangOperate {
                 "errorCode=${code.name}（${code.category.display}），" +
                 "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，reason=$logMessage"
         )
+        HomeUiRefreshBridge.requestRefresh("device_fault:${code.name}")
         operateScope.launch {
             AppConfig.saveAppConfig(config)
             publishRuntimeStateWithHttpFallback("设备故障状态上报")
@@ -682,6 +683,7 @@ object KaoChangOperate {
         config.onlineStatus = 3
         config.isEnable = 0
         AppConfig.saveAppConfig(config)
+        HomeUiRefreshBridge.requestRefresh("action_group:disable_if_idle")
         logW(
             LOG_ACTION_GROUP,
             "$reason：已执行 pendingDisableActionGroupV2=1（待会话收口后关闭），" +
@@ -3121,6 +3123,7 @@ object KaoChangOperate {
             config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
             KaoChangAlgorithm.isEnabled = false
+            HomeUiRefreshBridge.requestRefresh("business_start:fault")
             logW(
                 LOG_DEVICE,
                 "跳过营业开始自动恢复：原因=检测到故障，source=$source，" +
@@ -3162,6 +3165,7 @@ object KaoChangOperate {
         config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
         AppConfig.saveAppConfig(config)
         KaoChangAlgorithm.isEnabled = true
+        HomeUiRefreshBridge.requestRefresh("business_start:rest_to_operating")
         logI(
             LOG_DEVICE,
             "营业开始自动恢复：source=$source，" +
@@ -3183,6 +3187,7 @@ object KaoChangOperate {
             config.onlineStatus = 3
             config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
+            HomeUiRefreshBridge.requestRefresh("business_end:fault")
             logW(
                 LOG_DEVICE,
                 "营业时间结束：检测到设备故障标记，保持维护中 | errorStatus=${config.errorStatus}(0=正常, 非0=故障), " +
@@ -3205,6 +3210,7 @@ object KaoChangOperate {
             restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
         }
         AppConfig.saveAppConfig(config)
+        HomeUiRefreshBridge.requestRefresh("business_end:operating_to_rest")
         logD(
             LOG_DEVICE,
             "营业时间结束：已自动切换为休息中（2），" +
@@ -3274,6 +3280,7 @@ object KaoChangOperate {
             config.errorReason = "营业结束重置烤盘失败：${e.javaClass.simpleName}：${e.message}"
             config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
             AppConfig.saveAppConfig(config)
+            HomeUiRefreshBridge.requestRefresh("business_end:reset_failed")
             logE(
                 LOG_DEVICE,
                 "营业时间结束：重置烤盘失败，已降级为维护中并上报 | " +
