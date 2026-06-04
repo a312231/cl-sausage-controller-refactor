@@ -120,8 +120,13 @@ object NetApi {
      */
     fun getDeviceInfo(deviceId: String, callback: (code: Int, content: String?) -> Unit) {
         LogUtils.d("【网络请求】开始获取设备详情：deviceCode=$deviceId")
-        OkGo.get<String>(getDeviceInfo_url)
+        val request = OkGo.get<String>(getDeviceInfo_url)
             .params("deviceCode", deviceId)
+        val credential = AppConfig.getAppConfig().mqttPassword
+        if (!credential.isNullOrBlank()) {
+            request.headers("X-Device-Credential", credential)
+        }
+        request
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
                     LogUtils.d("【网络请求】获取设备详情成功：deviceCode=$deviceId")

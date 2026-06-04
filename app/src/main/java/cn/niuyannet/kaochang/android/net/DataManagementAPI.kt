@@ -507,6 +507,7 @@ object DataManagementAPI {
         val previousModeType = config.modeType
         val previousTransitionMode = config.transitionMode
         val previousHighConcurrencyResidualDrain = config.highConcurrencyResidualDrain
+        val previousAdminPasswordHash = config.adminPasswordHash
         val previousRestStatusSource = config.restStatusSource
         val operator = json.getString("operator").orEmpty()
 
@@ -595,6 +596,7 @@ object DataManagementAPI {
                 previousModeType != currentConfig.modeType ||
                 previousTransitionMode != currentConfig.transitionMode ||
                 previousHighConcurrencyResidualDrain != currentConfig.highConcurrencyResidualDrain ||
+                previousAdminPasswordHash != currentConfig.adminPasswordHash ||
                 patchResult.temperatureChanged
 
         val rejectedFields = patchResult.rejectedFields + patchResult.unknownFields

@@ -10,9 +10,11 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
+import java.security.MessageDigest
 
 object AppConfig {
     const val Sp_File_URL = "KAOCHANG_APP_CONFIG"
+    const val DEFAULT_ADMIN_PASSWORD_HASH = "e7d5ef5d4a76223f930e1264c0690f7aa0fea6faf27eefa0110c1a16bfe8bf2d"
     const val DEFAULT_BOX_REFILL_TARGET_NUM = 10
     const val MIN_BOX_REFILL_TARGET_NUM = 1
     const val MAX_BOX_REFILL_TARGET_NUM = 15
@@ -202,6 +204,7 @@ object AppConfig {
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
         val faultSafetyMigrated = normalizeFaultSafetyConfig(config, "配置加载")
+        val adminPasswordMigrated = normalizeAdminPasswordHash(config)
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         normalizeConcurrencyState(config, "配置加载")
@@ -209,6 +212,7 @@ object AppConfig {
             forceVisionSuccessMigrated ||
             boxRefillTargetNumMigrated ||
             faultSafetyMigrated ||
+            adminPasswordMigrated ||
             oldModeType != config.modeType ||
             oldTransitionMode != config.transitionMode
         ) {
@@ -258,6 +262,35 @@ object AppConfig {
             changed = true
         }
         return changed
+    }
+
+    private fun normalizeAdminPasswordHash(config: AppConfigBean): Boolean {
+        val currentHash = config.adminPasswordHash
+        if (isValidSha256Hash(currentHash)) {
+            return false
+        }
+        config.adminPasswordHash = DEFAULT_ADMIN_PASSWORD_HASH
+        LogUtils.w("【配置迁移】上位机管理员密码配置为空或非法，已回退为默认密码 cl123")
+        return true
+    }
+
+    fun isAdminPasswordValid(password: String): Boolean {
+        val config = getAppConfig()
+        val configuredHash = if (isValidSha256Hash(config.adminPasswordHash)) {
+            config.adminPasswordHash
+        } else {
+            DEFAULT_ADMIN_PASSWORD_HASH
+        }
+        return sha256(password.trim()).equals(configuredHash, ignoreCase = true)
+    }
+
+    private fun isValidSha256Hash(value: String?): Boolean {
+        return value != null && Regex("^[0-9a-fA-F]{64}$").matches(value)
+    }
+
+    private fun sha256(value: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return bytes.joinToString(separator = "") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun migrateForceVisionSuccessDefault(config: AppConfigBean): Boolean {
@@ -560,6 +593,14 @@ object AppConfig {
         mergeString("mqttUrl", "mqttUrl") { config.mqttHost = it }
         mergeString("mqttUsername", "mqttUsername") { config.mqttUsername = it }
         mergeString("mqttPassword", "mqttPassword") { config.mqttPassword = it }
+        mergeString("adminPasswordHash", "adminPasswordHash", allowBlank = false) {
+            if (isValidSha256Hash(it)) {
+                config.adminPasswordHash = it.lowercase()
+            } else {
+                preservedFields.add("adminPasswordHash(invalid_preserved_local)")
+                LogUtils.w("[$logPrefix] 远端上位机管理员密码 hash 非法，已继续使用本地配置")
+            }
+        }
         mergeString("modbusAddress", "modbusAddress") { config.modbusAddress = it }
         mergeString("deviceCode", "deviceCode", allowBlank = false) { config.deviceCode = it }
         mergeString("name", "name", allowBlank = false) { config.deviceName = it }

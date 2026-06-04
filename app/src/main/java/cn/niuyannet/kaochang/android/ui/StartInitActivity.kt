@@ -69,8 +69,27 @@ class StartInitActivity : BaseActivity() {
         if (code == 0) {
             val json = JSON.parseObject(content)
             if (json.getIntValue("code") == 200) {
-                val deviceCode = json.getJSONObject("data")?.getString("deviceCode")?.takeIf { it.isNotBlank() }
+                val data = json.getJSONObject("data")
+                val deviceData = data?.getJSONObject("device")
+                if (deviceData != null) {
+                    val mergeResult = AppConfig.mergeRemoteConfig(
+                        deviceData,
+                        content,
+                        "设备初始化",
+                        preserveRuntimeConcurrencyState = false
+                    )
+                    if (!mergeResult.applied) {
+                        LogUtils.w("设备初始化：云端返回设备配置未完整应用，message=${mergeResult.message}")
+                    }
+                }
+                val deviceCode = data?.getString("deviceCode")?.takeIf { it.isNotBlank() }
+                    ?: deviceData?.getString("deviceCode")?.takeIf { it.isNotBlank() }
                     ?: initInput
+                if (AppConfig.getAppConfig().mqttPassword.isNullOrBlank()) {
+                    LogUtils.w("设备初始化：云端未返回设备通信凭证，已拒绝完成初始化；请使用后台生成的一次性激活码")
+                    ToastUtils.showShort("请使用后台生成的一次性激活码初始化设备")
+                    return
+                }
                 PreferenceUtils.saveBooleanPreference(spFileKey, "sp_init_status", true)
                 AppConfig.saveDeviceId(deviceCode)
                 MainActivity.start(this)

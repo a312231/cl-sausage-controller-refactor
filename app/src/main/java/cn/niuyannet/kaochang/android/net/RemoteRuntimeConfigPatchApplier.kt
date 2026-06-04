@@ -61,6 +61,8 @@ object RemoteRuntimeConfigPatchApplier {
                     applyHeatingOffset(config, field, entry.value, normalizedFields) { config.zone2HeatingOffset = it }
                 "zone3HeatingOffset" ->
                     applyHeatingOffset(config, field, entry.value, normalizedFields) { config.zone3HeatingOffset = it }
+                "adminPasswordHash" ->
+                    applySha256Hash(config, field, entry.value) { config.adminPasswordHash = it }
                 else -> {
                     unknownFields.add(rawField)
                     false
@@ -153,6 +155,20 @@ object RemoteRuntimeConfigPatchApplier {
         }
     }
 
+    private fun applySha256Hash(
+        config: AppConfigBean,
+        field: String,
+        value: Any?,
+        setter: (String) -> Unit
+    ): Boolean {
+        val hash = (value as? String)?.trim() ?: return false
+        if (!Regex("^[0-9a-fA-F]{64}$").matches(hash)) {
+            return false
+        }
+        setter(hash.lowercase())
+        return readStringField(config, field) == hash.lowercase()
+    }
+
     private fun readIntField(config: AppConfigBean, field: String): Int? {
         return when (field) {
             "onlineStatus" -> config.onlineStatus
@@ -166,6 +182,13 @@ object RemoteRuntimeConfigPatchApplier {
             "zone1HeatingOffset" -> config.zone1HeatingOffset
             "zone2HeatingOffset" -> config.zone2HeatingOffset
             "zone3HeatingOffset" -> config.zone3HeatingOffset
+            else -> null
+        }
+    }
+
+    private fun readStringField(config: AppConfigBean, field: String): String? {
+        return when (field) {
+            "adminPasswordHash" -> config.adminPasswordHash
             else -> null
         }
     }

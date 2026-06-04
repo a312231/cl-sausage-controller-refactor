@@ -27,6 +27,9 @@ public class AppConfigBean implements Serializable {
     public String mqttPassword = "";
     public int mqttPort = 1883;
 
+    // 上位机本地管理员登录密码 SHA-256 哈希；远端未下发时默认 cl123
+    public String adminPasswordHash = "e7d5ef5d4a76223f930e1264c0690f7aa0fea6faf27eefa0110c1a16bfe8bf2d";
+
     // Modbus 串口配置
     public String modbusAddress = "/dev/ttyS2";
     public int modbusBaudRate = 115200;
