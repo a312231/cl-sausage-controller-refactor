@@ -23,6 +23,43 @@ class PendingRootInstallTest {
     }
 
     @Test
+    fun decodeOldJson_missingInstallerTypeDefaultsToRoot() {
+        val raw = """
+            {
+              "targetVersionCode":130,
+              "targetVersionName":"2.1.35",
+              "forceUpdate":false,
+              "triggerId":null,
+              "apkSha256":"abc123",
+              "startedAtMs":1000,
+              "firstDetectedAtMs":900
+            }
+        """.trimIndent()
+
+        val pending = PendingRootInstallCodec.decode(raw)
+
+        assertEquals(PendingRootInstall.INSTALLER_TYPE_ROOT, pending?.installerTypeOrRoot())
+    }
+
+    @Test
+    fun installerTypeOrRoot_preservesJwsAndFallsBackForBlank() {
+        val jws = PendingRootInstall(
+            targetVersionCode = 130,
+            targetVersionName = "2.1.35",
+            forceUpdate = false,
+            triggerId = null,
+            apkSha256 = "abc123",
+            startedAtMs = 1_000L,
+            firstDetectedAtMs = 900L,
+            installerType = " JWS "
+        )
+        val blank = jws.copy(installerType = " ")
+
+        assertEquals(PendingRootInstall.INSTALLER_TYPE_JWS, jws.installerTypeOrRoot())
+        assertEquals(PendingRootInstall.INSTALLER_TYPE_ROOT, blank.installerTypeOrRoot())
+    }
+
+    @Test
     fun isTimedOut_onlyAfterTimeoutWindow() {
         val pending = PendingRootInstall(
             targetVersionCode = 130,

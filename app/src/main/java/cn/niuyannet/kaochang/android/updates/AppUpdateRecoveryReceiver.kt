@@ -11,7 +11,7 @@ class AppUpdateRecoveryReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         val pending = PendingRootInstallStore.load(context)
         if (pending == null) {
-            LogUtils.d("【应用更新】收到恢复广播但无 pending root 安装任务：action=$action")
+            LogUtils.d("【应用更新】收到恢复广播但无 pending 静默安装任务：action=$action")
             return
         }
         LogUtils.i("【应用更新】收到恢复广播，尝试拉起上位机：action=$action，targetVersionCode=${pending.targetVersionCode}")
@@ -23,7 +23,7 @@ class AppUpdateRecoveryReceiver : BroadcastReceiver() {
                 }
             )
         }.onFailure {
-            LogUtils.w("【应用更新】恢复广播拉起上位机失败，等待 root shell 或外部守护兜底：error=${it.message}")
+            LogUtils.w("【应用更新】恢复广播拉起上位机失败，等待静默安装链路或外部守护兜底：error=${it.message}")
         }
     }
 }

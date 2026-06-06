@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.updates
 
 import android.content.Context
 import com.alibaba.fastjson.JSON
+import java.util.Locale
 
 data class PendingRootInstall(
     val targetVersionCode: Int,
@@ -10,8 +11,22 @@ data class PendingRootInstall(
     val triggerId: String?,
     val apkSha256: String,
     val startedAtMs: Long,
-    val firstDetectedAtMs: Long
-)
+    val firstDetectedAtMs: Long,
+    val installerType: String? = null
+) {
+    fun installerTypeOrRoot(): String {
+        return installerType
+            ?.trim()
+            ?.lowercase(Locale.US)
+            ?.takeIf { it.isNotBlank() }
+            ?: INSTALLER_TYPE_ROOT
+    }
+
+    companion object {
+        const val INSTALLER_TYPE_ROOT = "root"
+        const val INSTALLER_TYPE_JWS = "jws"
+    }
+}
 
 object PendingRootInstallCodec {
     fun encode(pending: PendingRootInstall): String = JSON.toJSONString(pending)

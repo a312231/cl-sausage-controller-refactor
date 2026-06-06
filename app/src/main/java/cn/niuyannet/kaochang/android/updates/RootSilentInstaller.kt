@@ -12,6 +12,12 @@ object RootSilentInstaller {
         val output: String
     )
 
+    data class RootProbeResult(
+        val available: Boolean,
+        val commandLabel: String?,
+        val output: String
+    )
+
     interface CommandRunner {
         fun runAndWait(command: List<String>, timeoutMs: Long): CommandResult
         fun start(command: List<String>): Process
@@ -47,11 +53,57 @@ object RootSilentInstaller {
         ) : LaunchResult()
     }
 
+    private data class RootShellCandidate(
+        val label: String,
+        val probeCommand: List<String>,
+        val buildScriptCommand: (String) -> List<String>
+    )
+
+    private val rootShellCandidates = listOf(
+        RootShellCandidate(
+            label = "su 0 sh -c",
+            probeCommand = listOf("su", "0", "sh", "-c", "id"),
+            buildScriptCommand = { script -> listOf("su", "0", "sh", "-c", script) }
+        ),
+        RootShellCandidate(
+            label = "su -c",
+            probeCommand = listOf("su", "-c", "id"),
+            buildScriptCommand = { script -> listOf("su", "-c", script) }
+        ),
+        RootShellCandidate(
+            label = "su root sh -c",
+            probeCommand = listOf("su", "root", "sh", "-c", "id"),
+            buildScriptCommand = { script -> listOf("su", "root", "sh", "-c", script) }
+        )
+    )
+
     fun isRootAvailable(runner: CommandRunner = ProcessCommandRunner): Boolean {
-        return runCatching {
-            val result = runner.runAndWait(listOf("su", "0", "sh", "-c", "id"), timeoutMs = 5_000L)
-            result.exitCode == 0 && isRootAvailableOutput(result.output)
-        }.getOrDefault(false)
+        return probeRoot(runner).available
+    }
+
+    fun probeRoot(runner: CommandRunner = ProcessCommandRunner): RootProbeResult {
+        val attempts = StringBuilder()
+        for (candidate in rootShellCandidates) {
+            val result = runCatching {
+                runner.runAndWait(candidate.probeCommand, timeoutMs = 5_000L)
+            }.getOrElse {
+                CommandResult(-1, it.message.orEmpty())
+            }
+            val summary = formatAttempt(candidate.label, result)
+            attempts.append(summary).append('\n')
+            if (result.exitCode == 0 && isRootAvailableOutput(result.output)) {
+                return RootProbeResult(
+                    available = true,
+                    commandLabel = candidate.label,
+                    output = attempts.toString().trim()
+                )
+            }
+        }
+        return RootProbeResult(
+            available = false,
+            commandLabel = null,
+            output = attempts.toString().trim()
+        )
     }
 
     fun isRootAvailableOutput(output: String): Boolean {
@@ -63,6 +115,7 @@ object RootSilentInstaller {
         targetVersionCode: Int,
         packageName: String = PACKAGE_NAME,
         launcherComponent: String = LAUNCHER_COMPONENT,
+        preferredRootCommandLabel: String? = null,
         runner: CommandRunner = ProcessCommandRunner
     ): LaunchResult {
         if (!apkFile.isFile) {
@@ -74,12 +127,23 @@ object RootSilentInstaller {
             packageName = packageName,
             launcherComponent = launcherComponent
         )
-        return runCatching {
-            runner.start(listOf("su", "0", "sh", "-c", script))
-            LaunchResult.Started
-        }.getOrElse {
-            LaunchResult.Failed("root_command_start_failed", it.message.orEmpty())
+        val failures = StringBuilder()
+        for (candidate in orderedRootShellCandidates(preferredRootCommandLabel)) {
+            val command = candidate.buildScriptCommand(script)
+            val started = runCatching {
+                runner.start(command)
+                LaunchResult.Started
+            }
+            if (started.isSuccess) {
+                return LaunchResult.Started
+            }
+            failures
+                .append(candidate.label)
+                .append(": ")
+                .append(started.exceptionOrNull()?.message.orEmpty())
+                .append('\n')
         }
+        return LaunchResult.Failed("root_command_start_failed", failures.toString().trim())
     }
 
     fun buildInstallScript(
@@ -110,5 +174,25 @@ object RootSilentInstaller {
 
     fun shellQuote(value: String): String {
         return "'" + value.replace("'", "'\"'\"'") + "'"
+    }
+
+    private fun orderedRootShellCandidates(preferredRootCommandLabel: String?): List<RootShellCandidate> {
+        if (preferredRootCommandLabel.isNullOrBlank()) {
+            return rootShellCandidates
+        }
+        val preferred = rootShellCandidates.firstOrNull { it.label == preferredRootCommandLabel }
+            ?: return rootShellCandidates
+        return listOf(preferred) + rootShellCandidates.filterNot { it.label == preferredRootCommandLabel }
+    }
+
+    private fun formatAttempt(label: String, result: CommandResult): String {
+        return "$label: exitCode=${result.exitCode}, output=${singleLine(result.output)}"
+    }
+
+    private fun singleLine(value: String): String {
+        return value.replace('\r', ' ')
+            .replace('\n', ' ')
+            .trim()
+            .take(500)
     }
 }

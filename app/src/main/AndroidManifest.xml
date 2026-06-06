@@ -24,6 +24,14 @@
     <!-- 存储权限（Android 13+） -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-feature android:name="android.hardware.usb.host" />
+
+    <queries>
+        <package android:name="com.jws.systemfor3rdservice" />
+        <intent>
+            <action android:name="action.com.jws.systemfor3rdservice" />
+        </intent>
+    </queries>
+
     <application
         android:name=".MyApp"
         android:allowBackup="true"

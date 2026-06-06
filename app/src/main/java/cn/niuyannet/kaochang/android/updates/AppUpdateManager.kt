@@ -8,6 +8,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.StatFs
 import android.provider.Settings
 import androidx.core.content.FileProvider
@@ -56,6 +57,11 @@ object AppUpdateManager {
     private const val REASON_ROOT_INSTALL_RECONCILE_TIMEOUT = "root_install_reconcile_timeout"
     private const val REASON_ROOT_NOT_AVAILABLE = "root_not_available"
     private const val REASON_MANUAL_FALLBACK_REQUIRED = "manual_fallback_required"
+    private const val REASON_JWS_INSTALL_STARTED = "jws_install_started"
+    private const val REASON_JWS_INSTALL_LAUNCH_FAILED = "jws_install_launch_failed"
+    private const val REASON_JWS_INSTALL_RECONCILED_SUCCESS = "jws_install_reconciled_success"
+    private const val REASON_JWS_INSTALL_RECONCILE_TIMEOUT = "jws_install_reconcile_timeout"
+    private const val REASON_JWS_SERVICE_UNAVAILABLE = "jws_service_unavailable"
     private val REPORT_VERSION_RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 60_000L)
 
     interface TimeSource {
@@ -602,7 +608,18 @@ object AppUpdateManager {
     }
 
     private fun continueInstallAfterRevalidation(activity: Activity, pending: PendingInstall) {
+        // 本批设备实测 JWS 服务 sendBroadcast NPE 且不安装，当前刻意停用；保留代码待厂商修复或新批次验证。
         startRootSilentInstall(activity, pending)
+    }
+
+    @Suppress("unused")
+    private fun startJwsThenFallbackInstall(activity: Activity, pending: PendingInstall) {
+        managerScope.launch {
+            val jwsStarted = startJwsSilentInstall(activity, pending)
+            if (!jwsStarted) {
+                startRootSilentInstall(activity, pending)
+            }
+        }
     }
 
     private fun startSystemInstallerFallback(activity: Activity, pending: PendingInstall) {
@@ -692,18 +709,119 @@ object AppUpdateManager {
         }
     }
 
+    @Suppress("unused")
+    private suspend fun startJwsSilentInstall(activity: Activity, pending: PendingInstall): Boolean {
+        val stagedApk = withContext(Dispatchers.IO) {
+            runCatching {
+                stageApkForJws(pending.info, pending.apkFile)
+            }
+        }.getOrElse {
+            publishUpgradeNotice(
+                pending.info,
+                pending.force,
+                REASON_JWS_INSTALL_LAUNCH_FAILED,
+                pending.triggerId,
+                "公共目录 staging 失败：${it.message ?: it.javaClass.name}"
+            )
+            return false
+        }
+
+        val bindResult = JwsSilentInstaller.bind(activity.applicationContext)
+        if (bindResult is JwsSilentInstaller.BindResult.Failed) {
+            publishUpgradeNotice(
+                pending.info,
+                pending.force,
+                REASON_JWS_SERVICE_UNAVAILABLE,
+                pending.triggerId,
+                "reason=${bindResult.reason}, output=${bindResult.output}"
+            )
+            return false
+        }
+
+        val session = (bindResult as JwsSilentInstaller.BindResult.Bound).session
+        try {
+            val pendingRootInstall = PendingRootInstall(
+                targetVersionCode = pending.info.versionCode,
+                targetVersionName = pending.info.versionName,
+                forceUpdate = pending.force,
+                triggerId = pending.triggerId,
+                apkSha256 = pending.info.apkSha256,
+                startedAtMs = timeSource.nowMs(),
+                firstDetectedAtMs = pending.firstDetectedAtMs,
+                installerType = PendingRootInstall.INSTALLER_TYPE_JWS
+            )
+            val saved = withContext(Dispatchers.IO) {
+                PendingRootInstallStore.save(activity.applicationContext, pendingRootInstall)
+            }
+            if (!saved) {
+                publishUpgradeNotice(
+                    pending.info,
+                    pending.force,
+                    REASON_JWS_INSTALL_LAUNCH_FAILED,
+                    pending.triggerId,
+                    "pending_root_install 落盘失败"
+                )
+                return false
+            }
+
+            val startedNoticeQueued = publishUpgradeNotice(
+                pending.info,
+                pending.force,
+                REASON_JWS_INSTALL_STARTED,
+                pending.triggerId,
+                PendingRootInstallCodec.encode(pendingRootInstall)
+            )
+            val drained = withContext(Dispatchers.IO) {
+                waitForMqttPublishDrain(ROOT_INSTALL_STARTED_FLUSH_TIMEOUT_MS)
+            }
+            if (!startedNoticeQueued) {
+                LogUtils.w("【应用更新】jws_install_started 未能进入 MQTT 队列，仍继续发起 JWS 安装")
+            } else if (!drained) {
+                LogUtils.w("【应用更新】jws_install_started 等待 MQTT 队列清空超时，仍继续发起 JWS 安装")
+            }
+
+            return when (val result = withContext(Dispatchers.IO) {
+                session.launchInstall(
+                    stagedApk,
+                    targetVersionCode = pending.info.versionCode,
+                    selfStarting = false
+                )
+            }) {
+                JwsSilentInstaller.LaunchResult.Started -> {
+                    updateStatus("已发起 JWS 系统服务静默安装：v${pending.info.versionName}(${pending.info.versionCode})")
+                    true
+                }
+                is JwsSilentInstaller.LaunchResult.Failed -> {
+                    withContext(Dispatchers.IO) {
+                        PendingRootInstallStore.clear(activity.applicationContext)
+                    }
+                    publishUpgradeNotice(
+                        pending.info,
+                        pending.force,
+                        REASON_JWS_INSTALL_LAUNCH_FAILED,
+                        pending.triggerId,
+                        "reason=${result.reason}, output=${result.output}"
+                    )
+                    false
+                }
+            }
+        } finally {
+            session.close()
+        }
+    }
+
     private fun startRootSilentInstall(activity: Activity, pending: PendingInstall) {
         managerScope.launch {
-            val rootAvailable = withContext(Dispatchers.IO) {
-                RootSilentInstaller.isRootAvailable()
+            val rootProbe = withContext(Dispatchers.IO) {
+                RootSilentInstaller.probeRoot()
             }
-            if (!rootAvailable) {
+            if (!rootProbe.available) {
                 publishUpgradeNotice(
                     pending.info,
                     pending.force,
                     REASON_ROOT_NOT_AVAILABLE,
                     pending.triggerId,
-                    "su 0 id 未返回 uid=0"
+                    rootProbe.output.ifBlank { "root 探测未返回 uid=0" }
                 )
                 if (pending.force) {
                     publishUpgradeNotice(
@@ -727,7 +845,8 @@ object AppUpdateManager {
                 triggerId = pending.triggerId,
                 apkSha256 = pending.info.apkSha256,
                 startedAtMs = timeSource.nowMs(),
-                firstDetectedAtMs = pending.firstDetectedAtMs
+                firstDetectedAtMs = pending.firstDetectedAtMs,
+                installerType = PendingRootInstall.INSTALLER_TYPE_ROOT
             )
             val saved = withContext(Dispatchers.IO) {
                 PendingRootInstallStore.save(activity.applicationContext, pendingRootInstall)
@@ -769,7 +888,11 @@ object AppUpdateManager {
                 LogUtils.w("【应用更新】root_install_started 等待 MQTT 队列清空超时，仍继续发起 root 安装")
             }
             when (val result = withContext(Dispatchers.IO) {
-                RootSilentInstaller.launchInstall(pending.apkFile, pending.info.versionCode)
+                RootSilentInstaller.launchInstall(
+                    pending.apkFile,
+                    pending.info.versionCode,
+                    preferredRootCommandLabel = rootProbe.commandLabel
+                )
             }) {
                 RootSilentInstaller.LaunchResult.Started -> {
                     updateStatus("已发起 root 静默安装：v${pending.info.versionName}(${pending.info.versionCode})")
@@ -813,6 +936,7 @@ object AppUpdateManager {
 
     private fun reconcilePendingRootInstall(context: Context) {
         val pending = PendingRootInstallStore.load(context) ?: return
+        val installerType = pending.installerTypeOrRoot()
         when (
             PendingRootInstallPolicy.reconcileAction(
                 pending,
@@ -828,7 +952,11 @@ object AppUpdateManager {
                     targetVersionCode = pending.targetVersionCode,
                     targetVersionName = pending.targetVersionName,
                     forceUpdate = pending.forceUpdate,
-                    reason = REASON_ROOT_INSTALL_RECONCILED_SUCCESS,
+                    reason = if (installerType == PendingRootInstall.INSTALLER_TYPE_JWS) {
+                        REASON_JWS_INSTALL_RECONCILED_SUCCESS
+                    } else {
+                        REASON_ROOT_INSTALL_RECONCILED_SUCCESS
+                    },
                     triggerId = pending.triggerId,
                     rawPayload = PendingRootInstallCodec.encode(pending)
                 )
@@ -842,14 +970,18 @@ object AppUpdateManager {
                     targetVersionCode = pending.targetVersionCode,
                     targetVersionName = pending.targetVersionName,
                     forceUpdate = pending.forceUpdate,
-                    reason = if (pending.forceUpdate) REASON_MANUAL_FALLBACK_REQUIRED else REASON_ROOT_INSTALL_RECONCILE_TIMEOUT,
+                    reason = when {
+                        installerType == PendingRootInstall.INSTALLER_TYPE_JWS -> REASON_JWS_INSTALL_RECONCILE_TIMEOUT
+                        pending.forceUpdate -> REASON_MANUAL_FALLBACK_REQUIRED
+                        else -> REASON_ROOT_INSTALL_RECONCILE_TIMEOUT
+                    },
                     triggerId = pending.triggerId,
                     rawPayload = PendingRootInstallCodec.encode(pending)
                 )
                 PendingRootInstallStore.clear(context)
             }
             PendingRootInstallPolicy.ReconcileAction.Wait -> {
-                LogUtils.w("【应用更新】存在未对账 root 安装任务，继续等待：targetVersionCode=${pending.targetVersionCode}")
+                LogUtils.w("【应用更新】存在未对账静默安装任务，继续等待：installerType=$installerType，targetVersionCode=${pending.targetVersionCode}")
             }
         }
     }
@@ -1042,6 +1174,32 @@ object AppUpdateManager {
         return null
     }
 
+    private fun stageApkForJws(info: UpdateInfo, sourceApk: File): File {
+        if (!sourceApk.isFile) {
+            error("源 APK 不存在：${sourceApk.absolutePath}")
+        }
+        val publicDir = jwsPublicUpdatesDir()
+        if (!publicDir.exists() && !publicDir.mkdirs()) {
+            error("无法创建 JWS 公共更新目录：${publicDir.absolutePath}")
+        }
+        cleanupOldApks(publicDir, keepVersionCode = info.versionCode)
+        val target = File(publicDir, apkFileName(info.versionCode))
+        if (sourceApk.absolutePath != target.absolutePath) {
+            sourceApk.copyTo(target, overwrite = true)
+        }
+        val targetLength = target.length()
+        if (targetLength != info.apkSize) {
+            target.delete()
+            error("JWS 公共 APK 大小不一致：actual=$targetLength，expected=${info.apkSize}")
+        }
+        val actualSha256 = sha256(target)
+        if (!actualSha256.equals(info.apkSha256, ignoreCase = true)) {
+            target.delete()
+            error("JWS 公共 APK SHA-256 校验失败")
+        }
+        return target
+    }
+
     private fun archivePackageInfo(context: Context, apkFile: File): PackageInfo? {
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             PackageManager.GET_SIGNING_CERTIFICATES
@@ -1121,6 +1279,10 @@ object AppUpdateManager {
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private fun updatesDir(context: Context): File = File(context.getExternalFilesDir(null), "updates")
+
+    private fun jwsPublicUpdatesDir(): File {
+        return File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "leye-updates")
+    }
 
     private fun apkFileName(versionCode: Int): String = "app-update-$versionCode.apk"
 

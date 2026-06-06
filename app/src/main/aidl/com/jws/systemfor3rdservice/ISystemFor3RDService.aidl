@@ -1,0 +1,45 @@
+package com.jws.systemfor3rdservice;
+
+interface ISystemFor3RDService {
+    int getScreenBrightness();
+    boolean setScreenBrightness(int brightness);
+    void jwsRegisterIRListener();
+    void jwsUnregisterIRListener();
+    void jwsShutDown();
+    void jwsReboot(String reason);
+    String jwsGetCurrentNetType();
+    String jwsGetSDcardPath();
+    String jwsGetUSBPath(int index);
+    String jwsGetFormattedKernelVersion();
+    String jwsGetRunningMemory();
+    String jwsGetInternalStorageMemory();
+    void jwsSetRotation(String rotation);
+    void jwsSetEthernetState(String iface, boolean enabled);
+    boolean jwsGetEthernetState(String iface);
+    int jwsSetLcdBackLight(int value);
+    int jwsSetHwAddr(in char[] hwAddr);
+    int jwsGetLcdLightStatus();
+    int jwsSetUsbPower(int port, int enabled, int persist);
+    int jwsSetPowerOnOff(String onTime, String offTime, int mode);
+    int jwsWatchDogFeed();
+    int jwsWatchDogKernelFeed();
+    int jwsWatchDogEnable(int enabled);
+    int jwsgetControl(int index);
+    int jwsSetControl(int index, int value);
+    int jwsReadExtrnalGpioValue(int gpio);
+    int jwsSetExtrnalGpioValue(int gpio, boolean value);
+    int jwsReadInputGpioValue(int gpio);
+    int jwsGetADCVoltageRaw(int channel);
+    int jwsGetADCVoltagemV(int channel);
+    byte[] jwsReadExtROM(int bus, int address, int offset, int length);
+    int jwsWriteExtROM(int bus, int address, int offset, int length, in byte[] data);
+    byte[] jwsReadExtROMForSerialID(int offset, int length);
+    int jwsWriteExtROMForSerialID(int offset, int length, in byte[] data);
+    String jwsGetAndroidModel();
+    String jwsGetAndroidVersion();
+    String jwsGetFirmwareVersion();
+    String jwsGetAndroidDisplay();
+    void jwsTakeScreenshot(String path, String fileName);
+    void jwsSilentInstall(String path);
+    void jwsSilentInstallApp(String path, boolean selfStarting);
+}
