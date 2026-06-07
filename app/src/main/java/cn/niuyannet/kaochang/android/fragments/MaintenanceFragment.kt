@@ -938,6 +938,84 @@ class MaintenanceFragment : Fragment() {
         }
     }
 
+    private fun showConfirmDiscardAndResetPanDialog() {
+        val sausageCount = KaoPanHelper.getKaoPanList().count { it.isHasSausage }
+        AlertDialog.Builder(requireContext())
+            .setTitle("确认丢弃所有烤肠？")
+            .setMessage(
+                "该操作会关闭烤肠算法，等待机械空闲后丢弃当前烤盘内所有烤肠，并重置本地烤盘状态。\n\n" +
+                    "当前本地记录有肠工位：$sausageCount 个\n\n" +
+                    "请确认现场已允许丢弃，且没有正在出餐或人工处理中的烤肠。"
+            )
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认丢弃并重置") { _, _ ->
+                performDiscardAndResetPan()
+            }
+            .show()
+    }
+
+    private fun performDiscardAndResetPan() {
+        if (resetPanCooldownJob?.isActive == true) return
+
+        AdminOperationLogger.i(
+            action = "丢弃所有烤肠并重置烤盘",
+            page = AdminOperationLogger.PAGE_PAN,
+            result = AdminOperationLogger.RESULT_START,
+            detail = "说明=将关闭烤肠算法并等待机械臂空闲"
+        )
+        setMaintenanceActionButtonsEnabled(false)
+        binding.tvCooldownHint.text = "正在丢弃并重置烤盘"
+        disableAlgorithmForMaintenance("点击丢弃所有烤肠并重置烤盘")
+
+        resetPanCooldownJob = lifecycleScope.launch {
+            val adminBusy = beginAdminBusy("维护页丢弃所有烤肠并重置烤盘")
+            try {
+                val idleReady = waitUntilMachineIdleOrTimeout(
+                    reason = "维护页点击重置烤盘等待空闲",
+                    waitingText = "等待机械动作完成后重置烤盘",
+                    update = { binding.tvCooldownHint.text = it }
+                )
+                if (!idleReady) {
+                    AdminOperationLogger.w(
+                        action = "丢弃所有烤肠并重置烤盘",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "失败原因=等待机械臂空闲超时"
+                    )
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                    resetPanCooldownJob = null
+                    return@launch
+                }
+                KaoChangAlgorithm.resetKaoPan { current, total, _ ->
+                    binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
+                }
+                KaoPanHelper.clearKaoPan()
+                KaoPanHelper.init()
+                FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击丢弃所有烤肠并重置烤盘")
+                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
+                KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
+                clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
+                AdminOperationLogger.i(
+                    action = "丢弃所有烤肠并重置烤盘",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "烤肠算法开关=关闭，说明=进入15秒防重复操作冷却"
+                )
+                finishMaintenanceAction()
+                resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {
+                    setMaintenanceActionButtonsEnabled(true)
+                    binding.btnCz.text = "丢弃所有烤肠并重置烤盘"
+                    binding.tvCooldownHint.text = ""
+                    resetPanCooldownJob = null
+                }
+            } finally {
+                endAdminBusy(adminBusy)
+            }
+        }
+    }
+
     @SuppressLint("NotifyDataSetChanged")
     private fun setupGrid() {
         kaoPanAdapter = KaoPanAdapter { showPurchaseOrderDialog(it) }
@@ -950,64 +1028,7 @@ class MaintenanceFragment : Fragment() {
 
         binding.btnCz.setOnClickListener {
             if (resetPanCooldownJob?.isActive == true) return@setOnClickListener
-
-            AdminOperationLogger.i(
-                action = "丢弃所有烤肠并重置烤盘",
-                page = AdminOperationLogger.PAGE_PAN,
-                result = AdminOperationLogger.RESULT_START,
-                detail = "说明=将关闭烤肠算法并等待机械臂空闲"
-            )
-            setMaintenanceActionButtonsEnabled(false)
-            binding.tvCooldownHint.text = "正在丢弃并重置烤盘"
-            disableAlgorithmForMaintenance("点击丢弃所有烤肠并重置烤盘")
-
-            resetPanCooldownJob = lifecycleScope.launch {
-                val adminBusy = beginAdminBusy("维护页丢弃所有烤肠并重置烤盘")
-                try {
-                    val idleReady = waitUntilMachineIdleOrTimeout(
-                        reason = "维护页点击重置烤盘等待空闲",
-                        waitingText = "等待机械动作完成后重置烤盘",
-                        update = { binding.tvCooldownHint.text = it }
-                    )
-                    if (!idleReady) {
-                        AdminOperationLogger.w(
-                            action = "丢弃所有烤肠并重置烤盘",
-                            page = AdminOperationLogger.PAGE_PAN,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = "失败原因=等待机械臂空闲超时"
-                        )
-                        binding.tvCooldownHint.text = ""
-                        setMaintenanceActionButtonsEnabled(true)
-                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                        resetPanCooldownJob = null
-                        return@launch
-                    }
-                    KaoChangAlgorithm.resetKaoPan { current, total, _ ->
-                        binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
-                    }
-                    KaoPanHelper.clearKaoPan()
-                    KaoPanHelper.init()
-                    FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击丢弃所有烤肠并重置烤盘")
-                    KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
-                    KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
-                    clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
-                    AdminOperationLogger.i(
-                        action = "丢弃所有烤肠并重置烤盘",
-                        page = AdminOperationLogger.PAGE_PAN,
-                        result = AdminOperationLogger.RESULT_DONE,
-                        detail = "烤肠算法开关=关闭，说明=进入15秒防重复操作冷却"
-                    )
-                    finishMaintenanceAction()
-                    resetPanCooldownJob = startMaintenanceCooldown(target = "reset") {
-                        setMaintenanceActionButtonsEnabled(true)
-                        binding.btnCz.text = "丢弃所有烤肠重置烤盘"
-                        binding.tvCooldownHint.text = ""
-                        resetPanCooldownJob = null
-                    }
-                } finally {
-                    endAdminBusy(adminBusy)
-                }
-            }
+            showConfirmDiscardAndResetPanDialog()
         }
 
         binding.btnUpdate.setOnClickListener {

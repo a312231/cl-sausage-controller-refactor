@@ -47,6 +47,17 @@ class MaintenanceBoxFragment : Fragment() {
     private companion object {
         const val BOX_GRID_SPAN_COUNT = 11
     }
+
+    private data class BoxClearSnapshot(
+        val box: KaoPanBox,
+        val productId: String?,
+        val tasteCode: String?,
+        val tasteName: String?,
+        val checkStatus: Boolean?,
+        val num: Int,
+        val cmdStatusTake: Int
+    )
+
     private var _binding: FragmentMaintenanceBoxBinding? = null
     private val binding get() = _binding!!
     private var refreshJob: Job? = null
@@ -77,6 +88,9 @@ class MaintenanceBoxFragment : Fragment() {
         }
         binding.btnClearAll.setOnClickListener {
             clearOven()
+        }
+        binding.btnClearAllBoxes.setOnClickListener {
+            clearAllOvenBoxes()
         }
     }
 
@@ -197,6 +211,51 @@ class MaintenanceBoxFragment : Fragment() {
     }
 
     /**
+     * 清空所有烤肠箱，仅重置本地和后端库存数据，不触发下位机动作。
+     */
+    private fun clearAllOvenBoxes() {
+        val allBoxes = KaoPanHelper.getKaoPanBoxList()
+        if (allBoxes.isEmpty()) {
+            AdminOperationLogger.w(
+                action = "清空所有烤肠箱",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=烤肠箱列表为空"
+            )
+            ToastUtils.showShort("烤肠箱数据为空，请先同步库存")
+            return
+        }
+        val stockBoxCount = allBoxes.count { it.num > 0 }
+        val totalStock = allBoxes.sumOf { it.num }
+        MaterialDialog(requireContext()).show {
+            title(text = "确认清空所有烤肠箱吗？")
+            message(
+                text = "该操作会把全部烤肠箱的产品、口味、库存数量和取肠状态清空，并同步到后台。\n\n" +
+                    "当前本地记录有库存箱位：$stockBoxCount 个\n" +
+                    "当前本地记录总库存：$totalStock 根\n\n" +
+                    "请确认现场已完成清空或允许把库存记录归零。"
+            )
+            positiveButton(text = "确认清空全部") { dialog ->
+                resetAdminIdleTimer("清空所有烤肠箱弹窗确认")
+                dialog.dismiss()
+                executeClearBoxes(
+                    targetBoxes = allBoxes,
+                    actionName = "清空所有烤肠箱",
+                    successMessage = "已清空所有烤肠箱"
+                )
+            }
+            negativeButton(text = "取消") {
+                resetAdminIdleTimer("清空所有烤肠箱弹窗取消")
+            }
+            lifecycleOwner(viewLifecycleOwner)
+        }.apply {
+            setOnShowListener {
+                resetAdminIdleTimer("清空所有烤肠箱弹窗显示")
+            }
+        }
+    }
+
+    /**
      * 显示清空确认对话框。
      */
     private fun showClearConfirmDialog(selectedBoxes: List<KaoPanBox>) {
@@ -205,54 +264,11 @@ class MaintenanceBoxFragment : Fragment() {
             positiveButton(text = "确定") { dialog ->
                 resetAdminIdleTimer("清空烤肠箱弹窗确认")
                 dialog.dismiss()
-                AdminOperationLogger.i(
-                    action = "清空烤肠箱",
-                    page = AdminOperationLogger.PAGE_BOX,
-                    result = AdminOperationLogger.RESULT_START,
-                    detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}"
+                executeClearBoxes(
+                    targetBoxes = selectedBoxes,
+                    actionName = "清空烤肠箱",
+                    successMessage = "已清空烤肠箱"
                 )
-                for (box in selectedBoxes) {
-                    box.productId = null
-                    box.tasteCode = null
-                    box.tasteName = null
-                    box.checkStatus = false
-                    box.num = 0
-                    box.cmdStatusTake = 0
-                }
-                showLoadingExt("设置中...")
-                NetApi.clearStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
-                    dismissLoadingExt()
-                    if (code == 0) {
-                        val json = JSON.parseObject(content)
-                        if (json.getIntValue("code") == 200) {
-                            KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
-                            kaoPanBoxAdapter.notifyDataSetChanged()
-                            AdminOperationLogger.i(
-                                action = "清空烤肠箱",
-                                page = AdminOperationLogger.PAGE_BOX,
-                                result = AdminOperationLogger.RESULT_DONE,
-                                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}"
-                            )
-                            ToastUtils.showShort("已清空烤肠箱")
-                        } else {
-                            AdminOperationLogger.w(
-                                action = "清空烤肠箱",
-                                page = AdminOperationLogger.PAGE_BOX,
-                                result = AdminOperationLogger.RESULT_FAIL,
-                                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，失败原因=${json.getString("msg")}"
-                            )
-                            ToastUtils.showShort(json.getString("msg"))
-                        }
-                    } else {
-                        AdminOperationLogger.w(
-                            action = "清空烤肠箱",
-                            page = AdminOperationLogger.PAGE_BOX,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，失败原因=接口请求失败"
-                        )
-                        ToastUtils.showShort("设置失败")
-                    }
-                }
             }
             negativeButton(text = "取消") {
                 resetAdminIdleTimer("清空烤肠箱弹窗取消")
@@ -263,6 +279,89 @@ class MaintenanceBoxFragment : Fragment() {
                 resetAdminIdleTimer("清空烤肠箱弹窗显示")
             }
         }
+    }
+
+    @SuppressLint("NotifyDataSetChanged")
+    private fun executeClearBoxes(
+        targetBoxes: List<KaoPanBox>,
+        actionName: String,
+        successMessage: String
+    ) {
+        val targetText = boxPositionListText(targetBoxes)
+        AdminOperationLogger.i(
+            action = actionName,
+            page = AdminOperationLogger.PAGE_BOX,
+            result = AdminOperationLogger.RESULT_START,
+            detail = "烤肠箱位=$targetText"
+        )
+        val snapshots = targetBoxes.map { box ->
+            BoxClearSnapshot(
+                box = box,
+                productId = box.productId,
+                tasteCode = box.tasteCode,
+                tasteName = box.tasteName,
+                checkStatus = box.checkStatus,
+                num = box.num,
+                cmdStatusTake = box.cmdStatusTake
+            )
+        }
+        for (box in targetBoxes) {
+            box.productId = null
+            box.tasteCode = null
+            box.tasteName = null
+            box.checkStatus = false
+            box.num = 0
+            box.cmdStatusTake = 0
+        }
+        showLoadingExt("设置中...")
+        NetApi.clearStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
+            dismissLoadingExt()
+            if (code == 0) {
+                val json = JSON.parseObject(content)
+                if (json.getIntValue("code") == 200) {
+                    KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                    kaoPanBoxAdapter.notifyDataSetChanged()
+                    AdminOperationLogger.i(
+                        action = actionName,
+                        page = AdminOperationLogger.PAGE_BOX,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = "烤肠箱位=$targetText"
+                    )
+                    ToastUtils.showShort(successMessage)
+                } else {
+                    AdminOperationLogger.w(
+                        action = actionName,
+                        page = AdminOperationLogger.PAGE_BOX,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "烤肠箱位=$targetText，失败原因=${json.getString("msg")}"
+                    )
+                    restoreClearSnapshots(snapshots)
+                    ToastUtils.showShort(json.getString("msg"))
+                }
+            } else {
+                AdminOperationLogger.w(
+                    action = actionName,
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "烤肠箱位=$targetText，失败原因=接口请求失败"
+                )
+                restoreClearSnapshots(snapshots)
+                ToastUtils.showShort("设置失败")
+            }
+        }
+    }
+
+    @SuppressLint("NotifyDataSetChanged")
+    private fun restoreClearSnapshots(snapshots: List<BoxClearSnapshot>) {
+        for (snapshot in snapshots) {
+            snapshot.box.productId = snapshot.productId
+            snapshot.box.tasteCode = snapshot.tasteCode
+            snapshot.box.tasteName = snapshot.tasteName
+            snapshot.box.checkStatus = snapshot.checkStatus
+            snapshot.box.num = snapshot.num
+            snapshot.box.cmdStatusTake = snapshot.cmdStatusTake
+        }
+        kaoPanBoxAdapter.notifyDataSetChanged()
     }
 
     /**

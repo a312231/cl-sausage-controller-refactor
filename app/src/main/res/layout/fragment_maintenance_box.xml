@@ -51,6 +51,19 @@
             app:cornerRadius="4dp" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_clear_all_boxes"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginLeft="40dp"
+            android:layout_marginTop="16dp"
+            android:layout_marginRight="40dp"
+            android:backgroundTint="#D32F2F"
+            android:text="清空所有烤肠箱"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            app:cornerRadius="4dp" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_move_to_kaopan"
             android:layout_width="match_parent"
             android:layout_height="60dp"

@@ -15,12 +15,6 @@
             android:orientation="horizontal"
             android:layout_height="wrap_content">
             <Button
-                android:id="@+id/btn_cz"
-                android:layout_width="wrap_content"
-                android:text="丢弃所有烤肠重置烤盘"
-                android:layout_height="wrap_content"/>
-
-            <Button
                 android:id="@+id/btn_update"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -149,6 +143,24 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="20dp"
                 android:text="清空垃圾桶" />
+
+            <TextView
+                android:id="@+id/tv_danger_action_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="30dp"
+                android:gravity="center_vertical"
+                android:text="危险操作："
+                android:textColor="#D32F2F"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btn_cz"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:backgroundTint="#D32F2F"
+                android:text="丢弃所有烤肠并重置烤盘"
+                android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <androidx.recyclerview.widget.RecyclerView

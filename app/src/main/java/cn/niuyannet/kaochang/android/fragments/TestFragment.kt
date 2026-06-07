@@ -124,6 +124,12 @@ class TestFragment : Fragment() {
         binding.btnBusinessActionSelfCheck.setOnClickListener {
             readBusinessActionProtocolStatus()
         }
+
+        binding.etRegisterStart.setText("201")
+        binding.etRegisterQuantity.setText("1")
+        binding.btnReadCustomRegisters.setOnClickListener {
+            readCustomRegisters()
+        }
     }
 
     private fun selectedAtomicActionItem(): TestAtomicActionItem? {
@@ -252,7 +258,21 @@ class TestFragment : Fragment() {
                             BusinessActionRegisterRead(
                                 label = "201（机械动作状态）",
                                 value = KaoChangOperate.readHoldingRegisters(201, 1)?.firstOrNull(),
-                                isMoveStatusRegister = true
+                                kind = BusinessActionRegisterKind.LEGACY_MOVE_STATUS
+                            )
+                        )
+                        add(
+                            BusinessActionRegisterRead(
+                                label = "202（烤盘搬移命令）",
+                                value = KaoChangOperate.readHoldingRegisters(202, 1)?.firstOrNull(),
+                                kind = BusinessActionRegisterKind.PAN_MOVE_COMMAND
+                            )
+                        )
+                        add(
+                            BusinessActionRegisterRead(
+                                label = "203（烤盘搬移结果）",
+                                value = KaoChangOperate.readHoldingRegisters(203, 1)?.firstOrNull(),
+                                kind = BusinessActionRegisterKind.PAN_MOVE_RESULT
                             )
                         )
                         atomicActionItems.forEach { item ->
@@ -260,7 +280,7 @@ class TestFragment : Fragment() {
                                 BusinessActionRegisterRead(
                                     label = "${item.spec.name} 结果寄存器 ${item.spec.resultRegister}",
                                     value = KaoChangOperate.readHoldingRegisters(item.spec.resultRegister, 1)?.firstOrNull(),
-                                    isMoveStatusRegister = false
+                                    kind = BusinessActionRegisterKind.ATOMIC_RESULT
                                 )
                             )
                         }
@@ -289,27 +309,171 @@ class TestFragment : Fragment() {
         }
     }
 
+    private fun readCustomRegisters() {
+        val startRegisterText = binding.etRegisterStart.text?.toString()?.trim().orEmpty()
+        val quantityText = binding.etRegisterQuantity.text?.toString()?.trim().orEmpty()
+        val startRegister = startRegisterText.toIntOrNull()
+        val quantity = quantityText.toIntOrNull()
+
+        if (startRegister == null || startRegister < 0) {
+            showToast("起始寄存器必须是非负整数")
+            binding.tvCustomRegisterReadResult.text = "读取失败：起始寄存器非法（$startRegisterText）"
+            return
+        }
+        if (quantity == null || quantity !in 1..10) {
+            showToast("读取数量必须在 1~10 之间")
+            binding.tvCustomRegisterReadResult.text = "读取失败：数量必须在 1~10 之间（$quantityText）"
+            return
+        }
+
+        lifecycleScope.launch {
+            binding.btnReadCustomRegisters.isEnabled = false
+            binding.tvCustomRegisterReadResult.text = "正在读取寄存器 $startRegister~${startRegister + quantity - 1}..."
+            try {
+                val (values, elapsedMs) = withContext(Dispatchers.IO) {
+                    val startMs = System.currentTimeMillis()
+                    val readValues = KaoChangOperate.readHoldingRegisters(startRegister, quantity)
+                    readValues to (System.currentTimeMillis() - startMs)
+                }
+                if (values == null) {
+                    binding.tvCustomRegisterReadResult.text =
+                        "读取失败：寄存器 $startRegister~${startRegister + quantity - 1} 返回为空"
+                    AdminOperationLogger.w(
+                        action = "通用读取寄存器",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "起始寄存器=$startRegister，数量=$quantity，失败原因=返回为空，耗时=${elapsedMs}ms"
+                    )
+                    return@launch
+                }
+                val resultText = buildCustomRegisterReadText(startRegister, values, elapsedMs)
+                binding.tvCustomRegisterReadResult.text = resultText
+                LogUtils.d(
+                    "测试下位机通用读寄存器成功：" +
+                        "起始寄存器=$startRegister，数量=$quantity，" +
+                        "返回值=${values.joinToString()}，耗时=${elapsedMs}ms"
+                )
+            } catch (e: Exception) {
+                binding.tvCustomRegisterReadResult.text = "读取异常：${e.message}"
+                AdminOperationLogger.e(
+                    action = "通用读取寄存器",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "起始寄存器=$startRegister，数量=$quantity，失败原因=${e.message}"
+                )
+            } finally {
+                binding.btnReadCustomRegisters.isEnabled = true
+            }
+        }
+    }
+
+    private fun buildCustomRegisterReadText(
+        startRegister: Int,
+        values: IntArray,
+        elapsedMs: Long
+    ): String {
+        return buildString {
+            append("读取范围：")
+            append(startRegister)
+            append("~")
+            append(startRegister + values.size - 1)
+            append("，耗时=")
+            append(elapsedMs)
+            append("ms")
+            values.forEachIndexed { index, value ->
+                val address = startRegister + index
+                append("\n")
+                append(address)
+                append(" = ")
+                append(formatCustomRegisterValue(address, value))
+            }
+        }
+    }
+
+    private fun formatCustomRegisterValue(address: Int, value: Int): String {
+        val atomicItem = atomicActionItems.firstOrNull { item ->
+            address == item.spec.commandRegister ||
+                address == item.spec.resultRegister ||
+                address == item.spec.infoRegister
+        }
+        return when {
+            address == 201 -> formatBusinessActionRegisterValue(
+                BusinessActionRegisterRead(
+                    label = "201（机械动作状态）",
+                    value = value,
+                    kind = BusinessActionRegisterKind.LEGACY_MOVE_STATUS
+                )
+            )
+            address == 202 -> formatPanMoveCommandRegisterValue(value)
+            address == 203 -> formatPanMoveResultRegisterValue(value)
+            atomicItem != null && address == atomicItem.spec.commandRegister ->
+                "${AtomicActionExecutor.commandValueDesc(value)}，${atomicItem.spec.name} 命令寄存器"
+            atomicItem != null && address == atomicItem.spec.resultRegister ->
+                "${formatAtomicResultRegisterValue(value)}，${atomicItem.spec.name} 结果寄存器"
+            atomicItem != null && address == atomicItem.spec.infoRegister ->
+                "${formatRegisterValue(value)}，${atomicItem.spec.name} 信息寄存器"
+            address in 500..502 -> "$value（${AtomicActionExecutor.formatCode(value)}，实时温度/温控状态）"
+            address in 503..505 -> "$value（${AtomicActionExecutor.formatCode(value)}，目标温度）"
+            address == 506 -> "$value（${AtomicActionExecutor.formatCode(value)}，功率或预留状态量）"
+            address in 900..903 -> "$value（${AtomicActionExecutor.formatCode(value)}，版本 ASCII 字寄存器）"
+            else -> "$value（${AtomicActionExecutor.formatCode(value)}）"
+        }
+    }
+
     private data class BusinessActionRegisterRead(
         val label: String,
         val value: Int?,
-        val isMoveStatusRegister: Boolean
+        val kind: BusinessActionRegisterKind
     )
+
+    private enum class BusinessActionRegisterKind {
+        LEGACY_MOVE_STATUS,
+        PAN_MOVE_COMMAND,
+        PAN_MOVE_RESULT,
+        ATOMIC_RESULT
+    }
 
     private fun formatBusinessActionRegisterValue(read: BusinessActionRegisterRead): String {
         val value = read.value ?: return "读取失败"
-        if (read.isMoveStatusRegister) {
-            return when (value) {
+        return when (read.kind) {
+            BusinessActionRegisterKind.LEGACY_MOVE_STATUS -> when (value) {
                 0 -> "0（机械动作空闲）"
                 1 -> "1（机械动作执行中）"
                 2 -> "2（设备忙）"
                 else -> "$value（未知机械动作状态）"
             }
+            BusinessActionRegisterKind.PAN_MOVE_COMMAND -> formatPanMoveCommandRegisterValue(value)
+            BusinessActionRegisterKind.PAN_MOVE_RESULT -> formatPanMoveResultRegisterValue(value)
+            BusinessActionRegisterKind.ATOMIC_RESULT -> formatAtomicResultRegisterValue(value)
         }
+    }
+
+    private fun formatAtomicResultRegisterValue(value: Int): String {
         return when {
             value == AtomicActionCodes.IDLE -> "0x0000（空闲/成功）"
             value == AtomicActionCodes.RUNNING -> "0x0001（执行中）"
+            value == AtomicActionCodes.COMPLETED -> "0x0002（动作完成）"
             value >= AtomicActionCodes.PARAM_ERROR -> "0x${value.toString(16).uppercase().padStart(4, '0')}（${AtomicActionExecutor.messageOf(value)}）"
             else -> "0x${value.toString(16).uppercase().padStart(4, '0')}（未知结果码）"
+        }
+    }
+
+    private fun formatPanMoveCommandRegisterValue(value: Int): String {
+        if (value == 0) {
+            return "0x0000（无烤盘搬移命令）"
+        }
+        val source = (value shr 8) and 0xFF
+        val target = value and 0xFF
+        return "0x${value.toString(16).uppercase().padStart(4, '0')}（来源烤盘=$source，目标烤盘=$target）"
+    }
+
+    private fun formatPanMoveResultRegisterValue(value: Int): String {
+        return when {
+            value == AtomicActionCodes.IDLE -> "0x0000（空闲/等待接收）"
+            value == AtomicActionCodes.RUNNING -> "0x0001（执行中）"
+            value == AtomicActionCodes.COMPLETED -> "0x0002（搬移完成）"
+            value >= AtomicActionCodes.PARAM_ERROR -> "0x${value.toString(16).uppercase().padStart(4, '0')}（${AtomicActionExecutor.messageOf(value)}）"
+            else -> "0x${value.toString(16).uppercase().padStart(4, '0')}（未知搬移结果码）"
         }
     }
 
