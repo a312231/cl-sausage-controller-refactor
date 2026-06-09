@@ -72,6 +72,14 @@ object Legacy201Policy {
     }
 }
 
+object MoveStatusRecoveryPolicy {
+    fun canRecoverIdleFromLegacy201(statusReadings: List<Int>): Boolean {
+        return statusReadings.size >= 2 && statusReadings.all { status201 ->
+            Legacy201Policy.evaluateAfterCommand(status201, hasObservedRunning = false) == Legacy201Decision.WaitingForStart
+        }
+    }
+}
+
 object SourceBoxPositionPolicy {
     fun isValidSourceBox(positionSn: Int): Boolean {
         return positionSn in 1..22 && positionSn != 11 && positionSn != 22

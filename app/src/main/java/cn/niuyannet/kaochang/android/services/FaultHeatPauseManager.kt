@@ -78,6 +78,13 @@ object FaultHeatPauseManager {
 
             val nowMs = System.currentTimeMillis()
             val pans = KaoPanHelper.getKaoPanList()
+            val normalizedPositions = normalizeStaleBakingHoldingTimes(pans, config)
+            if (normalizedPositions.isNotEmpty()) {
+                LogUtils.w(
+                    "【$LOG_TAG】故障停热恢复前自愈烤制盘旧保温时间：" +
+                        "positions=$normalizedPositions，reason=$reason"
+                )
+            }
             val result = adjustPansForPause(
                 pans = pans,
                 config = config,
@@ -109,6 +116,37 @@ object FaultHeatPauseManager {
 
     internal fun shouldSkipBakingCompletion(config: AppConfigBean): Boolean {
         return config.faultHeatPauseActive == 1 && config.faultHeatPauseStartedAtMs > 0L
+    }
+
+    internal fun isStaleBakingHoldingTime(pan: KaoPan): Boolean {
+        return pan.isHasSausage &&
+            pan.startTime > 0L &&
+            pan.holdingTime > 0L &&
+            pan.startTime > pan.holdingTime
+    }
+
+    internal fun normalizeStaleBakingHoldingTimes(
+        pans: List<KaoPan>,
+        config: AppConfigBean? = null
+    ): List<Int> {
+        synchronized(mutex) {
+            val normalizedPositions = mutableListOf<Int>()
+            pans.forEach { pan ->
+                if (isStaleBakingHoldingTime(pan)) {
+                    pan.holdingTime = 0L
+                    pan.status = 1
+                    normalizedPositions += pan.positionSn
+                }
+            }
+            if (normalizedPositions.isNotEmpty() && config != null) {
+                config.pendingDiscardPositions.removeAll(normalizedPositions.toSet())
+                if (config.pendingDiscardPositions.isEmpty()) {
+                    config.foodSafetyAlertCode = null
+                    config.foodSafetyAlertReason = null
+                }
+            }
+            return normalizedPositions.sorted()
+        }
     }
 
     fun effectiveBakingElapsedMs(

@@ -31,6 +31,24 @@ class OverKeepWarmDiscardScannerTest {
     }
 
     @Test
+    fun collectDiscardCandidates_shouldNotExpireStaleBakingHoldingTimePan() {
+        val nowMs = 8 * 60 * 60 * 1000L
+        val staleBakingPan = holdingPan(positionSn = 14, holdingStartedAtMs = 1L).apply {
+            status = 1
+            startTime = nowMs - 90 * 60 * 1000L
+        }
+
+        val result = OverKeepWarmDiscardScanner.collectDiscardCandidates(
+            pans = listOf(staleBakingPan),
+            pendingDiscardPositions = emptyList(),
+            nowMs = nowMs
+        )
+
+        assertTrue(result.expiredPositions.isEmpty())
+        assertTrue(result.allPositions.isEmpty())
+    }
+
+    @Test
     fun evaluateMechanicalGate_shouldBlockWhenAlgorithmDisabledButKeepCandidatesMarkable() {
         val config = AppConfigBean().apply {
             onlineStatus = 1

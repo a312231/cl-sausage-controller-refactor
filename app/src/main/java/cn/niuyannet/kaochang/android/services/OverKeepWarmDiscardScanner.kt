@@ -34,6 +34,15 @@ object OverKeepWarmDiscardScanner {
         val pans = KaoPanHelper.getKaoPanList()
             .filter { it.positionSn in positionRange }
             .sortedBy { it.positionSn }
+        val normalizedPositions = FaultHeatPauseManager.normalizeStaleBakingHoldingTimes(pans, config)
+        if (normalizedPositions.isNotEmpty()) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            AppConfig.saveAppConfig(config)
+            LogUtils.w(
+                TAG,
+                "【丢弃流程】过保扫描前自愈烤制盘旧保温时间：source=$source，positions=$normalizedPositions"
+            )
+        }
 
         val candidates = collectDiscardCandidates(
             pans = pans,
@@ -150,6 +159,7 @@ object OverKeepWarmDiscardScanner {
 
     private fun isExpiredHoldingPan(pan: KaoPan, nowMs: Long): Boolean =
         pan.isHasSausage &&
+            !FaultHeatPauseManager.isStaleBakingHoldingTime(pan) &&
             pan.holdingTime > 0L &&
             pan.closeTime > 0L &&
             nowMs - pan.holdingTime > pan.closeTime

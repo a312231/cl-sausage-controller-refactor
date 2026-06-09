@@ -26,6 +26,7 @@ import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
+import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
@@ -358,26 +359,36 @@ class MaintenanceFragment : Fragment() {
         if (config.moveStatus == 0) {
             return true
         }
-        val status201 = withContext(Dispatchers.IO) {
+        val statusReadings = withContext(Dispatchers.IO) {
             if (!VMModbusHelper.connectStatus()) {
-                -1
+                listOf(-1)
             } else {
-                VMModbusHelper.readHoldingRegisters(
+                val first = VMModbusHelper.readHoldingRegisters(
                     KaoChangOperate.modbus_address,
                     KaoChangOperate.action_address_status
                 )
+                delay(500L)
+                val second = VMModbusHelper.readHoldingRegisters(
+                    KaoChangOperate.modbus_address,
+                    KaoChangOperate.action_address_status
+                )
+                listOf(first, second)
             }
         }
-        if (status201 == 0) {
+        if (MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings)) {
             val oldMoveStatus = config.moveStatus
             config.moveStatus = 0
             AppConfig.saveAppConfig(config)
             LogUtils.w(
                 "【维护操作】检测到本地机械状态与下位机空闲状态不一致，已自动收口：" +
-                    "reason=$reason，moveStatus（机械动作状态）=$oldMoveStatus->0，status201（下位机动作状态）=0"
+                    "reason=$reason，moveStatus（机械动作状态）=$oldMoveStatus->0，status201连续读数=$statusReadings"
             )
             return true
         }
+        LogUtils.w(
+            "【维护操作】跳过本地机械状态自动收口：" +
+                "reason=$reason，moveStatus（机械动作状态）=${config.moveStatus}，status201连续读数=$statusReadings"
+        )
         return false
     }
 

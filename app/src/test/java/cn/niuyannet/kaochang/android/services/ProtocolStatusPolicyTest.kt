@@ -43,6 +43,14 @@ class ProtocolStatusPolicyTest {
     }
 
     @Test
+    fun moveStatusRecovery_shouldRequireTwoIdle201Readings() {
+        assertEquals(false, MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(listOf(0)))
+        assertEquals(true, MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(listOf(0, 0)))
+        assertEquals(false, MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(listOf(0, 1)))
+        assertEquals(false, MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(listOf(-1, 0)))
+    }
+
+    @Test
     fun zone3SelfClean_shouldNotMarkPendingWhenFourFNoOpSuppressed() {
         assertEquals(
             false,

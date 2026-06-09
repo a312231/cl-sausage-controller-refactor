@@ -219,20 +219,28 @@ object KaoChangOperate {
         if (!VMModbusHelper.connectStatus()) {
             return false
         }
-        return when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
-            ActionStatus201.IDLE -> {
-                val oldMoveStatus = config.moveStatus
-                config.moveStatus = 0
-                AppConfig.saveAppConfig(config)
-                logW(
-                    LOG_ACTION,
-                    "检测到本地机械状态残留，已按下位机空闲状态自动收口：" +
-                        "reason=$reason，moveStatus（机械动作状态）=${moveStatusDesc(oldMoveStatus)}->${moveStatusDesc(config.moveStatus)}"
-                )
-                true
-            }
-            else -> false
+        val first = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        Thread.sleep(500L)
+        val second = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        val statusReadings = listOf(first, second)
+        if (!MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings)) {
+            logW(
+                LOG_ACTION,
+                "跳过本地机械状态自动收口：reason=$reason，" +
+                    "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，status201连续读数=$statusReadings"
+            )
+            return false
         }
+        val oldMoveStatus = config.moveStatus
+        config.moveStatus = 0
+        AppConfig.saveAppConfig(config)
+        logW(
+            LOG_ACTION,
+            "检测到本地机械状态残留，已按下位机连续空闲状态自动收口：" +
+                "reason=$reason，moveStatus（机械动作状态）=${moveStatusDesc(oldMoveStatus)}->${moveStatusDesc(config.moveStatus)}，" +
+                "status201连续读数=$statusReadings"
+        )
+        return true
     }
 
     private suspend fun waitUntilMoveStatusIdleOrTimeout(
