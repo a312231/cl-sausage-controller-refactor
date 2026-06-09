@@ -24,4 +24,17 @@ class JwsSilentInstallerTest {
 
         assertEquals("com.jws.systemfor3rdservice.ISystemFor3RDService", field.get(null))
     }
+
+    @Test
+    fun silentUpdate_requestsSelfStartingAfterInstall() {
+        assertEquals(true, AppUpdateManager.jwsSelfStartingAfterSilentUpdate())
+    }
+
+    @Test
+    fun vendorBroadcastContract_matchesSilentInstallDemo() {
+        assertEquals("jws.intent.action.SILENT_INSTALL", JwsSilentInstaller.BROADCAST_ACTION)
+        assertEquals("install_path", JwsSilentInstaller.EXTRA_INSTALL_PATH)
+        assertEquals("self_starting", JwsSilentInstaller.EXTRA_SELF_STARTING)
+        assertEquals("Update.apk", JwsSilentInstaller.BROADCAST_APK_NAME)
+    }
 }

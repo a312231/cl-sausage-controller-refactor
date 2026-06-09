@@ -30,6 +30,9 @@
         <intent>
             <action android:name="action.com.jws.systemfor3rdservice" />
         </intent>
+        <intent>
+            <action android:name="jws.intent.action.SILENT_INSTALL" />
+        </intent>
     </queries>
 
     <application

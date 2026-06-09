@@ -3,11 +3,12 @@ package cn.niuyannet.kaochang.android.updates
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.ServiceConnection
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.Build
 import android.os.SystemClock
 import com.jws.systemfor3rdservice.ISystemFor3RDService
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -19,6 +20,10 @@ object JwsSilentInstaller {
     const val SERVICE_PACKAGE = "com.jws.systemfor3rdservice"
     const val SERVICE_ACTION = "action.com.jws.systemfor3rdservice"
     const val TRANSACTION_JWS_SILENT_INSTALL_APP = 41
+    const val BROADCAST_ACTION = "jws.intent.action.SILENT_INSTALL"
+    const val EXTRA_INSTALL_PATH = "install_path"
+    const val EXTRA_SELF_STARTING = "self_starting"
+    const val BROADCAST_APK_NAME = "Update.apk"
 
     sealed class BindResult {
         data class Bound(val session: Session) : BindResult()
@@ -34,6 +39,40 @@ object JwsSilentInstaller {
             val reason: String,
             val output: String
         ) : LaunchResult()
+    }
+
+    fun launchBroadcastInstall(context: Context, apkFile: File, selfStarting: Boolean = true): LaunchResult {
+        if (!apkFile.isFile) {
+            return LaunchResult.Failed("apk_not_found", "apkFile=${apkFile.absolutePath}")
+        }
+        val appContext = context.applicationContext
+        val intent = Intent(BROADCAST_ACTION).apply {
+            putExtra(EXTRA_INSTALL_PATH, apkFile.absolutePath)
+            putExtra(EXTRA_SELF_STARTING, selfStarting)
+        }
+        val receiverCount = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                appContext.packageManager.queryBroadcastReceivers(
+                    intent,
+                    PackageManager.ResolveInfoFlags.of(0L)
+                ).size
+            } else {
+                @Suppress("DEPRECATION")
+                appContext.packageManager.queryBroadcastReceivers(intent, 0).size
+            }
+        }.getOrDefault(-1)
+        if (receiverCount == 0) {
+            return LaunchResult.Failed(
+                "jws_broadcast_receiver_not_found",
+                "action=$BROADCAST_ACTION, apkFile=${apkFile.absolutePath}"
+            )
+        }
+        return runCatching {
+            appContext.sendBroadcast(intent)
+            LaunchResult.Started
+        }.getOrElse {
+            LaunchResult.Failed("jws_broadcast_send_failed", it.message ?: it.javaClass.name)
+        }
     }
 
     class Session internal constructor(
