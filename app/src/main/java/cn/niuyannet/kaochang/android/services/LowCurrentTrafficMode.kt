@@ -109,6 +109,22 @@ object LowCurrentTrafficMode {
             return totalEmpty
         }
 
+        val activeLowHeatIntentTargetPositions = KaoChangOperate.activeSupplementBatchTargetPositions(
+            setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
+        )
+        val clearedGhostReservations = clearGhostLowFrontReservations(
+            list1_9 = list1_9,
+            list13_18 = list13_18,
+            activeLowHeatIntentTargetPositions = activeLowHeatIntentTargetPositions
+        )
+        if (clearedGhostReservations.isNotEmpty()) {
+            LogUtils.w(
+                TAG,
+                "【低并发自愈】清除前区幽灵预留：positions=$clearedGhostReservations，" +
+                    "reason=13~18全空且无活动低并发补热批次"
+            )
+        }
+
         logLowInitializationDecision(
             frontEmpty = p1_9,
             frontCapacity = list1_9.size,
@@ -519,8 +535,22 @@ object LowCurrentTrafficMode {
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
                 KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
             }
-            KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
-            selectedFrontPositions.forEach { it.isHasGrilling = true }
+            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
+            val activeTargets = KaoChangOperate.activeSupplementBatchTargetPositions(
+                setOf(SupplementBatchType.LOW_HEAT_13_15)
+            )
+            val result = applyLowHeatSupplementReservationResult(
+                frontPans = selectedFrontPositions,
+                supplementTargets = targets,
+                activeLowHeatIntentTargetPositions = activeTargets,
+                movedCount = movedCount
+            )
+            LogUtils.i(
+                TAG,
+                "【低并发补肠】13~15 补热区补肠结果收口：movedCount=$movedCount，" +
+                    "reserved=${result.reservedFrontPositions}，cleared=${result.clearedFrontPositions}，" +
+                    "keptForIntent=${result.keptForActiveIntentFrontPositions}，failedTargets=${result.failedTargetPositions}"
+            )
         }
     }
 
@@ -555,9 +585,92 @@ object LowCurrentTrafficMode {
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
                 KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
             }
-            KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
-            selectedFrontPositions.forEach { it.isHasGrilling = true }
+            val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
+            val activeTargets = KaoChangOperate.activeSupplementBatchTargetPositions(
+                setOf(SupplementBatchType.LOW_HEAT_16_18)
+            )
+            val result = applyLowHeatSupplementReservationResult(
+                frontPans = selectedFrontPositions,
+                supplementTargets = targets,
+                activeLowHeatIntentTargetPositions = activeTargets,
+                movedCount = movedCount
+            )
+            LogUtils.i(
+                TAG,
+                "【低并发补肠】16~18 补热区补肠结果收口：movedCount=$movedCount，" +
+                    "reserved=${result.reservedFrontPositions}，cleared=${result.clearedFrontPositions}，" +
+                    "keptForIntent=${result.keptForActiveIntentFrontPositions}，failedTargets=${result.failedTargetPositions}"
+            )
         }
+    }
+
+    internal data class LowHeatSupplementReservationResult(
+        val reservedFrontPositions: List<Int>,
+        val clearedFrontPositions: List<Int>,
+        val keptForActiveIntentFrontPositions: List<Int>,
+        val failedTargetPositions: List<Int>,
+        val movedCount: Int,
+        val actualSuccessCount: Int
+    )
+
+    internal fun applyLowHeatSupplementReservationResult(
+        frontPans: List<KaoPan>,
+        supplementTargets: List<KaoChangOperate.SupplementTarget>,
+        activeLowHeatIntentTargetPositions: Set<Int>,
+        movedCount: Int
+    ): LowHeatSupplementReservationResult {
+        require(frontPans.size == supplementTargets.size) {
+            "frontPans and supplementTargets must be index-aligned: front=${frontPans.size}, targets=${supplementTargets.size}"
+        }
+        val reserved = mutableListOf<Int>()
+        val cleared = mutableListOf<Int>()
+        val keptForIntent = mutableListOf<Int>()
+        val failedTargets = mutableListOf<Int>()
+
+        supplementTargets.forEachIndexed { index, target ->
+            val frontPan = frontPans[index]
+            val targetPan = target.kaoPan
+            if (targetPan.isHasSausage) {
+                frontPan.isHasGrilling = true
+                reserved += frontPan.positionSn
+            } else if (targetPan.positionSn in activeLowHeatIntentTargetPositions) {
+                frontPan.isHasGrilling = true
+                keptForIntent += frontPan.positionSn
+                failedTargets += targetPan.positionSn
+            } else {
+                frontPan.isHasGrilling = false
+                targetPan.taste = null
+                cleared += frontPan.positionSn
+                failedTargets += targetPan.positionSn
+            }
+        }
+
+        return LowHeatSupplementReservationResult(
+            reservedFrontPositions = reserved.sorted(),
+            clearedFrontPositions = cleared.sorted(),
+            keptForActiveIntentFrontPositions = keptForIntent.sorted(),
+            failedTargetPositions = failedTargets.sorted(),
+            movedCount = movedCount,
+            actualSuccessCount = supplementTargets.count { it.kaoPan.isHasSausage }
+        )
+    }
+
+    internal fun clearGhostLowFrontReservations(
+        list1_9: List<KaoPan>,
+        list13_18: List<KaoPan>,
+        activeLowHeatIntentTargetPositions: Set<Int>
+    ): List<Int> {
+        if (activeLowHeatIntentTargetPositions.isNotEmpty() || list13_18.any { it.isHasSausage }) {
+            return emptyList()
+        }
+        val cleared = mutableListOf<Int>()
+        list1_9
+            .filter { !it.isHasSausage && it.isHasGrilling }
+            .forEach { pan ->
+                pan.isHasGrilling = false
+                cleared += pan.positionSn
+            }
+        return cleared.sorted()
     }
 
     /**

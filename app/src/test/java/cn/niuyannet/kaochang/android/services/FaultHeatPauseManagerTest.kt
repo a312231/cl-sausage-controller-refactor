@@ -69,6 +69,28 @@ class FaultHeatPauseManagerTest {
     }
 
     @Test
+    fun adjustPansForPause_shouldTreatSupplementedPanWithZeroHoldingTimeAsBakingPan() {
+        val config = config()
+        val supplementedPan = bakingPan(positionSn = 13, startTime = 10_000L).apply {
+            holdingTime = 0L
+            closeTime = 1L
+        }
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(supplementedPan),
+            config = config,
+            nowMs = 70_000L,
+            pauseStartedAtMs = 60_000L,
+            reason = "单测",
+            emitLogs = false
+        )
+
+        assertEquals(listOf(13), result.shiftedPositions)
+        assertTrue(result.pendingDiscardPositions.isEmpty())
+        assertTrue(config.pendingDiscardPositions.isEmpty())
+    }
+
+    @Test
     fun effectiveBakingElapsedMs_shouldFreezeAtFaultPauseStart() {
         val config = config().apply {
             faultHeatPauseActive = 1

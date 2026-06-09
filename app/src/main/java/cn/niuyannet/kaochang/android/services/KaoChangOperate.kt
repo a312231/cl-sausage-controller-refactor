@@ -7,6 +7,7 @@ import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
+import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
@@ -1068,14 +1069,12 @@ object KaoChangOperate {
                     )
                     return false
                 }
-                pan.isHasSausage = true
-                LowToHighDemandGate.clearPosition(pan.positionSn, "补肠动作组恢复成功")
-                box.num = maxOf(0, box.num - 1)
-                pan.taste = KaoPanHelper.buildTasteFromBox(box, pan.taste)
-                pan.status = 1
-                pan.startTime = System.currentTimeMillis()
-                pan.cmdStatusMove = 0
-                box.cmdStatusTake = 0
+                applySuccessfulSupplementPanState(
+                    pan,
+                    box,
+                    "补肠动作组恢复成功",
+                    config = AppConfig.getAppConfig()
+                )
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                 KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
                 AppConfig.getAppConfig().moveStatus = 0
@@ -1454,6 +1453,17 @@ object KaoChangOperate {
 
     fun clearPendingSupplementBatchIntent(reason: String) {
         supplementBatchIntentRepository.clear(reason)
+    }
+
+    fun activeSupplementBatchTargetPositions(types: Set<SupplementBatchType>): Set<Int> {
+        val intent = supplementBatchIntentRepository.loadActive() ?: return emptySet()
+        if (intent.type !in types) {
+            return emptySet()
+        }
+        return intent.remainingTargets()
+            .map { it.positionSn }
+            .filter { it in 1..33 }
+            .toSet()
     }
 
     suspend fun handlePendingSupplementBatchIfAny(
@@ -1899,17 +1909,12 @@ object KaoChangOperate {
     private fun applySuccessfulSupplementMove(kaoPan: KaoPan, kaoPanBox: KaoPanBox) {
         val sausageName = getBoxTasteLabel(kaoPanBox)
         val boxStockBefore = kaoPanBox.num
-        kaoPan.isHasSausage = true
-        LowToHighDemandGate.clearPosition(kaoPan.positionSn, "补肠预取流水线完成")
-        kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
-        kaoPan.taste = KaoPanHelper.buildTasteFromBox(kaoPanBox, kaoPan.taste)
-        kaoPan.status = 1
-        kaoPan.startTime = System.currentTimeMillis()
-        val cfg = AppConfig.getAppConfig()
-        kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
-        kaoPan.closeTime = cfg.discardTime * 60L * 60L * 1000L
-        kaoPan.cmdStatusMove = 0
-        kaoPanBox.cmdStatusTake = 0
+        applySuccessfulSupplementPanState(
+            kaoPan,
+            kaoPanBox,
+            "补肠预取流水线完成",
+            config = AppConfig.getAppConfig()
+        )
         logD(
             LOG_SUPPLEMENT,
             "补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，口味=$sausageName，" +
@@ -2173,20 +2178,12 @@ object KaoChangOperate {
         )
 
         if (moveSuccess){
-            kaoPan.isHasSausage=true
-            LowToHighDemandGate.clearPosition(kaoPan.positionSn, "补肠动作组完成")
-            // 减少烤肠箱中的数量，最低只允许到 0，防止库存被写成负数
-            kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
-            kaoPan.taste = KaoPanHelper.buildTasteFromBox(kaoPanBox, kaoPan.taste)
-            //清空旧位置信息
-            kaoPan.status=1//开始加热烤制
-            // 记录开始时间
-            kaoPan.startTime = System.currentTimeMillis()
-            // 从当前 config 刷新烤制时长和丢弃阈值，防止初始化时 config 尚未从云端加载
-            // 导致 bakingTime/closeTime 遗留为 0 而直接跳入保温状态
-            val cfg = AppConfig.getAppConfig()
-            kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
-            kaoPan.closeTime  = cfg.discardTime * 60L * 60L * 1000L
+            val cfg = applySuccessfulSupplementPanState(
+                kaoPan,
+                kaoPanBox,
+                "补肠动作组完成",
+                config = AppConfig.getAppConfig()
+            )
             logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${kaoPan.id}")
             logD(
                 LOG_SUPPLEMENT,
@@ -2733,6 +2730,34 @@ object KaoChangOperate {
                 applyPendingActionGroupDisableIfIdle("出餐动作组会话收口")
             }
         }
+    }
+
+    internal fun applySuccessfulSupplementPanState(
+        kaoPan: KaoPan,
+        kaoPanBox: KaoPanBox,
+        demandGateReason: String,
+        nowMs: Long = System.currentTimeMillis(),
+        clearPendingDiscard: Boolean = true,
+        config: AppConfigBean,
+        tasteBuilder: (KaoPanBox, Taste?) -> Taste = KaoPanHelper::buildTasteFromBox
+    ): AppConfigBean {
+        val cfg = config
+        kaoPan.isHasSausage = true
+        kaoPan.isHasGrilling = false
+        LowToHighDemandGate.clearPosition(kaoPan.positionSn, demandGateReason)
+        kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
+        kaoPan.taste = tasteBuilder(kaoPanBox, kaoPan.taste)
+        kaoPan.status = 1
+        kaoPan.startTime = nowMs
+        kaoPan.holdingTime = 0L
+        kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
+        kaoPan.closeTime = cfg.discardTime * 60L * 60L * 1000L
+        kaoPan.cmdStatusMove = 0
+        kaoPanBox.cmdStatusTake = 0
+        if (clearPendingDiscard) {
+            FaultHeatPauseManager.clearDiscardPositionAndAlertIfFinished(kaoPan.positionSn)
+        }
+        return cfg
     }
 
     /**
