@@ -28,10 +28,12 @@ class InActionGroupRunner(
         resumeFromRunningState: Boolean = false
     ): ActionGroupResult {
         if (!SourceBoxPositionPolicy.isValidSourceBox(sourceBoxNo)) {
+            val reason = "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
+            SendServerHelper.publishIllegalSourceBoxBlocked(sourceBoxNo, targetPanNo, reason)
             return ActionGroupResult.Failed(
                 "in",
                 AtomicActionResult.Failed(AtomicActionCodes.PARAM_ERROR, "参数错误"),
-                "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
+                reason
             )
         }
         if (targetPanNo !in 1..33) {

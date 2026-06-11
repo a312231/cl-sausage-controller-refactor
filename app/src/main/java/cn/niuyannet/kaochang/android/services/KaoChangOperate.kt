@@ -2063,10 +2063,12 @@ object KaoChangOperate {
             return false
         }
         if (!SourceBoxPositionPolicy.isValidSourceBox(kaoPanBox.positionSn)) {
+            val reason = "补肠取消：烤肠箱${kaoPanBox.positionSn}为 4F 保留/非法源肠箱，合法源肠箱=${SourceBoxPositionPolicy.validRangeText()}"
             logE(
                 LOG_SUPPLEMENT,
-                "补肠取消：烤肠箱${kaoPanBox.positionSn}为 4F 保留/非法源肠箱，合法源肠箱=${SourceBoxPositionPolicy.validRangeText()}"
+                reason
             )
+            SendServerHelper.publishIllegalSourceBoxBlocked(kaoPanBox.positionSn, kaoPan.positionSn, reason)
             return false
         }
         if (kaoPanBox.num <= 0) {

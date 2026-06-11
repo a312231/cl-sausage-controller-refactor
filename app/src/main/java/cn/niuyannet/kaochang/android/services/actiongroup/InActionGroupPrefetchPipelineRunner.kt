@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -172,11 +173,13 @@ class InActionGroupPrefetchPipelineRunner(
                     "candidateIndex=${index + 1}/${task.sourceBoxCandidates.size}"
             )
             if (!SourceBoxPositionPolicy.isValidSourceBox(sourceBoxNo)) {
+                val reason = "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
+                SendServerHelper.publishIllegalSourceBoxBlocked(sourceBoxNo, task.targetPanNo, reason)
                 return PrefetchResult.Failed(
                     actionName = "in",
                     sourceBoxNo = sourceBoxNo,
                     result = AtomicActionResult.Failed(AtomicActionCodes.PARAM_ERROR, "参数错误"),
-                    message = "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
+                    message = reason
                 )
             }
 

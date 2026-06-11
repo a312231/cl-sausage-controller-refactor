@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -174,6 +175,9 @@ object SendServerHelper {
         payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
+        payload["sourceBoxPolicyVersion"] = SourceBoxPositionPolicy.POLICY_VERSION
+        payload["validSourceBoxRanges"] = SourceBoxPositionPolicy.validRangePayloadText()
+        payload["disabledSourceBoxes"] = SourceBoxPositionPolicy.disabledBoxes()
         payload["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
         payload["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
         payload["pendingDiscardPositions"] = config.pendingDiscardPositions
@@ -377,6 +381,34 @@ object SendServerHelper {
                 "【300/400动作组】结构化动作日志进入 MQTT 发送队列失败：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，errorCode=${telemetry.errorCode}"
             )
+        }
+        return ok
+    }
+
+    fun publishIllegalSourceBoxBlocked(sourceBoxNo: Int, targetPanNo: Int?, reason: String): Boolean {
+        val payload = JSONObject()
+        payload["messageType"] = MqttProtocol.TYPE_ILLEGAL_SOURCE_BOX_BLOCKED
+        payload["deviceCode"] = AppConfig.getDeviceId()
+        payload["eventType"] = "ILLEGAL_SOURCE_BOX_BLOCKED"
+        payload["severity"] = "FATAL"
+        payload["reportedAt"] = System.currentTimeMillis()
+        payload["sourceBoxNo"] = sourceBoxNo
+        targetPanNo?.let { payload["targetPanNo"] = it }
+        payload["sourceBoxPolicyVersion"] = SourceBoxPositionPolicy.POLICY_VERSION
+        payload["validSourceBoxRanges"] = SourceBoxPositionPolicy.validRangePayloadText()
+        payload["disabledSourceBoxes"] = SourceBoxPositionPolicy.disabledBoxes()
+        payload["reason"] = reason
+        val ok = VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_DEVICE_LOG
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+        if (ok) {
+            LogUtils.e("【补肠安全】非法源肠箱拦截事件已进入 MQTT 发送队列：sourceBox=$sourceBoxNo，targetPan=$targetPanNo，reason=$reason")
+        } else {
+            LogUtils.e("【补肠安全】非法源肠箱拦截事件进入 MQTT 发送队列失败：sourceBox=$sourceBoxNo，targetPan=$targetPanNo，reason=$reason")
         }
         return ok
     }

@@ -81,11 +81,18 @@ object MoveStatusRecoveryPolicy {
 }
 
 object SourceBoxPositionPolicy {
+    const val POLICY_VERSION = 2
+    private val disabledSourceBoxes = setOf(1, 11, 12, 22)
+
     fun isValidSourceBox(positionSn: Int): Boolean {
-        return positionSn in 1..22 && positionSn != 11 && positionSn != 22
+        return positionSn in 2..10 || positionSn in 13..21
     }
 
-    fun validRangeText(): String = "1~10、12~21"
+    fun validRangeText(): String = "2~10、13~21"
+
+    fun validRangePayloadText(): String = "2-10,13-21"
+
+    fun disabledBoxes(): List<Int> = disabledSourceBoxes.sorted()
 }
 
 object FourFTemperaturePolicy {

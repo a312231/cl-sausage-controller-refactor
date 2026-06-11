@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 
 internal object RuntimeStateSignatureBuilder {
     private const val KEEP_WARM_EXPIRED_ALERT_CODE = "KEEP_WARM_EXPIRED"
@@ -22,7 +23,10 @@ internal object RuntimeStateSignatureBuilder {
             append(config.restStatusSource ?: "").append('|')
             append(alertCode).append('|')
             append(alertReason).append('|')
-            append(config.pendingDiscardPositions.toSortedSet().joinToString(","))
+            append(config.pendingDiscardPositions.toSortedSet().joinToString(",")).append('|')
+            append(SourceBoxPositionPolicy.POLICY_VERSION).append('|')
+            append(SourceBoxPositionPolicy.validRangePayloadText()).append('|')
+            append(SourceBoxPositionPolicy.disabledBoxes().joinToString(","))
         }
     }
 
