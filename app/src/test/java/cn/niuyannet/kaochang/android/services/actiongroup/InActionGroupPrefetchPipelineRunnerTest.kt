@@ -1,12 +1,16 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.fail
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.coroutines.cancellation.CancellationException
 
 class InActionGroupPrefetchPipelineRunnerTest {
 
@@ -170,7 +174,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         val failed = result as InActionGroupPipelineResult.Failed
         assertEquals("in", failed.actionName)
         assertEquals(22, failed.sourceBoxNo)
-        assertEquals("源肠箱编号必须在 1~10、12~21，当前=22", failed.message)
+        assertEquals("源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=22", failed.message)
         assertTrue(client.calls.isEmpty())
     }
 
@@ -355,6 +359,54 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(failed.completed.isEmpty())
     }
 
+    @Test
+    fun pipeline_shouldTranslateIn7RuntimeExceptionToFailedWithActualAction() = runBlocking {
+        val client = ThrowingClient(throwOnAction = "in7", throwable = IllegalStateException("in7 writeback failed"))
+        val completedEvents = mutableListOf<CompletedInActionGroupPipelineTask>()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            onTaskCompleted = { completedEvents += it }
+        )
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals("in7", failed.actionName)
+        assertEquals(17, failed.sourceBoxNo)
+        assertTrue(failed.result is AtomicActionResult.ModbusError)
+        assertTrue(failed.message.contains("IllegalStateException"))
+        assertTrue(completedEvents.isEmpty())
+    }
+
+    @Test
+    fun pipeline_shouldTranslateIn5RuntimeExceptionToFailedWithoutHardcodingIn7() = runBlocking {
+        val client = ThrowingClient(throwOnAction = "in5", throwable = IllegalArgumentException("throw sensor read failed"))
+        val runner = InActionGroupPrefetchPipelineRunner(client)
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals("in5", failed.actionName)
+        assertFalse(failed.actionName == "in7")
+        assertEquals(17, failed.sourceBoxNo)
+        assertTrue(failed.result is AtomicActionResult.ModbusError)
+    }
+
+    @Test
+    fun pipeline_shouldRethrowIn7CancellationException() = runBlocking {
+        val client = ThrowingClient(throwOnAction = "in7", throwable = CancellationException("scope cancelled"))
+        val runner = InActionGroupPrefetchPipelineRunner(client)
+
+        try {
+            runner.run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+            fail("CancellationException should be rethrown")
+        } catch (e: CancellationException) {
+            assertEquals("scope cancelled", e.message)
+        }
+    }
+
     private class FakeClient(
         private val results: ArrayDeque<AtomicActionResult> = ArrayDeque()
     ) : AtomicActionClient {
@@ -372,6 +424,26 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 yield()
             }
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
+        }
+    }
+
+    private class ThrowingClient(
+        private val throwOnAction: String,
+        private val throwable: Throwable
+    ) : AtomicActionClient {
+        override suspend fun execute(
+            spec: AtomicActionSpec,
+            infoValue: Int,
+            onCommandDispatched: (suspend () -> Unit)?
+        ): AtomicActionResult {
+            if (spec.name == throwOnAction) {
+                throw throwable
+            }
+            if (spec.name == "in6" && onCommandDispatched != null) {
+                onCommandDispatched()
+                yield()
+            }
+            return AtomicActionResult.Success
         }
     }
 

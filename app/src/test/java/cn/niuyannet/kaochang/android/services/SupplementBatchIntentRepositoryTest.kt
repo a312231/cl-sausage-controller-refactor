@@ -89,6 +89,28 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun begin_shouldRejectNewBatchWhenActiveBatchRequiresManualConfirmation() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(listOf(target(13, "B"), target(14, "B"), target(15, "B")))!!
+
+        repository.markFailure(
+            batchId = intent.batchId,
+            targetPanNo = 13,
+            actionName = "in7",
+            failureMessage = "in7 取消，可能已落盘",
+            requiresManualConfirm = true
+        )
+
+        assertNull(repository.begin(listOf(target(16, "B"))))
+
+        val saved = store.intent!!
+        assertEquals(intent.batchId, saved.batchId)
+        assertTrue(saved.requiresManualConfirm)
+        assertEquals(listOf(13, 14, 15), saved.remainingTargets().map { it.positionSn })
+    }
+
+    @Test
     fun confirmManualSafety_shouldAllowResumeWithoutDroppingRemainingTargets() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)

@@ -252,9 +252,13 @@ object KaoPanHelper {
      */
     fun saveKaoPanList(list: List<KaoPan>) {
         helperScope.launch {
-            kaoPanList = list.toMutableList()
-            PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
+            saveKaoPanListSync(list)
         }
+    }
+
+    fun saveKaoPanListSync(list: List<KaoPan>) {
+        kaoPanList = list.toMutableList()
+        PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
     }
 
 
@@ -263,9 +267,13 @@ object KaoPanHelper {
      */
     fun saveKaoPanBoxList(list: List<KaoPanBox>) {
         helperScope.launch {
-            kaoPanBoxList = list.toMutableList()
-            PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
+            saveKaoPanBoxListSync(list)
         }
+    }
+
+    fun saveKaoPanBoxListSync(list: List<KaoPanBox>) {
+        kaoPanBoxList = list.toMutableList()
+        PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
     }
 
 

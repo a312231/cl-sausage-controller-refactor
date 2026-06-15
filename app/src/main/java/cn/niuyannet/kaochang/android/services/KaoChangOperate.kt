@@ -34,6 +34,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicReadResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.CompletedInActionGroupPipelineTask
+import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineActionContext
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineTask
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPrefetchPipelineRunner
@@ -55,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 internal fun formatActionGroupFailureReasonForUpload(
     actionName: String,
@@ -1803,8 +1805,8 @@ object KaoChangOperate {
             appliedCompletedPanNos += completedTask.targetPanNo
             completedCount += 1
             supplementBatchIntentRepository.markCompleted(batchId, completedTask.targetPanNo)
-            KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+            KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
             logD(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线单根状态已回写：sourceBox=${completedTask.sourceBoxNo}，" +
@@ -1812,6 +1814,8 @@ object KaoChangOperate {
             )
         }
         var actionGroupCompleted = false
+        var latestCurrentAction: InActionGroupPipelineActionContext? = null
+        var latestRiskAction: InActionGroupPipelineActionContext? = null
         val result = try {
             val firstMove = plannedMoves.first()
             actionGroupSessionStore.save(
@@ -1852,11 +1856,27 @@ object KaoChangOperate {
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogger = { message -> LogUtils.i(message) },
                 failureLogger = { message -> LogUtils.e(message) },
-                onTaskCompleted = { completedTask -> applyCompletedPipelineTask(completedTask) },
+                onTaskCompleted = { completedTask ->
+                    applyCompletedPipelineTask(completedTask)
+                    if (latestRiskAction?.targetPanNo == completedTask.targetPanNo) {
+                        latestRiskAction = null
+                    }
+                },
                 onPickFailureSkipped = { sourceBoxNo ->
                     recordIrPickFailureAndSave(
                         sourceBoxNo = sourceBoxNo,
                         reason = "补肠预取流水线连续取肠失败后跳过候选箱"
+                    )
+                },
+                onCurrentActionChanged = { context ->
+                    latestCurrentAction = context
+                    if (isSupplementPipelineDropRiskAction(context.actionName)) {
+                        latestRiskAction = context
+                    }
+                    logD(
+                        LOG_ACTION_GROUP,
+                        "补肠预取流水线当前动作：targetPan=${context.targetPanNo}，" +
+                            "sourceBox=${context.sourceBoxNo}，action=${context.actionName}"
                     )
                 },
                 pauseReasonAfterCurrentTask = {
@@ -1870,11 +1890,25 @@ object KaoChangOperate {
             )
                 .run(plannedMoves.map { it.task })
                 .also { actionGroupCompleted = true }
+        } catch (e: CancellationException) {
+            markSupplementPipelineCancellationRisk(
+                batchId = batchId,
+                currentAction = latestCurrentAction,
+                riskAction = latestRiskAction,
+                throwable = e
+            )
+            throw e
         } finally {
             if (actionGroupCompleted) {
                 actionGroupSessionStore.clear()
             }
             actionGroupLocks.release(owner)
+            AppConfig.getAppConfig().moveStatus = 0
+            AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+            KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
+            logD(LOG_SUPPLEMENT, "补肠预取流水线收口状态保存完成")
         }
 
         val completed = when (result) {
@@ -1901,16 +1935,9 @@ object KaoChangOperate {
                 handlePipelineSupplementFailure(result, taskByPanNo, batchId)
             }
         }
+        KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+        KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
 
-        AppConfig.getAppConfig().moveStatus = 0
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
-        applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
-
-        operateScope.launch {
-            KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-            logD(LOG_SUPPLEMENT, "补肠预取流水线收口状态保存完成")
-        }
         return completedCount
     }
 
@@ -1971,11 +1998,68 @@ object KaoChangOperate {
         val boxList = KaoPanHelper.getKaoPanBoxList()
         val failedBox = boxList.firstOrNull { it.positionSn == sourceBoxNo } ?: return
         val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
-        KaoPanHelper.saveKaoPanBoxList(boxList)
+        KaoPanHelper.saveKaoPanBoxListSync(boxList)
         logW(
             LOG_SUPPLEMENT,
             "$reason：烤肠箱=${markResult.boxNo}，保留库存=${markResult.previousNum}，remainingCandidates=${markResult.remainingCandidateBoxNos}"
         )
+    }
+
+    private fun isSupplementPipelineDropRiskAction(actionName: String): Boolean =
+        actionName == "in6" || actionName == "in7"
+
+    private fun markSupplementPipelineCancellationRisk(
+        batchId: String?,
+        currentAction: InActionGroupPipelineActionContext?,
+        riskAction: InActionGroupPipelineActionContext?,
+        throwable: CancellationException
+    ) {
+        val marked = markSupplementPipelineCancellationRiskIfNeeded(
+            batchId = batchId,
+            currentAction = currentAction,
+            riskAction = riskAction,
+            failureMessage = { action ->
+                "补肠预取流水线在 ${action.actionName} 阶段被取消，目标烤盘可能已落肠，需人工确认后再续补：" +
+                    "targetPan=${action.targetPanNo}，sourceBox=${action.sourceBoxNo}，cancel=${describeThrowableBrief(throwable)}"
+            },
+            markFailure = { targetPanNo, actionName, failureMessage ->
+                logE(LOG_SUPPLEMENT, failureMessage)
+                supplementBatchIntentRepository.markFailure(
+                    batchId = batchId,
+                    targetPanNo = targetPanNo,
+                    actionName = actionName,
+                    failureMessage = failureMessage,
+                    requiresManualConfirm = true
+                )
+            }
+        )
+        if (!marked) {
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠预取流水线取消：当前动作=${currentAction?.actionName ?: "未知"}，未进入 in6/in7 落盘风险段，仅做同步收口"
+            )
+        }
+    }
+
+    internal fun selectSupplementPipelineCancellationRiskAction(
+        currentAction: InActionGroupPipelineActionContext?,
+        riskAction: InActionGroupPipelineActionContext?
+    ): InActionGroupPipelineActionContext? =
+        riskAction ?: currentAction?.takeIf { isSupplementPipelineDropRiskAction(it.actionName) }
+
+    internal fun markSupplementPipelineCancellationRiskIfNeeded(
+        batchId: String?,
+        currentAction: InActionGroupPipelineActionContext?,
+        riskAction: InActionGroupPipelineActionContext?,
+        failureMessage: (InActionGroupPipelineActionContext) -> String,
+        markFailure: (targetPanNo: Int, actionName: String, failureMessage: String) -> Unit
+    ): Boolean {
+        if (batchId.isNullOrBlank()) {
+            return false
+        }
+        val action = selectSupplementPipelineCancellationRiskAction(currentAction, riskAction) ?: return false
+        markFailure(action.targetPanNo, action.actionName, failureMessage(action))
+        return true
     }
 
     private fun handlePipelineSupplementFailure(
@@ -2023,7 +2107,7 @@ object KaoChangOperate {
                 }.forEach { failedBox ->
                     SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
                 }
-                KaoPanHelper.saveKaoPanBoxList(boxList)
+                KaoPanHelper.saveKaoPanBoxListSync(boxList)
             }
             enterActionGroupMaintenance(
                 "补肠预取流水线同口味候选箱取肠均失败（0x00E5），设备进入维护等待人工确认：" +
@@ -2046,6 +2130,15 @@ object KaoChangOperate {
             is AtomicActionResult.Failed -> "${AtomicActionExecutor.formatCode(result.errorCode)}（${result.message}）"
             is AtomicActionResult.ModbusError -> "MODBUS_ERROR（${result.message}）"
             is AtomicActionResult.Timeout -> "TIMEOUT（${result.message}）"
+        }
+    }
+
+    private fun describeThrowableBrief(throwable: Throwable): String {
+        val message = throwable.message?.takeIf { it.isNotBlank() }
+        return if (message == null) {
+            throwable.javaClass.simpleName
+        } else {
+            "${throwable.javaClass.simpleName}: $message"
         }
     }
 
