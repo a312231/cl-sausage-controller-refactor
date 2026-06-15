@@ -29,7 +29,7 @@ class InActionGroupRunner(
     ): ActionGroupResult {
         if (!SourceBoxPositionPolicy.isValidSourceBox(sourceBoxNo)) {
             val reason = "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
-            SendServerHelper.publishIllegalSourceBoxBlocked(sourceBoxNo, targetPanNo, reason)
+            publishIllegalSourceBoxBlockedSafely(sourceBoxNo, targetPanNo, reason, logger)
             return ActionGroupResult.Failed(
                 "in",
                 AtomicActionResult.Failed(AtomicActionCodes.PARAM_ERROR, "参数错误"),
@@ -189,15 +189,7 @@ private suspend fun executeSteps(
             }
         }
         if (step.spec == AtomicActions.out2 && result == ActionGroupResult.Success) {
-            SendServerHelper.publishConsumableEvent(
-                ConsumableEventPayloadBuilder.nextEvent(
-                    consumableType = "STICK",
-                    eventType = "STICK_CONSUME",
-                    deltaValue = -1L,
-                    source = "out2_success",
-                    detail = "action=${step.spec.name}, elapsedMs=$elapsedMs"
-                )
-            )
+            publishStickConsumeEventSafely(step.spec.name, elapsedMs, logger)
         }
         if (step.spec == AtomicActions.out4 && result == ActionGroupResult.Success) {
             if (windowOpenBufferMs > 0L) {
@@ -212,6 +204,37 @@ private suspend fun executeSteps(
         }
     }
     return ActionGroupResult.Success
+}
+
+private fun publishIllegalSourceBoxBlockedSafely(
+    sourceBoxNo: Int,
+    targetPanNo: Int,
+    reason: String,
+    logger: (String) -> Unit
+) {
+    try {
+        SendServerHelper.publishIllegalSourceBoxBlocked(sourceBoxNo, targetPanNo, reason)
+    } catch (throwable: Throwable) {
+        logger(
+            "非法源肠箱拦截上报失败，不影响参数错误拦截：sourceBox=$sourceBoxNo，" +
+                "targetPan=$targetPanNo，error=${throwable::class.java.simpleName}: ${throwable.message ?: "无详情"}"
+        )
+    }
+}
+
+private fun publishStickConsumeEventSafely(actionName: String, elapsedMs: Long, logger: (String) -> Unit) {
+    try {
+        val event = ConsumableEventPayloadBuilder.nextEvent(
+            consumableType = "STICK",
+            eventType = "STICK_CONSUME",
+            deltaValue = -1L,
+            source = "out2_success",
+            detail = "action=$actionName, elapsedMs=$elapsedMs"
+        )
+        SendServerHelper.publishConsumableEvent(event)
+    } catch (throwable: Throwable) {
+        logger("耗材事件上报失败，不影响动作组执行：error=${throwable::class.java.simpleName}: ${throwable.message ?: "无详情"}")
+    }
 }
 
 private suspend fun executeRetriableStep(

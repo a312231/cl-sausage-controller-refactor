@@ -66,7 +66,7 @@ class KaoPanHelperRatioTest {
 
     @Test
     fun supplyBoxAutoSupplementExclusionReasons_shouldExplainEveryFilterCondition() {
-        val emptyBox = box(positionSn = 1, tasteCode = "A", num = 0)
+        val emptyBox = box(positionSn = 2, tasteCode = "A", num = 0)
         val blankTasteBox = box(positionSn = 2, tasteCode = "", num = 8)
         val irFailedBox = box(positionSn = 3, tasteCode = "B", num = 8, cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED)
         val reservedBox = box(positionSn = 22, tasteCode = "C", num = 8)

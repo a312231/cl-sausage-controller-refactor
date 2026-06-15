@@ -27,7 +27,7 @@ class TrafficModeHelperTest {
     }
 
     @Test
-    fun findSupplyBoxesByTaste_shouldAllowValidBoxesAroundReservedSlots() {
+    fun findSupplyBoxesByTaste_shouldSkipReservedSlotsAndAllowAdjacentValidBoxes() {
         val boxes = listOf(
             box(positionSn = 10, tasteCode = "A", num = 1),
             box(positionSn = 11, tasteCode = "A", num = 1),
@@ -38,7 +38,7 @@ class TrafficModeHelperTest {
 
         val result = TrafficModeHelper.findSupplyBoxesByTaste(boxes, "A")
 
-        assertEquals(listOf(21, 12, 10), result.map { it.positionSn })
+        assertEquals(listOf(21, 10), result.map { it.positionSn })
     }
 
     @Test

@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -15,7 +16,10 @@ class ActionGroupRunnerTest {
         val result = runner.run(sourceBoxNo = 23, targetPanNo = 1)
 
         assertTrue(result is ActionGroupResult.Failed)
-        assertEquals("源肠箱编号必须在 1~10、12~21，当前=23", (result as ActionGroupResult.Failed).message)
+        assertEquals(
+            "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=23",
+            (result as ActionGroupResult.Failed).message
+        )
         assertTrue(client.calls.isEmpty())
     }
 
@@ -27,7 +31,10 @@ class ActionGroupRunnerTest {
         val result = runner.run(sourceBoxNo = 11, targetPanNo = 1)
 
         assertTrue(result is ActionGroupResult.Failed)
-        assertEquals("源肠箱编号必须在 1~10、12~21，当前=11", (result as ActionGroupResult.Failed).message)
+        assertEquals(
+            "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=11",
+            (result as ActionGroupResult.Failed).message
+        )
         assertTrue(client.calls.isEmpty())
     }
 
