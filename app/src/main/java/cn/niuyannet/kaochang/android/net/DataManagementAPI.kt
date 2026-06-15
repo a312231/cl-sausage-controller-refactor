@@ -30,8 +30,15 @@ import kotlinx.coroutines.launch
 object DataManagementAPI {
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val LOG_SYNC = "云端同步"
+    private const val PRODUCT_CATALOG_REFRESH_MIN_INTERVAL_MS = 5_000L
     @Volatile
     private var lastAppliedConcurrencyControlSeq: Long = -1L
+    @Volatile
+    private var productCatalogRefreshInFlight = false
+    @Volatile
+    private var lastProductCatalogRefreshAtMillis = 0L
+    private val productCatalogRefreshLock = Any()
+    private val productCatalogRefreshCallbacks = mutableListOf<(ProductCatalogRefreshResult) -> Unit>()
 
     data class RemoteDeviceStateRefreshResult(
         val success: Boolean,
@@ -42,6 +49,14 @@ object DataManagementAPI {
         val inspectionMode: Int,
         val isEnable: Int,
         val restStatusSource: String
+    )
+
+    data class ProductCatalogRefreshResult(
+        val success: Boolean,
+        val catalogChanged: Boolean,
+        val metadataNormalized: Boolean,
+        val tasteCount: Int,
+        val reason: String
     )
 
     data class RuntimeControlApplyResult(
@@ -851,6 +866,139 @@ object DataManagementAPI {
                 logE("[$logPrefix] 同步烤肠箱库存失败：code=$code, content=$content")
             }
             onResult?.invoke(false, 0)
+        }
+    }
+
+    fun refreshProductCatalog(
+        force: Boolean = false,
+        logPrefix: String = LOG_SYNC,
+        onResult: ((ProductCatalogRefreshResult) -> Unit)? = null
+    ) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastProductCatalogRefreshAtMillis < PRODUCT_CATALOG_REFRESH_MIN_INTERVAL_MS) {
+            onResult?.invoke(
+                ProductCatalogRefreshResult(
+                    success = true,
+                    catalogChanged = false,
+                    metadataNormalized = false,
+                    tasteCount = KaoPanHelper.getTasteList().size,
+                    reason = "recently_refreshed"
+                )
+            )
+            return
+        }
+
+        synchronized(productCatalogRefreshLock) {
+            if (productCatalogRefreshInFlight) {
+                onResult?.let { productCatalogRefreshCallbacks.add(it) }
+                return
+            }
+            productCatalogRefreshInFlight = true
+            onResult?.let { productCatalogRefreshCallbacks.add(it) }
+        }
+
+        NetApi.getKcProductList { code, content ->
+            val result = if (code == 0) {
+                applyProductCatalogResponse(content, logPrefix)
+            } else {
+                logE("[$logPrefix] 商品目录同步失败：code=$code, content=$content")
+                ProductCatalogRefreshResult(
+                    success = false,
+                    catalogChanged = false,
+                    metadataNormalized = false,
+                    tasteCount = KaoPanHelper.getTasteList().size,
+                    reason = "network_error"
+                )
+            }
+            val callbacks = synchronized(productCatalogRefreshLock) {
+                productCatalogRefreshInFlight = false
+                if (result.success) {
+                    lastProductCatalogRefreshAtMillis = System.currentTimeMillis()
+                }
+                productCatalogRefreshCallbacks.toList().also {
+                    productCatalogRefreshCallbacks.clear()
+                }
+            }
+            callbacks.forEach { callback -> callback(result) }
+        }
+    }
+
+    internal fun parseProductCatalogResponse(content: String?): List<Taste>? {
+        val json = try {
+            JSON.parseObject(content)
+        } catch (e: Exception) {
+            return null
+        }
+        if (json?.getIntValue("code") != 200) {
+            return null
+        }
+        val jsonData = json.getJSONArray("data") ?: return null
+        val tasteList = mutableListOf<Taste>()
+        for (i in 0 until jsonData.size) {
+            val item = jsonData.getJSONObject(i)
+            val taste = Taste(
+                item.getIntValue("tasteId"),
+                item.getString("tasteCode"),
+                item.getString("tasteName"),
+                item.getIntValue("id"),
+                item.getString("name")
+            )
+            tasteList.add(taste)
+        }
+        return tasteList
+    }
+
+    private fun applyProductCatalogResponse(
+        content: String?,
+        logPrefix: String
+    ): ProductCatalogRefreshResult {
+        val refreshedTasteList = parseProductCatalogResponse(content)
+        if (refreshedTasteList == null) {
+            logE("[$logPrefix] 商品目录同步业务返回异常：content=$content")
+            return ProductCatalogRefreshResult(
+                success = false,
+                catalogChanged = false,
+                metadataNormalized = false,
+                tasteCount = KaoPanHelper.getTasteList().size,
+                reason = "invalid_response"
+            )
+        }
+
+        val catalogChanged = !isSameProductCatalog(KaoPanHelper.getTasteList(), refreshedTasteList)
+        if (catalogChanged) {
+            saveTasteList(refreshedTasteList)
+        }
+        val panMetadataNormalized = KaoPanHelper.normalizeKaoPanTasteMetadata()
+        val boxMetadataNormalized = KaoPanHelper.normalizeKaoPanBoxTasteMetadata()
+        val metadataNormalized = panMetadataNormalized || boxMetadataNormalized
+        if (catalogChanged || metadataNormalized) {
+            logD(
+                "[$logPrefix] 商品目录同步完成：" +
+                    "商品数=${refreshedTasteList.size}, " +
+                    "目录变化=$catalogChanged, " +
+                    "烤盘归一=$panMetadataNormalized, " +
+                    "烤肠箱归一=$boxMetadataNormalized"
+            )
+        }
+        return ProductCatalogRefreshResult(
+            success = true,
+            catalogChanged = catalogChanged,
+            metadataNormalized = metadataNormalized,
+            tasteCount = refreshedTasteList.size,
+            reason = "success"
+        )
+    }
+
+    private fun isSameProductCatalog(left: List<Taste>, right: List<Taste>): Boolean {
+        if (left.size != right.size) {
+            return false
+        }
+        return left.zip(right).all { (leftTaste, rightTaste) ->
+            leftTaste.tasteId == rightTaste.tasteId &&
+                leftTaste.tasteCode == rightTaste.tasteCode &&
+                leftTaste.tasteName == rightTaste.tasteName &&
+                leftTaste.productId == rightTaste.productId &&
+                leftTaste.productName == rightTaste.productName
         }
     }
 

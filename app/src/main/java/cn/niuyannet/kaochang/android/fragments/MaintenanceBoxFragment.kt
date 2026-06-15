@@ -36,16 +36,19 @@ import com.afollestad.materialdialogs.lifecycle.lifecycleOwner
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
 import com.google.android.material.button.MaterialButton
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MaintenanceBoxFragment : Fragment() {
     private companion object {
         const val BOX_GRID_SPAN_COUNT = 11
+        const val REFILL_CATALOG_REFRESH_TIMEOUT_MS = 3_000L
     }
 
     private data class BoxClearSnapshot(
@@ -61,6 +64,7 @@ class MaintenanceBoxFragment : Fragment() {
     private var _binding: FragmentMaintenanceBoxBinding? = null
     private val binding get() = _binding!!
     private var refreshJob: Job? = null
+    private var refillCatalogRefreshJob: Job? = null
     private lateinit var kaoPanBoxAdapter: KaoPanBoxAdapter
 
     override fun onCreateView(
@@ -77,6 +81,7 @@ class MaintenanceBoxFragment : Fragment() {
         setupGrid()
         setupButtons()
         ensureBoxDataLoaded()
+        refreshProductCatalogForPage()
     }
 
     /**
@@ -407,7 +412,76 @@ class MaintenanceBoxFragment : Fragment() {
                 ToastUtils.showShort("请先选择需要加满的烤肠箱")
                 return@setOnClickListener
             }
-            showTasteSelectDialog(selectedBoxes)
+            refreshCatalogThenShowTasteSelectDialog(selectedBoxes)
+        }
+    }
+
+    private fun refreshProductCatalogForPage() {
+        DataManagementAPI.refreshProductCatalog(
+            force = true,
+            logPrefix = "进入烤肠箱页同步商品目录"
+        ) { result ->
+            activity?.runOnUiThread {
+                if (!isAdded || _binding == null) {
+                    return@runOnUiThread
+                }
+                if (result.success) {
+                    kaoPanBoxAdapter.setData(KaoPanHelper.getKaoPanBoxList())
+                }
+            }
+        }
+    }
+
+    private fun refreshCatalogThenShowTasteSelectDialog(selectedBoxes: List<KaoPanBox>) {
+        if (refillCatalogRefreshJob?.isActive == true) {
+            return
+        }
+        showLoadingExt("同步商品目录中...")
+        refillCatalogRefreshJob = viewLifecycleOwner.lifecycleScope.launch {
+            var loadingDismissed = false
+            try {
+                val refreshSuccess = withTimeoutOrNull(REFILL_CATALOG_REFRESH_TIMEOUT_MS) {
+                    val deferred = CompletableDeferred<Boolean>()
+                    DataManagementAPI.refreshProductCatalog(
+                        force = true,
+                        logPrefix = "加满烤肠箱前同步商品目录"
+                    ) { result ->
+                        deferred.complete(result.success)
+                    }
+                    deferred.await()
+                } ?: false
+
+                dismissLoadingExt()
+                loadingDismissed = true
+                if (!isAdded || _binding == null) {
+                    return@launch
+                }
+
+                when (
+                    resolveRefillCatalogRefreshAction(
+                        refreshSuccess = refreshSuccess,
+                        localCatalogNotEmpty = KaoPanHelper.getTasteList().isNotEmpty()
+                    )
+                ) {
+                    RefillCatalogRefreshAction.OPEN_DIALOG -> {
+                        showTasteSelectDialog(selectedBoxes)
+                    }
+
+                    RefillCatalogRefreshAction.OPEN_DIALOG_WITH_CACHE_TOAST -> {
+                        ToastUtils.showShort("商品目录同步失败，已使用本地缓存")
+                        showTasteSelectDialog(selectedBoxes)
+                    }
+
+                    RefillCatalogRefreshAction.REJECT_WITH_NETWORK_TOAST -> {
+                        ToastUtils.showShort("商品目录同步失败，请检查网络")
+                    }
+                }
+            } finally {
+                if (!loadingDismissed) {
+                    dismissLoadingExt()
+                }
+                refillCatalogRefreshJob = null
+            }
         }
     }
 
@@ -588,6 +662,7 @@ class MaintenanceBoxFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         refreshJob?.cancel()
+        refillCatalogRefreshJob?.cancel()
         _binding = null
     }
 }
