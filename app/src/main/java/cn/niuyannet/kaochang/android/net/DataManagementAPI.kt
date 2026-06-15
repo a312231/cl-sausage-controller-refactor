@@ -1356,6 +1356,10 @@ object DataManagementAPI {
         NetApi.uploadConsumableEvent(event, callback)
     }
 
+    fun refreshConsumableState(callback: (code: Int, content: String?) -> Unit) {
+        NetApi.getConsumableState(AppConfig.getDeviceId(), callback)
+    }
+
     fun refillStickFull(callback: ((code: Int, content: String?) -> Unit)? = null) {
         NetApi.refillStickFull(callback)
     }

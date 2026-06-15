@@ -41,6 +41,7 @@ object NetApi {
     var consumableEvent_url = "$API_URL_START/consumable/event"
     var consumableRefillStickFull_url = "$API_URL_START/consumable/refillStickFull"
     var consumableClearWaste_url = "$API_URL_START/consumable/clearWaste"
+    var consumableState_url = "$API_URL_START/consumable/state"
     var checkUpdate_url = "$API_URL_START/checkUpdate"
     var reportVersion_url = "$API_URL_START/reportVersion"
 
@@ -137,6 +138,24 @@ object NetApi {
                     super.onError(response)
                     LogUtils.e("【网络请求】获取设备详情失败：deviceCode=$deviceId, error=${response?.exception?.message}")
                     callback(1, null)
+                }
+            })
+    }
+
+    fun getConsumableState(deviceId: String, callback: (code: Int, content: String?) -> Unit) {
+        LogUtils.d("【耗材状态】开始获取耗材状态：deviceCode=$deviceId")
+        OkGo.get<String>(consumableState_url)
+            .params("deviceCode", deviceId)
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.d("【耗材状态】获取耗材状态成功：deviceCode=$deviceId")
+                    callback(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e("【耗材状态】获取耗材状态失败：deviceCode=$deviceId, error=${response?.exception?.message}")
+                    callback(1, response?.body())
                 }
             })
     }

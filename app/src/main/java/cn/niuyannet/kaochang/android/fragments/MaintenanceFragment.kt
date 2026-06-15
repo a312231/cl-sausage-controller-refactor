@@ -18,6 +18,7 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
+import cn.niuyannet.kaochang.android.net.ConsumableStateResponseParser
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
@@ -198,6 +199,7 @@ class MaintenanceFragment : Fragment() {
         MaintenanceUiRefreshBridge.register(maintenanceUiRefreshCallback)
         setupGrid()
         setupButtons()
+        refreshConsumableState()
         syncAlgorithmSwitchFromRuntimeState("维护页初始化", forceLog = true)
         syncInspectionSwitchFromRuntimeState("维护页初始化", forceLog = true)
         updateManualSupplementConfirmButtonVisibility()
@@ -295,6 +297,7 @@ class MaintenanceFragment : Fragment() {
                                 detail = "deviceCode=${AppConfig.getDeviceId()}"
                             )
                             ToastUtils.showLong(successMessage)
+                            refreshConsumableState()
                         } else {
                             AdminOperationLogger.w(
                                 action = actionName,
@@ -309,6 +312,23 @@ class MaintenanceFragment : Fragment() {
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    private fun refreshConsumableState() {
+        binding.tvConsumableState.text = "耗材：同步中"
+        DataManagementAPI.refreshConsumableState { code, content ->
+            activity?.runOnUiThread {
+                if (!isAdded || _binding == null) {
+                    return@runOnUiThread
+                }
+                if (code != 0) {
+                    binding.tvConsumableState.text = "耗材状态暂不可用"
+                    return@runOnUiThread
+                }
+                val result = ConsumableStateResponseParser.parse(content)
+                binding.tvConsumableState.text = ConsumableStateResponseParser.buildDisplayText(result.states)
+            }
+        }
     }
 
     private fun setAlgorithmSwitchCheckedSilently(checked: Boolean) {
