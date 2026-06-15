@@ -360,6 +360,41 @@ object KaoPanHelper {
         return changed
     }
 
+    fun normalizeKaoPanBoxTasteMetadata(): Boolean {
+        val currentBoxes = getKaoPanBoxList()
+        val changedCount = normalizeKaoPanBoxTasteMetadata(currentBoxes, getTasteList())
+        if (changedCount > 0) {
+            saveKaoPanBoxList(currentBoxes)
+        }
+        return changedCount > 0
+    }
+
+    internal fun normalizeKaoPanBoxTasteMetadata(
+        boxes: List<KaoPanBox>,
+        tastes: List<Taste>
+    ): Int {
+        if (boxes.isEmpty() || tastes.isEmpty()) {
+            return 0
+        }
+        var changedCount = 0
+        boxes.forEach { box ->
+            val productId = box.productId?.toIntOrNull()?.takeIf { it > 0 } ?: return@forEach
+            val tasteCode = normalizeTasteCode(box.tasteCode)
+            if (tasteCode.isBlank()) {
+                return@forEach
+            }
+            val resolvedTaste = tastes.firstOrNull {
+                it.productId == productId && normalizeTasteCode(it.tasteCode) == tasteCode
+            } ?: return@forEach
+            val normalizedTasteName = "${resolvedTaste.productName.orEmpty()}(${resolvedTaste.tasteName.orEmpty()})"
+            if (box.tasteName != normalizedTasteName) {
+                box.tasteName = normalizedTasteName
+                changedCount += 1
+            }
+        }
+        return changedCount
+    }
+
     fun buildTasteFromBox(kaoPanBox: KaoPanBox, fallbackTaste: Taste? = null): Taste {
         val normalizedByCatalog = findTasteFromCatalog(
             productId = kaoPanBox.productId?.toIntOrNull(),
@@ -451,6 +486,23 @@ object KaoPanHelper {
         val normalizedTasteCode = normalizeTasteCode(tasteCode)
         val normalizedTasteName = normalizeLabel(tasteName)
         val normalizedProductName = normalizeLabel(productName)
+
+        if (productId != null && productId > 0) {
+            return currentTasteList.firstOrNull {
+                it.productId == productId &&
+                    tasteId != null && tasteId > 0 && it.tasteId == tasteId
+            } ?: currentTasteList.firstOrNull {
+                it.productId == productId &&
+                    normalizedTasteCode.isNotBlank() && normalizeTasteCode(it.tasteCode) == normalizedTasteCode
+            } ?: currentTasteList.firstOrNull {
+                it.productId == productId &&
+                    normalizedTasteName.isNotBlank() && normalizeLabel(it.tasteName) == normalizedTasteName
+            } ?: currentTasteList.firstOrNull {
+                it.productId == productId &&
+                    normalizedProductName.isNotBlank() && normalizeLabel(it.productName) == normalizedProductName &&
+                    normalizedTasteName.isNotBlank() && normalizeLabel(it.tasteName) == normalizedTasteName
+            }
+        }
 
         return currentTasteList.firstOrNull {
             productId != null && productId > 0 && it.productId == productId &&

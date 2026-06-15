@@ -79,6 +79,7 @@ object SnapshotSyncPolicy {
     fun maybeUploadSnapshot(reason: String = "poll_loop") {
         if (snapshotSource === KaoPanSnapshotSource) {
             KaoPanHelper.normalizeKaoPanTasteMetadata()
+            KaoPanHelper.normalizeKaoPanBoxTasteMetadata()
         }
         val pans = snapshotSource.getKaoPanList()
         val boxes = snapshotSource.getKaoPanBoxList()

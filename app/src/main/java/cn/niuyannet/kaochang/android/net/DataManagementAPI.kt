@@ -861,8 +861,12 @@ object DataManagementAPI {
         onResult: ((Boolean) -> Unit)? = null
     ) {
         val metadataNormalized = KaoPanHelper.normalizeKaoPanTasteMetadata()
+        val boxMetadataNormalized = KaoPanHelper.normalizeKaoPanBoxTasteMetadata()
         if (metadataNormalized) {
             logD("上传前已统一烤盘口味元数据")
+        }
+        if (boxMetadataNormalized) {
+            logD("上传前已统一烤肠箱口味元数据")
         }
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val kaoPanPayload = JSON.toJSONString(kaoPanList)
