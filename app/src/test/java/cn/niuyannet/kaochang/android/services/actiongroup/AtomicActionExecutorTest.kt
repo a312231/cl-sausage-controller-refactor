@@ -321,10 +321,17 @@ class AtomicActionExecutorTest {
     }
 
     @Test
-    fun execute_shouldTimeoutWhenIdleAppearsAfterRunningInNewProtocol() = runBlocking {
+    fun execute_shouldTimeoutWhenIdleAppearsTwiceAfterRunningInNewProtocol() = runBlocking {
         val spec = AtomicActionSpec("out1-test", 410, 411, 412, 80L, 10L, "out1：从烤盘取熟肠到穿签位")
         val gateway = FakeGateway(
-            reads = mapOf(411 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+            reads = mapOf(
+                411 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE
+                )
+            )
         )
         val logs = mutableListOf<String>()
         val executor = AtomicActionExecutor(gateway, logger = { logs += it })
@@ -332,14 +339,93 @@ class AtomicActionExecutorTest {
         val result = executor.execute(spec, infoValue = 2)
 
         assertTrue(result is AtomicActionResult.Timeout)
-        assertTrue((result as AtomicActionResult.Timeout).message.contains("初判责任=下位机执行状态异常回退"))
+        val message = (result as AtomicActionResult.Timeout).message
+        assertTrue(message.contains("初判责任=下位机执行状态异常回退"))
+        assertTrue(message.contains("连续空闲确认次数=2"))
+        assertTrue(logs.any { it.contains("执行中后读到空闲，等待复核") && it.contains("idleAfterRunningCount=1") })
     }
 
     @Test
-    fun execute_shouldReturnStructuredDiagnosisWhenIdleAppearsAfterRunning() = runBlocking {
+    fun execute_shouldSucceedWhenIdleAfterRunningIsFollowedByCompleted() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                411 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IDLE,
+                    COMPLETED
+                )
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 2)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertTrue(logs.any { it.contains("执行中后读到空闲，等待复核") && it.contains("idleAfterRunningCount=1") })
+    }
+
+    @Test
+    fun execute_shouldContinueWhenIdleAfterRunningIsFollowedByRunningThenCompleted() = runBlocking {
+        val spec = AtomicActionSpec("out1-test", 410, 411, 412, 1_000L, 10L, "out1：从烤盘取熟肠到穿签位")
+        val gateway = FakeGateway(
+            reads = mapOf(
+                411 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    COMPLETED
+                )
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(spec, infoValue = 2)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertTrue(logs.any { it.contains("执行中后空闲复核恢复执行中") && it.contains("idleAfterRunningCount=1") })
+    }
+
+    @Test
+    fun execute_shouldReturnControllerErrorWhenIdleAfterRunningIsFollowedByErrorCode() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(
+                351 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IR_THROW_FAILED
+                )
+            )
+        )
+        val logs = mutableListOf<String>()
+        val executor = AtomicActionExecutor(gateway, logger = { logs += it })
+
+        val result = executor.execute(AtomicActions.in5, infoValue = 0)
+
+        assertTrue(result is AtomicActionResult.Failed)
+        val failed = result as AtomicActionResult.Failed
+        assertEquals(AtomicActionCodes.IR_THROW_FAILED, failed.errorCode)
+        assertTrue(failed.message.contains("初判责任=下位机明确返回动作错误码"))
+        assertTrue(logs.any { it.contains("执行中后读到空闲，等待复核") && it.contains("idleAfterRunningCount=1") })
+    }
+
+    @Test
+    fun execute_shouldReturnStructuredDiagnosisWhenIdleAppearsTwiceAfterRunning() = runBlocking {
         val spec = AtomicActionSpec("out3", 430, 431, 432, 80L, 10L, "out3：从穿签位放到预推送位置")
         val gateway = FakeGateway(
-            reads = mapOf(431 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, AtomicActionCodes.IDLE))
+            reads = mapOf(
+                431 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IDLE
+                )
+            )
         )
         val executor = AtomicActionExecutor(
             gateway = gateway,
@@ -363,6 +449,7 @@ class AtomicActionExecutorTest {
         assertTrue(message.contains("结果寄存器=431"))
         assertTrue(message.contains("结果值=0x0000（空闲/未启动）"))
         assertTrue(message.contains("已观察到执行中=是"))
+        assertTrue(message.contains("连续空闲确认次数=2"))
         assertTrue(message.contains("连接状态=已连接"))
         assertTrue(message.contains("串口地址=/dev/ttyS2"))
         assertFalse(message.contains("信息值"))

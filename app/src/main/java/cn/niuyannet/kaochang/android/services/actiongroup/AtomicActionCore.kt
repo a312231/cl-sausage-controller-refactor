@@ -306,6 +306,7 @@ class AtomicActionExecutor(
         var hasObservedRunning = hasAlreadyObservedRunning
         var hasLoggedStartupWait = false
         var hasLoggedCommandPendingWait = false
+        var idleAfterRunningCount = 0
         val startupConfirmWindowMs = minOf(startupConfirmTimeoutMs, spec.timeoutMs)
         val commandPendingTimeoutMs = minOf(commandPendingConfirmTimeoutMs, spec.timeoutMs)
         while (System.currentTimeMillis() - startedAtMs <= spec.timeoutMs) {
@@ -402,6 +403,17 @@ class AtomicActionExecutor(
                             delay(spec.pollDelayMs)
                         }
                         code == AtomicActionCodes.IDLE && hasObservedRunning -> {
+                            idleAfterRunningCount += 1
+                            if (idleAfterRunningCount < IDLE_AFTER_RUNNING_CONFIRM_THRESHOLD) {
+                                logger(
+                                    "执行中后读到空闲，等待复核：sessionId=${telemetryContext.sessionId}，" +
+                                        "action=${spec.name}，resultRegister（结果寄存器）=${spec.resultRegister}，" +
+                                        "resultCode=${resultCodeDesc(code)}，elapsedMs=$elapsedMs，" +
+                                        "idleAfterRunningCount=$idleAfterRunningCount"
+                                )
+                                delay(spec.pollDelayMs)
+                                continue
+                            }
                             return finishWithTelemetry(
                                 spec,
                                 AtomicActionResult.Timeout(
@@ -411,7 +423,8 @@ class AtomicActionExecutor(
                                         spec = spec,
                                         elapsedMs = elapsedMs,
                                         resultValue = code,
-                                        hasObservedRunning = true
+                                        hasObservedRunning = true,
+                                        extraParts = listOf("连续空闲确认次数=$idleAfterRunningCount")
                                     )
                                 ),
                                 startedAtMs
@@ -498,7 +511,15 @@ class AtomicActionExecutor(
                                     "动作启动确认成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                                         "resultRegister（结果寄存器）=${spec.resultRegister}，resultCode=${formatCode(code)}，elapsedMs=$elapsedMs"
                                 )
+                            } else if (idleAfterRunningCount > 0) {
+                                logger(
+                                    "执行中后空闲复核恢复执行中：sessionId=${telemetryContext.sessionId}，" +
+                                        "action=${spec.name}，resultRegister（结果寄存器）=${spec.resultRegister}，" +
+                                        "resultCode=${formatCode(code)}，elapsedMs=$elapsedMs，" +
+                                        "idleAfterRunningCount=$idleAfterRunningCount"
+                                )
                             }
+                            idleAfterRunningCount = 0
                             delay(spec.pollDelayMs)
                         }
                         code >= AtomicActionCodes.PARAM_ERROR -> return finishWithTelemetry(
@@ -803,6 +824,7 @@ class AtomicActionExecutor(
         private const val STARTUP_CONFIRM_TIMEOUT_MS = 3_000L
         private const val COMMAND_PENDING_CONFIRM_TIMEOUT_MS = 40_000L
         private const val MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH = 300
+        private const val IDLE_AFTER_RUNNING_CONFIRM_THRESHOLD = 2
 
         fun formatCode(code: Int): String = "0x${code.toString(16).uppercase().padStart(4, '0')}"
 
