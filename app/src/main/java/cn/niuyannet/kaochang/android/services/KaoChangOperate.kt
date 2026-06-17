@@ -1135,11 +1135,7 @@ object KaoChangOperate {
             enterActionGroupMaintenance("出餐恢复完成但本地找不到源烤盘，需人工确认：reason=$reason，session=$session")
             return false
         }
-        pan.cmdStatusTake = 0
-        pan.isHasSausage = false
-        pan.holdingTime = 0L
-        pan.startTime = 0
-        pan.status = 0
+        applySuccessfulTakePanState(pan)
         if (isManualTake) {
             LowToHighDemandGate.clearPosition(pan.positionSn, "维护手动取肠动作组恢复完成")
         }
@@ -2598,11 +2594,7 @@ object KaoChangOperate {
             when (actionGroupResult) {
                 ActionGroupResult.Success,
                 ActionGroupResult.Discarded -> {
-                    kaoPan.cmdStatusTake = 0
-                    kaoPan.isHasSausage = false
-                    kaoPan.holdingTime = 0L
-                    kaoPan.startTime = 0
-                    kaoPan.status = 0
+                    applySuccessfulTakePanState(kaoPan)
                     LowToHighDemandGate.clearPosition(kaoPan.positionSn, "维护手动取肠完成")
                     operateScope.launch {
                         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
@@ -2917,10 +2909,7 @@ object KaoChangOperate {
             null
         }
         if (result==ActionExecutionResult.SUCCESS){
-            kaoPan.isHasSausage=false
-            kaoPan.holdingTime=0
-            kaoPan.startTime=0
-            kaoPan.status=0
+            applySuccessfulTakePanState(kaoPan)
             SendServerHelper.publishConsumableEvent(
                 ConsumableEventPayloadBuilder.nextEvent(
                     consumableType = "WASTE",

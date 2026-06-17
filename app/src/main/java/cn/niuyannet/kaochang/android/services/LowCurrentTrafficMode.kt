@@ -27,6 +27,7 @@ object LowCurrentTrafficMode {
 
     private var lastLowTrafficSnapshot: String? = null
     private var lastLowInitializationDecisionLog: String? = null
+    private var lastLowHeatSupplementGateLog: String? = null
 
     private fun modeText(value: Int): String = when (value) {
         1 -> "1(低并发)"
@@ -164,14 +165,29 @@ object LowCurrentTrafficMode {
                 }
             }
 
+            logLowHeatSupplementGate(
+                supplementDecision = supplementDecision,
+                schedulingEnabled = schedulingEnabled,
+                boxSupplyAvailable = boxSupplyAvailable,
+                errorStatus = config.errorStatus,
+                isBeforeCloseWindow = isBeforeCloseWindow,
+                selectedFrontPositions = when (supplementDecision) {
+                    1 -> list1_9.filter { !it.isHasSausage }.take(list13_15.size)
+                    2 -> list1_9.filter { !it.isHasSausage }.take(list16_18.size)
+                    else -> emptyList()
+                }
+            )
+
             if (schedulingEnabled && supplementDecision == 1 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
-                addLowHeatSausage(kaoPanList, listBox, list13_15.size)
-                LogUtils.i(TAG, "【低并发补肠】已向 13~15 补热区补肠")
+                if (addLowHeatSausage(kaoPanList, listBox, list13_15.size)) {
+                    LogUtils.i(TAG, "【低并发补肠】已向 13~15 补热区补肠")
+                }
             } else if (schedulingEnabled && supplementDecision == 2 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
-                addLowHeatSausage16_18(kaoPanList, listBox, list16_18.size)
-                LogUtils.i(TAG, "【低并发补肠】已向 16~18 补热区补肠")
+                if (addLowHeatSausage16_18(kaoPanList, listBox, list16_18.size)) {
+                    LogUtils.i(TAG, "【低并发补肠】已向 16~18 补热区补肠")
+                }
             }
         }
 
@@ -511,12 +527,12 @@ object LowCurrentTrafficMode {
         list: List<KaoPan>,
         listBox: List<KaoPanBox>,
         pNum: Int
-    ) {
+    ): Boolean {
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
         val hasSausageIn13_15 = list13_15.any { it.isHasSausage }
         if (hasSausageIn13_15) {
-            return
+            return false
         }
 
         TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
@@ -527,9 +543,21 @@ object LowCurrentTrafficMode {
             val neededTastes = emptyPositions.take(pNum).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
             if (neededTastes.size < pNum) {
                 LogUtils.w(TAG, "【低并发补肠】跳过 13~15 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
-                return
+                return false
             }
             val selectedFrontPositions = emptyPositions.take(pNum)
+            if (!hasSameTasteSupplyForAll(neededTastes, listBox)) {
+                LogUtils.w(
+                    TAG,
+                    formatNoSameTasteStockLog(
+                        groupName = "13~15",
+                        selectedFrontPositions = selectedFrontPositions,
+                        neededTastes = neededTastes,
+                        listBox = listBox
+                    )
+                )
+                return false
+            }
             val targets = neededTastes.mapIndexed { index, tasteCode ->
                 val targetPosition = emptyPositions13_15[index]
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
@@ -551,7 +579,9 @@ object LowCurrentTrafficMode {
                     "reserved=${result.reservedFrontPositions}，cleared=${result.clearedFrontPositions}，" +
                     "keptForIntent=${result.keptForActiveIntentFrontPositions}，failedTargets=${result.failedTargetPositions}"
             )
+            return true
         }
+        return false
     }
 
     /**
@@ -561,12 +591,12 @@ object LowCurrentTrafficMode {
         list: List<KaoPan>,
         listBox: List<KaoPanBox>,
         pNum: Int
-    ) {
+    ): Boolean {
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         val list16_18 = TrafficModeHelper.getTrafficModePositions(16, 18, list)
         val hasSausageIn16_18 = list16_18.any { it.isHasSausage }
         if (hasSausageIn16_18) {
-            return
+            return false
         }
 
         TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
@@ -577,9 +607,21 @@ object LowCurrentTrafficMode {
             val neededTastes = emptyPositions.take(pNum).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
             if (neededTastes.size < pNum) {
                 LogUtils.w(TAG, "【低并发补肠】跳过 16~18 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
-                return
+                return false
             }
             val selectedFrontPositions = emptyPositions.take(pNum)
+            if (!hasSameTasteSupplyForAll(neededTastes, listBox)) {
+                LogUtils.w(
+                    TAG,
+                    formatNoSameTasteStockLog(
+                        groupName = "16~18",
+                        selectedFrontPositions = selectedFrontPositions,
+                        neededTastes = neededTastes,
+                        listBox = listBox
+                    )
+                )
+                return false
+            }
             val targets = neededTastes.mapIndexed { index, tasteCode ->
                 val targetPosition = emptyPositions16_18[index]
                 targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
@@ -601,7 +643,114 @@ object LowCurrentTrafficMode {
                     "reserved=${result.reservedFrontPositions}，cleared=${result.clearedFrontPositions}，" +
                     "keptForIntent=${result.keptForActiveIntentFrontPositions}，failedTargets=${result.failedTargetPositions}"
             )
+            return true
         }
+        return false
+    }
+
+    private fun hasSameTasteSupplyForAll(neededTastes: List<String>, listBox: List<KaoPanBox>): Boolean {
+        return neededTastes.distinct().all { tasteCode ->
+            validSupplyBoxesByTaste(listBox, tasteCode).isNotEmpty()
+        }
+    }
+
+    private fun validSupplyBoxesByTaste(listBox: List<KaoPanBox>, tasteCode: String): List<KaoPanBox> {
+        return TrafficModeHelper.findSupplyBoxesByTaste(listBox, tasteCode)
+    }
+
+    private fun logLowHeatSupplementGate(
+        supplementDecision: Int,
+        schedulingEnabled: Boolean,
+        boxSupplyAvailable: Boolean,
+        errorStatus: Int,
+        isBeforeCloseWindow: Boolean,
+        selectedFrontPositions: List<KaoPan>
+    ) {
+        if (supplementDecision !in 1..2) {
+            return
+        }
+        val message = formatLowHeatSupplementGateLog(
+            supplementDecision = supplementDecision,
+            schedulingEnabled = schedulingEnabled,
+            boxSupplyAvailable = boxSupplyAvailable,
+            errorStatus = errorStatus,
+            isBeforeCloseWindow = isBeforeCloseWindow,
+            selectedFrontPositions = selectedFrontPositions
+        )
+        if (message != lastLowHeatSupplementGateLog) {
+            val blocked = !schedulingEnabled || !boxSupplyAvailable || errorStatus != 0 || isBeforeCloseWindow
+            if (blocked) {
+                LogUtils.w(TAG, message)
+            } else {
+                LogUtils.i(TAG, message)
+            }
+            lastLowHeatSupplementGateLog = message
+        }
+    }
+
+    internal fun formatLowHeatSupplementGateLog(
+        supplementDecision: Int,
+        schedulingEnabled: Boolean,
+        boxSupplyAvailable: Boolean,
+        errorStatus: Int,
+        isBeforeCloseWindow: Boolean,
+        selectedFrontPositions: List<KaoPan>
+    ): String {
+        val groupName = when (supplementDecision) {
+            1 -> "13~15"
+            2 -> "16~18"
+            else -> "无"
+        }
+        val blockedReasons = buildList {
+            if (!schedulingEnabled) add("schedulingDisabled")
+            if (!boxSupplyAvailable) add("boxSupplyUnavailable")
+            if (errorStatus != 0) add("errorStatus=$errorStatus")
+            if (isBeforeCloseWindow) add("beforeCloseWindow")
+        }
+        val actionText = if (blockedReasons.isEmpty()) "准备进入" else "未进入"
+        val frontTasteSummary = selectedFrontPositions.joinToString(",") { pan ->
+            val tasteCode = pan.taste?.tasteCode?.takeIf { it.isNotBlank() } ?: "未预留"
+            val reserveState = when {
+                pan.isHasGrilling -> "回补预占"
+                !pan.taste?.tasteCode.isNullOrBlank() -> "预占"
+                else -> "空缺"
+            }
+            "${pan.positionSn}:$tasteCode($reserveState)"
+        }.ifBlank { "空" }
+        return "【低并发补肠】$groupName 补热区补肠$actionText：" +
+            "decision=${lowSupplementStateText(supplementDecision)}，" +
+            "阻断原因=${blockedReasons.joinToString(",").ifBlank { "无" }}，" +
+            "schedulingEnabled=$schedulingEnabled，boxSupplyAvailable=$boxSupplyAvailable，" +
+            "errorStatus=$errorStatus，beforeCloseWindow=$isBeforeCloseWindow，" +
+            "前区空位口味=$frontTasteSummary"
+    }
+
+    internal fun formatNoSameTasteStockLog(
+        groupName: String,
+        selectedFrontPositions: List<KaoPan>,
+        neededTastes: List<String>,
+        listBox: List<KaoPanBox>
+    ): String {
+        val missingTastes = neededTastes
+            .distinct()
+            .filter { tasteCode -> validSupplyBoxesByTaste(listBox, tasteCode).isEmpty() }
+        val frontTasteSummary = selectedFrontPositions.joinToString(",") { pan ->
+            "${pan.positionSn}:${pan.taste?.tasteCode?.takeIf { it.isNotBlank() } ?: "未预留"}"
+        }.ifBlank { "空" }
+        val availableStockSummary = listBox
+            .mapNotNull { it.tasteCode?.takeIf { tasteCode -> tasteCode.isNotBlank() } }
+            .distinct()
+            .flatMap { tasteCode -> validSupplyBoxesByTaste(listBox, tasteCode) }
+            .groupBy { it.tasteCode.orEmpty() }
+            .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
+            .entries
+            .sortedBy { it.key }
+            .joinToString(",") { (tasteCode, count) -> "$tasteCode=$count" }
+            .ifBlank { "无" }
+        return "【低并发补肠】跳过 $groupName 补热区补肠：无同口味可用库存，" +
+            "目标补热区=$groupName，前区空位口味=$frontTasteSummary，" +
+            "缺失口味=${missingTastes.joinToString(",").ifBlank { "无" }}，" +
+            "可用源箱库存=$availableStockSummary"
     }
 
     internal data class LowHeatSupplementReservationResult(

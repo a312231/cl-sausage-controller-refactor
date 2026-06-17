@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,6 +10,79 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LowHeatSupplementReservationResultTest {
+
+    @Test
+    fun formatNoSameTasteStockLog_shouldExplainMissingTasteAndAvailableStock() {
+        val frontPans = listOf(
+            frontPan(1, "B"),
+            frontPan(2, "B"),
+            frontPan(3, "B")
+        )
+        val boxes = listOf(
+            box(positionSn = 10, tasteCode = "C", num = 15),
+            box(positionSn = 21, tasteCode = "C", num = 15)
+        )
+
+        val message = LowCurrentTrafficMode.formatNoSameTasteStockLog(
+            groupName = "13~15",
+            selectedFrontPositions = frontPans,
+            neededTastes = listOf("B", "B", "B"),
+            listBox = boxes
+        )
+
+        assertTrue(message.contains("无同口味可用库存"))
+        assertTrue(message.contains("目标补热区=13~15"))
+        assertTrue(message.contains("前区空位口味=1:B,2:B,3:B"))
+        assertTrue(message.contains("缺失口味=B"))
+        assertTrue(message.contains("可用源箱库存=C=30"))
+    }
+
+    @Test
+    fun formatNoSameTasteStockLog_shouldUseSameSourceBoxPolicyAsSupplementGate() {
+        val frontPans = listOf(
+            frontPan(1, "B"),
+            frontPan(2, "B"),
+            frontPan(3, "B")
+        )
+        val boxes = listOf(
+            box(positionSn = 23, tasteCode = "B", num = 15),
+            box(positionSn = 21, tasteCode = "C", num = 15)
+        )
+
+        val message = LowCurrentTrafficMode.formatNoSameTasteStockLog(
+            groupName = "13~15",
+            selectedFrontPositions = frontPans,
+            neededTastes = listOf("B", "B", "B"),
+            listBox = boxes
+        )
+
+        assertTrue(message.contains("缺失口味=B"))
+        assertFalse(message.contains("B=15"))
+        assertTrue(message.contains("可用源箱库存=C=15"))
+    }
+
+    @Test
+    fun formatLowHeatSupplementGateLog_shouldExplainBlockedReasonAndFrontReservation() {
+        val frontPans = listOf(
+            frontPan(1, "B").apply { isHasGrilling = true },
+            frontPan(2, "B"),
+            frontPan(3, "C")
+        )
+
+        val message = LowCurrentTrafficMode.formatLowHeatSupplementGateLog(
+            supplementDecision = 1,
+            schedulingEnabled = false,
+            boxSupplyAvailable = true,
+            errorStatus = 0,
+            isBeforeCloseWindow = false,
+            selectedFrontPositions = frontPans
+        )
+
+        assertTrue(message.contains("13~15 补热区补肠未进入"))
+        assertTrue(message.contains("decision=1(补 13~15 补热区)"))
+        assertTrue(message.contains("阻断原因=schedulingDisabled"))
+        assertTrue(message.contains("前区空位口味=1:B(回补预占),2:B(预占),3:C(预占)"))
+    }
 
     @Test
     fun applyResult_shouldReserveAllFrontPansWhenTargetsSucceeded() {
@@ -134,10 +208,10 @@ class LowHeatSupplementReservationResultTest {
         assertTrue(fronts[0].isHasGrilling)
     }
 
-    private fun frontPan(position: Int): KaoPan =
+    private fun frontPan(position: Int, tasteCode: String = "C"): KaoPan =
         KaoPan().apply {
             positionSn = position
-            taste = Taste("C")
+            taste = Taste(tasteCode)
         }
 
     private fun targetPan(position: Int, hasSausage: Boolean): KaoPan =
@@ -145,5 +219,12 @@ class LowHeatSupplementReservationResultTest {
             positionSn = position
             isHasSausage = hasSausage
             taste = Taste("C")
+        }
+
+    private fun box(positionSn: Int, tasteCode: String, num: Int): KaoPanBox =
+        KaoPanBox().apply {
+            this.positionSn = positionSn
+            this.tasteCode = tasteCode
+            this.num = num
         }
 }
