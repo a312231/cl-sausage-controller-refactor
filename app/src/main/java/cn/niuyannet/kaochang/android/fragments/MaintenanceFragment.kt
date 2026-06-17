@@ -25,9 +25,12 @@ import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearExecutor
+import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
+import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
@@ -38,6 +41,7 @@ import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.updates.AppUpdateManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
+import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import com.blankj.utilcode.util.ToastUtils
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.Dispatchers
@@ -1174,6 +1178,31 @@ class MaintenanceFragment : Fragment() {
             return
         }
 
+        AlertDialog.Builder(requireContext())
+            .setTitle("工位 ${kaoPan.positionSn}")
+            .setMessage("请选择维护操作：\n\n手动取肠会执行机械取肠；仅清除本位数据不执行机械动作。")
+            .setPositiveButton("手动取肠") { _, _ ->
+                resetAdminIdleTimer("手动取肠弹窗确认")
+                showManualTakeSausageDialog(kaoPan)
+            }
+            .setNeutralButton("仅清除本位数据") { _, _ ->
+                resetAdminIdleTimer("仅清除本位数据弹窗确认")
+                showClearPanPositionDataDialog(kaoPan)
+            }
+            .setNegativeButton("取消") { dialog, _ ->
+                resetAdminIdleTimer("烤盘位维护弹窗取消")
+                dialog.dismiss()
+            }
+            .create()
+            .also { dialog ->
+                dialog.setOnShowListener {
+                    resetAdminIdleTimer("烤盘位维护弹窗显示")
+                }
+            }
+            .show()
+    }
+
+    private fun showManualTakeSausageDialog(kaoPan: KaoPan) {
         val dialog = AlertDialog.Builder(requireContext())
             .setTitle("确认")
             .setMessage("是否要取出烤肠？")
@@ -1260,6 +1289,142 @@ class MaintenanceFragment : Fragment() {
             resetAdminIdleTimer("手动取肠弹窗显示")
         }
         dialog.show()
+    }
+
+    private fun showClearPanPositionDataDialog(kaoPan: KaoPan) {
+        AlertDialog.Builder(requireContext())
+            .setTitle("仅清除本位数据")
+            .setMessage("确认仅清除工位 ${kaoPan.positionSn} 的本地烤肠数据？\n\n该操作不执行机械动作，不关闭烤肠算法。")
+            .setPositiveButton("确认清除") { dialog, _ ->
+                resetAdminIdleTimer("仅清除本位数据确认")
+                dialog.dismiss()
+                clearPanPositionDataOnly(kaoPan.positionSn)
+            }
+            .setNegativeButton("取消") { dialog, _ ->
+                resetAdminIdleTimer("仅清除本位数据取消")
+                dialog.dismiss()
+            }
+            .create()
+            .also { dialog ->
+                dialog.setOnShowListener {
+                    resetAdminIdleTimer("仅清除本位数据弹窗显示")
+                }
+            }
+            .show()
+    }
+
+    @SuppressLint("NotifyDataSetChanged")
+    private fun clearPanPositionDataOnly(positionSn: Int) {
+        if (!status.compareAndSet(true, false)) {
+            ToastUtils.showShort("请等待当前操作完成")
+            return
+        }
+        val adminBusy = beginAdminBusy("维护页仅清除烤盘位数据")
+        setMaintenanceActionButtonsEnabled(false)
+        binding.tvCooldownHint.text = "正在清除工位 $positionSn 数据"
+        AdminOperationLogger.i(
+            action = "仅清除烤盘位数据",
+            page = AdminOperationLogger.PAGE_PAN,
+            result = AdminOperationLogger.RESULT_START,
+            detail = "烤盘位=$positionSn，说明=纯数据清除，不执行机械动作，不关闭烤肠算法"
+        )
+
+        lifecycleScope.launch {
+            try {
+                val initialDecision = buildManualPanPositionClearReadinessDecision(ignoreMoveStatus = true)
+                if (!initialDecision.ok) {
+                    rejectClearPanPositionData(positionSn, initialDecision.reason)
+                    return@launch
+                }
+
+                val idleReady = waitUntilMachineIdleOrTimeout(
+                    reason = "维护页仅清除烤盘位数据等待空闲",
+                    waitingText = "请等待上位机空闲",
+                    update = { binding.tvCooldownHint.text = it }
+                )
+                if (!idleReady) {
+                    val busyDecision = buildManualPanPositionClearReadinessDecision()
+                    rejectClearPanPositionData(positionSn, busyDecision.reason)
+                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                    return@launch
+                }
+
+                val latestDecision = buildManualPanPositionClearReadinessDecision()
+                if (!latestDecision.ok) {
+                    rejectClearPanPositionData(positionSn, latestDecision.reason)
+                    return@launch
+                }
+
+                val clearResult = withContext(Dispatchers.IO) {
+                    val config = AppConfig.getAppConfig()
+                    ManualPanPositionDataClearExecutor.execute(
+                        positionSn = positionSn,
+                        bakingTimeMinutes = config.bakingTime,
+                        discardTimeHours = config.discardTime
+                    )
+                }
+
+                if (!clearResult.cleared) {
+                    AdminOperationLogger.w(
+                        action = "仅清除烤盘位数据",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_REJECT,
+                        detail = "烤盘位=$positionSn，拒绝原因=目标烤盘位不存在"
+                    )
+                    ToastUtils.showShort("未找到工位 $positionSn")
+                    return@launch
+                }
+
+                kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
+                kaoPanAdapter.notifyDataSetChanged()
+                binding.tvCooldownHint.text = ""
+                AdminOperationLogger.i(
+                    action = "仅清除烤盘位数据",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "清除前=${clearResult.before?.toLogText()}，清除后=${clearResult.after?.toLogText()}，" +
+                        "云端同步=SnapshotSyncPolicy.maybeUploadSnapshot"
+                )
+                ToastUtils.showShort("工位 $positionSn 数据已清除")
+            } catch (e: Exception) {
+                AdminOperationLogger.e(
+                    action = "仅清除烤盘位数据",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "烤盘位=$positionSn，失败原因=${e.message ?: e.javaClass.simpleName}"
+                )
+                ToastUtils.showShort("清除失败，请查看日志")
+            } finally {
+                binding.tvCooldownHint.text = ""
+                setMaintenanceActionButtonsEnabled(true)
+                status.set(true)
+                endAdminBusy(adminBusy)
+            }
+        }
+    }
+
+    private fun buildManualPanPositionClearReadinessDecision(
+        ignoreMoveStatus: Boolean = false
+    ): ManualPanPositionDataClearPolicy.ReadinessDecision {
+        val config = AppConfig.getAppConfig()
+        return ManualPanPositionDataClearPolicy.checkReadiness(
+            ManualPanPositionDataClearPolicy.State(
+                moveStatus = if (ignoreMoveStatus) 0 else config.moveStatus,
+                onlineStatus = config.onlineStatus,
+                hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
+                hasOrderTracking = SelfCleanManager.hasOrderTracking()
+            )
+        )
+    }
+
+    private fun rejectClearPanPositionData(positionSn: Int, reason: String) {
+        AdminOperationLogger.w(
+            action = "仅清除烤盘位数据",
+            page = AdminOperationLogger.PAGE_PAN,
+            result = AdminOperationLogger.RESULT_REJECT,
+            detail = "烤盘位=$positionSn，拒绝原因=$reason"
+        )
+        ToastUtils.showShort("当前不允许清除：$reason")
     }
 
     /**
