@@ -12,6 +12,29 @@ import org.junit.Test
 class SupplementSuccessPanStateTest {
 
     @Test
+    fun applySuccessfulTakePanState_shouldClearLowHeatReservationAfterSold() {
+        val pan = KaoPan().apply {
+            positionSn = 1
+            isHasSausage = true
+            isHasGrilling = true
+            status = 2
+            startTime = 0L
+            holdingTime = 12_000L
+            taste = Taste("B")
+            cmdStatusTake = 0x00E5
+        }
+
+        KaoChangOperate.applySuccessfulTakePanState(pan)
+
+        assertFalse(pan.isHasSausage)
+        assertFalse(pan.isHasGrilling)
+        assertEquals(0, pan.status)
+        assertEquals(0L, pan.startTime)
+        assertEquals(0L, pan.holdingTime)
+        assertEquals(0, pan.cmdStatusTake)
+    }
+
+    @Test
     fun applySuccessfulSupplementPanState_shouldClearStaleHoldingTimeAndStartBaking() {
         val pan = KaoPan().apply {
             positionSn = 13

@@ -2809,11 +2809,7 @@ object KaoChangOperate {
             }
             SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
-            kaoPan.cmdStatusTake = 0
-            kaoPan.isHasSausage = false
-            kaoPan.holdingTime = 0L
-            kaoPan.startTime = 0
-            kaoPan.status = 0
+            applySuccessfulTakePanState(kaoPan)
             armPostSellSupplementGuard("out5 已完成关门回零/出餐收尾")
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
@@ -2833,6 +2829,15 @@ object KaoChangOperate {
                 applyPendingActionGroupDisableIfIdle("出餐动作组会话收口")
             }
         }
+    }
+
+    internal fun applySuccessfulTakePanState(kaoPan: KaoPan) {
+        kaoPan.cmdStatusTake = 0
+        kaoPan.isHasSausage = false
+        kaoPan.isHasGrilling = false
+        kaoPan.holdingTime = 0L
+        kaoPan.startTime = 0
+        kaoPan.status = 0
     }
 
     internal fun applySuccessfulSupplementPanState(
