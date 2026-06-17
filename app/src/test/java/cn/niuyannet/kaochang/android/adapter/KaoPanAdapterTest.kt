@@ -9,7 +9,7 @@ import org.junit.Test
 class KaoPanAdapterTest {
 
     @Test
-    fun formatKaoPanStatusText_shouldShowTasteReservationForEmptyPan() {
+    fun formatKaoPanStatusText_shouldShowEmptyForEmptyPanWithReservedTaste() {
         val pan = KaoPan().apply {
             status = 0
             isHasSausage = false
@@ -19,11 +19,11 @@ class KaoPanAdapterTest {
 
         val text = formatKaoPanStatusText(pan, config = AppConfigBean())
 
-        assertEquals("预占", text)
+        assertEquals("空缺", text)
     }
 
     @Test
-    fun formatKaoPanStatusText_shouldShowReturnReservationForEmptyReservedPan() {
+    fun formatKaoPanStatusText_shouldShowEmptyForEmptyPanWithReturnReservationFlag() {
         val pan = KaoPan().apply {
             status = 0
             isHasSausage = false
@@ -33,11 +33,11 @@ class KaoPanAdapterTest {
 
         val text = formatKaoPanStatusText(pan, config = AppConfigBean())
 
-        assertEquals("回补预占", text)
+        assertEquals("空缺", text)
     }
 
     @Test
-    fun formatKaoPanTasteText_shouldKeepReservedTasteVisible() {
+    fun formatKaoPanTasteText_shouldPreferTasteNameOverProductName() {
         val pan = KaoPan().apply {
             isHasSausage = false
             taste = Taste().apply {
@@ -49,7 +49,7 @@ class KaoPanAdapterTest {
 
         val text = formatKaoPanTasteText(pan)
 
-        assertEquals("口味: 肉多多(口味B)", text)
+        assertEquals("口味: 口味B", text)
     }
 
     @Test

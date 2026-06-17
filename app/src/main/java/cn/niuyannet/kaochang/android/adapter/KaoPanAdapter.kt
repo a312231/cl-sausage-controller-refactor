@@ -58,12 +58,7 @@ class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan,
                     0 -> {
                         tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#000000".toColorInt())
-                        val statusColor = if (kaoPan.isHasGrilling || !kaoPan.taste?.tasteCode.isNullOrBlank()) {
-                            "#FFF2CC"
-                        } else {
-                            "#CCCCCC"
-                        }
-                        tvStatus.setBackgroundColor(statusColor.toColorInt())
+                        tvStatus.setBackgroundColor("#CCCCCC".toColorInt()) // 灰色背景
                     }
                     1 -> {
                         tvStatus.text = formatKaoPanStatusText(kaoPan)
@@ -101,11 +96,7 @@ internal fun formatKaoPanStatusText(
     config: AppConfigBean = AppConfig.getAppConfig()
 ): String {
     return when (kaoPan.status) {
-        0 -> when {
-            kaoPan.isHasGrilling -> "回补预占"
-            !kaoPan.taste?.tasteCode.isNullOrBlank() -> "预占"
-            else -> "空缺"
-        }
+        0 -> "空缺"
         1 -> {
             val seconds = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, config, nowMs) / 1000L
             "烤制中:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
@@ -119,13 +110,9 @@ internal fun formatKaoPanStatusText(
 }
 
 internal fun formatKaoPanTasteText(kaoPan: KaoPan): String {
-    val taste = kaoPan.taste
     val text = when {
-        !taste?.tasteName.isNullOrBlank() && !taste?.productName.isNullOrBlank() ->
-            "${taste?.productName}(${taste?.tasteName})"
-        !taste?.tasteName.isNullOrBlank() -> taste?.tasteName
-        !taste?.tasteCode.isNullOrBlank() -> taste?.tasteCode
-        else -> "无"
+        !kaoPan.taste?.tasteName.isNullOrEmpty() -> kaoPan.taste?.tasteName
+        else -> kaoPan.taste?.tasteCode ?: "无"
     }
     return "口味: $text"
 }
@@ -141,8 +128,6 @@ private class KaoPanDiffCallback : DiffUtil.ItemCallback<KaoPan>() {
                oldItem.temperature == newItem.temperature &&
                oldItem.taste?.tasteCode == newItem.taste?.tasteCode &&
                oldItem.taste?.tasteName == newItem.taste?.tasteName &&
-               oldItem.taste?.productName == newItem.taste?.productName &&
-               oldItem.isHasGrilling == newItem.isHasGrilling &&
                oldItem.isHasSausage == newItem.isHasSausage
     }
 }
