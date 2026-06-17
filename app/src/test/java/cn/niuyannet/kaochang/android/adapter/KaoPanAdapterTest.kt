@@ -2,10 +2,55 @@ package cn.niuyannet.kaochang.android.adapter
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class KaoPanAdapterTest {
+
+    @Test
+    fun formatKaoPanStatusText_shouldShowTasteReservationForEmptyPan() {
+        val pan = KaoPan().apply {
+            status = 0
+            isHasSausage = false
+            isHasGrilling = false
+            taste = Taste("B")
+        }
+
+        val text = formatKaoPanStatusText(pan, config = AppConfigBean())
+
+        assertEquals("预占", text)
+    }
+
+    @Test
+    fun formatKaoPanStatusText_shouldShowReturnReservationForEmptyReservedPan() {
+        val pan = KaoPan().apply {
+            status = 0
+            isHasSausage = false
+            isHasGrilling = true
+            taste = Taste("B")
+        }
+
+        val text = formatKaoPanStatusText(pan, config = AppConfigBean())
+
+        assertEquals("回补预占", text)
+    }
+
+    @Test
+    fun formatKaoPanTasteText_shouldKeepReservedTasteVisible() {
+        val pan = KaoPan().apply {
+            isHasSausage = false
+            taste = Taste().apply {
+                tasteCode = "B"
+                tasteName = "口味B"
+                productName = "肉多多"
+            }
+        }
+
+        val text = formatKaoPanTasteText(pan)
+
+        assertEquals("口味: 肉多多(口味B)", text)
+    }
 
     @Test
     fun formatKaoPanStatusText_shouldFreezeBakingTimerDuringFaultPause() {

@@ -54,11 +54,16 @@ class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan,
                     }
                 }
                 // 设置烤盘状态
-                 when(kaoPan.status) {
+                when(kaoPan.status) {
                     0 -> {
-                        tvStatus.text = "空缺"
+                        tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#000000".toColorInt())
-                        tvStatus.setBackgroundColor("#CCCCCC".toColorInt()) // 灰色背景
+                        val statusColor = if (kaoPan.isHasGrilling || !kaoPan.taste?.tasteCode.isNullOrBlank()) {
+                            "#FFF2CC"
+                        } else {
+                            "#CCCCCC"
+                        }
+                        tvStatus.setBackgroundColor(statusColor.toColorInt())
                     }
                     1 -> {
                         tvStatus.text = formatKaoPanStatusText(kaoPan)
@@ -83,11 +88,7 @@ class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan,
                     tvHasSausage.text = "无烤肠"
                 }
                 // 设置口味
-                if (kaoPan.taste?.tasteName.isNullOrEmpty()){
-                    tvTaste.text = "口味: ${kaoPan.taste?.tasteCode?:"无"}"
-                }else{
-                    tvTaste.text = "口味: ${kaoPan.taste?.tasteName?:"无"}"
-                }
+                tvTaste.text = formatKaoPanTasteText(kaoPan)
 
             }
         }
@@ -100,7 +101,11 @@ internal fun formatKaoPanStatusText(
     config: AppConfigBean = AppConfig.getAppConfig()
 ): String {
     return when (kaoPan.status) {
-        0 -> "空缺"
+        0 -> when {
+            kaoPan.isHasGrilling -> "回补预占"
+            !kaoPan.taste?.tasteCode.isNullOrBlank() -> "预占"
+            else -> "空缺"
+        }
         1 -> {
             val seconds = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, config, nowMs) / 1000L
             "烤制中:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
@@ -113,6 +118,18 @@ internal fun formatKaoPanStatusText(
     }
 }
 
+internal fun formatKaoPanTasteText(kaoPan: KaoPan): String {
+    val taste = kaoPan.taste
+    val text = when {
+        !taste?.tasteName.isNullOrBlank() && !taste?.productName.isNullOrBlank() ->
+            "${taste?.productName}(${taste?.tasteName})"
+        !taste?.tasteName.isNullOrBlank() -> taste?.tasteName
+        !taste?.tasteCode.isNullOrBlank() -> taste?.tasteCode
+        else -> "无"
+    }
+    return "口味: $text"
+}
+
 private class KaoPanDiffCallback : DiffUtil.ItemCallback<KaoPan>() {
     override fun areItemsTheSame(oldItem: KaoPan, newItem: KaoPan): Boolean {
         return oldItem.id == newItem.id
@@ -123,6 +140,9 @@ private class KaoPanDiffCallback : DiffUtil.ItemCallback<KaoPan>() {
                oldItem.status == newItem.status &&
                oldItem.temperature == newItem.temperature &&
                oldItem.taste?.tasteCode == newItem.taste?.tasteCode &&
+               oldItem.taste?.tasteName == newItem.taste?.tasteName &&
+               oldItem.taste?.productName == newItem.taste?.productName &&
+               oldItem.isHasGrilling == newItem.isHasGrilling &&
                oldItem.isHasSausage == newItem.isHasSausage
     }
 }
