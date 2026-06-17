@@ -39,6 +39,7 @@ class KaoPanAdapterTest {
     @Test
     fun formatKaoPanTasteText_shouldPreferTasteNameOverProductName() {
         val pan = KaoPan().apply {
+            status = 2
             isHasSausage = false
             taste = Taste().apply {
                 tasteCode = "B"
@@ -50,6 +51,23 @@ class KaoPanAdapterTest {
         val text = formatKaoPanTasteText(pan)
 
         assertEquals("口味: 口味B", text)
+    }
+
+    @Test
+    fun formatKaoPanTasteText_shouldHideTasteForEmptyPan() {
+        val pan = KaoPan().apply {
+            status = 0
+            isHasSausage = false
+            taste = Taste().apply {
+                tasteCode = "B"
+                tasteName = "口味B"
+                productName = "肉多多"
+            }
+        }
+
+        val text = formatKaoPanTasteText(pan)
+
+        assertEquals("口味: 无", text)
     }
 
     @Test

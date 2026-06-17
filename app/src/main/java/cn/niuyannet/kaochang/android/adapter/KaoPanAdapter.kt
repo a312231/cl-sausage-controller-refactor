@@ -110,6 +110,10 @@ internal fun formatKaoPanStatusText(
 }
 
 internal fun formatKaoPanTasteText(kaoPan: KaoPan): String {
+    if (kaoPan.status == 0) {
+        return "口味: 无"
+    }
+
     val text = when {
         !kaoPan.taste?.tasteName.isNullOrEmpty() -> kaoPan.taste?.tasteName
         else -> kaoPan.taste?.tasteCode ?: "无"
