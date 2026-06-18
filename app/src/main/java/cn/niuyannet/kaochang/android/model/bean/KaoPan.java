@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.model.bean;
 
+import com.alibaba.fastjson.annotation.JSONField;
 import com.google.gson.annotations.SerializedName;
 import java.io.Serializable;
 
@@ -60,6 +61,15 @@ public class KaoPan implements Serializable {
     
     @SerializedName("cmd_status_discard")
     private int cmdStatusDiscard; // 丢弃烤肠命令执行状态（0为正常，1为运动中，其余为错误码）
+
+    public static final int UI_RESERVATION_NONE = 0;
+    public static final int UI_RESERVATION_WAIT_SUPPLEMENT = 1;
+    public static final int UI_RESERVATION_WAIT_RETURN = 2;
+
+    @JSONField(serialize = false, deserialize = false)
+    private transient int uiReservationState; // 仅管理页展示使用，不参与持久化/调度
+    @JSONField(serialize = false, deserialize = false)
+    private transient Taste uiReservationTaste; // 仅管理页展示使用，不参与持久化/调度
     
     // 默认构造函数
     public KaoPan() {
@@ -81,6 +91,8 @@ public class KaoPan implements Serializable {
         this.cmdStatusTake = 0;
         this.cmdValueDiscard = 0;
         this.cmdStatusDiscard = 0;
+        this.uiReservationState = UI_RESERVATION_NONE;
+        this.uiReservationTaste = null;
     }
     
     // 带参数的构造函数
@@ -107,6 +119,8 @@ public class KaoPan implements Serializable {
         this.cmdStatusTake = cmdStatusTake;
         this.cmdValueDiscard = cmdValueDiscard;
         this.cmdStatusDiscard = cmdStatusDiscard;
+        this.uiReservationState = UI_RESERVATION_NONE;
+        this.uiReservationTaste = null;
     }
     
     // Getter 和 Setter 方法
@@ -252,5 +266,21 @@ public class KaoPan implements Serializable {
     
     public void setCmdStatusDiscard(int cmdStatusDiscard) {
         this.cmdStatusDiscard = cmdStatusDiscard;
+    }
+
+    public int getUiReservationState() {
+        return uiReservationState;
+    }
+
+    public void setUiReservationState(int uiReservationState) {
+        this.uiReservationState = uiReservationState;
+    }
+
+    public Taste getUiReservationTaste() {
+        return uiReservationTaste;
+    }
+
+    public void setUiReservationTaste(Taste uiReservationTaste) {
+        this.uiReservationTaste = uiReservationTaste;
     }
 }

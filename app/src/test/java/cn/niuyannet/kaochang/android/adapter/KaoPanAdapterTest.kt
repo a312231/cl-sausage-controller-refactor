@@ -71,6 +71,38 @@ class KaoPanAdapterTest {
     }
 
     @Test
+    fun formatKaoPanStatusText_shouldShowWaitSupplementForActiveUiState() {
+        val pan = KaoPan().apply {
+            status = 0
+            isHasSausage = false
+            uiReservationState = KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT
+            uiReservationTaste = Taste().apply {
+                tasteCode = "A"
+                tasteName = "口味A"
+            }
+        }
+
+        assertEquals("待补肠", formatKaoPanStatusText(pan, config = AppConfigBean()))
+        assertEquals("口味: 口味A", formatKaoPanTasteText(pan))
+    }
+
+    @Test
+    fun formatKaoPanStatusText_shouldShowWaitReturnForActiveUiState() {
+        val pan = KaoPan().apply {
+            status = 0
+            isHasSausage = false
+            uiReservationState = KaoPan.UI_RESERVATION_WAIT_RETURN
+            uiReservationTaste = Taste().apply {
+                tasteCode = "B"
+                tasteName = "口味B"
+            }
+        }
+
+        assertEquals("待回补", formatKaoPanStatusText(pan, config = AppConfigBean()))
+        assertEquals("口味: 口味B", formatKaoPanTasteText(pan))
+    }
+
+    @Test
     fun formatKaoPanStatusText_shouldFreezeBakingTimerDuringFaultPause() {
         val config = AppConfigBean().apply {
             faultHeatPauseActive = 1

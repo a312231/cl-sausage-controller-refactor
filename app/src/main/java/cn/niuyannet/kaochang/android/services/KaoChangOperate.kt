@@ -111,7 +111,8 @@ object KaoChangOperate {
 
     data class SupplementTarget(
         val kaoPan: KaoPan,
-        val tasteCode: String?
+        val tasteCode: String?,
+        val returnPositionSn: Int? = null
     )
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     /**
@@ -1472,6 +1473,10 @@ object KaoChangOperate {
             .toSet()
     }
 
+    fun activeSupplementBatchIntentForUi(): SupplementBatchIntent? {
+        return supplementBatchIntentRepository.loadActive()
+    }
+
     suspend fun handlePendingSupplementBatchIfAny(
         allowedTypes: Set<SupplementBatchType>,
         reason: String,
@@ -1527,23 +1532,29 @@ object KaoChangOperate {
                 null
             } else {
                 pan.applySupplementIntentTaste(target.tasteCode)
-                SupplementTarget(pan, target.tasteCode ?: pan.taste?.tasteCode)
+                SupplementTarget(
+                    pan,
+                    target.tasteCode ?: pan.taste?.tasteCode,
+                    returnPositionSn = target.returnPositionSn
+                )
             }
         }
         if (targets.isEmpty()) {
             supplementBatchIntentRepository.clear("未完成批次已无剩余目标:$reason")
             return PendingSupplementBatchHandling.NONE
         }
-        val executableTargets = filterExecutableSupplementTargets(
+        val availability = planExecutableSupplementTargets(
             targets = targets,
             listBox = KaoPanHelper.getKaoPanBoxList()
         )
+        val executableTargets = availability.executableTargets
         if (executableTargets.isEmpty() && intent.type == SupplementBatchType.HIGH_INITIALIZATION_1_21) {
             supplementBatchIntentRepository.clear("高并发初始化部分开盘收口：剩余目标无同口味可用库存:$reason")
             logW(
                 LOG_SUPPLEMENT,
                 "高并发初始化未完成批次剩余目标无同口味可用库存，按部分开盘收口：" +
-                    "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}"
+                    "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}，" +
+                    "skippedDetails=${availability.describeSkippedTargets()}"
             )
             return PendingSupplementBatchHandling.NONE
         }
@@ -1551,17 +1562,19 @@ object KaoChangOperate {
             logW(
                 LOG_SUPPLEMENT,
                 "检测到未完成补肠批次但剩余目标当前无同口味可用库存，暂不续补：" +
-                    "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}"
+                    "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}，" +
+                    "skippedDetails=${availability.describeSkippedTargets()}"
             )
             return PendingSupplementBatchHandling.BLOCKED
         }
 
         applyHeatingForSupplementBatch(intent.type)
         LogUtils.i(
-            "【补肠批次恢复】检测到未完成补肠批次，人工确认后续补：reason=$reason，" +
+                "【补肠批次恢复】检测到未完成补肠批次，人工确认后续补：reason=$reason，" +
                 "batchId=${intent.batchId}，type=${SupplementBatchIntentRepository.typeText(intent.type)}，" +
                 "目标烤盘=${executableTargets.joinToString(",") { it.kaoPan.positionSn.toString() }}，" +
-                "跳过不可执行目标=${(targets - executableTargets.toSet()).map { it.kaoPan.positionSn }}"
+                "跳过不可执行目标=${availability.skippedTargets.map { it.targetPositionSn }}，" +
+                "skippedDetails=${availability.describeSkippedTargets()}"
         )
         val movedCount = moveSausagesToKaoPansByTasteInternal(
             targets = executableTargets,
@@ -1647,15 +1660,18 @@ object KaoChangOperate {
         if (validTargets.isEmpty()) {
             return 0
         }
-        val executableTargets = filterExecutableSupplementTargets(
+        val availability = planExecutableSupplementTargets(
             targets = validTargets,
             listBox = KaoPanHelper.getKaoPanBoxList()
         )
+        val executableTargets = availability.executableTargets
         if (executableTargets.isEmpty()) {
             logW(
                 LOG_SUPPLEMENT,
                 "补肠批次无可执行目标：requestedTargets=${validTargets.map { it.kaoPan.positionSn }}，" +
-                    "原因=同口味烤肠箱库存不足或候选箱不可用"
+                    "原因=同口味烤肠箱库存不足或候选箱不可用，" +
+                    "requestedTastes=${validTargets.map { it.kaoPan.positionSn to (it.tasteCode ?: it.kaoPan.taste?.tasteCode) }}，" +
+                    "skippedDetails=${availability.describeSkippedTargets()}"
             )
             return 0
         }
@@ -1664,7 +1680,9 @@ object KaoChangOperate {
                 LOG_SUPPLEMENT,
                 "补肠批次按当前库存部分开盘：requestedTargets=${validTargets.map { it.kaoPan.positionSn }}，" +
                     "executableTargets=${executableTargets.map { it.kaoPan.positionSn }}，" +
-                    "skippedTargets=${validTargets.map { it.kaoPan.positionSn } - executableTargets.map { it.kaoPan.positionSn }.toSet()}"
+                    "requestedTastes=${validTargets.map { it.kaoPan.positionSn to (it.tasteCode ?: it.kaoPan.taste?.tasteCode) }}，" +
+                    "skippedTargets=${availability.skippedTargets.map { it.targetPositionSn }}，" +
+                    "skippedDetails=${availability.describeSkippedTargets()}"
             )
         }
         if (!ensureSupplementBatchStartAllowed("补肠批次入口")) {
@@ -1703,6 +1721,9 @@ object KaoChangOperate {
             return 0
         }
 
+        val returnPositionsByTarget = executableTargets.associate {
+            it.kaoPan.positionSn to it.returnPositionSn
+        }
         val plannedMoves = buildPipelineSupplementPlan(executableTargets)
         if (plannedMoves.size <= 1) {
             logD(
@@ -1711,7 +1732,13 @@ object KaoChangOperate {
             )
             val batchId = existingBatchId ?: if (createIntent && plannedMoves.isNotEmpty()) {
                 supplementBatchIntentRepository.begin(
-                    plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) },
+                    plannedMoves.map {
+                        SupplementTarget(
+                            it.kaoPan,
+                            it.tasteCode,
+                            returnPositionSn = returnPositionsByTarget[it.kaoPan.positionSn]
+                        )
+                    },
                     batchTypeOverride
                 )?.batchId
                     ?: return 0
@@ -1719,14 +1746,26 @@ object KaoChangOperate {
                 existingBatchId
             }
             return moveSausagesToKaoPansByTasteSerial(
-                plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) },
+                plannedMoves.map {
+                    SupplementTarget(
+                        it.kaoPan,
+                        it.tasteCode,
+                        returnPositionSn = returnPositionsByTarget[it.kaoPan.positionSn]
+                    )
+                },
                 "补肠预取流水线降级串行",
                 batchId
             )
         }
         val batchId = existingBatchId ?: if (createIntent) {
             supplementBatchIntentRepository.begin(
-                plannedMoves.map { SupplementTarget(it.kaoPan, it.tasteCode) },
+                plannedMoves.map {
+                    SupplementTarget(
+                        it.kaoPan,
+                        it.tasteCode,
+                        returnPositionSn = returnPositionsByTarget[it.kaoPan.positionSn]
+                    )
+                },
                 batchTypeOverride
             )?.batchId
                 ?: return 0

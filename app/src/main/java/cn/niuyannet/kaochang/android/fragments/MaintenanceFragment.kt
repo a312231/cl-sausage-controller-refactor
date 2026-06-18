@@ -22,6 +22,7 @@ import cn.niuyannet.kaochang.android.net.ConsumableStateResponseParser
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
+import cn.niuyannet.kaochang.android.services.KaoPanUiReservationStateBuilder
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
@@ -1052,13 +1053,23 @@ class MaintenanceFragment : Fragment() {
     }
 
     @SuppressLint("NotifyDataSetChanged")
+    private fun refreshKaoPanGrid() {
+        val pans = KaoPanUiReservationStateBuilder.apply(
+            pans = KaoPanHelper.getKaoPanList(),
+            activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        )
+        kaoPanAdapter.submitList(pans)
+        kaoPanAdapter.notifyDataSetChanged()
+    }
+
+    @SuppressLint("NotifyDataSetChanged")
     private fun setupGrid() {
         kaoPanAdapter = KaoPanAdapter { showPurchaseOrderDialog(it) }
         binding.rvKaopan.apply {
             layoutManager = GridLayoutManager(context, 11)
             adapter = kaoPanAdapter
         }
-        kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
+        refreshKaoPanGrid()
         startRefreshTimer()
 
         binding.btnCz.setOnClickListener {
@@ -1067,8 +1078,7 @@ class MaintenanceFragment : Fragment() {
         }
 
         binding.btnUpdate.setOnClickListener {
-            kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
-            kaoPanAdapter.notifyDataSetChanged()
+            refreshKaoPanGrid()
         }
 
         binding.btnLogs.setOnClickListener {
@@ -1375,8 +1385,7 @@ class MaintenanceFragment : Fragment() {
                     return@launch
                 }
 
-                kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
-                kaoPanAdapter.notifyDataSetChanged()
+                refreshKaoPanGrid()
                 binding.tvCooldownHint.text = ""
                 AdminOperationLogger.i(
                     action = "仅清除烤盘位数据",
@@ -1440,8 +1449,7 @@ class MaintenanceFragment : Fragment() {
                     delay(1_000L)
                 }
             }.collect {
-                kaoPanAdapter.submitList(KaoPanHelper.getKaoPanList())
-                kaoPanAdapter.notifyDataSetChanged()
+                refreshKaoPanGrid()
                 algorithmSwitchFallbackTickCount++
                 if (algorithmSwitchFallbackTickCount >= ALGORITHM_SWITCH_FALLBACK_SYNC_INTERVAL_SECONDS) {
                     algorithmSwitchFallbackTickCount = 0

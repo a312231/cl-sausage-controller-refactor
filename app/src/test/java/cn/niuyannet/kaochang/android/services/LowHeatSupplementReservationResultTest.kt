@@ -164,6 +164,59 @@ class LowHeatSupplementReservationResultTest {
     }
 
     @Test
+    fun planTargets_shouldFallbackToAvailableTasteWithoutLeavingLowHeatHoles() {
+        val frontPans = listOf(
+            frontPan(1, "B"),
+            frontPan(2, "B"),
+            frontPan(3, "A")
+        )
+        val supplementPans = (13..15).map { targetPan(it, hasSausage = false).apply { taste = null } }
+        val boxes = listOf(
+            box(positionSn = 19, tasteCode = "A", num = 2),
+            box(positionSn = 15, tasteCode = "B", num = 1)
+        )
+
+        val plan = LowCurrentTrafficMode.planLowHeatSupplementTargets(
+            selectedFrontPositions = frontPans,
+            supplementPositions = supplementPans,
+            listBox = boxes
+        )
+
+        assertEquals(listOf(1, 2, 3), plan.frontPans.map { it.positionSn })
+        assertEquals(listOf(13, 14, 15), plan.targets.map { it.kaoPan.positionSn })
+        assertEquals(listOf("B", "A", "A"), plan.targets.map { it.tasteCode })
+        assertEquals(listOf(1, 2, 3), plan.targets.map { it.returnPositionSn })
+        assertEquals("A", frontPans[1].taste.tasteCode)
+        assertEquals("A", supplementPans[1].taste.tasteCode)
+    }
+
+    @Test
+    fun planTargets_shouldOnlyRequestContiguousLowHeatTargetsCoveredByCurrentStock() {
+        val frontPans = listOf(
+            frontPan(1, "B"),
+            frontPan(2, "B"),
+            frontPan(3, "B")
+        )
+        val supplementPans = (13..15).map { targetPan(it, hasSausage = false).apply { taste = null } }
+        val boxes = listOf(
+            box(positionSn = 15, tasteCode = "B", num = 1)
+        )
+
+        val plan = LowCurrentTrafficMode.planLowHeatSupplementTargets(
+            selectedFrontPositions = frontPans,
+            supplementPositions = supplementPans,
+            listBox = boxes
+        )
+
+        assertEquals(listOf(1), plan.frontPans.map { it.positionSn })
+        assertEquals(listOf(13), plan.targets.map { it.kaoPan.positionSn })
+        assertEquals(listOf("B"), plan.targets.map { it.tasteCode })
+        assertEquals("B", supplementPans[0].taste.tasteCode)
+        assertNull(supplementPans[1].taste)
+        assertNull(supplementPans[2].taste)
+    }
+
+    @Test
     fun clearGhostReservations_shouldOnlyClearWhenHeatAreaEmptyAndNoActiveIntent() {
         val fronts = listOf(
             frontPan(1).apply { isHasGrilling = true },

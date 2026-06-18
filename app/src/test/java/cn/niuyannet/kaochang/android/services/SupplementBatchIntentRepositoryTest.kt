@@ -29,6 +29,25 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun begin_shouldPersistLowHeatReturnPositionsForUiDisplay() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        val intent = repository.begin(
+            listOf(
+                target(13, "A", returnPositionSn = 1),
+                target(14, "A", returnPositionSn = 2),
+                target(15, "B", returnPositionSn = 6)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )
+
+        assertEquals(SupplementBatchType.LOW_HEAT_13_15, intent?.type)
+        assertEquals(listOf(13, 14, 15), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(1, 2, 6), store.intent?.targets?.map { it.returnPositionSn })
+    }
+
+    @Test
     fun begin_withoutOverride_shouldKeepLegacyInferenceForFullLowInitialization() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)
@@ -150,13 +169,18 @@ class SupplementBatchIntentRepositoryTest {
         assertNull(store.intent)
     }
 
-    private fun target(positionSn: Int, tasteCode: String): KaoChangOperate.SupplementTarget =
+    private fun target(
+        positionSn: Int,
+        tasteCode: String,
+        returnPositionSn: Int? = null
+    ): KaoChangOperate.SupplementTarget =
         KaoChangOperate.SupplementTarget(
             KaoPan().apply {
                 this.positionSn = positionSn
                 this.taste = Taste(tasteCode)
             },
-            tasteCode
+            tasteCode,
+            returnPositionSn
         )
 
     private fun repository(store: SupplementBatchIntentStore): SupplementBatchIntentRepository =

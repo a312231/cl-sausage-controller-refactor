@@ -539,36 +539,28 @@ object LowCurrentTrafficMode {
         val emptyPositions = list1_9.filter { !it.isHasSausage && !it.isHasGrilling }
         val emptyPositions13_15 = list13_15.filter { !it.isHasSausage }
         if (emptyPositions.size >= pNum && emptyPositions13_15.size >= pNum) {
-            KaoChangOperate.heating(2)
-            val neededTastes = emptyPositions.take(pNum).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
-            if (neededTastes.size < pNum) {
-                LogUtils.w(TAG, "【低并发补肠】跳过 13~15 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
-                return false
-            }
             val selectedFrontPositions = emptyPositions.take(pNum)
-            if (!hasSameTasteSupplyForAll(neededTastes, listBox)) {
+            val plan = planLowHeatSupplementTargets(
+                selectedFrontPositions = selectedFrontPositions,
+                supplementPositions = emptyPositions13_15.take(pNum),
+                listBox = listBox
+            )
+            if (plan.targets.isEmpty()) {
                 LogUtils.w(
                     TAG,
-                    formatNoSameTasteStockLog(
-                        groupName = "13~15",
-                        selectedFrontPositions = selectedFrontPositions,
-                        neededTastes = neededTastes,
-                        listBox = listBox
-                    )
+                    "【低并发补肠】跳过 13~15 补热区补肠：当前无可执行补肠目标，" +
+                        "frontEmpty=${emptyPositions.size}，heatEmpty=${emptyPositions13_15.size}"
                 )
                 return false
             }
-            val targets = neededTastes.mapIndexed { index, tasteCode ->
-                val targetPosition = emptyPositions13_15[index]
-                targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
-            }
+            KaoChangOperate.heating(2)
+            val targets = plan.targets
             val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
             val activeTargets = KaoChangOperate.activeSupplementBatchTargetPositions(
                 setOf(SupplementBatchType.LOW_HEAT_13_15)
             )
             val result = applyLowHeatSupplementReservationResult(
-                frontPans = selectedFrontPositions,
+                frontPans = plan.frontPans,
                 supplementTargets = targets,
                 activeLowHeatIntentTargetPositions = activeTargets,
                 movedCount = movedCount
@@ -603,36 +595,28 @@ object LowCurrentTrafficMode {
         val emptyPositions = list1_9.filter { !it.isHasSausage && !it.isHasGrilling }
         val emptyPositions16_18 = list16_18.filter { !it.isHasSausage }
         if (emptyPositions.size >= pNum && emptyPositions16_18.size >= pNum) {
-            KaoChangOperate.heating(2)
-            val neededTastes = emptyPositions.take(pNum).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
-            if (neededTastes.size < pNum) {
-                LogUtils.w(TAG, "【低并发补肠】跳过 16~18 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
-                return false
-            }
             val selectedFrontPositions = emptyPositions.take(pNum)
-            if (!hasSameTasteSupplyForAll(neededTastes, listBox)) {
+            val plan = planLowHeatSupplementTargets(
+                selectedFrontPositions = selectedFrontPositions,
+                supplementPositions = emptyPositions16_18.take(pNum),
+                listBox = listBox
+            )
+            if (plan.targets.isEmpty()) {
                 LogUtils.w(
                     TAG,
-                    formatNoSameTasteStockLog(
-                        groupName = "16~18",
-                        selectedFrontPositions = selectedFrontPositions,
-                        neededTastes = neededTastes,
-                        listBox = listBox
-                    )
+                    "【低并发补肠】跳过 16~18 补热区补肠：当前无可执行补肠目标，" +
+                        "frontEmpty=${emptyPositions.size}，heatEmpty=${emptyPositions16_18.size}"
                 )
                 return false
             }
-            val targets = neededTastes.mapIndexed { index, tasteCode ->
-                val targetPosition = emptyPositions16_18[index]
-                targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
-            }
+            KaoChangOperate.heating(2)
+            val targets = plan.targets
             val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
             val activeTargets = KaoChangOperate.activeSupplementBatchTargetPositions(
                 setOf(SupplementBatchType.LOW_HEAT_16_18)
             )
             val result = applyLowHeatSupplementReservationResult(
-                frontPans = selectedFrontPositions,
+                frontPans = plan.frontPans,
                 supplementTargets = targets,
                 activeLowHeatIntentTargetPositions = activeTargets,
                 movedCount = movedCount
@@ -761,6 +745,77 @@ object LowCurrentTrafficMode {
         val movedCount: Int,
         val actualSuccessCount: Int
     )
+
+    internal data class LowHeatSupplementPlan(
+        val frontPans: List<KaoPan>,
+        val targets: List<KaoChangOperate.SupplementTarget>
+    )
+
+    internal fun planLowHeatSupplementTargets(
+        selectedFrontPositions: List<KaoPan>,
+        supplementPositions: List<KaoPan>,
+        listBox: List<KaoPanBox>
+    ): LowHeatSupplementPlan {
+        val maxCount = minOf(selectedFrontPositions.size, supplementPositions.size)
+        val remainingStockByTaste = buildAvailableStockByTaste(listBox)
+        val plannedFrontPans = mutableListOf<KaoPan>()
+        val targets = mutableListOf<KaoChangOperate.SupplementTarget>()
+        supplementPositions.take(maxCount).forEach { targetPan ->
+            if (!targetPan.isHasSausage) {
+                targetPan.taste = null
+            }
+        }
+        for (index in 0 until maxCount) {
+            val frontPan = selectedFrontPositions[index]
+            val targetPan = supplementPositions[index]
+            val preferredTasteCode = frontPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
+            val tasteCode = selectTasteWithRemainingStock(
+                preferredTasteCode = preferredTasteCode,
+                remainingStockByTaste = remainingStockByTaste
+            ) ?: break
+            remainingStockByTaste[tasteCode] = (remainingStockByTaste[tasteCode] ?: 0) - 1
+            if (frontPan.taste?.tasteCode != tasteCode) {
+                frontPan.taste = Taste(tasteCode)
+            }
+            targetPan.taste = Taste(tasteCode)
+            plannedFrontPans += frontPan
+            targets += KaoChangOperate.SupplementTarget(
+                targetPan,
+                tasteCode,
+                returnPositionSn = frontPan.positionSn
+            )
+        }
+        return LowHeatSupplementPlan(plannedFrontPans, targets)
+    }
+
+    private fun buildAvailableStockByTaste(listBox: List<KaoPanBox>): MutableMap<String, Int> {
+        return listBox
+            .filter {
+                KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) &&
+                    SourceBoxPositionPolicy.isValidSourceBox(it.positionSn) &&
+                    !it.tasteCode.isNullOrBlank()
+            }
+            .groupBy { it.tasteCode.orEmpty() }
+            .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
+            .filterValues { it > 0 }
+            .toMutableMap()
+    }
+
+    private fun selectTasteWithRemainingStock(
+        preferredTasteCode: String?,
+        remainingStockByTaste: Map<String, Int>
+    ): String? {
+        val preferred = preferredTasteCode?.takeIf { it.isNotBlank() }
+        if (preferred != null && (remainingStockByTaste[preferred] ?: 0) > 0) {
+            return preferred
+        }
+        return remainingStockByTaste
+            .filterValues { it > 0 }
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .firstOrNull()
+            ?.key
+    }
 
     internal fun applyLowHeatSupplementReservationResult(
         frontPans: List<KaoPan>,

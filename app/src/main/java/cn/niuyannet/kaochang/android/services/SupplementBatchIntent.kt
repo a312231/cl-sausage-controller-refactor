@@ -18,6 +18,7 @@ enum class SupplementBatchType {
 data class SupplementBatchIntentTarget(
     var positionSn: Int = 0,
     var tasteCode: String? = null,
+    var returnPositionSn: Int? = null,
     var completed: Boolean = false
 )
 
@@ -111,6 +112,7 @@ class SupplementBatchIntentRepository(
                     positionSn = it.kaoPan.positionSn,
                     tasteCode = it.tasteCode?.takeIf { code -> code.isNotBlank() }
                         ?: it.kaoPan.taste?.tasteCode?.takeIf { code -> code.isNotBlank() },
+                    returnPositionSn = it.returnPositionSn?.takeIf { position -> position in 1..33 },
                     completed = false
                 )
             }

@@ -90,6 +90,34 @@ class MaturedZoneKeepWarmSettlerTest {
     }
 
     @Test
+    fun settleMaturedZones_shouldSkipOldLowHeatPansButStillSettleNineteenToTwentyOneDuringLowToHigh() {
+        val nowMs = 10_000L
+        val config = config().apply {
+            modeType = 2
+            transitionMode = 1
+        }
+        val pans = pans(
+            maturedBakingPan(13),
+            maturedBakingPan(14),
+            maturedBakingPan(19),
+            maturedBakingPan(20)
+        )
+        val appliedAreas = mutableListOf<Int>()
+
+        val result = MaturedZoneKeepWarmSettler.settleMaturedZones(pans, config, nowMs) {
+            appliedAreas += it
+        }
+
+        assertEquals(listOf(2), appliedAreas)
+        assertEquals(listOf(2), result.map { it.area })
+        assertEquals(listOf(19, 20), result.single().positions)
+        assertEquals(1, pans.first { it.positionSn == 13 }.status)
+        assertEquals(1L, pans.first { it.positionSn == 13 }.startTime)
+        assertEquals(2, pans.first { it.positionSn == 19 }.status)
+        assertEquals(0L, pans.first { it.positionSn == 19 }.startTime)
+    }
+
+    @Test
     fun settleMaturedZones_shouldSettlePartialZoneThreeWhenAllExistingZoneThreePansAreMatured() {
         val nowMs = 10_000L
         val pans = pans(

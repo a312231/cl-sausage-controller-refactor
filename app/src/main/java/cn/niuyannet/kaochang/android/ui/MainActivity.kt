@@ -435,8 +435,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         binding.configButton.setOnClickListener {
             goToSetting()
         }
-        binding.tvGly.setOnClickListener {
+        binding.tvGly.setOnLongClickListener {
             goToSetting()
+            true
         }
     }
 

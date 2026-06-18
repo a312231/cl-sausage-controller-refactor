@@ -10,7 +10,8 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 internal object HighHeatSupplementResumePlanner {
     data class ResumeTarget(
         val kaoPan: KaoPan,
-        val tasteCode: String
+        val tasteCode: String,
+        val returnPositionSn: Int? = null
     ) {
         val positionSn: Int
             get() = kaoPan.positionSn
@@ -37,31 +38,77 @@ internal object HighHeatSupplementResumePlanner {
         frontPans: List<KaoPan>,
         supplementGroup: List<KaoPan>,
         listBox: List<KaoPanBox>,
-        requestedCount: Int = 9
+        requestedCount: Int = 9,
+        excludedReturnPositions: Set<Int> = emptySet(),
+        committedFutureReturnPositions: List<Int> = emptyList()
     ): List<ResumeTarget> {
+        val currentReturnPans = frontPans
+            .filter { !it.isHasSausage && it.positionSn !in excludedReturnPositions }
+            .sortedBy { it.positionSn }
+            .take(requestedCount)
+        val currentReturnPositions = currentReturnPans.map { it.positionSn }.toSet()
+        val futureReturnPans = if (currentReturnPans.size < requestedCount) {
+            val futureReturnPositions = committedFutureReturnPositions
+                .filter {
+                    it in 1..21 &&
+                        it !in excludedReturnPositions &&
+                        it !in currentReturnPositions
+                }
+                .distinct()
+                .take(requestedCount - currentReturnPans.size)
+                .toSet()
+            frontPans
+                .filter { it.positionSn in futureReturnPositions }
+                .sortedBy { committedFutureReturnPositions.indexOf(it.positionSn).let { index -> if (index >= 0) index else Int.MAX_VALUE } }
+        } else {
+            emptyList()
+        }
+        val returnPans = (currentReturnPans + futureReturnPans)
+            .take(requestedCount)
+        val futureReturnPositions = futureReturnPans.map { it.positionSn }.toSet()
+        if (returnPans.isEmpty()) {
+            return emptyList()
+        }
         val targetPans = supplementGroup
             .filter { !it.isHasSausage }
             .sortedBy { it.positionSn }
-            .take(requestedCount)
+            .take(minOf(requestedCount, returnPans.size))
         if (targetPans.isEmpty()) {
             return emptyList()
         }
 
-        val reservedTasteCodes = frontPans
-            .filter { !it.isHasSausage }
-            .sortedBy { it.positionSn }
-            .mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
+        val reservedTasteCodes = returnPans
+            .map { pan ->
+                if (pan.positionSn in futureReturnPositions) {
+                    null
+                } else {
+                    pan.taste?.tasteCode?.takeIf { code -> code.isNotBlank() }
+                }
+            }
         val stockRatioTasteCodes = expandTasteAllocation(
             KaoPanHelper.computeHighKaoPamRatio(listBox, targetPans.size)
         )
+        val remainingStockByTaste = buildAvailableStockByTaste(listBox)
 
         return targetPans.mapIndexedNotNull { index, targetPan ->
-            val tasteCode = reservedTasteCodes.getOrNull(index)
+            val returnPan = returnPans.getOrNull(index)
+            val preferredTasteCode = reservedTasteCodes.getOrNull(index)
                 ?: stockRatioTasteCodes.getOrNull(index)
                 ?: stockRatioTasteCodes.firstOrNull()
+            val tasteCode = selectTasteWithRemainingStock(
+                preferredTasteCode = preferredTasteCode,
+                remainingStockByTaste = remainingStockByTaste
+            )
                 ?: return@mapIndexedNotNull null
+            remainingStockByTaste[tasteCode] = (remainingStockByTaste[tasteCode] ?: 0) - 1
+            if (returnPan != null &&
+                returnPan.positionSn !in futureReturnPositions &&
+                returnPan.taste?.tasteCode != tasteCode
+            ) {
+                returnPan.taste = Taste(tasteCode)
+            }
             targetPan.taste = Taste(tasteCode)
-            ResumeTarget(targetPan, tasteCode)
+            ResumeTarget(targetPan, tasteCode, returnPan?.positionSn)
         }
     }
 
@@ -174,6 +221,35 @@ internal object HighHeatSupplementResumePlanner {
         return allocation.flatMap { (tasteCode, count) ->
             List(count.coerceAtLeast(0)) { tasteCode }
         }
+    }
+
+    private fun buildAvailableStockByTaste(listBox: List<KaoPanBox>): MutableMap<String, Int> {
+        return listBox
+            .filter {
+                KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) &&
+                    SourceBoxPositionPolicy.isValidSourceBox(it.positionSn) &&
+                    !it.tasteCode.isNullOrBlank()
+            }
+            .groupBy { it.tasteCode.orEmpty() }
+            .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
+            .filterValues { it > 0 }
+            .toMutableMap()
+    }
+
+    private fun selectTasteWithRemainingStock(
+        preferredTasteCode: String?,
+        remainingStockByTaste: Map<String, Int>
+    ): String? {
+        val preferred = preferredTasteCode?.takeIf { it.isNotBlank() }
+        if (preferred != null && (remainingStockByTaste[preferred] ?: 0) > 0) {
+            return preferred
+        }
+        return remainingStockByTaste
+            .filterValues { it > 0 }
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .firstOrNull()
+            ?.key
     }
 
     private fun isKeepWarmReady(

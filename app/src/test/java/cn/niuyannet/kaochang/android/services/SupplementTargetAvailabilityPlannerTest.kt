@@ -57,6 +57,42 @@ class SupplementTargetAvailabilityPlannerTest {
         assertEquals("A", executableTargets.single().tasteCode)
     }
 
+    @Test
+    fun planExecutableSupplementTargets_shouldExplainTargetsSkippedByReservedStock() {
+        val targets = listOf(target(25, "B"), target(26, "B"), target(27, "B"))
+        val boxes = listOf(box(positionSn = 13, tasteCode = "B", num = 2))
+
+        val result = planExecutableSupplementTargets(
+            targets = targets,
+            listBox = boxes
+        )
+
+        assertEquals(listOf(25, 26), result.executableTargets.map { it.kaoPan.positionSn })
+        assertEquals(1, result.skippedTargets.size)
+        assertEquals(27, result.skippedTargets.single().targetPositionSn)
+        assertEquals("B", result.skippedTargets.single().tasteCode)
+        assertEquals("同口味可用箱预扣库存不足", result.skippedTargets.single().reason)
+        assertEquals(listOf(13), result.skippedTargets.single().candidateBoxNos)
+        assertEquals(0, result.skippedTargets.single().reservedStockByBoxNo[13])
+    }
+
+    @Test
+    fun planExecutableSupplementTargets_shouldExplainTargetsSkippedByUnavailableSameTasteBoxes() {
+        val targets = listOf(target(25, "B"))
+        val boxes = listOf(box(positionSn = 13, tasteCode = "B", num = 0))
+
+        val result = planExecutableSupplementTargets(
+            targets = targets,
+            listBox = boxes
+        )
+
+        assertEquals(emptyList<Int>(), result.executableTargets.map { it.kaoPan.positionSn })
+        assertEquals(1, result.skippedTargets.size)
+        assertEquals(25, result.skippedTargets.single().targetPositionSn)
+        assertEquals("无同口味可用箱", result.skippedTargets.single().reason)
+        assertEquals(listOf("num<=0"), result.skippedTargets.single().sameTasteBoxes.single().exclusionReasons)
+    }
+
     private fun target(positionSn: Int, tasteCode: String): KaoChangOperate.SupplementTarget =
         KaoChangOperate.SupplementTarget(
             kaoPan = KaoPan().apply {

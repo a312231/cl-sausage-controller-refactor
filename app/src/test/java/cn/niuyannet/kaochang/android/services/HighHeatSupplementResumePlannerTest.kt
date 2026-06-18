@@ -6,6 +6,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -110,7 +111,7 @@ class HighHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun planInitialTargets_shouldRequestNinePansEvenWhenFrontOnlyHasSevenReservedEmptyPans() {
+    fun planInitialTargets_shouldOnlyRequestContiguousTargetsCoveredByCurrentStock() {
         val front = (1..21).map { position ->
             frontPan(position, "B", reserved = position in 1..7).apply {
                 isHasSausage = position !in 1..7
@@ -128,10 +129,110 @@ class HighHeatSupplementResumePlannerTest {
             listBox = boxes
         )
 
+        assertEquals((25..31).toList(), result.map { it.positionSn })
+        assertEquals(List(7) { "B" }, result.map { it.tasteCode })
+        assertEquals((1..7).toList(), result.map { it.returnPositionSn })
+        assertNull(group.first { it.positionSn == 32 }.taste)
+        assertNull(group.first { it.positionSn == 33 }.taste)
+    }
+
+    @Test
+    fun planInitialTargets_shouldFallbackToAvailableTasteWithoutLeavingTargetHoles() {
+        val emptyFrontTastes = listOf("A", "A", "B", "B", "B", "A", "A", "A", "A")
+        val front = (1..21).map { position ->
+            val tasteCode = emptyFrontTastes.getOrNull(position - 1) ?: "A"
+            frontPan(position, tasteCode, reserved = position in 1..9).apply {
+                isHasSausage = position !in 1..9
+            }
+        }
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(
+            box(positionSn = 19, tasteCode = "A", num = 8),
+            box(positionSn = 15, tasteCode = "B", num = 1)
+        )
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes
+        )
+
         assertEquals((25..33).toList(), result.map { it.positionSn })
-        assertEquals(List(9) { "B" }, result.map { it.tasteCode })
-        assertEquals("B", group.first { it.positionSn == 32 }.taste.tasteCode)
-        assertEquals("B", group.first { it.positionSn == 33 }.taste.tasteCode)
+        assertEquals(listOf("A", "A", "B", "A", "A", "A", "A", "A", "A"), result.map { it.tasteCode })
+        assertEquals((1..9).toList(), result.map { it.returnPositionSn })
+        assertEquals("A", front.first { it.positionSn == 4 }.taste.tasteCode)
+        assertEquals("A", front.first { it.positionSn == 5 }.taste.tasteCode)
+        assertEquals("A", group.first { it.positionSn == 28 }.taste.tasteCode)
+        assertEquals("A", group.first { it.positionSn == 29 }.taste.tasteCode)
+    }
+
+    @Test
+    fun planInitialTargets_shouldExcludeProtectedOldLowHeatReturnPositions() {
+        val front = (1..21).map { position ->
+            frontPan(position, "B", reserved = position in 1..9).apply {
+                isHasSausage = position !in 1..9
+            }
+        }
+        front.first { it.positionSn == 1 }.taste = Taste("A")
+        front.first { it.positionSn == 2 }.taste = Taste("A")
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(box(positionSn = 18, tasteCode = "B", num = 9))
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes,
+            excludedReturnPositions = setOf(1, 2)
+        )
+
+        assertEquals((25..31).toList(), result.map { it.positionSn })
+        assertEquals((3..9).toList(), result.map { it.returnPositionSn })
+        assertEquals("A", front.first { it.positionSn == 1 }.taste.tasteCode)
+        assertEquals("A", front.first { it.positionSn == 2 }.taste.tasteCode)
+    }
+
+    @Test
+    fun planInitialTargets_shouldUseCommittedOldLowHeatSourcePositionsAsFutureReturnSlots() {
+        val availableNow = setOf(7, 8, 10, 11, 12, 19, 20, 21)
+        val front = (1..21).map { position ->
+            frontPan(position, "B", reserved = position in 1..9).apply {
+                isHasSausage = position !in availableNow
+            }
+        }
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(box(positionSn = 18, tasteCode = "B", num = 9))
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes,
+            excludedReturnPositions = setOf(1, 2, 3, 4, 5, 6),
+            committedFutureReturnPositions = listOf(13)
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals(listOf(7, 8, 10, 11, 12, 19, 20, 21, 13), result.map { it.returnPositionSn })
+        assertTrue(front.first { it.positionSn == 13 }.isHasSausage)
+    }
+
+    @Test
+    fun planInitialTargets_shouldKeepDefaultHighHeatPlanningWhenNoReturnPositionsAreExcluded() {
+        val front = (1..21).map { position ->
+            frontPan(position, "B", reserved = position in 1..9).apply {
+                isHasSausage = position !in 1..9
+            }
+        }
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(box(positionSn = 18, tasteCode = "B", num = 9))
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals((1..9).toList(), result.map { it.returnPositionSn })
     }
 
     @Test

@@ -96,7 +96,11 @@ internal fun formatKaoPanStatusText(
     config: AppConfigBean = AppConfig.getAppConfig()
 ): String {
     return when (kaoPan.status) {
-        0 -> "空缺"
+        0 -> when (kaoPan.uiReservationState) {
+            KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT -> "待补肠"
+            KaoPan.UI_RESERVATION_WAIT_RETURN -> "待回补"
+            else -> "空缺"
+        }
         1 -> {
             val seconds = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, config, nowMs) / 1000L
             "烤制中:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
@@ -111,14 +115,19 @@ internal fun formatKaoPanStatusText(
 
 internal fun formatKaoPanTasteText(kaoPan: KaoPan): String {
     if (kaoPan.status == 0) {
-        return "口味: 无"
+        return "口味: ${formatTasteName(kaoPan.uiReservationTaste) ?: "无"}"
     }
 
-    val text = when {
-        !kaoPan.taste?.tasteName.isNullOrEmpty() -> kaoPan.taste?.tasteName
-        else -> kaoPan.taste?.tasteCode ?: "无"
-    }
+    val text = formatTasteName(kaoPan.taste) ?: "无"
     return "口味: $text"
+}
+
+private fun formatTasteName(taste: cn.niuyannet.kaochang.android.model.bean.Taste?): String? {
+    return when {
+        !taste?.tasteName.isNullOrEmpty() -> taste?.tasteName
+        !taste?.tasteCode.isNullOrEmpty() -> taste?.tasteCode
+        else -> null
+    }
 }
 
 private class KaoPanDiffCallback : DiffUtil.ItemCallback<KaoPan>() {
@@ -132,6 +141,9 @@ private class KaoPanDiffCallback : DiffUtil.ItemCallback<KaoPan>() {
                oldItem.temperature == newItem.temperature &&
                oldItem.taste?.tasteCode == newItem.taste?.tasteCode &&
                oldItem.taste?.tasteName == newItem.taste?.tasteName &&
+               oldItem.uiReservationState == newItem.uiReservationState &&
+               oldItem.uiReservationTaste?.tasteCode == newItem.uiReservationTaste?.tasteCode &&
+               oldItem.uiReservationTaste?.tasteName == newItem.uiReservationTaste?.tasteName &&
                oldItem.isHasSausage == newItem.isHasSausage
     }
 }

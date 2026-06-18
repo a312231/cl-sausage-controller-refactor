@@ -28,7 +28,19 @@ internal object MaturedZoneKeepWarmSettler {
             return emptyList()
         }
 
-        return physicalZones.mapNotNull { (area, positions) ->
+        val zones = if (config.modeType == 2 && config.transitionMode == 1) {
+            physicalZones.map { (area, positions) ->
+                if (area == 2) {
+                    area to (19..21)
+                } else {
+                    area to positions
+                }
+            }
+        } else {
+            physicalZones
+        }
+
+        return zones.mapNotNull { (area, positions) ->
             settleZone(
                 area = area,
                 positions = positions,

@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.Taste
 
 internal data class HighTrafficSupplementTrackingState(
     val pitCount: Int,
@@ -26,6 +27,11 @@ internal data class OldLowHeatReturnGroup(
     val end: Int,
     val groupName: String,
     val maxStartTime: Long
+)
+
+internal data class OldLowHeatReturnReservation(
+    val positionSn: Int,
+    val tasteCode: String?
 )
 
 private data class OldLowHeatRange(
@@ -222,6 +228,235 @@ internal fun hasRealOldLowHeatLegacyBatch(
             val isBaking = pan.startTime > 0L && pan.status != 2
             isBaking || hasReservedFrontReturnTarget(pan, frontPans)
         }
+}
+
+internal fun collectProtectedOldLowHeatReturnPositions(
+    frontPans: List<KaoPan>,
+    oldLowHeatPans: List<KaoPan>,
+    activeIntent: SupplementBatchIntent?
+): Set<Int> {
+    val protectedPositions = linkedSetOf<Int>()
+    collectOldLowHeatReturnReservations(
+        frontPans = frontPans,
+        oldLowHeatPans = oldLowHeatPans,
+        activeIntent = activeIntent
+    ).forEach { reservation ->
+        val frontPan = frontPans.firstOrNull {
+            it.positionSn == reservation.positionSn &&
+                it.positionSn in 1..9 &&
+                !it.isHasSausage
+        } ?: return@forEach
+        restoreOldLowHeatReturnReservation(frontPan, reservation.tasteCode)
+        protectedPositions += frontPan.positionSn
+    }
+    return protectedPositions
+}
+
+internal fun collectOldLowHeatReturnReservations(
+    frontPans: List<KaoPan>,
+    oldLowHeatPans: List<KaoPan>,
+    activeIntent: SupplementBatchIntent?
+): List<OldLowHeatReturnReservation> {
+    val reservations = linkedMapOf<Int, OldLowHeatReturnReservation>()
+    val activeOldLowHeatByPosition = oldLowHeatPans
+        .filter { it.positionSn in 13..18 && it.isHasSausage }
+        .associateBy { it.positionSn }
+
+    activeIntent
+        ?.targets
+        ?.filter { target ->
+            activeIntent.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) &&
+                target.returnPositionSn in 1..9
+        }
+        ?.forEach { target ->
+            val tasteCode = target.tasteCode?.takeIf { it.isNotBlank() }
+                ?: activeOldLowHeatByPosition[target.positionSn]?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+            val frontPan = frontPans.firstOrNull {
+                it.positionSn == target.returnPositionSn &&
+                    it.positionSn in 1..9 &&
+                    !it.isHasSausage
+            } ?: return@forEach
+            reservations[frontPan.positionSn] = OldLowHeatReturnReservation(
+                positionSn = frontPan.positionSn,
+                tasteCode = tasteCode
+            )
+        }
+
+    val activeOldLowHeatTastes = activeOldLowHeatByPosition.values
+        .mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
+        .toSet()
+    frontPans
+        .filter { pan ->
+            pan.positionSn in 1..9 &&
+                !pan.isHasSausage &&
+                pan.isHasGrilling &&
+                pan.taste?.tasteCode in activeOldLowHeatTastes
+        }
+        .forEach { pan ->
+            reservations.putIfAbsent(
+                pan.positionSn,
+                OldLowHeatReturnReservation(
+                    positionSn = pan.positionSn,
+                    tasteCode = pan.taste?.tasteCode?.takeIf { it.isNotBlank() }
+                )
+            )
+        }
+
+    return reservations.values.toList()
+}
+
+internal fun collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
+    frontPans: List<KaoPan>,
+    oldLowHeatPans: List<KaoPan>,
+    activeIntent: SupplementBatchIntent?
+): Set<Int> {
+    val sourcePans = oldLowHeatPans
+        .filter { it.positionSn in 13..18 && it.isHasSausage }
+        .sortedBy { it.positionSn }
+    if (sourcePans.isEmpty()) {
+        return emptySet()
+    }
+
+    val sourceByPosition = sourcePans.associateBy { it.positionSn }
+    val committedSources = linkedSetOf<Int>()
+    activeIntent
+        ?.targets
+        ?.takeIf {
+            activeIntent.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
+        }
+        ?.forEach { target ->
+            val sourcePan = sourceByPosition[target.positionSn] ?: return@forEach
+            val returnPosition = target.returnPositionSn ?: return@forEach
+            val hasEmptyReturnTarget = frontPans.any {
+                it.positionSn == returnPosition &&
+                    it.positionSn in 1..9 &&
+                    !it.isHasSausage
+            }
+            if (hasEmptyReturnTarget) {
+                committedSources += sourcePan.positionSn
+            }
+        }
+
+    val remainingSources = sourcePans.filter { it.positionSn !in committedSources }
+    if (remainingSources.isEmpty()) {
+        return committedSources
+    }
+    val reservedCountByTaste = frontPans
+        .filter {
+            it.positionSn in 1..9 &&
+                !it.isHasSausage &&
+                it.isHasGrilling &&
+                !it.taste?.tasteCode.isNullOrBlank()
+        }
+        .groupingBy { it.taste.tasteCode }
+        .eachCount()
+        .toMutableMap()
+
+    remainingSources.forEach { sourcePan ->
+        val tasteCode = sourcePan.taste?.tasteCode?.takeIf { it.isNotBlank() } ?: return@forEach
+        val reservedCount = reservedCountByTaste[tasteCode] ?: 0
+        if (reservedCount <= 0) {
+            return@forEach
+        }
+        committedSources += sourcePan.positionSn
+        reservedCountByTaste[tasteCode] = reservedCount - 1
+    }
+    return committedSources
+}
+
+internal fun normalizeOldLowHeatWaitingSourcesForReturn(oldLowHeatPans: List<KaoPan>): List<Int> {
+    val normalizedPositions = mutableListOf<Int>()
+    oldLowHeatPans
+        .filter { pan ->
+            pan.positionSn in 13..18 &&
+                pan.isHasSausage &&
+                pan.status == 2 &&
+                pan.holdingTime > 0L &&
+                pan.startTime <= 0L
+        }
+        .forEach { pan ->
+            val reconstructedStartTime = if (pan.bakingTime > 0L) {
+                (pan.holdingTime - pan.bakingTime).coerceAtLeast(1L)
+            } else {
+                1L
+            }
+            pan.startTime = reconstructedStartTime
+            pan.holdingTime = 0L
+            pan.status = 1
+            normalizedPositions += pan.positionSn
+        }
+    return normalizedPositions.sorted()
+}
+
+internal fun clearReturnedOldLowHeatSourceMetadata(sourcePan: KaoPan) {
+    if (sourcePan.positionSn !in 13..18 || sourcePan.isHasSausage) {
+        return
+    }
+    sourcePan.isHasGrilling = false
+    sourcePan.taste = null
+}
+
+internal fun selectOldLowHeatReturnTarget(
+    sourcePan: KaoPan,
+    frontPans: List<KaoPan>,
+    activeIntent: SupplementBatchIntent?
+): KaoPan? {
+    val intentTarget = activeIntent
+        ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
+        ?.targets
+        ?.firstOrNull { it.positionSn == sourcePan.positionSn && it.returnPositionSn in 1..9 }
+    val tasteCode = sourcePan.taste?.tasteCode?.takeIf { it.isNotBlank() }
+        ?: intentTarget?.tasteCode?.takeIf { it.isNotBlank() }
+        ?: return null
+    val specifiedTarget = intentTarget?.returnPositionSn?.let { returnPosition ->
+        frontPans.firstOrNull {
+            it.positionSn == returnPosition &&
+                it.positionSn in 1..9 &&
+                !it.isHasSausage
+        }
+    }
+    if (specifiedTarget != null) {
+        restoreOldLowHeatReturnReservation(
+            specifiedTarget,
+            intentTarget.tasteCode?.takeIf { it.isNotBlank() } ?: tasteCode
+        )
+        return specifiedTarget
+    }
+
+    return frontPans
+        .filter {
+            it.positionSn in 1..9 &&
+                !it.isHasSausage &&
+                it.isHasGrilling &&
+                it.taste?.tasteCode == tasteCode
+        }
+        .minByOrNull { it.positionSn }
+}
+
+internal fun shouldDiscardWaitingOldLowHeatSource(
+    pan: KaoPan,
+    config: AppConfigBean,
+    nowMs: Long
+): Boolean {
+    if (!pan.isHasSausage || pan.positionSn !in 13..18 || pan.startTime <= 0L) {
+        return false
+    }
+    if (pan.bakingTime <= 0L || pan.closeTime <= 0L) {
+        return false
+    }
+    val elapsed = FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs)
+    return elapsed >= pan.bakingTime + pan.closeTime
+}
+
+private fun restoreOldLowHeatReturnReservation(
+    frontPan: KaoPan,
+    tasteCode: String?
+) {
+    frontPan.isHasGrilling = true
+    val normalizedTasteCode = tasteCode?.takeIf { it.isNotBlank() } ?: return
+    if (frontPan.taste?.tasteCode != normalizedTasteCode) {
+        frontPan.taste = Taste(normalizedTasteCode)
+    }
 }
 
 internal fun hasHighHeatReturnStartedAndUncleared(

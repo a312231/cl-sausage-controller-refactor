@@ -464,6 +464,17 @@ object HighCurrentTrafficMode {
             return
         }
 
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val protectedOldLowHeatReturnPositions = collectProtectedOldLowHeatReturnPositions(
+            frontPans = TrafficModeHelper.getTrafficModePositions(1, 9, list),
+            oldLowHeatPans = list13_18,
+            activeIntent = activeIntent
+        )
+        val committedOldLowHeatSourcePositions = collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
+            frontPans = TrafficModeHelper.getTrafficModePositions(1, 9, list),
+            oldLowHeatPans = list13_18,
+            activeIntent = activeIntent
+        )
         val hasIncompleteHighHeatBatch = HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)
         if (
             shouldResumeIncompleteHighHeatBatch(pitCount = pitCount, hasIncompleteBatch = hasIncompleteHighHeatBatch) &&
@@ -482,14 +493,20 @@ object HighCurrentTrafficMode {
             val plannedTargets = HighHeatSupplementResumePlanner.planInitialTargets(
                 frontPans = list1_21,
                 supplementGroup = list25_33,
-                listBox = listBox
+                listBox = listBox,
+                excludedReturnPositions = protectedOldLowHeatReturnPositions,
+                committedFutureReturnPositions = committedOldLowHeatSourcePositions.toList()
             )
             val availableStockByTaste = listBox
                 .filter { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
                 .groupBy { it.tasteCode.orEmpty() }
                 .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
             val targets = plannedTargets.map { target ->
-                KaoChangOperate.SupplementTarget(target.kaoPan, target.tasteCode)
+                KaoChangOperate.SupplementTarget(
+                    target.kaoPan,
+                    target.tasteCode,
+                    returnPositionSn = target.returnPositionSn
+                )
             }
             if (targets.isEmpty()) {
                 LogUtils.w(
@@ -523,8 +540,11 @@ object HighCurrentTrafficMode {
                     TAG,
                     "【并发切换】低转高过渡：已向 25~33 启动高并发补肠，batchResult=$batchResultText，" +
                         "frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste，" +
+                        "protectedOldLowHeatReturnPositions=$protectedOldLowHeatReturnPositions，" +
+                        "committedOldLowHeatSourcePositions=$committedOldLowHeatSourcePositions，" +
                         "requestedTargetCount=${targets.size}，actualMovedCount=$movedCount，" +
                         "partialBatch=$partialBatch，targetPositions=${targets.map { it.kaoPan.positionSn }}，" +
+                        "returnPositions=${targets.map { it.returnPositionSn }}，" +
                         "lastFillPitTime=$lastFillPitTime"
                 )
             } else {
@@ -532,6 +552,8 @@ object HighCurrentTrafficMode {
                     TAG,
                     "【并发切换】低转高过渡：尝试向 25~33 启动高并发补肠，但本次未成功移动烤肠，" +
                         "frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste，" +
+                        "protectedOldLowHeatReturnPositions=$protectedOldLowHeatReturnPositions，" +
+                        "committedOldLowHeatSourcePositions=$committedOldLowHeatSourcePositions，" +
                         "requestedTargetCount=${targets.size}，targetPositions=${targets.map { it.kaoPan.positionSn }}"
                 )
             }
@@ -546,7 +568,14 @@ object HighCurrentTrafficMode {
                 oldLowHeatPans = list13_18,
                 nowMs = System.currentTimeMillis()
             ).forEach { group ->
-                moveFinishedOldLowHeatGroupToFront(list, group.start, group.end, group.groupName)
+                moveFinishedOldLowHeatGroupToFront(
+                    list = list,
+                    activeIntent = activeIntent,
+                    config = config,
+                    start = group.start,
+                    end = group.end,
+                    groupName = group.groupName
+                )
             }
         } else if (schedulingEnabled && highHeatReturnStartedAndUncleared) {
             LogUtils.i(
@@ -643,6 +672,8 @@ object HighCurrentTrafficMode {
      */
     private suspend fun moveFinishedOldLowHeatGroupToFront(
         list: List<KaoPan>,
+        activeIntent: SupplementBatchIntent?,
+        config: AppConfigBean,
         start: Int,
         end: Int,
         groupName: String
@@ -666,21 +697,45 @@ object HighCurrentTrafficMode {
         }
 
         val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
-        KaoChangOperate.keepWarm(1)
-        LogUtils.i(TAG, "【并发切换】低转高过渡：$groupName 旧补热区已烤熟，开始搬回 1~9 前区保温可售")
+        val normalizedLegacySellableSources = normalizeOldLowHeatWaitingSourcesForReturn(sourcePans)
+        if (normalizedLegacySellableSources.isNotEmpty()) {
+            LogUtils.w(
+                TAG,
+                "【并发切换】低转高过渡：发现 $groupName 旧补热区历史原地保温可售状态，已恢复为等待回搬不可售，" +
+                    "positions=$normalizedLegacySellableSources"
+            )
+        }
+        KaoChangOperate.keepWarm(2)
+        LogUtils.i(TAG, "【并发切换】低转高过渡：$groupName 旧补热区已烤熟，2区硬件保温等待搬回 1~9；本地不标可售")
+        val frontPans = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         sourcePans.forEach { kaoPan ->
             val tasteCode = kaoPan.taste?.tasteCode
-            val targetPan = TrafficModeHelper.selectFrontTargetPan(
-                TrafficModeHelper.getTrafficModePositions(1, 9, list),
-                tasteCode,
-                requireReserved = true
+            val targetPan = selectOldLowHeatReturnTarget(
+                sourcePan = kaoPan,
+                frontPans = frontPans,
+                activeIntent = activeIntent
             )
             if (targetPan == null) {
-                LogUtils.w(
-                    TAG,
-                    "【并发切换】低转高过渡：$groupName 旧补热区搬回失败，未找到 1~9 同口味预留空位，" +
-                        "sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，sourceStartTime=${kaoPan.startTime}"
-                )
+                if (shouldDiscardWaitingOldLowHeatSource(kaoPan, config, now)) {
+                    LogUtils.w(
+                        TAG,
+                        "【并发切换】低转高过渡：$groupName 旧补热区等待回搬已超过丢弃窗口，执行丢弃，" +
+                            "sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，sourceStartTime=${kaoPan.startTime}，" +
+                            "bakingTime=${kaoPan.bakingTime}，closeTime=${kaoPan.closeTime}"
+                    )
+                    KaoChangOperate.discardSausage(
+                        kaoPan,
+                        source = "低转高旧补热区等待回搬超时",
+                        detail = "group=$groupName，tasteCode=$tasteCode，bakingElapsed=${FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, config, now)}ms，" +
+                            "bakingTime=${kaoPan.bakingTime}ms，closeTime=${kaoPan.closeTime}ms"
+                    )
+                } else {
+                    LogUtils.w(
+                        TAG,
+                        "【并发切换】低转高过渡：$groupName 旧补热区已熟但暂未找到 1~9 既定回补空位，保持2区硬件保温等待，" +
+                            "sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，sourceStartTime=${kaoPan.startTime}"
+                    )
+                }
                 return@forEach
             }
             val moved = KaoChangOperate.moveKaoPanToKaoPan(
@@ -694,6 +749,8 @@ object HighCurrentTrafficMode {
                     "【并发切换】低转高过渡：$groupName 旧补热区搬回失败，" +
                         "sourcePan=${kaoPan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode"
                 )
+            } else {
+                clearReturnedOldLowHeatSourceMetadata(kaoPan)
             }
         }
         KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
@@ -916,23 +973,25 @@ object HighCurrentTrafficMode {
         val emptyPositions = list1_21.filter { !it.isHasSausage }
         val emptyPositions25_33 = list25_33.filter { !it.isHasSausage }
         if (emptyPositions.size >= 9 && emptyPositions25_33.size >= 9) {
-            KaoChangOperate.heating(3)
-            val neededTastes = emptyPositions.take(9).mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
-            if (neededTastes.size < 9) {
+            val plannedTargets = HighHeatSupplementResumePlanner.planInitialTargets(
+                frontPans = list1_21,
+                supplementGroup = list25_33,
+                listBox = listBox
+            )
+            if (plannedTargets.isEmpty()) {
                 LogUtils.w(
                     TAG,
-                    "【高并发补肠】跳过 25~33 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}"
+                    "【高并发补肠】跳过 25~33 补热区补肠：当前无可执行补肠目标，frontEmpty=${emptyPositions.size}，zone3Empty=${emptyPositions25_33.size}"
                 )
                 return 0
             }
-            val targets = neededTastes.mapIndexedNotNull { index, tasteCode ->
-                if (index < emptyPositions25_33.size) {
-                    val targetPosition = emptyPositions25_33[index]
-                    targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
-                    KaoChangOperate.SupplementTarget(targetPosition, tasteCode)
-                } else {
-                    null
-                }
+            KaoChangOperate.heating(3)
+            val targets = plannedTargets.map { target ->
+                KaoChangOperate.SupplementTarget(
+                    target.kaoPan,
+                    target.tasteCode,
+                    returnPositionSn = target.returnPositionSn
+                )
             }
             val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
                 targets,

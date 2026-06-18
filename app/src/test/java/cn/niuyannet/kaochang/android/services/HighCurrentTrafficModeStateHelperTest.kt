@@ -488,6 +488,186 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun collectProtectedOldLowHeatReturnPositions_shouldUseActiveIntentReturnPositionsAndRestoreFrontReservation() {
+        val frontPans = (1..9).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+                isHasGrilling = false
+                taste = null
+            }
+        }
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 1_000L, holdingTime = 0L, status = 1)
+        )
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 13, tasteCode = "A", returnPositionSn = 2, completed = true)
+            )
+        )
+
+        val protected = collectProtectedOldLowHeatReturnPositions(
+            frontPans = frontPans,
+            oldLowHeatPans = oldLowHeatPans,
+            activeIntent = intent
+        )
+
+        val protectedPan = frontPans.first { it.positionSn == 2 }
+        assertEquals(setOf(2), protected)
+        assertTrue(protectedPan.isHasGrilling)
+        assertEquals("A", protectedPan.taste.tasteCode)
+    }
+
+    @Test
+    fun collectProtectedOldLowHeatReturnPositions_shouldProtectActiveIntentTargetBeforeSourceIsPlaced() {
+        val frontPans = (1..9).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+                isHasGrilling = false
+                taste = null
+            }
+        }
+        val oldLowHeatPans = (13..18).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+            }
+        }
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 13, tasteCode = "A", returnPositionSn = 2, completed = false)
+            )
+        )
+
+        val protected = collectProtectedOldLowHeatReturnPositions(
+            frontPans = frontPans,
+            oldLowHeatPans = oldLowHeatPans,
+            activeIntent = intent
+        )
+
+        val protectedPan = frontPans.first { it.positionSn == 2 }
+        assertEquals(setOf(2), protected)
+        assertTrue(protectedPan.isHasGrilling)
+        assertEquals("A", protectedPan.taste.tasteCode)
+    }
+
+    @Test
+    fun collectProtectedOldLowHeatReturnPositions_shouldFallbackToExistingReservedFrontWithMatchingSource() {
+        val frontPans = frontPansWithReservedTarget(position = 3, tasteCode = "A")
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 1_000L, holdingTime = 0L, status = 1)
+        )
+
+        val protected = collectProtectedOldLowHeatReturnPositions(
+            frontPans = frontPans,
+            oldLowHeatPans = oldLowHeatPans,
+            activeIntent = null
+        )
+
+        assertEquals(setOf(3), protected)
+    }
+
+    @Test
+    fun selectOldLowHeatReturnTarget_shouldPreferIntentSpecifiedEmptyFrontPanAndRestoreReservation() {
+        val frontPans = (1..9).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+                isHasGrilling = position == 1
+                taste = if (position == 1) Taste("A") else null
+            }
+        }
+        val sourcePan = oldLowHeatPan(position = 13, tasteCode = "A", startTime = 1_000L, holdingTime = 0L, status = 1)
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 13, tasteCode = "A", returnPositionSn = 4, completed = true)
+            )
+        )
+
+        val selected = selectOldLowHeatReturnTarget(
+            sourcePan = sourcePan,
+            frontPans = frontPans,
+            activeIntent = intent
+        )
+
+        assertEquals(4, selected?.positionSn)
+        assertTrue(selected!!.isHasGrilling)
+        assertEquals("A", selected.taste.tasteCode)
+    }
+
+    @Test
+    fun normalizeOldLowHeatWaitingSourcesForReturn_shouldConvertLegacyKeepWarmStateBackToNonSellableWaiting() {
+        val legacyPan = oldLowHeatPan(
+            position = 13,
+            tasteCode = "A",
+            startTime = 0L,
+            holdingTime = 9_000L,
+            status = 2
+        ).apply {
+            bakingTime = 8_000L
+        }
+
+        val normalized = normalizeOldLowHeatWaitingSourcesForReturn(listOf(legacyPan))
+
+        assertEquals(listOf(13), normalized)
+        assertEquals(1, legacyPan.status)
+        assertEquals(1_000L, legacyPan.startTime)
+        assertEquals(0L, legacyPan.holdingTime)
+    }
+
+    @Test
+    fun clearReturnedOldLowHeatSourceMetadata_shouldMakeReturnedSourceAvailableAsBlankHighFrontSlot() {
+        val sourcePan = oldLowHeatPan(
+            position = 13,
+            tasteCode = "A",
+            startTime = 0L,
+            holdingTime = 0L,
+            status = 0
+        ).apply {
+            isHasSausage = false
+            isHasGrilling = true
+        }
+
+        clearReturnedOldLowHeatSourceMetadata(sourcePan)
+
+        assertEquals(null, sourcePan.taste)
+        assertFalse(sourcePan.isHasGrilling)
+    }
+
+    @Test
+    fun shouldDiscardWaitingOldLowHeatSource_shouldTriggerAfterBakingAndCloseTimeElapsed() {
+        val pan = oldLowHeatPan(
+            position = 13,
+            tasteCode = "A",
+            startTime = 1_000L,
+            holdingTime = 0L,
+            status = 1
+        ).apply {
+            bakingTime = 8_000L
+            closeTime = 2_000L
+        }
+
+        assertFalse(
+            shouldDiscardWaitingOldLowHeatSource(
+                pan = pan,
+                config = AppConfigBean(),
+                nowMs = 10_999L
+            )
+        )
+        assertTrue(
+            shouldDiscardWaitingOldLowHeatSource(
+                pan = pan,
+                config = AppConfigBean(),
+                nowMs = 11_000L
+            )
+        )
+    }
+
+    @Test
     fun planOldLowHeatReturnGroups_shouldPrioritizeEarlierMaxStartTime() {
         val oldLowHeatPans =
             oldLowHeatBatch(13, 15, listOf(2_000L, 2_500L, 3_000L)) +

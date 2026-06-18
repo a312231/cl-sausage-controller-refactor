@@ -235,14 +235,17 @@
 
         <TextView
             android:id="@+id/tv_gly"
-            android:layout_width="wrap_content"
+            android:layout_width="96dp"
+            android:layout_height="64dp"
+            android:layout_alignParentTop="true"
             android:layout_alignParentRight="true"
-            android:textColor="@color/blue_200"
-            android:background="#0d000000"
-            android:padding="10dp"
-            android:text="管理员登录"
-            android:gravity="right"
-            android:layout_height="wrap_content"/>
+            android:layout_alignParentEnd="true"
+            android:background="@android:color/transparent"
+            android:gravity="center"
+            android:importantForAccessibility="no"
+            android:longClickable="true"
+            android:text=""
+            android:textColor="@android:color/transparent"/>
     </RelativeLayout>
 
     <!-- 加载中布局 -->
