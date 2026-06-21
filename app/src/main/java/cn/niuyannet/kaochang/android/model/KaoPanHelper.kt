@@ -6,6 +6,8 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
+import cn.niuyannet.kaochang.android.services.KaoPanAsyncSaveGeneration
+import cn.niuyannet.kaochang.android.services.KaoPanCacheInitPolicy
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -37,6 +39,7 @@ object KaoPanHelper {
     private const val KEY_TASTE_LIST = "key_taste_list" // 添加口味列表的键
     private const val DEFAULT_BAKING_TIME_MINUTES = 40
     private const val DEFAULT_DISCARD_TIME_HOURS = 6
+    private val kaoPanSaveGeneration = KaoPanAsyncSaveGeneration()
     /** 默认烤制时长，40 分钟。 */
     val bakingTime = 40 * 60 * 1000L
 
@@ -108,16 +111,37 @@ object KaoPanHelper {
      * 优先读取本地缓存；若本地还没有保存过，则按默认工位顺序生成 33 个烤盘并立即落盘。
      */
     fun init() {
+        if (kaoPanList.isNotEmpty()) {
+            return
+        }
         val savedKaoPanList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java)
-        if (!savedKaoPanList.isNullOrEmpty()) {
-            kaoPanList = savedKaoPanList.toMutableList()
+        val config = getAppConfig()
+        val bakingTimeMinutes = config.bakingTime.takeIf { it > 0 } ?: DEFAULT_BAKING_TIME_MINUTES
+        val discardTimeHours = config.discardTime.takeIf { it > 0 } ?: DEFAULT_DISCARD_TIME_HOURS
+        val defaultPans = if (savedKaoPanList.isNullOrEmpty()) {
+            createDefaultKaoPanList(bakingTimeMinutes, discardTimeHours)
         } else {
-            val config = getAppConfig()
-            val bakingTimeMinutes = config.bakingTime.takeIf { it > 0 } ?: DEFAULT_BAKING_TIME_MINUTES
-            val discardTimeHours = config.discardTime.takeIf { it > 0 } ?: DEFAULT_DISCARD_TIME_HOURS
-            kaoPanList = createDefaultKaoPanList(bakingTimeMinutes, discardTimeHours)
+            emptyList()
+        }
+        kaoPanList = KaoPanCacheInitPolicy.resolveInitialPans(
+            currentPans = kaoPanList,
+            storedPans = savedKaoPanList,
+            defaultPans = defaultPans
+        )
+        if (savedKaoPanList.isNullOrEmpty()) {
             saveKaoPanList(kaoPanList)
         }
+    }
+
+    fun resetKaoPanCacheAfterManualClear() {
+        kaoPanSaveGeneration.advance()
+        val config = getAppConfig()
+        val bakingTimeMinutes = config.bakingTime.takeIf { it > 0 } ?: DEFAULT_BAKING_TIME_MINUTES
+        val discardTimeHours = config.discardTime.takeIf { it > 0 } ?: DEFAULT_DISCARD_TIME_HOURS
+        kaoPanList = KaoPanCacheInitPolicy.resolveResetPansAfterManualClear(
+            createDefaultKaoPanList(bakingTimeMinutes, discardTimeHours)
+        )
+        saveKaoPanListSync(kaoPanList)
     }
 
     internal fun createDefaultKaoPanList(
@@ -251,8 +275,13 @@ object KaoPanHelper {
      * 保存烤盘列表
      */
     fun saveKaoPanList(list: List<KaoPan>) {
+        val capturedGeneration = kaoPanSaveGeneration.current()
         helperScope.launch {
-            saveKaoPanListSync(list)
+            if (kaoPanSaveGeneration.isCurrent(capturedGeneration)) {
+                saveKaoPanListSync(list)
+            } else {
+                LogUtils.w("跳过过期烤盘异步保存：保存任务 generation=$capturedGeneration，当前已清空重建")
+            }
         }
     }
 
@@ -565,6 +594,7 @@ object KaoPanHelper {
      */
     fun clearKaoPan() {
         PreferenceUtils.deletePreference(FILE_SP_URL,KEY_KAO_PAN_LIST)
+        resetKaoPanCacheAfterManualClear()
     }
 
     /**

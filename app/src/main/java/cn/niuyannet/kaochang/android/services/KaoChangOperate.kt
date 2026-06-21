@@ -1836,7 +1836,13 @@ object KaoChangOperate {
                 return
             }
 
-            applySuccessfulSupplementMove(move.kaoPan, box)
+            val appliedPan = applySuccessfulSupplementMove(move.kaoPan, box)
+            if (appliedPan == null) {
+                enterActionGroupMaintenance(
+                    "补肠预取流水线单根完成后找不到当前烤盘缓存对象，需人工确认：sourceBox=${completedTask.sourceBoxNo}，targetPan=${completedTask.targetPanNo}"
+                )
+                return
+            }
             appliedCompletedPanNos += completedTask.targetPanNo
             completedCount += 1
             supplementBatchIntentRepository.markCompleted(batchId, completedTask.targetPanNo)
@@ -1976,24 +1982,36 @@ object KaoChangOperate {
         return completedCount
     }
 
-    private fun applySuccessfulSupplementMove(kaoPan: KaoPan, kaoPanBox: KaoPanBox) {
+    private fun applySuccessfulSupplementMove(kaoPan: KaoPan, kaoPanBox: KaoPanBox): KaoPan? {
         val sausageName = getBoxTasteLabel(kaoPanBox)
         val boxStockBefore = kaoPanBox.num
+        val targetPan = SupplementPanStateWriter.resolveCurrentTargetPan(
+            plannedPan = kaoPan,
+            currentPans = KaoPanHelper.getKaoPanList()
+        )
+        if (targetPan == null) {
+            logE(
+                LOG_SUPPLEMENT,
+                "补肠预取流水线完成后无法回写当前烤盘缓存：targetPan=${kaoPan.positionSn}，sourceBox=${kaoPanBox.positionSn}"
+            )
+            return null
+        }
         applySuccessfulSupplementPanState(
-            kaoPan,
+            targetPan,
             kaoPanBox,
             "补肠预取流水线完成",
             config = AppConfig.getAppConfig()
         )
         logD(
             LOG_SUPPLEMENT,
-            "补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，口味=$sausageName，" +
-                "箱库存=$boxStockBefore->${kaoPanBox.num}，panStatus=${kaoPan.status}，startTime=${kaoPan.startTime}"
+            "补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${targetPan.positionSn}，口味=$sausageName，" +
+                "箱库存=$boxStockBefore->${kaoPanBox.num}，panStatus=${targetPan.status}，startTime=${targetPan.startTime}"
         )
         LogUtils.i(
-            "【补肠】烤盘${kaoPan.positionSn} 补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，" +
+            "【补肠】烤盘${targetPan.positionSn} 补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，" +
                 "口味=$sausageName，烤盘开始烤制计时，箱库存=$boxStockBefore->${kaoPanBox.num}"
         )
+        return targetPan
     }
 
     private data class PlannedPipelineSupplementMove(
