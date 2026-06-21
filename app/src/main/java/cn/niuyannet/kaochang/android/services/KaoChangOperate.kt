@@ -1812,6 +1812,7 @@ object KaoChangOperate {
 
         val taskByPanNo = plannedMoves.associateBy { it.task.targetPanNo }
         var completedCount = 0
+        val supplementWriteRecords = mutableListOf<SupplementWriteRecord>()
         val appliedCompletedPanNos = mutableSetOf<Int>()
         fun applyCompletedPipelineTask(completedTask: CompletedInActionGroupPipelineTask) {
             if (completedTask.targetPanNo in appliedCompletedPanNos) {
@@ -1836,13 +1837,14 @@ object KaoChangOperate {
                 return
             }
 
-            val appliedPan = applySuccessfulSupplementMove(move.kaoPan, box)
-            if (appliedPan == null) {
+            val appliedMove = applySuccessfulSupplementMove(move.kaoPan, box)
+            if (appliedMove == null) {
                 enterActionGroupMaintenance(
                     "补肠预取流水线单根完成后找不到当前烤盘缓存对象，需人工确认：sourceBox=${completedTask.sourceBoxNo}，targetPan=${completedTask.targetPanNo}"
                 )
                 return
             }
+            supplementWriteRecords += appliedMove.writeRecord
             appliedCompletedPanNos += completedTask.targetPanNo
             completedCount += 1
             supplementBatchIntentRepository.markCompleted(batchId, completedTask.targetPanNo)
@@ -1976,42 +1978,66 @@ object KaoChangOperate {
                 handlePipelineSupplementFailure(result, taskByPanNo, batchId)
             }
         }
+        verifySupplementConsistencyOrEnterMaintenance(
+            source = "补肠预取流水线",
+            expectedSuccessCount = completedCount,
+            records = supplementWriteRecords
+        )
         KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
         KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
 
         return completedCount
     }
 
-    private fun applySuccessfulSupplementMove(kaoPan: KaoPan, kaoPanBox: KaoPanBox): KaoPan? {
+    private data class AppliedSupplementMove(
+        val targetPan: KaoPan,
+        val sourceBox: KaoPanBox,
+        val writeRecord: SupplementWriteRecord
+    )
+
+    private fun applySuccessfulSupplementMove(kaoPan: KaoPan, kaoPanBox: KaoPanBox): AppliedSupplementMove? {
         val sausageName = getBoxTasteLabel(kaoPanBox)
-        val boxStockBefore = kaoPanBox.num
-        val targetPan = SupplementPanStateWriter.resolveCurrentTargetPan(
+        val currentState = SupplementPanStateWriter.resolveCurrentSupplementState(
             plannedPan = kaoPan,
-            currentPans = KaoPanHelper.getKaoPanList()
+            plannedBox = kaoPanBox,
+            currentPans = KaoPanHelper.getKaoPanList(),
+            currentBoxes = KaoPanHelper.getKaoPanBoxList()
         )
-        if (targetPan == null) {
+        if (currentState == null) {
             logE(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线完成后无法回写当前烤盘缓存：targetPan=${kaoPan.positionSn}，sourceBox=${kaoPanBox.positionSn}"
             )
             return null
         }
+        val targetPan = currentState.targetPan
+        val sourceBox = currentState.sourceBox
+        val boxStockBefore = sourceBox.num
         applySuccessfulSupplementPanState(
             targetPan,
-            kaoPanBox,
+            sourceBox,
             "补肠预取流水线完成",
             config = AppConfig.getAppConfig()
         )
         logD(
             LOG_SUPPLEMENT,
-            "补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${targetPan.positionSn}，口味=$sausageName，" +
-                "箱库存=$boxStockBefore->${kaoPanBox.num}，panStatus=${targetPan.status}，startTime=${targetPan.startTime}"
+            "补肠完成：来源烤肠箱=${sourceBox.positionSn}，目标烤盘=${targetPan.positionSn}，口味=$sausageName，" +
+                "箱库存=$boxStockBefore->${sourceBox.num}，panStatus=${targetPan.status}，startTime=${targetPan.startTime}"
         )
         LogUtils.i(
-            "【补肠】烤盘${targetPan.positionSn} 补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，" +
-                "口味=$sausageName，烤盘开始烤制计时，箱库存=$boxStockBefore->${kaoPanBox.num}"
+            "【补肠】烤盘${targetPan.positionSn} 补肠完成：来源烤肠箱=${sourceBox.positionSn}，" +
+                "口味=$sausageName，烤盘开始烤制计时，箱库存=$boxStockBefore->${sourceBox.num}"
         )
-        return targetPan
+        return AppliedSupplementMove(
+            targetPan = targetPan,
+            sourceBox = sourceBox,
+            writeRecord = SupplementWriteRecord(
+                targetPanNo = targetPan.positionSn,
+                sourceBoxNo = sourceBox.positionSn,
+                panApplied = targetPan.isHasSausage && targetPan.status == 1,
+                boxDeducted = boxStockBefore > 0 && sourceBox.num == boxStockBefore - 1
+            )
+        )
     }
 
     private data class PlannedPipelineSupplementMove(
@@ -2019,6 +2045,22 @@ object KaoChangOperate {
         val tasteCode: String?,
         val task: InActionGroupPipelineTask
     )
+
+    private fun verifySupplementConsistencyOrEnterMaintenance(
+        source: String,
+        expectedSuccessCount: Int,
+        records: List<SupplementWriteRecord>
+    ) {
+        val result = SupplementConsistencyChecker.evaluate(
+            expectedSuccessCount = expectedSuccessCount,
+            records = records
+        )
+        if (result.requiresMaintenance) {
+            enterActionGroupMaintenance("$source 盘箱状态自检失败，需人工确认：${result.message}")
+        } else {
+            logD(LOG_SUPPLEMENT, "$source 盘箱状态自检通过：${result.message}")
+        }
+    }
 
     private fun buildPipelineSupplementPlan(targets: List<SupplementTarget>): List<PlannedPipelineSupplementMove> {
         val reservedStock = KaoPanHelper.getKaoPanBoxList().associate { it.positionSn to it.num }.toMutableMap()
@@ -2333,19 +2375,43 @@ object KaoChangOperate {
                 "result=${actionGroupResultDesc(actionGroupResult)}"
         )
 
+        val supplementWriteRecords = mutableListOf<SupplementWriteRecord>()
+        var supplementStateApplied = false
         if (moveSuccess){
-            val cfg = applySuccessfulSupplementPanState(
-                kaoPan,
-                kaoPanBox,
-                "补肠动作组完成",
-                config = AppConfig.getAppConfig()
+            val currentState = SupplementPanStateWriter.resolveCurrentSupplementState(
+                plannedPan = kaoPan,
+                plannedBox = kaoPanBox,
+                currentPans = KaoPanHelper.getKaoPanList(),
+                currentBoxes = KaoPanHelper.getKaoPanBoxList()
             )
-            logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${kaoPan.id}")
-            logD(
-                LOG_SUPPLEMENT,
-                "补肠完成：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，口味=$sausageName，" +
-                    "箱库存=$boxStockBefore->${kaoPanBox.num}，panStatus=${kaoPan.status}，startTime=${kaoPan.startTime}"
-            )
+            if (currentState == null) {
+                enterActionGroupMaintenance(
+                    "补肠动作组完成后找不到当前盘箱缓存对象，需人工确认：sourceBox=${kaoPanBox.positionSn}，targetPan=${kaoPan.positionSn}"
+                )
+            } else {
+                val currentPan = currentState.targetPan
+                val currentBox = currentState.sourceBox
+                val currentBoxStockBefore = currentBox.num
+                val cfg = applySuccessfulSupplementPanState(
+                    currentPan,
+                    currentBox,
+                    "补肠动作组完成",
+                    config = AppConfig.getAppConfig()
+                )
+                supplementWriteRecords += SupplementWriteRecord(
+                    targetPanNo = currentPan.positionSn,
+                    sourceBoxNo = currentBox.positionSn,
+                    panApplied = currentPan.isHasSausage && currentPan.status == 1,
+                    boxDeducted = currentBoxStockBefore > 0 && currentBox.num == currentBoxStockBefore - 1
+                )
+                supplementStateApplied = true
+                logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${currentPan.id}")
+                logD(
+                    LOG_SUPPLEMENT,
+                    "补肠完成：来源烤肠箱=${currentBox.positionSn}，目标烤盘=${currentPan.positionSn}，口味=$sausageName，" +
+                        "箱库存=$currentBoxStockBefore->${currentBox.num}，panStatus=${currentPan.status}，startTime=${currentPan.startTime}"
+                )
+            }
         } else {
             logE(
                 LOG_SUPPLEMENT,
@@ -2365,6 +2431,13 @@ object KaoChangOperate {
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
         applyPendingActionGroupDisableIfIdle("补肠动作组会话收口")
+        if (moveSuccess && supplementStateApplied) {
+            verifySupplementConsistencyOrEnterMaintenance(
+                source = "补肠动作组",
+                expectedSuccessCount = 1,
+                records = supplementWriteRecords
+            )
+        }
 
         //更新烤肠箱的库存和烤盘的状态
         operateScope.launch {
@@ -2378,7 +2451,7 @@ object KaoChangOperate {
             delay(5000L)
             logD(LOG_SUPPLEMENT, "等待当前售卖结束后再补下一根烤肠")
         }
-        return moveSuccess
+        return moveSuccess && supplementStateApplied
     }
 
     /**

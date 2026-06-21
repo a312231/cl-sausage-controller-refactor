@@ -66,6 +66,82 @@ class SupplementPanStateWriterTest {
     }
 
     @Test
+    fun resolveCurrentSourceBox_shouldUseCurrentCacheObjectWhenPlannedBoxBecameOrphan() {
+        val oldPlannedBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+        val currentCacheBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+        val currentBoxes = listOf(currentCacheBox)
+
+        val resolved = SupplementPanStateWriter.resolveCurrentSourceBox(
+            plannedBox = oldPlannedBox,
+            currentBoxes = currentBoxes
+        )
+
+        assertSame(currentCacheBox, resolved)
+    }
+
+    @Test
+    fun resolvedCurrentState_shouldDeductCurrentCacheBoxInsteadOfOrphanPlannedBox() {
+        val orphanPlannedPan = pan(positionSn = 4, tasteCode = "B")
+        val currentCachePan = pan(positionSn = 4, tasteCode = "B")
+        val orphanPlannedBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+        val currentCacheBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+
+        val resolvedState = SupplementPanStateWriter.resolveCurrentSupplementState(
+            plannedPan = orphanPlannedPan,
+            plannedBox = orphanPlannedBox,
+            currentPans = listOf(currentCachePan),
+            currentBoxes = listOf(currentCacheBox)
+        )
+        requireNotNull(resolvedState)
+
+        KaoChangOperate.applySuccessfulSupplementPanState(
+            kaoPan = resolvedState.targetPan,
+            kaoPanBox = resolvedState.sourceBox,
+            demandGateReason = "单测",
+            nowMs = 12_345L,
+            clearPendingDiscard = false,
+            config = AppConfigBean().apply {
+                bakingTime = 40
+                discardTime = 6
+            },
+            tasteBuilder = { sourceBox, _ -> Taste(sourceBox.tasteCode) }
+        )
+
+        assertFalse(orphanPlannedPan.isHasSausage)
+        assertTrue(currentCachePan.isHasSausage)
+        assertEquals(6, orphanPlannedBox.num)
+        assertEquals(5, currentCacheBox.num)
+    }
+
+    @Test
+    fun consistencyCheck_shouldPassWhenSuccessfulPanAndBoxCountsMatch() {
+        val result = SupplementConsistencyChecker.evaluate(
+            expectedSuccessCount = 2,
+            records = listOf(
+                SupplementWriteRecord(targetPanNo = 1, sourceBoxNo = 21, panApplied = true, boxDeducted = true),
+                SupplementWriteRecord(targetPanNo = 2, sourceBoxNo = 22, panApplied = true, boxDeducted = true)
+            )
+        )
+
+        assertFalse(result.requiresMaintenance)
+    }
+
+    @Test
+    fun consistencyCheck_shouldDetectPanBoxDivergence() {
+        val result = SupplementConsistencyChecker.evaluate(
+            expectedSuccessCount = 2,
+            records = listOf(
+                SupplementWriteRecord(targetPanNo = 1, sourceBoxNo = 21, panApplied = true, boxDeducted = true),
+                SupplementWriteRecord(targetPanNo = 2, sourceBoxNo = 22, panApplied = true, boxDeducted = false)
+            )
+        )
+
+        assertTrue(result.requiresMaintenance)
+        assertTrue(result.message.contains("落盘成功数=2"))
+        assertTrue(result.message.contains("扣箱成功数=1"))
+    }
+
+    @Test
     fun shouldKeepExistingInMemoryPans_shouldPreserveObjectIdentityWhenCacheAlreadyLoaded() {
         val currentPan = pan(positionSn = 1, tasteCode = "A").apply {
             isHasSausage = true
@@ -117,5 +193,13 @@ class SupplementPanStateWriterTest {
             this.taste = tasteCode?.let { Taste(it) }
             this.isHasSausage = false
             this.status = 0
+        }
+
+    private fun box(positionSn: Int, stock: Int, tasteCode: String): KaoPanBox =
+        KaoPanBox().apply {
+            this.positionSn = positionSn
+            this.num = stock
+            this.tasteCode = tasteCode
+            this.tasteName = "测试肠"
         }
 }
