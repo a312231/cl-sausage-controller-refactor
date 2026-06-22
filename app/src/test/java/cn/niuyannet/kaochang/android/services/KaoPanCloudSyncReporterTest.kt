@@ -66,6 +66,38 @@ class KaoPanCloudSyncReporterTest {
         assertEquals(1, uploadCount)
     }
 
+    @Test
+    fun uploadIfSellableStateChanged_shouldUseSnapshotToAvoidLivePanAlias() {
+        val source = sellablePan(1, "A")
+        val target = KaoPan().apply {
+            positionSn = 11
+            isHasSausage = false
+            status = 0
+            holdingTime = 0L
+        }
+        val livePans = listOf(source, target)
+        val beforeSnapshot = KaoPanCloudSyncReporter.captureSellableSnapshot(livePans)
+
+        target.isHasSausage = true
+        target.status = 2
+        target.holdingTime = source.holdingTime
+        target.taste = source.taste
+        source.isHasSausage = false
+        source.status = 0
+        source.holdingTime = 0L
+
+        var uploadCount = 0
+        KaoPanCloudSyncReporter.withUploaderForTest({ uploadCount++ }) {
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSnapshot,
+                livePans,
+                "测试活对象别名"
+            )
+        }
+
+        assertEquals(1, uploadCount)
+    }
+
     private fun sellablePan(positionSn: Int, tasteCode: String): KaoPan =
         KaoPan().apply {
             this.positionSn = positionSn

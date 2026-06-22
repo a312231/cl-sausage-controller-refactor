@@ -2471,28 +2471,63 @@ object KaoChangOperate {
         kaoPan: KaoPan,
         newKaoPan: KaoPan,
         targetHoldingTime: Long = kaoPan.holdingTime
-    ):Boolean  {
+    ): Boolean {
+        return moveKaoPanToKaoPanInternal(
+            kaoPan = kaoPan,
+            newKaoPan = newKaoPan,
+            targetHoldingTime = targetHoldingTime,
+            requireAutoDispatchGate = true,
+            operationReason = "自动调度",
+            ownerPrefix = "legacy_move"
+        )
+    }
+
+    suspend fun moveKaoPanToKaoPanManual(
+        kaoPan: KaoPan,
+        newKaoPan: KaoPan,
+        targetHoldingTime: Long = kaoPan.holdingTime
+    ): Boolean {
+        return moveKaoPanToKaoPanInternal(
+            kaoPan = kaoPan,
+            newKaoPan = newKaoPan,
+            targetHoldingTime = targetHoldingTime,
+            requireAutoDispatchGate = false,
+            operationReason = "维护页手动搬盘",
+            ownerPrefix = "manual_move"
+        )
+    }
+
+    private suspend fun moveKaoPanToKaoPanInternal(
+        kaoPan: KaoPan,
+        newKaoPan: KaoPan,
+        targetHoldingTime: Long,
+        requireAutoDispatchGate: Boolean,
+        operationReason: String,
+        ownerPrefix: String
+    ): Boolean {
         val sourcePosition = kaoPan.positionSn
         val targetPosition = newKaoPan.positionSn
         if (sourcePosition==targetPosition){
             return true
         }
 
-        val dispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
-            onlineStatus = AppConfig.getAppConfig().onlineStatus,
-            errorStatus = AppConfig.getAppConfig().errorStatus,
-            inspectionMode = AppConfig.getAppConfig().inspectionMode,
-            moveStatus = AppConfig.getAppConfig().moveStatus
-        )
-        if (!dispatchDecision.canStart) {
-            logD(
-                LOG_PAN_MOVE,
-                "跳过本轮自动搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，reason=${dispatchDecision.reason}"
+        if (requireAutoDispatchGate) {
+            val dispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
+                onlineStatus = AppConfig.getAppConfig().onlineStatus,
+                errorStatus = AppConfig.getAppConfig().errorStatus,
+                inspectionMode = AppConfig.getAppConfig().inspectionMode,
+                moveStatus = AppConfig.getAppConfig().moveStatus
             )
-            return false
+            if (!dispatchDecision.canStart) {
+                logD(
+                    LOG_PAN_MOVE,
+                    "跳过本轮自动搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，reason=${dispatchDecision.reason}"
+                )
+                return false
+            }
         }
 
-        val owner = "legacy_move:$sourcePosition->$targetPosition:${System.currentTimeMillis()}"
+        val owner = "$ownerPrefix:$sourcePosition->$targetPosition:${System.currentTimeMillis()}"
         val lockMask = ResourceMask.lift or ResourceMask.above
         if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
             logW(
@@ -2513,7 +2548,7 @@ object KaoChangOperate {
             AppConfig.getAppConfig().moveStatus = 3
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             LogUtils.i(
-                "【搬盘】开始搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=自动调度"
+                "【搬盘】开始搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=$operationReason"
             )
             logD(
                 LOG_PAN_MOVE,
