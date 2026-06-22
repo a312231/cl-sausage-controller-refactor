@@ -23,6 +23,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.services.BoxRefillEligibilityPolicy
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
@@ -410,6 +411,17 @@ class MaintenanceBoxFragment : Fragment() {
                     detail = "拒绝原因=未选择烤肠箱"
                 )
                 ToastUtils.showShort("请先选择需要加满的烤肠箱")
+                return@setOnClickListener
+            }
+            val refillDecision = BoxRefillEligibilityPolicy.evaluate(selectedBoxes)
+            if (!refillDecision.allowed) {
+                AdminOperationLogger.w(
+                    action = "加满烤肠箱",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "拒绝原因=禁用箱位不允许加肠，烤肠箱位=${boxPositionListText(selectedBoxes)}，禁用箱位=${refillDecision.disabledBoxNos.joinToString("、")}"
+                )
+                ToastUtils.showShort(refillDecision.message)
                 return@setOnClickListener
             }
             refreshCatalogThenShowTasteSelectDialog(selectedBoxes)
