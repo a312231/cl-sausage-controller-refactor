@@ -67,6 +67,7 @@ object KaoChangAlgorithm {
     private var lastPollStateSnapshot: String? = null
     private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
+    private var lastFaultHeatDiagnosticLogKey: String? = null
     var isEnabled = false
 
     private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
@@ -121,6 +122,64 @@ object KaoChangAlgorithm {
         0 -> "0（关闭）"
         1 -> "1（开启）"
         else -> "$value（未知）"
+    }
+
+    private fun businessTimeText(value: BusinessTime?): String {
+        if (value == null) {
+            return "null"
+        }
+        val defaultRange = value.defaultTime?.joinToString(prefix = "[", postfix = "]") ?: "null"
+        val customRange = value.customTimes
+            ?.joinToString(prefix = "[", postfix = "]") { item ->
+                "day=${item.day},enabled=${item.enabled},range=${item.timeRange}"
+            }
+            ?: "null"
+        return "mode=${value.mode ?: "null"},defaultTime=$defaultRange,customTimes=$customRange"
+    }
+
+    private fun faultHeatDiagnosticText(
+        config: AppConfigBean,
+        currentTime: String,
+        isWithinBusinessHours: Boolean
+    ): String =
+        "currentTime=$currentTime，" +
+            "isWithinBusinessHours=$isWithinBusinessHours，" +
+            "businessTime=${businessTimeText(config.businessTime)}，" +
+            "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+            "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}，" +
+            "errorCode=${config.errorCode ?: "null"}，" +
+            "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}，" +
+            "moveStatus（机械动作状态）=${moveStatusText(config.moveStatus)}，" +
+            "isRunning（算法轮询是否运行）=$isRunning，" +
+            "faultHeatingStopped（故障停热守卫）=$faultHeatingStopped"
+
+    private fun logFaultHeatDiagnosticOnce(
+        stage: String,
+        config: AppConfigBean,
+        currentTime: String,
+        isWithinBusinessHours: Boolean
+    ) {
+        val logKey = listOf(
+            stage,
+            isWithinBusinessHours,
+            businessTimeText(config.businessTime),
+            config.onlineStatus,
+            config.errorStatus,
+            config.errorCode ?: "null",
+            config.isEnable,
+            config.moveStatus,
+            isRunning,
+            faultHeatingStopped
+        ).joinToString("|")
+        if (lastFaultHeatDiagnosticLogKey == logKey) {
+            return
+        }
+        lastFaultHeatDiagnosticLogKey = logKey
+        logW(
+            LOG_DEVICE,
+            "【故障停热诊断】stage=$stage，" +
+                faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
+        )
     }
 
     private fun residualDrainText(value: Int): String = when (value) {
@@ -649,6 +708,8 @@ object KaoChangAlgorithm {
         reason: String,
         forceStopHeating: Boolean = false
     ) {
+        val currentTime = getCurrentTime()
+        val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
         val previousOnlineStatus = config.onlineStatus
         val previousIsEnable = config.isEnable
         if (config.onlineStatus != 3) {
@@ -666,7 +727,8 @@ object KaoChangAlgorithm {
             "设备故障态收口：reason=$reason，" +
                 "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
                 "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
-                "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}"
+                "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}，" +
+                faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
         )
         HomeUiRefreshBridge.requestRefresh("algorithm_fault:$reason")
     }
@@ -682,8 +744,10 @@ object KaoChangAlgorithm {
         if (config.businessTime == null) {
             logW(LOG_ALGORITHM, "【营业时间】营业时间配置为空（businessTime=null），算法按非营业时间处理，设备将不会运营。请检查后台是否已配置营业时间")
         }
-        val isWithinBusinessHours = isWithinBusinessHours(getCurrentTime(), config.businessTime)
+        val currentTime = getCurrentTime()
+        val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
         if (!isWithinBusinessHours) {
+            logFaultHeatDiagnosticOnce("not_within_business_hours_before_return", config, currentTime, isWithinBusinessHours)
             // 只有运营中（1）才需要执行停业收尾切换到休息中（2）；
             // 待投运/维护中等后台管理员设置的状态，不触发自动切换
             if (onlineStatus == 1) {
@@ -702,6 +766,7 @@ object KaoChangAlgorithm {
         }
 
         if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
+            logFaultHeatDiagnosticOnce("error_status_before_fault_stop", config, currentTime, isWithinBusinessHours)
             stopHeatingAndDispatchForFault(config, "算法轮询检测到设备故障")
             SendServerHelper.publishServiceUpdateStatus()
             return
