@@ -612,10 +612,6 @@ object KaoPanHelper {
             .mapValues { (_, items) -> items.sumOf { it.num } }
         logAutoSupplementRatioEffectiveStock("computeKaoPamRatio", flavorTypes2)
 
-        // 2. 检查是否可分配
-        if (flavorTypes2.size > list_size) {
-            LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
-        }
         if (list_size <= 0 || flavorTypes2.isEmpty()) {
             logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, emptyMap())
             return mutableMapOf()
@@ -627,10 +623,8 @@ object KaoPanHelper {
             return mutableMapOf()
         }
 
-        // 3. 计算比例并排序
-        val sortedFlavors = flavorTypes2.map { (flavor, count) ->
-            flavor to count / totalCount
-        }.sortedByDescending { (_, ratio) -> ratio }
+        // 3. 计算比例并排序；口味数超过目标工位数时，只保留库存最多的前 N 个口味。
+        val sortedFlavors = selectAssignableFlavors("computeKaoPamRatio", flavorTypes2, list_size, totalCount)
 
         // 4. 按比例计算“理论分配值”
         val rawAllocations = sortedFlavors.associate { (flavor, ratio) ->
@@ -669,7 +663,10 @@ object KaoPanHelper {
 
             var idx = 0
             while (currentSum > list_size) {
-                val flavor = sortedByCount[idx % sortedByCount.size]
+                if (idx >= sortedByCount.size) {
+                    break
+                }
+                val flavor = sortedByCount[idx]
                 if (allocation[flavor]!! > 1) {
                     allocation[flavor] = allocation[flavor]!! - 1
                     currentSum--
@@ -697,9 +694,9 @@ object KaoPanHelper {
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
 
-        // 2. 检查是否可分配
+        // 2. 旧算法不再用于实际初始化；保留给历史对比，不在这里输出业务告警。
         if (flavorTypes2.size > list_size) {
-            LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
+            return mutableMapOf()
         }
         if (list_size <= 0 || flavorTypes2.isEmpty()) {
             return mutableMapOf()
@@ -766,10 +763,6 @@ object KaoPanHelper {
             .mapValues { (_, items) -> items.sumOf { it.num } }
         logAutoSupplementRatioEffectiveStock("computeHighKaoPamRatio", flavorTypes2)
 
-        // 2. 检查是否可分配
-        if (flavorTypes2.size > list_size) {
-            LogUtils.d("KaoChangAlgorithm", "口味类型数量大于工位数分配失败！")
-        }
         if (list_size <= 0 || flavorTypes2.isEmpty()) {
             logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, emptyMap())
             return mutableMapOf()
@@ -781,10 +774,8 @@ object KaoPanHelper {
             return mutableMapOf()
         }
 
-        // 3. 计算比例并排序
-        val sortedFlavors = flavorTypes2.map { (flavor, count) ->
-            flavor to count / totalCount
-        }.sortedByDescending { (_, ratio) -> ratio }
+        // 3. 计算比例并排序；口味数超过目标工位数时，只保留库存最多的前 N 个口味。
+        val sortedFlavors = selectAssignableFlavors("computeHighKaoPamRatio", flavorTypes2, list_size, totalCount)
 
         // 4. 初始化每个口味
         val allocation = mutableMapOf<String, Int>()
@@ -816,6 +807,25 @@ object KaoPanHelper {
 
         logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, allocation)
         return allocation
+    }
+
+    private fun selectAssignableFlavors(
+        source: String,
+        stockByTaste: Map<String, Int>,
+        targetPanCount: Int,
+        totalCount: Float
+    ): List<Pair<String, Float>> {
+        val sortedByStock = stockByTaste.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+        if (sortedByStock.size > targetPanCount) {
+            val dropped = sortedByStock
+                .drop(targetPanCount)
+                .joinToString(",") { "${it.key}=${it.value}" }
+            safeLogInfo("【补肠】可用口味数超过目标烤盘数，按库存从高到低取前${targetPanCount}种：source=$source，被暂不分配口味=$dropped")
+        }
+        return sortedByStock
+            .take(targetPanCount)
+            .map { it.key to it.value / totalCount }
     }
 
     private fun logAutoSupplementRatioInput(

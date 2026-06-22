@@ -65,6 +65,22 @@ class KaoPanHelperRatioTest {
     }
 
     @Test
+    fun computeKaoPamRatio_shouldCapAllocationWhenTasteCountExceedsTargetPanCount() {
+        val boxes = listOf(
+            box(positionSn = 2, tasteCode = "A", num = 10),
+            box(positionSn = 3, tasteCode = "B", num = 9),
+            box(positionSn = 4, tasteCode = "C", num = 8),
+            box(positionSn = 5, tasteCode = "S", num = 7)
+        )
+
+        val allocation = KaoPanHelper.computeKaoPamRatio(boxes, 3)
+
+        assertEquals(3, allocation.values.sum())
+        assertEquals(setOf("A", "B", "C"), allocation.keys)
+        assertFalse(allocation.containsKey("S"))
+    }
+
+    @Test
     fun supplyBoxAutoSupplementExclusionReasons_shouldExplainEveryFilterCondition() {
         val emptyBox = box(positionSn = 2, tasteCode = "A", num = 0)
         val blankTasteBox = box(positionSn = 2, tasteCode = "", num = 8)
@@ -95,6 +111,22 @@ class KaoPanHelperRatioTest {
 
         assertFalse(allocation.containsKey("A"))
         assertEquals(6, allocation["B"])
+    }
+
+    @Test
+    fun computeHighKaoPamRatio_shouldCapAllocationWhenTasteCountExceedsTargetPanCount() {
+        val boxes = listOf(
+            box(positionSn = 2, tasteCode = "A", num = 10),
+            box(positionSn = 3, tasteCode = "B", num = 9),
+            box(positionSn = 4, tasteCode = "C", num = 8),
+            box(positionSn = 5, tasteCode = "S", num = 7)
+        )
+
+        val allocation = KaoPanHelper.computeHighKaoPamRatio(boxes, 3)
+
+        assertEquals(3, allocation.values.sum())
+        assertEquals(setOf("A", "B", "C"), allocation.keys)
+        assertFalse(allocation.containsKey("S"))
     }
 
     @Test
