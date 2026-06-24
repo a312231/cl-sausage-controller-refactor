@@ -133,6 +133,14 @@ class TestFragment : Fragment() {
             executePanMoveCommandFromTestPage()
         }
 
+        binding.btnClearLowerBoardRegisters.setOnClickListener {
+            clearLowerBoardRegisters()
+        }
+
+        binding.btnResetLowerBoardSystem.setOnClickListener {
+            resetLowerBoardSystem()
+        }
+
         binding.etRegisterStart.setText("201")
         binding.etRegisterQuantity.setText("1")
         binding.btnReadCustomRegisters.setOnClickListener {
@@ -408,6 +416,202 @@ class TestFragment : Fragment() {
             "提示：该操作仅测试下位机搬移动作，不会更新本地烤盘库存或云端可售状态。"
     }
 
+    private fun clearLowerBoardRegisters() {
+        lifecycleScope.launch {
+            setLowerBoardMaintenanceButtonsEnabled(false)
+            binding.tvAtomicActionResult.text = "正在检查下位机空闲状态，准备清空寄存器残留..."
+            try {
+                val startedAtMs = System.currentTimeMillis()
+                val resultText = withContext(Dispatchers.IO) {
+                    val guard = readLowerBoardMaintenanceGuard()
+                    val decision = LowerBoardMaintenancePolicy.canRunMaintenance(
+                        moveStatus = AppConfig.getAppConfig().moveStatus,
+                        status201 = guard.status201 ?: -1,
+                        moveResult203 = guard.moveResult203 ?: -1,
+                        atomicResultValues = guard.atomicResults.filterValues { it != null }.mapValues { it.value!! }
+                    )
+                    if (!decision.allowed) {
+                        AdminOperationLogger.w(
+                            action = "清空下位机寄存器残留",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_REJECT,
+                            detail = "拒绝原因=${decision.reason}，检查结果=${guard.summary()}"
+                        )
+                        return@withContext "清空寄存器残留被拒绝：${decision.reason}\n${guard.summary()}"
+                    }
+                    AdminOperationLogger.i(
+                        action = "清空下位机寄存器残留",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_START,
+                        detail = "写入 998=1，检查结果=${guard.summary()}"
+                    )
+                    val writeResult = KaoChangOperate.writeSingleRegister(
+                        LowerBoardMaintenancePolicy.CLEAR_REGISTER,
+                        LowerBoardMaintenancePolicy.TRIGGER_VALUE
+                    )
+                    val readBack = KaoChangOperate.readHoldingRegisters(
+                        LowerBoardMaintenancePolicy.CLEAR_REGISTER,
+                        1
+                    )?.firstOrNull()
+                    val afterResults = readAtomicResultRegisters()
+                    val allCleared = writeResult.isSuccess &&
+                        readBack == 0 &&
+                        afterResults.values.all { it == 0 }
+                    val elapsedMs = System.currentTimeMillis() - startedAtMs
+                    val detail = "写入状态=${writeResult.status}，写入消息=${writeResult.message ?: "无"}，" +
+                        "998回读=${readBack ?: "读取失败"}，清理后=${formatRegisterSnapshot(afterResults)}，耗时=${elapsedMs}ms"
+                    if (allCleared) {
+                        AdminOperationLogger.i(
+                            action = "清空下位机寄存器残留",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = detail
+                        )
+                    } else {
+                        AdminOperationLogger.w(
+                            action = "清空下位机寄存器残留",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = detail
+                        )
+                    }
+                    LogUtils.i("【下位机测试】清空寄存器残留：$detail")
+                    buildString {
+                        append(if (allCleared) "清空寄存器残留完成" else "清空寄存器残留未确认完成")
+                        append("\n写入 998=1：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}")
+                        append("\n998 回读：${readBack ?: "读取失败"}（期望 0）")
+                        append("\n清理后结果寄存器：${formatRegisterSnapshot(afterResults)}")
+                    }
+                }
+                binding.tvAtomicActionResult.text = resultText
+            } catch (e: Exception) {
+                binding.tvAtomicActionResult.text = "清空寄存器残留异常：${e.message}"
+                AdminOperationLogger.e(
+                    action = "清空下位机寄存器残留",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "失败原因=${e.message}"
+                )
+            } finally {
+                setLowerBoardMaintenanceButtonsEnabled(true)
+            }
+        }
+    }
+
+    private fun resetLowerBoardSystem() {
+        lifecycleScope.launch {
+            setLowerBoardMaintenanceButtonsEnabled(false)
+            binding.tvAtomicActionResult.text = "正在检查下位机空闲状态，准备下发 999 复位..."
+            try {
+                val resultText = withContext(Dispatchers.IO) {
+                    val guard = readLowerBoardMaintenanceGuard()
+                    val decision = LowerBoardMaintenancePolicy.canRunMaintenance(
+                        moveStatus = AppConfig.getAppConfig().moveStatus,
+                        status201 = guard.status201 ?: -1,
+                        moveResult203 = guard.moveResult203 ?: -1,
+                        atomicResultValues = guard.atomicResults.filterValues { it != null }.mapValues { it.value!! }
+                    )
+                    if (!decision.allowed) {
+                        AdminOperationLogger.w(
+                            action = "下位机复位",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_REJECT,
+                            detail = "拒绝原因=${decision.reason}，检查结果=${guard.summary()}"
+                        )
+                        return@withContext "下位机复位被拒绝：${decision.reason}\n${guard.summary()}"
+                    }
+                    AdminOperationLogger.i(
+                        action = "下位机复位",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_START,
+                        detail = "写入 999=1，检查结果=${guard.summary()}"
+                    )
+                    val writeResult = KaoChangOperate.writeSingleRegister(
+                        LowerBoardMaintenancePolicy.SYSTEM_RESET_REGISTER,
+                        LowerBoardMaintenancePolicy.TRIGGER_VALUE
+                    )
+                    val success = writeResult.isSuccess
+                    val detail = "写入状态=${writeResult.status}，写入消息=${writeResult.message ?: "无"}；" +
+                        "999 写入后下位机会约 50ms 内软重启，不做立即回读"
+                    if (success) {
+                        AdminOperationLogger.i(
+                            action = "下位机复位",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = detail
+                        )
+                    } else {
+                        AdminOperationLogger.w(
+                            action = "下位机复位",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = detail
+                        )
+                    }
+                    LogUtils.i("【下位机测试】下位机复位：$detail")
+                    if (success) {
+                        "999 已下发，等待下位机重启并完成机械回零\n写入状态=${writeResult.status}"
+                    } else {
+                        "999 下发失败：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}"
+                    }
+                }
+                binding.tvAtomicActionResult.text = resultText
+            } catch (e: Exception) {
+                binding.tvAtomicActionResult.text = "下位机复位异常：${e.message}"
+                AdminOperationLogger.e(
+                    action = "下位机复位",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "失败原因=${e.message}"
+                )
+            } finally {
+                setLowerBoardMaintenanceButtonsEnabled(true)
+            }
+        }
+    }
+
+    private fun setLowerBoardMaintenanceButtonsEnabled(enabled: Boolean) {
+        binding.btnClearLowerBoardRegisters.isEnabled = enabled
+        binding.btnResetLowerBoardSystem.isEnabled = enabled
+    }
+
+    private fun readLowerBoardMaintenanceGuard(): LowerBoardMaintenanceGuard {
+        return LowerBoardMaintenanceGuard(
+            status201 = KaoChangOperate.readHoldingRegisters(201, 1)?.firstOrNull(),
+            moveResult203 = KaoChangOperate.readHoldingRegisters(203, 1)?.firstOrNull(),
+            atomicResults = readAtomicResultRegisters()
+        )
+    }
+
+    private fun readAtomicResultRegisters(): Map<Int, Int?> {
+        return LowerBoardMaintenancePolicy.actionResultRegisters.associateWith { register ->
+            KaoChangOperate.readHoldingRegisters(register, 1)?.firstOrNull()
+        }
+    }
+
+    private fun formatRegisterSnapshot(values: Map<Int, Int?>): String {
+        return values.entries.joinToString("；") { (register, value) ->
+            "$register=${value ?: "读取失败"}"
+        }
+    }
+
+    private data class LowerBoardMaintenanceGuard(
+        val status201: Int?,
+        val moveResult203: Int?,
+        val atomicResults: Map<Int, Int?>
+    ) {
+        fun summary(): String {
+            return "201=${status201 ?: "读取失败"}，203=${moveResult203 ?: "读取失败"}，" +
+                "原子结果=${formatRegisterSnapshot(atomicResults)}"
+        }
+
+        private fun formatRegisterSnapshot(values: Map<Int, Int?>): String {
+            return values.entries.joinToString("；") { (register, value) ->
+                "$register=${value ?: "读取失败"}"
+            }
+        }
+    }
+
     private fun readBusinessActionProtocolStatus() {
         lifecycleScope.launch {
             binding.btnBusinessActionSelfCheck.isEnabled = false
@@ -567,6 +771,9 @@ class TestFragment : Fragment() {
             )
             address == 202 -> formatPanMoveCommandRegisterValue(value)
             address == 203 -> formatPanMoveResultRegisterValue(value)
+            address == LowerBoardMaintenancePolicy.CLEAR_REGISTER ||
+                address == LowerBoardMaintenancePolicy.SYSTEM_RESET_REGISTER ->
+                LowerBoardMaintenancePolicy.formatMaintenanceRegisterValue(address, value)
             atomicItem != null && address == atomicItem.spec.commandRegister ->
                 "${AtomicActionExecutor.commandValueDesc(value)}，${atomicItem.spec.name} 命令寄存器"
             atomicItem != null && address == atomicItem.spec.resultRegister ->
