@@ -30,6 +30,26 @@ object PanMove203Policy {
     }
 }
 
+object TestPagePanMoveCommandPolicy {
+    data class ValidationResult(
+        val ok: Boolean,
+        val message: String
+    )
+
+    fun validate(sourcePosition: Int, targetPosition: Int): ValidationResult {
+        return when {
+            sourcePosition !in 1..33 -> ValidationResult(false, "源烤盘位必须在 1~33 之间")
+            targetPosition !in 1..33 -> ValidationResult(false, "目标烤盘位必须在 1~33 之间")
+            sourcePosition == targetPosition -> ValidationResult(false, "源烤盘位和目标烤盘位不能相同")
+            else -> ValidationResult(true, "OK")
+        }
+    }
+
+    fun encodeCommand(sourcePosition: Int, targetPosition: Int): Int {
+        return (sourcePosition shl 8) or targetPosition
+    }
+}
+
 object FourFSelfCleanNoOpPolicy {
     const val message = "4f_self_clean_no_op"
 

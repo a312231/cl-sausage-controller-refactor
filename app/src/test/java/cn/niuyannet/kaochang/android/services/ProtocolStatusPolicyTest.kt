@@ -22,6 +22,11 @@ class ProtocolStatusPolicyTest {
     }
 
     @Test
+    fun testPagePanMove_shouldNotTreatCompletedAsSuccessBeforeRunningObserved() {
+        assertEquals(PanMove203Decision.WaitingForStart, PanMove203Policy.evaluate(2, hasObservedRunning = false))
+    }
+
+    @Test
     fun panMove203_shouldFailWhenRunningFallsBackToIdleOrReturnsFourFError() {
         assertEquals(PanMove203Decision.Failed, PanMove203Policy.evaluate(0, hasObservedRunning = true))
         assertEquals(PanMove203Decision.Failed, PanMove203Policy.evaluate(0x00F8, hasObservedRunning = false))
@@ -32,6 +37,20 @@ class ProtocolStatusPolicyTest {
     fun panMove203_shouldPollFastEnoughToObserveShortRunningWindow() {
         assertEquals(500L, PanMove203Policy.pollDelayMs)
         assertEquals(2_000L, PanMove203Policy.waitOtherActionDelayMs)
+    }
+
+    @Test
+    fun testPagePanMove_shouldEncodeSourceAndTargetIntoRegister202() {
+        assertEquals(0x0102, TestPagePanMoveCommandPolicy.encodeCommand(sourcePosition = 1, targetPosition = 2))
+        assertEquals(0x2120, TestPagePanMoveCommandPolicy.encodeCommand(sourcePosition = 33, targetPosition = 32))
+    }
+
+    @Test
+    fun testPagePanMove_shouldValidateOneToThirtyThreeAndRejectSamePosition() {
+        assertEquals(true, TestPagePanMoveCommandPolicy.validate(sourcePosition = 1, targetPosition = 33).ok)
+        assertEquals("源烤盘位必须在 1~33 之间", TestPagePanMoveCommandPolicy.validate(0, 2).message)
+        assertEquals("目标烤盘位必须在 1~33 之间", TestPagePanMoveCommandPolicy.validate(1, 34).message)
+        assertEquals("源烤盘位和目标烤盘位不能相同", TestPagePanMoveCommandPolicy.validate(8, 8).message)
     }
 
     @Test

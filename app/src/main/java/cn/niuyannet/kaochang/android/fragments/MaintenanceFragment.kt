@@ -26,10 +26,8 @@ import cn.niuyannet.kaochang.android.services.KaoPanUiReservationStateBuilder
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
-import cn.niuyannet.kaochang.android.services.KaoPanCloudSyncReporter
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearExecutor
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
-import cn.niuyannet.kaochang.android.services.ManualPanMovePolicy
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
@@ -54,7 +52,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.coroutines.cancellation.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MaintenanceFragment : Fragment() {
@@ -1191,7 +1188,7 @@ class MaintenanceFragment : Fragment() {
             return
         }
 
-        val actions = arrayOf("手动取肠", "搬移到其他工位", "仅清除本位数据")
+        val actions = arrayOf("手动取肠", "仅清除本位数据")
         AlertDialog.Builder(requireContext())
             .setTitle("工位 ${kaoPan.positionSn}")
             .setItems(actions) { dialog, which ->
@@ -1199,10 +1196,6 @@ class MaintenanceFragment : Fragment() {
                     "手动取肠" -> {
                         resetAdminIdleTimer("手动取肠弹窗确认")
                         showManualTakeSausageDialog(kaoPan)
-                    }
-                    "搬移到其他工位" -> {
-                        resetAdminIdleTimer("手动搬盘目标选择入口")
-                        showManualPanMoveTargetDialog(kaoPan.positionSn)
                     }
                     "仅清除本位数据" -> {
                         resetAdminIdleTimer("仅清除本位数据弹窗确认")
@@ -1222,203 +1215,6 @@ class MaintenanceFragment : Fragment() {
                 }
             }
             .show()
-    }
-
-    private fun showManualPanMoveTargetDialog(sourcePositionSn: Int) {
-        val emptyTargets = KaoPanHelper.getKaoPanList()
-            .filter { it.positionSn != sourcePositionSn && !it.isHasSausage }
-            .sortedBy { it.positionSn }
-        if (emptyTargets.isEmpty()) {
-            AdminOperationLogger.w(
-                action = "手动搬盘",
-                page = AdminOperationLogger.PAGE_PAN,
-                result = AdminOperationLogger.RESULT_REJECT,
-                detail = "源烤盘位=$sourcePositionSn，拒绝原因=没有可选空工位"
-            )
-            ToastUtils.showShort("没有可搬入的空工位")
-            return
-        }
-
-        val labels = emptyTargets.map { "工位 ${it.positionSn}" }.toTypedArray()
-        AlertDialog.Builder(requireContext())
-            .setTitle("选择目标工位")
-            .setItems(labels) { dialog, which ->
-                resetAdminIdleTimer("手动搬盘目标选择确认")
-                dialog.dismiss()
-                showManualPanMoveConfirmDialog(sourcePositionSn, emptyTargets[which].positionSn)
-            }
-            .setNegativeButton("取消") { dialog, _ ->
-                resetAdminIdleTimer("手动搬盘目标选择取消")
-                dialog.dismiss()
-            }
-            .create()
-            .also { dialog ->
-                dialog.setOnShowListener {
-                    resetAdminIdleTimer("手动搬盘目标选择弹窗显示")
-                }
-            }
-            .show()
-    }
-
-    private fun showManualPanMoveConfirmDialog(sourcePositionSn: Int, targetPositionSn: Int) {
-        val decision = buildManualPanMoveReadinessDecision(sourcePositionSn, targetPositionSn)
-        if (!decision.ok) {
-            rejectManualPanMove(sourcePositionSn, targetPositionSn, decision.reason)
-            return
-        }
-
-        val warning = decision.warning?.let { "\n\n$it" }.orEmpty()
-        AlertDialog.Builder(requireContext())
-            .setTitle("确认搬盘")
-            .setMessage(
-                "确认将工位 $sourcePositionSn 的烤肠搬移到工位 $targetPositionSn？\n\n" +
-                    "该操作会执行真实机械搬盘动作。手动搬盘要求烤肠算法已关闭，搬完后算法保持关闭；" +
-                    "如维护后继续营业，请重新开启算法并确认加热/保温状态。$warning"
-            )
-            .setPositiveButton("确认搬移") { dialog, _ ->
-                resetAdminIdleTimer("手动搬盘确认")
-                dialog.dismiss()
-                executeManualPanMove(
-                    sourcePositionSn,
-                    targetPositionSn,
-                    confirmedWarning = decision.warning
-                )
-            }
-            .setNegativeButton("取消") { dialog, _ ->
-                resetAdminIdleTimer("手动搬盘取消")
-                dialog.dismiss()
-            }
-            .create()
-            .also { dialog ->
-                dialog.setOnShowListener {
-                    resetAdminIdleTimer("手动搬盘确认弹窗显示")
-                }
-            }
-            .show()
-    }
-
-    @SuppressLint("NotifyDataSetChanged")
-    private fun executeManualPanMove(
-        sourcePositionSn: Int,
-        targetPositionSn: Int,
-        confirmedWarning: String?
-    ) {
-        if (!status.compareAndSet(true, false)) {
-            ToastUtils.showShort("请等待当前操作完成")
-            return
-        }
-        val adminBusy = beginAdminBusy("维护页手动搬盘")
-        setMaintenanceActionButtonsEnabled(false)
-        binding.tvCooldownHint.text = "正在搬移工位 $sourcePositionSn -> $targetPositionSn"
-        AdminOperationLogger.i(
-            action = "手动搬盘",
-            page = AdminOperationLogger.PAGE_PAN,
-            result = AdminOperationLogger.RESULT_START,
-            detail = "源烤盘位=$sourcePositionSn，目标烤盘位=$targetPositionSn"
-        )
-
-        lifecycleScope.launch {
-            try {
-                val modbusConnected = withContext(Dispatchers.IO) {
-                    MaintenanceModbusRecoveryConnector.ensureConnected()
-                }
-                if (!modbusConnected) {
-                    AdminOperationLogger.w(
-                        action = "手动搬盘",
-                        page = AdminOperationLogger.PAGE_PAN,
-                        result = AdminOperationLogger.RESULT_REJECT,
-                        detail = "源烤盘位=$sourcePositionSn，目标烤盘位=$targetPositionSn，拒绝原因=下位机未连接，" +
-                            "Modbus串口地址=${AppConfig.getAppConfig().modbusAddress}"
-                    )
-                    ToastUtils.showShort("下位机未连接，请先恢复通信")
-                    return@launch
-                }
-
-                val idleReady = waitUntilMachineIdleOrTimeout(
-                    reason = "维护页手动搬盘等待空闲",
-                    waitingText = "请等待上位机空闲",
-                    update = { binding.tvCooldownHint.text = it }
-                )
-                if (!idleReady) {
-                    val busyDecision = buildManualPanMoveReadinessDecision(sourcePositionSn, targetPositionSn)
-                    rejectManualPanMove(sourcePositionSn, targetPositionSn, busyDecision.reason)
-                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                    return@launch
-                }
-
-                val latestDecision = buildManualPanMoveReadinessDecision(sourcePositionSn, targetPositionSn)
-                if (!latestDecision.ok) {
-                    rejectManualPanMove(sourcePositionSn, targetPositionSn, latestDecision.reason)
-                    return@launch
-                }
-                if (latestDecision.requiresConfirmation && latestDecision.warning != confirmedWarning) {
-                    rejectManualPanMove(
-                        sourcePositionSn,
-                        targetPositionSn,
-                        "状态已变化为故障/检修，请重新确认后再搬盘"
-                    )
-                    ToastUtils.showShort("设备状态已变化，请重新确认")
-                    return@launch
-                }
-
-                val moved = withContext(Dispatchers.IO) {
-                    val pans = KaoPanHelper.getKaoPanList()
-                    val sourcePan = pans.firstOrNull { it.positionSn == sourcePositionSn } ?: return@withContext false
-                    val targetPan = pans.firstOrNull { it.positionSn == targetPositionSn } ?: return@withContext false
-                    val beforeSnapshot = KaoPanCloudSyncReporter.captureSellableSnapshot(pans)
-                    val result = KaoChangOperate.moveKaoPanToKaoPanManual(
-                        sourcePan,
-                        targetPan,
-                        targetHoldingTime = sourcePan.holdingTime
-                    )
-                    if (result) {
-                        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
-                            beforeSnapshot,
-                            KaoPanHelper.getKaoPanList(),
-                            "维护页手动搬盘"
-                        )
-                    }
-                    result
-                }
-
-                refreshKaoPanGrid()
-                binding.tvCooldownHint.text = ""
-                if (moved) {
-                    AdminOperationLogger.i(
-                        action = "手动搬盘",
-                        page = AdminOperationLogger.PAGE_PAN,
-                        result = AdminOperationLogger.RESULT_DONE,
-                        detail = "源烤盘位=$sourcePositionSn，目标烤盘位=$targetPositionSn，云端同步=KaoPanCloudSyncReporter"
-                    )
-                    ToastUtils.showShort("搬移成功")
-                } else {
-                    AdminOperationLogger.w(
-                        action = "手动搬盘",
-                        page = AdminOperationLogger.PAGE_PAN,
-                        result = AdminOperationLogger.RESULT_FAIL,
-                        detail = "源烤盘位=$sourcePositionSn，目标烤盘位=$targetPositionSn"
-                    )
-                    ToastUtils.showShort("搬移失败，请查看日志")
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) {
-                    throw e
-                }
-                refreshKaoPanGrid()
-                AdminOperationLogger.e(
-                    action = "手动搬盘",
-                    page = AdminOperationLogger.PAGE_PAN,
-                    result = AdminOperationLogger.RESULT_FAIL,
-                    detail = "源烤盘位=$sourcePositionSn，目标烤盘位=$targetPositionSn，失败原因=${e.message ?: e.javaClass.simpleName}"
-                )
-                ToastUtils.showShort("搬移失败，请查看日志")
-            } finally {
-                binding.tvCooldownHint.text = ""
-                setMaintenanceActionButtonsEnabled(true)
-                status.set(true)
-                endAdminBusy(adminBusy)
-            }
-        }
     }
 
     private fun showManualTakeSausageDialog(kaoPan: KaoPan) {
@@ -1633,44 +1429,6 @@ class MaintenanceFragment : Fragment() {
                 hasOrderTracking = SelfCleanManager.hasOrderTracking()
             )
         )
-    }
-
-    private fun buildManualPanMoveReadinessDecision(
-        sourcePositionSn: Int,
-        targetPositionSn: Int
-    ): ManualPanMovePolicy.ReadinessDecision {
-        val config = AppConfig.getAppConfig()
-        val pans = KaoPanHelper.getKaoPanList()
-        val sourcePan = pans.firstOrNull { it.positionSn == sourcePositionSn }
-        val targetPan = pans.firstOrNull { it.positionSn == targetPositionSn }
-        return ManualPanMovePolicy.checkReadiness(
-            ManualPanMovePolicy.State(
-                sourcePan = sourcePan,
-                targetPan = targetPan,
-                sourcePositionSn = sourcePositionSn,
-                targetPositionSn = targetPositionSn,
-                appConfigIsEnable = config.isEnable,
-                algorithmIsEnabled = KaoChangAlgorithm.isEnabled,
-                moveStatus = config.moveStatus,
-                onlineStatus = config.onlineStatus,
-                errorStatus = config.errorStatus,
-                errorCode = config.errorCode,
-                errorReason = config.errorReason,
-                inspectionMode = config.inspectionMode,
-                hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
-                hasOrderTracking = SelfCleanManager.hasOrderTracking()
-            )
-        )
-    }
-
-    private fun rejectManualPanMove(sourcePositionSn: Int, targetPositionSn: Int, reason: String) {
-        AdminOperationLogger.w(
-            action = "手动搬盘",
-            page = AdminOperationLogger.PAGE_PAN,
-            result = AdminOperationLogger.RESULT_REJECT,
-            detail = "源烤盘位=$sourcePositionSn，目标烤盘位=$targetPositionSn，拒绝原因=$reason"
-        )
-        ToastUtils.showShort("当前不允许搬盘：$reason")
     }
 
     private fun rejectClearPanPositionData(positionSn: Int, reason: String) {

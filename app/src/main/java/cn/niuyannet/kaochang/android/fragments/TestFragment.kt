@@ -13,6 +13,9 @@ import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.PanMove203Decision
+import cn.niuyannet.kaochang.android.services.PanMove203Policy
+import cn.niuyannet.kaochang.android.services.TestPagePanMoveCommandPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetryContext
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
@@ -27,6 +30,7 @@ import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -123,6 +127,10 @@ class TestFragment : Fragment() {
 
         binding.btnBusinessActionSelfCheck.setOnClickListener {
             readBusinessActionProtocolStatus()
+        }
+
+        binding.btnRunPanMoveCommand.setOnClickListener {
+            executePanMoveCommandFromTestPage()
         }
 
         binding.etRegisterStart.setText("201")
@@ -245,6 +253,159 @@ class TestFragment : Fragment() {
             }
             binding.tvAtomicActionResult.text = text
         }
+    }
+
+    private fun executePanMoveCommandFromTestPage() {
+        val sourceText = binding.etPanMoveSource.text?.toString()?.trim().orEmpty()
+        val targetText = binding.etPanMoveTarget.text?.toString()?.trim().orEmpty()
+        val sourcePosition = sourceText.toIntOrNull()
+        val targetPosition = targetText.toIntOrNull()
+        if (sourcePosition == null) {
+            showToast("请输入源烤盘位 1~33")
+            binding.tvPanMoveCommandResult.text = "执行失败：源烤盘位非法（$sourceText）"
+            return
+        }
+        if (targetPosition == null) {
+            showToast("请输入目标烤盘位 1~33")
+            binding.tvPanMoveCommandResult.text = "执行失败：目标烤盘位非法（$targetText）"
+            return
+        }
+        val validation = TestPagePanMoveCommandPolicy.validate(sourcePosition, targetPosition)
+        if (!validation.ok) {
+            showToast(validation.message)
+            binding.tvPanMoveCommandResult.text = "执行失败：${validation.message}"
+            return
+        }
+
+        lifecycleScope.launch {
+            if (AppConfig.getAppConfig().moveStatus == 5) {
+                AdminOperationLogger.w(
+                    action = "测试烤盘搬移202/203",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，拒绝原因=当前正在自清洁"
+                )
+                showToast("当前正在自清洁，测试下位机动作已禁用")
+                return@launch
+            }
+
+            val commandValue = TestPagePanMoveCommandPolicy.encodeCommand(sourcePosition, targetPosition)
+            val commandHex = formatCommandHex(commandValue)
+            val adminBusy = beginAdminBusy("测试下位机烤盘搬移202/203")
+            binding.btnRunPanMoveCommand.isEnabled = false
+            binding.tvPanMoveCommandResult.text =
+                "准备写入 202=$commandHex（源烤盘=$sourcePosition，目标烤盘=$targetPosition）\n" +
+                    "提示：该操作仅测试下位机搬移动作，不会更新本地烤盘库存。"
+            try {
+                AdminOperationLogger.i(
+                    action = "测试烤盘搬移202/203",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_START,
+                    detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，202=$commandHex，说明=裸下位机协议测试，不更新本地库存或云端"
+                )
+                val resultText = withContext(Dispatchers.IO) {
+                    runPanMoveCommandAndWait(sourcePosition, targetPosition, commandValue)
+                }
+                binding.tvPanMoveCommandResult.text = resultText
+            } finally {
+                binding.btnRunPanMoveCommand.isEnabled = true
+                endAdminBusy(adminBusy)
+            }
+        }
+    }
+
+    private suspend fun runPanMoveCommandAndWait(
+        sourcePosition: Int,
+        targetPosition: Int,
+        commandValue: Int
+    ): String {
+        val commandHex = formatCommandHex(commandValue)
+        if (!VMModbusHelper.connectStatus()) {
+            AdminOperationLogger.w(
+                action = "测试烤盘搬移202/203",
+                page = AdminOperationLogger.PAGE_TEST,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，拒绝原因=下位机未连接，Modbus串口地址=${AppConfig.getAppConfig().modbusAddress}"
+            )
+            return "执行失败：下位机未连接\n202=$commandHex\n提示：该操作未更新本地烤盘库存。"
+        }
+
+        val writeResult = KaoChangOperate.writeSingleRegister2(KaoChangOperate.action_address_move, commandValue)
+        if (!writeResult.isSuccess) {
+            AdminOperationLogger.w(
+                action = "测试烤盘搬移202/203",
+                page = AdminOperationLogger.PAGE_TEST,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，202=$commandHex，失败原因=写202失败，status=${writeResult.status}"
+            )
+            return "写入 202 失败：status=${writeResult.status}\n202=$commandHex\n提示：该操作未更新本地烤盘库存。"
+        }
+
+        val startedAtMs = System.currentTimeMillis()
+        val timeoutMs = 60_000L
+        var hasObservedRunning = false
+        while (true) {
+            delay(PanMove203Policy.pollDelayMs)
+            val result203 = KaoChangOperate.readHoldingRegisters(KaoChangOperate.action_address_move_result, 1)?.firstOrNull() ?: -1
+            when (PanMove203Policy.evaluate(result203, hasObservedRunning)) {
+                PanMove203Decision.Running -> {
+                    hasObservedRunning = true
+                    LogUtils.d("测试下位机烤盘搬移执行中：source=$sourcePosition，target=$targetPosition，203=1")
+                }
+                PanMove203Decision.Success -> {
+                    val elapsedMs = System.currentTimeMillis() - startedAtMs
+                    AdminOperationLogger.i(
+                        action = "测试烤盘搬移202/203",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，202=$commandHex，203=${formatPanMoveResultRegisterValue(result203)}，耗时=${elapsedMs}ms，说明=未更新本地库存或云端"
+                    )
+                    return buildPanMoveCommandReport(sourcePosition, targetPosition, commandHex, result203, elapsedMs, "搬移完成")
+                }
+                PanMove203Decision.WaitingForStart -> {
+                    LogUtils.d("测试下位机烤盘搬移等待启动：source=$sourcePosition，target=$targetPosition，203=$result203")
+                }
+                PanMove203Decision.ReadFailed,
+                PanMove203Decision.Failed -> {
+                    val elapsedMs = System.currentTimeMillis() - startedAtMs
+                    AdminOperationLogger.w(
+                        action = "测试烤盘搬移202/203",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，202=$commandHex，203=${formatPanMoveResultRegisterValue(result203)}，耗时=${elapsedMs}ms"
+                    )
+                    return buildPanMoveCommandReport(sourcePosition, targetPosition, commandHex, result203, elapsedMs, "搬移失败")
+                }
+            }
+
+            if (System.currentTimeMillis() - startedAtMs > timeoutMs) {
+                val timeoutResult203 = KaoChangOperate.readHoldingRegisters(KaoChangOperate.action_address_move_result, 1)?.firstOrNull() ?: -1
+                val elapsedMs = System.currentTimeMillis() - startedAtMs
+                AdminOperationLogger.w(
+                    action = "测试烤盘搬移202/203",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，202=$commandHex，203=${formatPanMoveResultRegisterValue(timeoutResult203)}，失败原因=等待203完成超时，耗时=${elapsedMs}ms"
+                )
+                return buildPanMoveCommandReport(sourcePosition, targetPosition, commandHex, timeoutResult203, elapsedMs, "等待 203 完成超时")
+            }
+        }
+    }
+
+    private fun buildPanMoveCommandReport(
+        sourcePosition: Int,
+        targetPosition: Int,
+        commandHex: String,
+        result203: Int,
+        elapsedMs: Long,
+        message: String
+    ): String {
+        return "源烤盘=$sourcePosition，目标烤盘=$targetPosition\n" +
+            "202（搬移命令）=$commandHex\n" +
+            "203（搬移结果）=${formatPanMoveResultRegisterValue(result203)}\n" +
+            "耗时=${elapsedMs}ms\n" +
+            "结果=$message\n" +
+            "提示：该操作仅测试下位机搬移动作，不会更新本地烤盘库存或云端可售状态。"
     }
 
     private fun readBusinessActionProtocolStatus() {
@@ -465,6 +626,10 @@ class TestFragment : Fragment() {
         val source = (value shr 8) and 0xFF
         val target = value and 0xFF
         return "0x${value.toString(16).uppercase().padStart(4, '0')}（来源烤盘=$source，目标烤盘=$target）"
+    }
+
+    private fun formatCommandHex(value: Int): String {
+        return "0x${value.toString(16).uppercase().padStart(4, '0')}"
     }
 
     private fun formatPanMoveResultRegisterValue(value: Int): String {
