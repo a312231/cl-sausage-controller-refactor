@@ -37,6 +37,8 @@ object DataManagementAPI {
     private var productCatalogRefreshInFlight = false
     @Volatile
     private var lastProductCatalogRefreshAtMillis = 0L
+    @Volatile
+    private var lastRemoteProductCatalogEmpty = false
     private val productCatalogRefreshLock = Any()
     private val productCatalogRefreshCallbacks = mutableListOf<(ProductCatalogRefreshResult) -> Unit>()
 
@@ -56,6 +58,7 @@ object DataManagementAPI {
         val catalogChanged: Boolean,
         val metadataNormalized: Boolean,
         val tasteCount: Int,
+        val remoteCatalogEmpty: Boolean,
         val reason: String
     )
 
@@ -877,13 +880,7 @@ object DataManagementAPI {
         val now = System.currentTimeMillis()
         if (!force && now - lastProductCatalogRefreshAtMillis < PRODUCT_CATALOG_REFRESH_MIN_INTERVAL_MS) {
             onResult?.invoke(
-                ProductCatalogRefreshResult(
-                    success = true,
-                    catalogChanged = false,
-                    metadataNormalized = false,
-                    tasteCount = KaoPanHelper.getTasteList().size,
-                    reason = "recently_refreshed"
-                )
+                buildRecentlyRefreshedProductCatalogResult()
             )
             return
         }
@@ -899,7 +896,9 @@ object DataManagementAPI {
 
         NetApi.getKcProductList { code, content ->
             val result = if (code == 0) {
-                applyProductCatalogResponse(content, logPrefix)
+                synchronized(productCatalogRefreshLock) {
+                    applyProductCatalogResponse(content, logPrefix)
+                }
             } else {
                 logE("[$logPrefix] 商品目录同步失败：code=$code, content=$content")
                 ProductCatalogRefreshResult(
@@ -907,6 +906,7 @@ object DataManagementAPI {
                     catalogChanged = false,
                     metadataNormalized = false,
                     tasteCount = KaoPanHelper.getTasteList().size,
+                    remoteCatalogEmpty = false,
                     reason = "network_error"
                 )
             }
@@ -960,33 +960,123 @@ object DataManagementAPI {
                 catalogChanged = false,
                 metadataNormalized = false,
                 tasteCount = KaoPanHelper.getTasteList().size,
+                remoteCatalogEmpty = false,
                 reason = "invalid_response"
             )
         }
 
-        val catalogChanged = !isSameProductCatalog(KaoPanHelper.getTasteList(), refreshedTasteList)
-        if (catalogChanged) {
-            saveTasteList(refreshedTasteList)
-        }
-        val panMetadataNormalized = KaoPanHelper.normalizeKaoPanTasteMetadata()
-        val boxMetadataNormalized = KaoPanHelper.normalizeKaoPanBoxTasteMetadata()
-        val metadataNormalized = panMetadataNormalized || boxMetadataNormalized
-        if (catalogChanged || metadataNormalized) {
-            logD(
-                "[$logPrefix] 商品目录同步完成：" +
-                    "商品数=${refreshedTasteList.size}, " +
-                    "目录变化=$catalogChanged, " +
-                    "烤盘归一=$panMetadataNormalized, " +
-                    "烤肠箱归一=$boxMetadataNormalized"
+        return applyParsedProductCatalog(
+            refreshedTasteList = refreshedTasteList,
+            currentTasteList = KaoPanHelper.getTasteList(),
+            saveCatalog = { saveTasteList(it) },
+            normalizeMetadata = {
+                val panMetadataNormalized = KaoPanHelper.normalizeKaoPanTasteMetadata()
+                val boxMetadataNormalized = KaoPanHelper.normalizeKaoPanBoxTasteMetadata()
+                Pair(panMetadataNormalized, boxMetadataNormalized)
+            },
+            onRemoteEmpty = { localTasteCount ->
+                if (localTasteCount > 0) {
+                    logE("[$logPrefix] 商品目录远端为空，保留本地口味缓存：本地商品数=$localTasteCount")
+                } else {
+                    logE("[$logPrefix] 商品目录远端为空，本地口味缓存也为空")
+                }
+            },
+            onApplied = { catalogChanged, panMetadataNormalized, boxMetadataNormalized ->
+                val metadataNormalized = panMetadataNormalized || boxMetadataNormalized
+                if (catalogChanged || metadataNormalized) {
+                    logD(
+                        "[$logPrefix] 商品目录同步完成：" +
+                            "商品数=${refreshedTasteList.size}, " +
+                            "目录变化=$catalogChanged, " +
+                            "烤盘归一=$panMetadataNormalized, " +
+                            "烤肠箱归一=$boxMetadataNormalized"
+                    )
+                }
+            }
+        )
+    }
+
+    private fun applyParsedProductCatalog(
+        refreshedTasteList: List<Taste>,
+        currentTasteList: List<Taste>,
+        saveCatalog: (List<Taste>) -> Unit,
+        normalizeMetadata: () -> Pair<Boolean, Boolean>,
+        onRemoteEmpty: (localTasteCount: Int) -> Unit,
+        onApplied: (catalogChanged: Boolean, panMetadataNormalized: Boolean, boxMetadataNormalized: Boolean) -> Unit
+    ): ProductCatalogRefreshResult {
+        if (refreshedTasteList.isEmpty()) {
+            lastRemoteProductCatalogEmpty = true
+            onRemoteEmpty(currentTasteList.size)
+            return ProductCatalogRefreshResult(
+                success = true,
+                catalogChanged = false,
+                metadataNormalized = false,
+                tasteCount = 0,
+                remoteCatalogEmpty = true,
+                reason = "remote_empty"
             )
         }
+
+        val catalogChanged = !isSameProductCatalog(currentTasteList, refreshedTasteList)
+        if (catalogChanged) {
+            saveCatalog(refreshedTasteList)
+        }
+        lastRemoteProductCatalogEmpty = false
+        val (panMetadataNormalized, boxMetadataNormalized) = normalizeMetadata()
+        val metadataNormalized = panMetadataNormalized || boxMetadataNormalized
+        onApplied(catalogChanged, panMetadataNormalized, boxMetadataNormalized)
         return ProductCatalogRefreshResult(
             success = true,
             catalogChanged = catalogChanged,
             metadataNormalized = metadataNormalized,
             tasteCount = refreshedTasteList.size,
+            remoteCatalogEmpty = false,
             reason = "success"
         )
+    }
+
+    private fun buildRecentlyRefreshedProductCatalogResult(): ProductCatalogRefreshResult {
+        return ProductCatalogRefreshResult(
+            success = true,
+            catalogChanged = false,
+            metadataNormalized = false,
+            tasteCount = KaoPanHelper.getTasteList().size,
+            remoteCatalogEmpty = false,
+            reason = "recently_refreshed"
+        )
+    }
+
+    fun wasLastRemoteProductCatalogEmpty(): Boolean = lastRemoteProductCatalogEmpty
+
+    internal fun applyParsedProductCatalogForTest(
+        refreshedTasteList: List<Taste>,
+        currentTasteList: MutableList<Taste>
+    ): ProductCatalogRefreshResult = applyParsedProductCatalog(
+        refreshedTasteList = refreshedTasteList,
+        currentTasteList = currentTasteList,
+        saveCatalog = {
+            currentTasteList.clear()
+            currentTasteList.addAll(it)
+        },
+        normalizeMetadata = { Pair(false, false) },
+        onRemoteEmpty = {},
+        onApplied = { _, _, _ -> }
+    )
+
+    internal fun buildRecentlyRefreshedProductCatalogResultForTest(): ProductCatalogRefreshResult =
+        buildRecentlyRefreshedProductCatalogResult()
+
+    internal fun markLastRemoteProductCatalogEmptyForTest(value: Boolean) {
+        lastRemoteProductCatalogEmpty = value
+    }
+
+    internal fun resetProductCatalogRefreshStateForTest() {
+        lastProductCatalogRefreshAtMillis = 0L
+        productCatalogRefreshInFlight = false
+        lastRemoteProductCatalogEmpty = false
+        synchronized(productCatalogRefreshLock) {
+            productCatalogRefreshCallbacks.clear()
+        }
     }
 
     private fun isSameProductCatalog(left: List<Taste>, right: List<Taste>): Boolean {
@@ -1128,30 +1218,7 @@ object DataManagementAPI {
     }
 
     fun getDeviceInfo() {
-        NetApi.getKcProductList { code, content ->
-            val tasteList = mutableListOf<Taste>()
-            if (code == 0) {
-                val json = JSON.parseObject(content)
-                if (json?.getIntValue("code") == 200) {
-                    val jsonData = json.getJSONArray("data")
-                    for (i in 0 until jsonData.size) {
-                        val item = jsonData.getJSONObject(i)
-                        val taste = Taste(
-                            item.getIntValue("tasteId"),
-                            item.getString("tasteCode"),
-                            item.getString("tasteName"),
-                            item.getIntValue("id"),
-                            item.getString("name")
-                        )
-                        tasteList.add(taste)
-                    }
-                    saveTasteList(tasteList)
-                }
-            } else {
-                ToastUtils.showShort("网络错误")
-                logE("同步口味列表失败：code=$code, content=$content")
-            }
-        }
+        refreshProductCatalog(force = false, logPrefix = "$LOG_SYNC-product-catalog")
 
         NetApi.getDeviceInfo(AppConfig.getDeviceId()) deviceInfoCallback@{ code, content ->
             if (code != 0) {

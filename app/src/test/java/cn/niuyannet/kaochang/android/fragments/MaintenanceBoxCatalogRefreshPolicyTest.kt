@@ -9,7 +9,12 @@ class MaintenanceBoxCatalogRefreshPolicyTest {
     fun resolveRefillCatalogRefreshAction_shouldOpenDialogAfterSuccessfulRefresh() {
         assertEquals(
             RefillCatalogRefreshAction.OPEN_DIALOG,
-            resolveRefillCatalogRefreshAction(refreshSuccess = true, localCatalogNotEmpty = false)
+            resolveRefillCatalogRefreshAction(
+                refreshSuccess = true,
+                remoteCatalogEmpty = false,
+                lastRemoteCatalogEmpty = false,
+                localCatalogNotEmpty = false
+            )
         )
     }
 
@@ -17,7 +22,12 @@ class MaintenanceBoxCatalogRefreshPolicyTest {
     fun resolveRefillCatalogRefreshAction_shouldUseLocalCacheWhenRefreshFailsButCatalogExists() {
         assertEquals(
             RefillCatalogRefreshAction.OPEN_DIALOG_WITH_CACHE_TOAST,
-            resolveRefillCatalogRefreshAction(refreshSuccess = false, localCatalogNotEmpty = true)
+            resolveRefillCatalogRefreshAction(
+                refreshSuccess = false,
+                remoteCatalogEmpty = false,
+                lastRemoteCatalogEmpty = false,
+                localCatalogNotEmpty = true
+            )
         )
     }
 
@@ -25,7 +35,38 @@ class MaintenanceBoxCatalogRefreshPolicyTest {
     fun resolveRefillCatalogRefreshAction_shouldRejectWhenRefreshFailsAndCatalogIsEmpty() {
         assertEquals(
             RefillCatalogRefreshAction.REJECT_WITH_NETWORK_TOAST,
-            resolveRefillCatalogRefreshAction(refreshSuccess = false, localCatalogNotEmpty = false)
+            resolveRefillCatalogRefreshAction(
+                refreshSuccess = false,
+                remoteCatalogEmpty = false,
+                lastRemoteCatalogEmpty = false,
+                localCatalogNotEmpty = false
+            )
+        )
+    }
+
+    @Test
+    fun resolveRefillCatalogRefreshAction_shouldRejectWhenRemoteCatalogIsEmpty() {
+        assertEquals(
+            RefillCatalogRefreshAction.REJECT_WITH_EMPTY_CATALOG_TOAST,
+            resolveRefillCatalogRefreshAction(
+                refreshSuccess = true,
+                remoteCatalogEmpty = true,
+                lastRemoteCatalogEmpty = true,
+                localCatalogNotEmpty = true
+            )
+        )
+    }
+
+    @Test
+    fun resolveRefillCatalogRefreshAction_shouldRejectFailedRefreshWhenLastRemoteCatalogWasEmpty() {
+        assertEquals(
+            RefillCatalogRefreshAction.REJECT_WITH_EMPTY_CATALOG_TOAST,
+            resolveRefillCatalogRefreshAction(
+                refreshSuccess = false,
+                remoteCatalogEmpty = false,
+                lastRemoteCatalogEmpty = true,
+                localCatalogNotEmpty = true
+            )
         )
     }
 }

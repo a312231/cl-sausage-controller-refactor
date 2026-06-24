@@ -452,16 +452,16 @@ class MaintenanceBoxFragment : Fragment() {
         refillCatalogRefreshJob = viewLifecycleOwner.lifecycleScope.launch {
             var loadingDismissed = false
             try {
-                val refreshSuccess = withTimeoutOrNull(REFILL_CATALOG_REFRESH_TIMEOUT_MS) {
-                    val deferred = CompletableDeferred<Boolean>()
+                val refreshResult = withTimeoutOrNull(REFILL_CATALOG_REFRESH_TIMEOUT_MS) {
+                    val deferred = CompletableDeferred<DataManagementAPI.ProductCatalogRefreshResult>()
                     DataManagementAPI.refreshProductCatalog(
                         force = true,
                         logPrefix = "加满烤肠箱前同步商品目录"
                     ) { result ->
-                        deferred.complete(result.success)
+                        deferred.complete(result)
                     }
                     deferred.await()
-                } ?: false
+                }
 
                 dismissLoadingExt()
                 loadingDismissed = true
@@ -471,7 +471,9 @@ class MaintenanceBoxFragment : Fragment() {
 
                 when (
                     resolveRefillCatalogRefreshAction(
-                        refreshSuccess = refreshSuccess,
+                        refreshSuccess = refreshResult?.success == true,
+                        remoteCatalogEmpty = refreshResult?.remoteCatalogEmpty == true,
+                        lastRemoteCatalogEmpty = DataManagementAPI.wasLastRemoteProductCatalogEmpty(),
                         localCatalogNotEmpty = KaoPanHelper.getTasteList().isNotEmpty()
                     )
                 ) {
@@ -482,6 +484,10 @@ class MaintenanceBoxFragment : Fragment() {
                     RefillCatalogRefreshAction.OPEN_DIALOG_WITH_CACHE_TOAST -> {
                         ToastUtils.showShort("商品目录同步失败，已使用本地缓存")
                         showTasteSelectDialog(selectedBoxes)
+                    }
+
+                    RefillCatalogRefreshAction.REJECT_WITH_EMPTY_CATALOG_TOAST -> {
+                        ToastUtils.showShort("本设备可售范围内暂无可补商品，请检查后台可售范围或商品上下架")
                     }
 
                     RefillCatalogRefreshAction.REJECT_WITH_NETWORK_TOAST -> {
