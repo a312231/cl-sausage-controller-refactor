@@ -141,6 +141,28 @@ class LowerBoardParamTuningServiceTest {
     }
 
     @Test
+    fun saveFlash_defaultTimeoutShouldAllowTenSecondFlashWrite() = runBlocking {
+        var now = 0L
+        val gateway = FakeParamGateway().apply {
+            readQueues[1120] = ArrayDeque(List(10) { 0x0001 } + 0x0002)
+        }
+        val service = LowerBoardParamTuningService(
+            gateway = gateway,
+            pollDelayMs = 0L,
+            nowMs = {
+                now += 1_000L
+                now
+            }
+        )
+
+        val result = service.saveFlash()
+
+        assertTrue(result is ParamTuningResult.Success)
+        assertEquals(listOf(1121 to 1), gateway.writes)
+        assertEquals(11, gateway.singleReads.count { it == 1120 })
+    }
+
+    @Test
     fun restoreDefaultsToRam_shouldPoll1120UntilResetOk() = runBlocking {
         val gateway = FakeParamGateway().apply {
             readQueues[1120] = ArrayDeque(listOf(0x0001, 0x0003))

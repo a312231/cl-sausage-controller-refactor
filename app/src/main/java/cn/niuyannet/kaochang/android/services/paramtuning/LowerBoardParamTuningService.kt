@@ -299,7 +299,7 @@ class LowerBoardParamTuningService(
 
     companion object {
         private const val DEFAULT_POLL_DELAY_MS = 200L
-        private const val DEFAULT_FLASH_TIMEOUT_MS = 5_000L
+        private const val DEFAULT_FLASH_TIMEOUT_MS = 15_000L
         private const val DEFAULT_CALIBRATION_TIMEOUT_MS = 60_000L
         private const val MIN_COORDINATE_MM = -500.0f
         private const val MAX_COORDINATE_MM = 800.0f
