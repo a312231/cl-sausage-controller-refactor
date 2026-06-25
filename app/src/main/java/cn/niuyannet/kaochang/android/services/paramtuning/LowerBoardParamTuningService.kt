@@ -299,7 +299,8 @@ class LowerBoardParamTuningService(
 
     companion object {
         private const val DEFAULT_POLL_DELAY_MS = 200L
-        private const val DEFAULT_FLASH_TIMEOUT_MS = 15_000L
+        // 固件 param_save 做 Flash 擦除+逐字烧写，真机实测约 15s，取 2 倍余量防边界超时
+        private const val DEFAULT_FLASH_TIMEOUT_MS = 30_000L
         private const val DEFAULT_CALIBRATION_TIMEOUT_MS = 60_000L
         private const val MIN_COORDINATE_MM = -500.0f
         private const val MAX_COORDINATE_MM = 800.0f
