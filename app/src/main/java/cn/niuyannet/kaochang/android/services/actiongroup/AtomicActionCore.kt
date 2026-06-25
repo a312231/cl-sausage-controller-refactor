@@ -72,6 +72,11 @@ sealed class AtomicReadResult {
     data class Failure(val message: String) : AtomicReadResult()
 }
 
+sealed class AtomicRegistersReadResult {
+    data class Success(val values: IntArray) : AtomicRegistersReadResult()
+    data class Failure(val message: String) : AtomicRegistersReadResult()
+}
+
 sealed class AtomicActionResult {
     data object Success : AtomicActionResult()
     data class Failed(val errorCode: Int, val message: String) : AtomicActionResult()

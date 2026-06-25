@@ -52,6 +52,40 @@ class VmAtomicModbusGateway(
         }
     }
 
+    suspend fun readRegisters(startAddress: Int, quantity: Int): AtomicRegistersReadResult {
+        if (operationDelayMs > 0L) {
+            delay(operationDelayMs)
+        }
+        val result = modbusOperationMutex.withLock {
+            VMModbusHelper.readHoldingRegistersWithDiagnosis(serverAddress, startAddress, quantity)
+        }
+        return if (result.isSuccess) {
+            AtomicRegistersReadResult.Success(result.values!!)
+        } else {
+            AtomicRegistersReadResult.Failure(formatBatchReadDiagnosis(startAddress, quantity, result.result))
+        }
+    }
+
+    private fun formatBatchReadDiagnosis(
+        startAddress: Int,
+        quantity: Int,
+        result: VMModbusHelper.ModbusOperationResult
+    ): String {
+        return listOf(
+            "操作=读取",
+            "寄存器地址=$startAddress",
+            "读取数量=$quantity",
+            "从站地址=$serverAddress",
+            "连接状态=${if (VMModbusHelper.modbusMaster != null) "已连接" else "未连接"}",
+            "异常类型=${result.exceptionClassName ?: "无"}",
+            "异常信息=${firstNonBlank(result.exceptionMessage, result.message, "无")}"
+        ).joinToString("，")
+    }
+
+    private fun firstNonBlank(vararg values: String?): String {
+        return values.firstOrNull { !it.isNullOrBlank() } ?: ""
+    }
+
     companion object {
         private val modbusOperationMutex = Mutex()
     }

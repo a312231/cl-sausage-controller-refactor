@@ -1,17 +1,23 @@
 package cn.niuyannet.kaochang.android.fragments
 
+import android.app.AlertDialog
 import android.os.Bundle
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
+import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.PanMove203Decision
 import cn.niuyannet.kaochang.android.services.PanMove203Policy
@@ -23,6 +29,15 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionSpec
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActions
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
+import cn.niuyannet.kaochang.android.services.paramtuning.CalibrationTarget
+import cn.niuyannet.kaochang.android.services.paramtuning.LowerBoardParamDefinitions
+import cn.niuyannet.kaochang.android.services.paramtuning.LowerBoardParamTuningService
+import cn.niuyannet.kaochang.android.services.paramtuning.ParamInput
+import cn.niuyannet.kaochang.android.services.paramtuning.ParamTuningMaintenanceGate
+import cn.niuyannet.kaochang.android.services.paramtuning.ParamTuningReadResult
+import cn.niuyannet.kaochang.android.services.paramtuning.ParamTuningResult
+import cn.niuyannet.kaochang.android.services.paramtuning.ParamValue
+import cn.niuyannet.kaochang.android.services.paramtuning.VmLowerBoardParamGateway
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
 import cn.niuyannet.kaochang.android.ui.endAdminBusy
@@ -42,6 +57,26 @@ private data class TestAtomicActionItem(
     override fun toString(): String = label
 }
 
+private data class CalibrationTargetItem(
+    val label: String,
+    val type: Int,
+    val needsSlot: Boolean,
+    val supportsZ: Boolean
+) {
+    override fun toString(): String = label
+
+    fun toTarget(slot: Int): CalibrationTarget = when (type) {
+        1 -> CalibrationTarget.BakewareSlot(slot)
+        2 -> CalibrationTarget.Lift
+        3 -> CalibrationTarget.Stick
+        4 -> CalibrationTarget.PushReady
+        5 -> CalibrationTarget.Discard
+        6 -> CalibrationTarget.PushTo
+        7 -> CalibrationTarget.PushBack
+        else -> error("unknown calibration target type: $type")
+    }
+}
+
 class TestFragment : Fragment() {
     private var _binding: FragmentTestBinding? = null
     private val binding: FragmentTestBinding
@@ -50,6 +85,18 @@ class TestFragment : Fragment() {
         TemperatureTargetInput(area = 1, register = 503, label = "一区1~9目标温度", textProvider = { binding.etTempSet0.text?.toString()?.trim().orEmpty() }),
         TemperatureTargetInput(area = 2, register = 504, label = "二区13~21目标温度", textProvider = { binding.etTempSet1.text?.toString()?.trim().orEmpty() }),
         TemperatureTargetInput(area = 3, register = 505, label = "三区25~33目标温度", textProvider = { binding.etTempSet2.text?.toString()?.trim().orEmpty() })
+    )
+    private val paramTuningService by lazy {
+        LowerBoardParamTuningService(VmLowerBoardParamGateway(KaoChangOperate.modbus_address))
+    }
+    private val calibrationTargetItems = listOf(
+        CalibrationTargetItem("1-烤位(编号 1~33)", 1, needsSlot = true, supportsZ = true),
+        CalibrationTargetItem("2-升降台取肠点", 2, needsSlot = false, supportsZ = true),
+        CalibrationTargetItem("3-穿签点", 3, needsSlot = false, supportsZ = true),
+        CalibrationTargetItem("4-推送准备位", 4, needsSlot = false, supportsZ = true),
+        CalibrationTargetItem("5-废弃池", 5, needsSlot = false, supportsZ = true),
+        CalibrationTargetItem("6-售卖推送终点(XY)", 6, needsSlot = false, supportsZ = false),
+        CalibrationTargetItem("7-推送回退点(XY)", 7, needsSlot = false, supportsZ = false)
     )
     private val atomicActionItems = listOf(
         TestAtomicActionItem("in1：移动到肠箱预推送位置", AtomicActions.in1, 1),
@@ -94,6 +141,7 @@ class TestFragment : Fragment() {
         setupSelfCleanListeners()
         setupTemperatureControlListeners()
         setupSystemInfoListeners()
+        setupParamTuningListeners()
     }
 
     private fun setupActionControlListeners() {
@@ -1177,5 +1225,485 @@ class TestFragment : Fragment() {
 
     private fun showToast(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    // ---- 参数调节 / 校准 ----
+
+    private val highValueParamKeys = listOf(
+        "stick_x", "stick_y", "stick_z",
+        "lift_x", "lift_y", "lift_z",
+        "push_ready_x", "push_ready_y", "push_ready_z",
+        "discard_x", "discard_y", "discard_z",
+        "push_to_x", "push_to_y",
+        "push_back_x", "push_back_y",
+        "exit_x", "exit_y",
+        "throw_y",
+        "x_push_ofs", "x_reverse_push_ofs"
+    )
+
+    // key -> 该字段的可编辑输入框（在 setupParamTuningListeners 中按 highValueParamKeys 动态构建）
+    private val paramInputFields = mutableMapOf<String, EditText>()
+
+    // 上次 readAll 读到的当前值快照，用于「只写改过的字段」改值检测
+    private val lastReadParamValues = mutableMapOf<String, Float>()
+
+    private fun setupParamTuningListeners() {
+        buildParamInputRows()
+        val targetAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, calibrationTargetItems)
+        targetAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerCalibrationTarget.adapter = targetAdapter
+        binding.spinnerCalibrationTarget.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                resetAdminIdleTimer("测试页选择校准目标")
+                val item = calibrationTargetItems[position]
+                binding.etCalibrationSlot.isEnabled = item.needsSlot
+                if (!item.needsSlot) {
+                    binding.etCalibrationSlot.setText("")
+                }
+                updateCalibrationTargetHint(item)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        binding.etCalibrationSlot.isEnabled = calibrationTargetItems.first().needsSlot
+        updateCalibrationTargetHint(calibrationTargetItems.first())
+
+        binding.btnParamTuningReadAll.setOnClickListener {
+            readAllParamTuning()
+        }
+
+        binding.btnParamTuningRefresh.setOnClickListener {
+            readAllParamTuning()
+        }
+
+        binding.btnParamTuningWrite.setOnClickListener {
+            writeChangedParamsWithGate()
+        }
+
+        binding.btnCalibrationMoveTo.setOnClickListener {
+            val x = binding.etCalibrationX.text?.toString()?.trim()?.toFloatOrNull()
+            val y = binding.etCalibrationY.text?.toString()?.trim()?.toFloatOrNull()
+            val z = binding.etCalibrationZ.text?.toString()?.trim()?.toFloatOrNull()
+            if (x == null || y == null || z == null) {
+                showToast("请输入有效的 X/Y/Z 坐标")
+                return@setOnClickListener
+            }
+            runParamTuningMutation("校准移动到输入XYZ") {
+                paramTuningService.moveTo(x, y, z)
+            }
+        }
+
+        binding.btnCalibrationCapture.setOnClickListener {
+            val targetItem = binding.spinnerCalibrationTarget.selectedItem as? CalibrationTargetItem
+            if (targetItem == null) {
+                showToast("请选择校准目标")
+                return@setOnClickListener
+            }
+            val slot = if (targetItem.needsSlot) {
+                val slotText = binding.etCalibrationSlot.text?.toString()?.trim()
+                val parsed = slotText?.toIntOrNull()
+                if (parsed == null || parsed !in 1..33) {
+                    showToast("烤位编号必须在 1~33 之间")
+                    return@setOnClickListener
+                }
+                parsed
+            } else {
+                0
+            }
+            val target = targetItem.toTarget(slot)
+            if (target is CalibrationTarget.BakewareSlot) {
+                showBakewareCaptureConfirmDialog(target) {
+                    runParamTuningMutation("捕获烤位${target.number}") {
+                        paramTuningService.captureTarget(target)
+                    }
+                }
+            } else {
+                runParamTuningMutation("捕获${targetItem.label}") {
+                    paramTuningService.captureTarget(target)
+                }
+            }
+        }
+
+        binding.btnCalibrationHome.setOnClickListener {
+            runParamTuningMutation("校准回零") {
+                paramTuningService.homeCalibration()
+            }
+        }
+
+        binding.btnParamTuningSaveFlash.setOnClickListener {
+            runParamTuningMutation(
+                actionName = "保存Flash",
+                resultView = binding.tvParamTuningSaveResult
+            ) {
+                paramTuningService.saveFlash()
+            }
+        }
+
+        binding.btnParamTuningRestoreDefaults.setOnClickListener {
+            runParamTuningMutation(
+                actionName = "恢复默认到RAM",
+                resultView = binding.tvParamTuningSaveResult
+            ) {
+                paramTuningService.restoreDefaultsToRam()
+            }
+        }
+    }
+
+    private fun updateCalibrationTargetHint(item: CalibrationTargetItem) {
+        binding.etCalibrationZ.isEnabled = true
+        if (item.supportsZ) {
+            binding.etCalibrationZ.hint = "Z (mm)"
+            binding.tvCalibrationTargetHint.text = "当前目标保存 X/Y/Z；捕获前请先移动到输入 XYZ。"
+        } else {
+            binding.etCalibrationZ.hint = "Z 仅用于移动定位"
+            binding.tvCalibrationTargetHint.text = "当前目标仅保存 X/Y；Z 仍用于移动定位，捕获时不会保存 Z。"
+        }
+    }
+
+    private fun readAllParamTuning() {
+        lifecycleScope.launch {
+            setParamTuningButtonsEnabled(false)
+            binding.tvParamTuningStatus.text = "正在读取全部参数..."
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    paramTuningService.readAll()
+                }
+                when (result) {
+                    is ParamTuningReadResult.Success -> {
+                        val snapshot = result.snapshot
+                        val latestConfig = AppConfig.getAppConfig()
+                        val readOnlyWarning = if (latestConfig.onlineStatus != 3) {
+                            "当前非维护中(onlineStatus=${latestConfig.onlineStatus})，仅允许查看，不允许写入/校准\n"
+                        } else {
+                            ""
+                        }
+                        binding.tvParamTuningStatus.text = buildString {
+                            append(readOnlyWarning)
+                            append("参数状态 1120=")
+                            append(formatParamTuningCode(snapshot.status.paramStatus1120))
+                            append("  参数版本=")
+                            append(formatParamTuningCode(snapshot.status.paramVersion))
+                            append("\n校准状态 1401=")
+                            append(formatParamTuningCode(snapshot.calibration.status1401))
+                            append("  最近错误 1416=")
+                            append(formatParamTuningCode(snapshot.calibration.lastError1416))
+                            append("\n当前 XYZ=(")
+                            append(String.format("%.2f", snapshot.calibration.currentX))
+                            append(", ")
+                            append(String.format("%.2f", snapshot.calibration.currentY))
+                            append(", ")
+                            append(String.format("%.2f", snapshot.calibration.currentZ))
+                            append(")")
+                            append("\n提示：固件 PARAM_READ_FROM_FLASH=false，保存 Flash 不等于重启后自动加载")
+                        }
+                        val allParams = snapshot.upperParams + snapshot.lowerParams
+                        prefillParamInputs(allParams)
+                    }
+                    is ParamTuningReadResult.Failure -> {
+                        binding.tvParamTuningStatus.text = "读取失败：${result.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                binding.tvParamTuningStatus.text = "读取异常：${e.message}"
+                AdminOperationLogger.e(
+                    action = "读取调参参数",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "失败原因=${e.message}"
+                )
+            } finally {
+                setParamTuningButtonsEnabled(true)
+            }
+        }
+    }
+
+    /**
+     * 按 highValueParamKeys 动态构建「标签 + 输入框」行，填充到 llParamTuningInputs 容器。
+     * 标签取自参数定义的 displayName，初始无值，等 readAll 成功后预填。
+     */
+    private fun buildParamInputRows() {
+        val container = binding.llParamTuningInputs
+        container.removeAllViews()
+        paramInputFields.clear()
+        val labelWidthPx = (context?.resources?.displayMetrics?.density ?: 1f).let { (it * 140).toInt() }
+        highValueParamKeys.forEach { key ->
+            val displayName = LowerBoardParamDefinitions.byKey[key]?.displayName ?: key
+            val row = LinearLayout(requireContext()).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+            }
+            val label = TextView(requireContext()).apply {
+                layoutParams = LinearLayout.LayoutParams(labelWidthPx, LinearLayout.LayoutParams.WRAP_CONTENT)
+                text = "$displayName($key)"
+                textSize = 13f
+            }
+            val edit = EditText(requireContext()).apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                hint = "mm"
+                inputType = InputType.TYPE_CLASS_NUMBER or
+                    InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                    InputType.TYPE_NUMBER_FLAG_SIGNED
+                textSize = 13f
+            }
+            row.addView(label)
+            row.addView(edit)
+            container.addView(row)
+            paramInputFields[key] = edit
+        }
+        // 这些输入框是动态创建的（晚于 onViewCreated 里的 registerAdminTextInputs(view)），
+        // 单独注册一次，保证现场输入数值时不会触发管理页空闲超时退出。
+        registerAdminTextInputs(container)
+    }
+
+    /**
+     * readAll 成功后用读到的当前值预填输入框，并更新改值检测用的快照缓存。
+     */
+    private fun prefillParamInputs(allParams: Map<String, ParamValue>) {
+        lastReadParamValues.clear()
+        highValueParamKeys.forEach { key ->
+            val edit = paramInputFields[key] ?: return@forEach
+            when (val param = allParams[key]) {
+                is ParamValue.Float32Value -> {
+                    val displayText = String.format("%.2f", param.value)
+                    edit.setText(displayText)
+                    // 缓存按显示文本回解析的值，使未改动字段在改值检测中精确相等，避免 %.2f 取整误差误触发写入
+                    lastReadParamValues[key] = displayText.toFloat()
+                }
+                else -> {
+                    // 高价值列表当前全为 float 字段；理论不会走到这里
+                    edit.setText("")
+                }
+            }
+        }
+    }
+
+    /**
+     * 写入参数修改：走现有 runParamTuningMutation 双层门控（一次刷新云端 + 门控检查），
+     * 通过后在同一 lambda 内顺序写多个被修改的字段。
+     */
+    private fun writeChangedParamsWithGate() {
+        if (lastReadParamValues.isEmpty()) {
+            showToast("请先点击「读取全部参数」再写入")
+            binding.tvParamTuningWriteResult.text = "未写入：请先读取一次参数"
+            return
+        }
+        runParamTuningMutation(
+            actionName = "写入参数修改",
+            resultView = binding.tvParamTuningWriteResult,
+            action = { writeChangedParams() }
+        )
+    }
+
+    /**
+     * 在门控通过后顺序写入「能解析且与上次读取值不同」的字段。
+     * 任一字段失败立即停止并点名失败字段。全部成功返回 Success。
+     */
+    private suspend fun writeChangedParams(): ParamTuningResult {
+        val toWrite = withContext(Dispatchers.Main) {
+            collectChangedParamInputs()
+        }
+        if (toWrite is ChangedParamCollect.InvalidInput) {
+            return ParamTuningResult.Failure("字段「${toWrite.key}」输入非法：${toWrite.text}")
+        }
+        val changes = (toWrite as ChangedParamCollect.Ok).changes
+        if (changes.isEmpty()) {
+            return ParamTuningResult.Failure("没有需要写入的字段：所有输入框为空或与当前值相同")
+        }
+        val written = mutableListOf<String>()
+        for ((key, value) in changes) {
+            val result = paramTuningService.writeParam(key, ParamInput.FloatInput(value))
+            if (result is ParamTuningResult.Failure) {
+                // 失败统一由 runParamTuningMutation 落 RESULT_FAIL 日志（message 已点名字段），此处只把已写字段带回 message
+                return ParamTuningResult.Failure(
+                    "字段「$key」写入失败：${result.message}（已写入：${written.joinToString().ifEmpty { "无" }}）",
+                    result.code
+                )
+            }
+            written += key
+            lastReadParamValues[key] = value
+        }
+        LogUtils.i("【下位机测试】写入参数修改成功：成功写入字段=${written.joinToString()}")
+        return ParamTuningResult.Success
+    }
+
+    private sealed class ChangedParamCollect {
+        data class Ok(val changes: List<Pair<String, Float>>) : ChangedParamCollect()
+        data class InvalidInput(val key: String, val text: String) : ChangedParamCollect()
+    }
+
+    /**
+     * 读取各输入框，筛出「能解析成数值且与上次读取值不同」的字段。
+     * 输入框为空 -> 跳过；输入非数字 -> 直接判非法（点名字段）。
+     */
+    private fun collectChangedParamInputs(): ChangedParamCollect {
+        val changes = mutableListOf<Pair<String, Float>>()
+        highValueParamKeys.forEach { key ->
+            val edit = paramInputFields[key] ?: return@forEach
+            val text = edit.text?.toString()?.trim().orEmpty()
+            if (text.isEmpty()) {
+                return@forEach
+            }
+            val value = text.toFloatOrNull()
+                ?: return ChangedParamCollect.InvalidInput(key, text)
+            val lastValue = lastReadParamValues[key]
+            if (lastValue != null && lastValue == value) {
+                return@forEach
+            }
+            changes += key to value
+        }
+        return ChangedParamCollect.Ok(changes)
+    }
+
+    /**
+     * Dual-layer gate for all param tuning mutations.
+     *
+     * Outer: refreshRemoteDeviceState (async callback, failure = hard reject, never fall back to cache)
+     * Inner: ParamTuningMaintenanceGate.check() = device state (onlineStatus/errorStatus/inspectionMode/moveStatus)
+     *        + register-level idle check (delegates to LowerBoardMaintenancePolicy.canRunMaintenance)
+     */
+    private fun runParamTuningMutation(
+        actionName: String,
+        resultView: TextView = binding.tvCalibrationResult,
+        action: suspend () -> ParamTuningResult
+    ) {
+        setParamTuningButtonsEnabled(false)
+        resultView.text = "正在同步云端设备状态..."
+
+        DataManagementAPI.refreshRemoteDeviceState(logPrefix = "测试页调参前同步") { result ->
+            activity?.runOnUiThread {
+                if (!isAdded || _binding == null) return@runOnUiThread
+
+                if (!result.success) {
+                    AdminOperationLogger.w(
+                        action = actionName,
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_REJECT,
+                        detail = "拒绝原因=同步云端设备状态失败"
+                    )
+                    resultView.text = "同步云端设备状态失败，请稍后重试"
+                    showToast("同步云端设备状态失败，请稍后重试")
+                    setParamTuningButtonsEnabled(true)
+                    return@runOnUiThread
+                }
+
+                val latestConfig = AppConfig.getAppConfig()
+
+                lifecycleScope.launch {
+                    val guard = withContext(Dispatchers.IO) { readLowerBoardMaintenanceGuard() }
+                    val decision = ParamTuningMaintenanceGate.check(
+                        onlineStatus = latestConfig.onlineStatus,
+                        errorStatus = latestConfig.errorStatus,
+                        inspectionMode = latestConfig.inspectionMode,
+                        moveStatus = latestConfig.moveStatus,
+                        status201 = guard.status201 ?: -1,
+                        moveResult203 = guard.moveResult203 ?: -1,
+                        atomicResultValues = guard.atomicResults.filterValues { it != null }.mapValues { it.value!! }
+                    )
+                    if (!decision.allowed) {
+                        AdminOperationLogger.w(
+                            action = actionName,
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_REJECT,
+                            detail = "拒绝原因=${decision.reason}，检查结果=${guard.summary()}"
+                        )
+                        resultView.text = "操作被拒绝：${decision.reason}"
+                        showToast(decision.reason)
+                        setParamTuningButtonsEnabled(true)
+                        return@launch
+                    }
+
+                    val adminBusy = beginAdminBusy("测试下位机调参:$actionName")
+                    try {
+                        AdminOperationLogger.i(
+                            action = actionName,
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_START,
+                            detail = "检查结果=${guard.summary()}"
+                        )
+                        resultView.text = "执行中：$actionName..."
+                        val tuningResult = withContext(Dispatchers.IO) { action() }
+                        when (tuningResult) {
+                            is ParamTuningResult.Success -> {
+                                AdminOperationLogger.i(
+                                    action = actionName,
+                                    page = AdminOperationLogger.PAGE_TEST,
+                                    result = AdminOperationLogger.RESULT_DONE,
+                                    detail = "操作成功"
+                                )
+                                val successMessage = buildSuccessMessage(actionName)
+                                resultView.text = successMessage
+                            }
+                            is ParamTuningResult.Failure -> {
+                                AdminOperationLogger.w(
+                                    action = actionName,
+                                    page = AdminOperationLogger.PAGE_TEST,
+                                    result = AdminOperationLogger.RESULT_FAIL,
+                                    detail = "失败原因=${tuningResult.message}，code=${tuningResult.code ?: "无"}"
+                                )
+                                resultView.text = "$actionName 失败：${tuningResult.message}"
+                            }
+                        }
+                    } catch (e: Exception) {
+                        AdminOperationLogger.e(
+                            action = actionName,
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "异常=${e.message}"
+                        )
+                        resultView.text = "$actionName 异常：${e.message}"
+                    } finally {
+                        endAdminBusy(adminBusy)
+                        setParamTuningButtonsEnabled(true)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun buildSuccessMessage(actionName: String): String {
+        return when {
+            actionName == "保存Flash" ->
+                "$actionName 完成\n提示：固件 PARAM_READ_FROM_FLASH=false，保存 Flash 不等于重启后自动加载"
+            actionName.startsWith("恢复默认") ->
+                "$actionName 完成\n提示：仅恢复 RAM 中参数为出厂默认值，需再执行「保存 Flash」才能持久化"
+            actionName == "校准回零" ->
+                "$actionName 完成\n提示：固件回零顺序为先 Z 后 XY"
+            actionName == "写入参数修改" ->
+                "$actionName 完成\n提示：仅改写 RAM，需再执行「保存 Flash」才能持久化"
+            else -> "$actionName 完成"
+        }
+    }
+
+    private fun showBakewareCaptureConfirmDialog(target: CalibrationTarget.BakewareSlot, onConfirm: () -> Unit) {
+        val ctx = context ?: return
+        AlertDialog.Builder(ctx)
+            .setTitle("烤位捕获确认")
+            .setMessage(
+                "即将捕获烤位 ${target.number} 的当前位置。\n\n" +
+                    "捕获任一烤位会重写全局 Z 与 X 公式，影响全部 33 个烤位，" +
+                    "并改写本排 Y 坐标。\n\n" +
+                    "请确认机械臂已在正确位置后再继续。"
+            )
+            .setPositiveButton("确认捕获") { _, _ -> onConfirm() }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun setParamTuningButtonsEnabled(enabled: Boolean) {
+        binding.btnParamTuningReadAll.isEnabled = enabled
+        binding.btnParamTuningRefresh.isEnabled = enabled
+        binding.btnParamTuningWrite.isEnabled = enabled
+        binding.btnCalibrationMoveTo.isEnabled = enabled
+        binding.btnCalibrationCapture.isEnabled = enabled
+        binding.btnCalibrationHome.isEnabled = enabled
+        binding.btnParamTuningSaveFlash.isEnabled = enabled
+        binding.btnParamTuningRestoreDefaults.isEnabled = enabled
+    }
+
+    private fun formatParamTuningCode(code: Int): String {
+        return "0x${code.toString(16).uppercase().padStart(4, '0')}"
     }
 }

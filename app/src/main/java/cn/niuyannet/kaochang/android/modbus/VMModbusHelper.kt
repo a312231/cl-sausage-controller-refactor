@@ -99,6 +99,14 @@ object VMModbusHelper {
             get() = result.isSuccess && value >= 0
     }
 
+    data class ModbusBatchReadResult(
+        val values: IntArray?,
+        val result: ModbusOperationResult
+    ) {
+        val isSuccess: Boolean
+            get() = result.isSuccess && values != null
+    }
+
     data class ModbusDiagnosisSnapshot(
         val connected: Boolean,
         val port: String,
@@ -584,6 +592,55 @@ object VMModbusHelper {
             e.printStackTrace()
             LogUtils.d("KaoChangAlgorithm", "批量读取寄存器失败：${e.message}")
             null
+        }
+    }
+
+    fun readHoldingRegistersWithDiagnosis(
+        serverAddress: Int,
+        startAddress: Int,
+        quantity: Int
+    ): ModbusBatchReadResult {
+        if (isDebug) {
+            return ModbusBatchReadResult(
+                values = IntArray(quantity),
+                result = ModbusOperationResult(ModbusOperationStatus.SUCCESS)
+            )
+        }
+        val currentMaster = modbusMaster ?: return ModbusBatchReadResult(
+            values = null,
+            result = ModbusOperationResult(
+                ModbusOperationStatus.DISCONNECTED,
+                "RTU 主站未初始化，跳过批量寄存器读取 [$startAddress,$quantity]"
+            )
+        )
+        return try {
+            val values = currentMaster.readHoldingRegisters(serverAddress, startAddress, quantity)
+            if (values != null) {
+                ModbusBatchReadResult(
+                    values = values,
+                    result = ModbusOperationResult(ModbusOperationStatus.SUCCESS)
+                )
+            } else {
+                ModbusBatchReadResult(
+                    values = null,
+                    result = ModbusOperationResult(
+                        ModbusOperationStatus.DISCONNECTED,
+                        "批量读取寄存器 $startAddress 数量 $quantity 返回空"
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            LogUtils.d("KaoChangAlgorithm", "批量读取寄存器失败：${e.message}")
+            ModbusBatchReadResult(
+                values = null,
+                result = ModbusOperationResult(
+                    status = classifyExceptionStatus(e),
+                    message = e.message,
+                    exceptionClassName = e.javaClass.simpleName,
+                    exceptionMessage = e.message
+                )
+            )
         }
     }
 
