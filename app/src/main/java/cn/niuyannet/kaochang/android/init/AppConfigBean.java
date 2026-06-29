@@ -47,6 +47,9 @@ public class AppConfigBean implements Serializable {
     // 最近一次已应用的 runtime_control 序号，随 AppConfig JSON 持久化
     public long lastAppliedControlSeq = -1L;
 
+    // 上位机本地运行心跳时间戳，用于冷启动后识别断电/App 停止期间的停热缺口。
+    public long lastRuntimeAliveAtMs = 0L;
+
     // 历史本地兼容字段：0=未激活，1=已激活；不等同于后端 kc_device.status（0=正常/启用，1=停用）
     public int status;
 

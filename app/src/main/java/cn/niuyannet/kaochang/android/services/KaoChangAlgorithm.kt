@@ -295,6 +295,9 @@ object KaoChangAlgorithm {
         startModbusStateMonitor()
         algorithmScope.launch {
             while (isRunning) {
+                // ponytail: 心跳必须先于 pollKaoPanStatus，且不得受 onlineStatus 门控；
+                // 休息/维护中也要续心跳，否则重启会把带电休息误算成断电停热缺口导致误丢盘。
+                PowerLossRecoveryGuard.markAliveIfDueAndPersist()
                 pollKaoPanStatus()
                 if (!isRunning) break
                 // 每轮 poll 后只在可售/库存投影变化或兜底到期时同步完整快照。

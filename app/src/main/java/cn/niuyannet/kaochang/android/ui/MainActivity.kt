@@ -25,6 +25,7 @@ import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
+import cn.niuyannet.kaochang.android.services.PowerLossRecoveryGuard
 import cn.niuyannet.kaochang.android.services.SupplementPauseController
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
@@ -141,6 +142,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         if (shouldStartRuntime) {
             runtimeStarted = true
             LogUtils.d("【启动流程】设备配置有效，开始启动算法与状态同步：source=$source")
+            PowerLossRecoveryGuard.recoverBeforeRuntimeStart(source)
             KaoChangAlgorithm.restoreRoastAlgorithmState()
             KaoChangAlgorithm.runServer()
         }

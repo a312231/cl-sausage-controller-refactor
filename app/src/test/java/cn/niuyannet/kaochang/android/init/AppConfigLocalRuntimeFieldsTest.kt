@@ -18,6 +18,7 @@ class AppConfigLocalRuntimeFieldsTest {
             "pendingDiscardPositions",
             "foodSafetyAlertCode",
             "foodSafetyAlertReason",
+            "lastRuntimeAliveAtMs",
             "zone3Dirty",
             "zone3CleanPending",
             "zone3CleanSuppressedFor4F"
@@ -49,6 +50,7 @@ class AppConfigLocalRuntimeFieldsTest {
             pendingDiscardPositions.addAll(listOf(5, 8))
             foodSafetyAlertCode = "BAKING_PAUSE_ABORT"
             foodSafetyAlertReason = "烤制停热超阈值"
+            lastRuntimeAliveAtMs = 123_000L
             zone3Dirty = 1
             zone3CleanPending = 0
             zone3CleanSuppressedFor4F = 1
@@ -66,6 +68,7 @@ class AppConfigLocalRuntimeFieldsTest {
             put("pendingDiscardPositions", emptyList<Int>())
             put("foodSafetyAlertCode", null)
             put("foodSafetyAlertReason", null)
+            put("lastRuntimeAliveAtMs", 0L)
             put("zone3Dirty", 0)
             put("zone3CleanPending", 1)
             put("zone3CleanSuppressedFor4F", 0)
@@ -81,6 +84,7 @@ class AppConfigLocalRuntimeFieldsTest {
         assertEquals(listOf(5, 8), config.pendingDiscardPositions)
         assertEquals("BAKING_PAUSE_ABORT", config.foodSafetyAlertCode)
         assertEquals("烤制停热超阈值", config.foodSafetyAlertReason)
+        assertEquals(123_000L, config.lastRuntimeAliveAtMs)
         assertEquals(1, config.zone3Dirty)
         assertEquals(0, config.zone3CleanPending)
         assertEquals(1, config.zone3CleanSuppressedFor4F)
