@@ -327,27 +327,10 @@ object SendServerHelper {
     }
 
     fun publishActionGroupTelemetry(telemetry: ActionGroupTelemetry): Boolean {
-        val payload = JSONObject()
-        payload["messageType"] = MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY
-        payload["deviceCode"] = AppConfig.getDeviceId()
-        payload["eventId"] = telemetry.eventId
-        payload["eventPhase"] = telemetry.eventPhase
-        payload["reportedAt"] = telemetry.reportedAt
-        payload["actionProtocolVersion"] = telemetry.actionProtocolVersion
-        payload["sessionId"] = telemetry.sessionId
-        payload["actionName"] = telemetry.actionName
-        payload["registerAddress"] = telemetry.registerAddress
-        payload["resultRegister"] = telemetry.resultRegister
-        payload["infoValue"] = telemetry.infoValue
-        payload["commandValue"] = telemetry.commandValue
-        payload["resultCode"] = telemetry.resultCode
-        payload["errorCode"] = telemetry.errorCode
-        payload["errorMessage"] = telemetry.errorMessage
-        payload["boxNo"] = telemetry.boxNo
-        payload["panNo"] = telemetry.panNo
-        payload["orderId"] = telemetry.orderId
-        payload["resourceLocks"] = telemetry.resourceLocks
-        payload["elapsedMs"] = telemetry.elapsedMs
+        val payload = ActionGroupTelemetryPayloadBuilder.build(
+            deviceCode = AppConfig.getDeviceId(),
+            telemetry = telemetry
+        )
         val ok = VMMqttHelper.publishService(
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_DEVICE_LOG
@@ -360,13 +343,16 @@ object SendServerHelper {
                 "【300/400动作组】结构化动作日志已进入 MQTT 发送队列：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
                     "eventPhase=${telemetry.eventPhase}，eventId=${telemetry.eventId}，" +
+                    "physicalCheckpoint=${telemetry.physicalCheckpoint}，physicalLocation=${telemetry.physicalLocation}，" +
                     "errorCode=${telemetry.errorCode}，elapsedMs=${telemetry.elapsedMs}"
             )
         } else {
             LogUtils.w(
                 "【300/400动作组】结构化动作日志进入 MQTT 发送队列失败：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
-                    "eventPhase=${telemetry.eventPhase}，eventId=${telemetry.eventId}，errorCode=${telemetry.errorCode}"
+                    "eventPhase=${telemetry.eventPhase}，eventId=${telemetry.eventId}，" +
+                    "physicalCheckpoint=${telemetry.physicalCheckpoint}，physicalLocation=${telemetry.physicalLocation}，" +
+                    "errorCode=${telemetry.errorCode}"
             )
         }
         return ok

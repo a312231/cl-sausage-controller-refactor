@@ -26,5 +26,7 @@ data class ActionGroupTelemetry(
     val panNo: Int?,
     val orderId: String?,
     val resourceLocks: String?,
+    val physicalCheckpoint: String? = null,
+    val physicalLocation: String? = null,
     val elapsedMs: Long
 )

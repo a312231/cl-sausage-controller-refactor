@@ -800,6 +800,11 @@ class AtomicActionExecutor(
             is AtomicActionResult.ModbusError,
             is AtomicActionResult.Timeout -> null
         }
+        val physicalCheckpoint = if (result == AtomicActionResult.Success) {
+            successfulPhysicalCheckpoint(spec.name)
+        } else {
+            null
+        }
         emitTelemetry(
             spec = spec,
             startedAtMs = startedAtMs,
@@ -807,6 +812,8 @@ class AtomicActionExecutor(
             resultCode = resultCode,
             errorCode = errorCode,
             errorMessage = errorMessage,
+            physicalCheckpoint = physicalCheckpoint?.first,
+            physicalLocation = physicalCheckpoint?.second,
             elapsedMs = elapsedMs
         )
         return result
@@ -821,6 +828,8 @@ class AtomicActionExecutor(
         resultCode: Int? = null,
         errorCode: Int? = null,
         errorMessage: String? = null,
+        physicalCheckpoint: String? = null,
+        physicalLocation: String? = null,
         elapsedMs: Long = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
     ) {
         telemetrySink(
@@ -841,9 +850,21 @@ class AtomicActionExecutor(
                 panNo = telemetryContext.panNo,
                 orderId = telemetryContext.orderId,
                 resourceLocks = telemetryContext.resourceLocks,
+                physicalCheckpoint = physicalCheckpoint,
+                physicalLocation = physicalLocation,
                 elapsedMs = elapsedMs
             )
         )
+    }
+
+    private fun successfulPhysicalCheckpoint(actionName: String): Pair<String, String>? {
+        return when (actionName) {
+            "in2" -> "SUPPLEMENT_PICKED_FROM_BOX" to "DRUM"
+            "in5" -> "SUPPLEMENT_THROWN_TO_LIFT" to "LIFT"
+            "in7" -> "SUPPLEMENT_PLACED_ON_PAN" to "PAN"
+            "out1" -> "OUT_REMOVED_FROM_PAN" to "SKEWERING_POSITION"
+            else -> null
+        }
     }
 
     private fun buildActionEventId(startedAtMs: Long, actionName: String, eventPhase: String): String {

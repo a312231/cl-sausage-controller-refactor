@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -756,6 +757,133 @@ class AtomicActionExecutorTest {
         assertEquals(AtomicActionCodes.RUNNING, telemetry.first { it.eventPhase == "started" }.commandValue)
         assertEquals(AtomicActionCodes.RUNNING, telemetry.first { it.eventPhase == "running_confirmed" }.resultCode)
         assertEquals(COMPLETED, telemetry.first { it.eventPhase == "finished" }.resultCode)
+    }
+
+    @Test
+    fun execute_shouldAttachPhysicalCheckpointOnlyToSuccessfulFinishedActions() = runBlocking {
+        val cases = listOf(
+            Triple(AtomicActions.in2, 5, "SUPPLEMENT_PICKED_FROM_BOX" to "DRUM"),
+            Triple(AtomicActions.in5, 0, "SUPPLEMENT_THROWN_TO_LIFT" to "LIFT"),
+            Triple(AtomicActions.in7, 9, "SUPPLEMENT_PLACED_ON_PAN" to "PAN"),
+            Triple(AtomicActions.out1, 9, "OUT_REMOVED_FROM_PAN" to "SKEWERING_POSITION")
+        )
+
+        cases.forEach { (spec, infoValue, expected) ->
+            val telemetry = mutableListOf<ActionGroupTelemetry>()
+            val gateway = FakeGateway(
+                reads = mapOf(spec.resultRegister to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
+            )
+            val executor = AtomicActionExecutor(
+                gateway = gateway,
+                logger = {},
+                telemetryContext = ActionGroupTelemetryContext(
+                    sessionId = "session-${spec.name}",
+                    boxNo = 5,
+                    panNo = 9,
+                    orderId = "order-1"
+                ),
+                telemetrySink = { telemetry += it }
+            )
+
+            assertEquals(AtomicActionResult.Success, executor.execute(spec, infoValue))
+
+            val finishedTelemetry = telemetry.first { it.eventPhase == "finished" }
+            assertEquals(expected.first, finishedTelemetry.physicalCheckpoint)
+            assertEquals(expected.second, finishedTelemetry.physicalLocation)
+            telemetry.filterNot { it.eventPhase == "finished" }.forEach {
+                assertNull(it.physicalCheckpoint)
+                assertNull(it.physicalLocation)
+            }
+        }
+    }
+
+    @Test
+    fun execute_shouldNotAttachPhysicalCheckpointToFailedFinishedAction() = runBlocking {
+        val telemetry = mutableListOf<ActionGroupTelemetry>()
+        val gateway = FakeGateway(
+            reads = mapOf(
+                321 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IR_PICK_FAILED
+                )
+            )
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            telemetryContext = ActionGroupTelemetryContext(
+                sessionId = "session-failed",
+                boxNo = 5,
+                panNo = 9
+            ),
+            telemetrySink = { telemetry += it }
+        )
+
+        val result = executor.execute(AtomicActions.in2, infoValue = 5)
+
+        assertTrue(result is AtomicActionResult.Failed)
+        val finishedTelemetry = telemetry.first { it.eventPhase == "finished" }
+        assertNull(finishedTelemetry.physicalCheckpoint)
+        assertNull(finishedTelemetry.physicalLocation)
+    }
+
+    @Test
+    fun execute_shouldNotAttachPhysicalCheckpointToUnmappedSuccessfulAction() = runBlocking {
+        val telemetry = mutableListOf<ActionGroupTelemetry>()
+        val gateway = FakeGateway(
+            reads = mapOf(331 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
+        )
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            telemetrySink = { telemetry += it }
+        )
+
+        assertEquals(AtomicActionResult.Success, executor.execute(AtomicActions.in3, infoValue = 0))
+
+        val finishedTelemetry = telemetry.first { it.eventPhase == "finished" }
+        assertNull(finishedTelemetry.physicalCheckpoint)
+        assertNull(finishedTelemetry.physicalLocation)
+    }
+
+    @Test
+    fun execute_shouldNotAttachPhysicalCheckpointToTimeoutOrModbusErrorFinishedAction() = runBlocking {
+        val timeoutTelemetry = mutableListOf<ActionGroupTelemetry>()
+        val timeoutGateway = FakeGateway(
+            reads = mapOf(411 to repeatedQueue(AtomicActionCodes.RUNNING, 20))
+        )
+        val timeoutExecutor = AtomicActionExecutor(
+            gateway = timeoutGateway,
+            logger = {},
+            telemetrySink = { timeoutTelemetry += it }
+        )
+
+        val timeoutResult = timeoutExecutor.execute(AtomicActions.out1.copy(timeoutMs = 30L, pollDelayMs = 10L), infoValue = 9)
+
+        assertTrue(timeoutResult is AtomicActionResult.Timeout)
+        timeoutTelemetry.first { it.eventPhase == "finished" }.let {
+            assertNull(it.physicalCheckpoint)
+            assertNull(it.physicalLocation)
+        }
+
+        val modbusTelemetry = mutableListOf<ActionGroupTelemetry>()
+        val modbusExecutor = AtomicActionExecutor(
+            gateway = FakeGateway(
+                reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE)),
+                writeResult = AtomicIoResult.Failure("写命令失败")
+            ),
+            logger = {},
+            telemetrySink = { modbusTelemetry += it }
+        )
+
+        val modbusResult = modbusExecutor.execute(AtomicActions.in7, infoValue = 9)
+
+        assertTrue(modbusResult is AtomicActionResult.ModbusError)
+        modbusTelemetry.first { it.eventPhase == "finished" }.let {
+            assertNull(it.physicalCheckpoint)
+            assertNull(it.physicalLocation)
+        }
     }
 
     @Test
