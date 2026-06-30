@@ -1953,12 +1953,17 @@ object KaoChangOperate {
                     "口味数量=$tasteSummary"
             )
             InActionGroupPrefetchPipelineRunner(
-                client = createAtomicActionClient(
-                    ActionGroupTelemetryContext(
-                        sessionId = owner,
-                        resourceLocks = actionGroupLocks.snapshot()
+                client = createAtomicActionClient(),
+                actionClientProvider = { context ->
+                    createAtomicActionClient(
+                        ActionGroupTelemetryContext(
+                            sessionId = owner,
+                            boxNo = context.sourceBoxNo,
+                            panNo = context.targetPanNo,
+                            resourceLocks = actionGroupLocks.snapshot()
+                        )
                     )
-                ),
+                },
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogger = { message -> LogUtils.i(message) },
                 failureLogger = { message -> LogUtils.e(message) },

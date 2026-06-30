@@ -55,6 +55,7 @@ class InActionGroupPrefetchPipelineRunner(
     private val onTaskCompleted: (CompletedInActionGroupPipelineTask) -> Unit = {},
     private val onPickFailureSkipped: (Int) -> Unit = {},
     private val onCurrentActionChanged: (InActionGroupPipelineActionContext) -> Unit = {},
+    private val actionClientProvider: (InActionGroupPipelineActionContext) -> AtomicActionClient = { client },
     private val shouldPauseAfterCurrentTask: () -> Boolean = { false },
     private val pauseReasonAfterCurrentTask: () -> String? = {
         if (shouldPauseAfterCurrentTask()) "检测到订单待出餐" else null
@@ -101,7 +102,7 @@ class InActionGroupPrefetchPipelineRunner(
             var currentDeliveryAction: InActionGroupPipelineActionContext? = null
             try {
                 currentDeliveryAction = notifyCurrentAction(task, prefetched.sourceBoxNo, task.targetPanNo, "in4")
-                when (val in4 = executeLoggedAction(AtomicActions.in4, 0, task.targetPanNo, prefetched.sourceBoxNo)) {
+                when (val in4 = executeLoggedAction(task, AtomicActions.in4, 0, prefetched.sourceBoxNo)) {
                     AtomicActionResult.Success -> Unit
                     else -> return@coroutineScope deliveryFailure(completed, task, prefetched.sourceBoxNo, "in4", in4, nextPrefetch)
                 }
@@ -110,7 +111,7 @@ class InActionGroupPrefetchPipelineRunner(
                     AtomicActions.in5,
                     0,
                     AtomicActionCodes.IR_THROW_FAILED,
-                    task.targetPanNo,
+                    task,
                     prefetched.sourceBoxNo
                 )) {
                     AtomicActionResult.Success -> Unit
@@ -118,9 +119,9 @@ class InActionGroupPrefetchPipelineRunner(
                 }
                 currentDeliveryAction = notifyCurrentAction(task, prefetched.sourceBoxNo, task.targetPanNo, "in6")
                 when (val in6 = executeLoggedAction(
+                    task,
                     AtomicActions.in6,
                     0,
-                    task.targetPanNo,
                     prefetched.sourceBoxNo,
                     onCommandDispatched = startNextPrefetchIfNeeded
                 )) {
@@ -129,7 +130,7 @@ class InActionGroupPrefetchPipelineRunner(
                 }
                 logger("in6 完成，立即执行 in7：targetPan=${task.targetPanNo}，sourceBox=${prefetched.sourceBoxNo}")
                 currentDeliveryAction = notifyCurrentAction(task, prefetched.sourceBoxNo, task.targetPanNo, "in7")
-                when (val in7 = executeLoggedAction(AtomicActions.in7, task.targetPanNo, task.targetPanNo, prefetched.sourceBoxNo)) {
+                when (val in7 = executeLoggedAction(task, AtomicActions.in7, task.targetPanNo, prefetched.sourceBoxNo)) {
                     AtomicActionResult.Success -> Unit
                     else -> return@coroutineScope deliveryFailure(completed, task, prefetched.sourceBoxNo, "in7", in7, nextPrefetch)
                 }
@@ -219,7 +220,7 @@ class InActionGroupPrefetchPipelineRunner(
             }
 
             recordCurrentAction(sourceBoxNo, "in1")
-            when (val in1 = executeLoggedAction(AtomicActions.in1, sourceBoxNo, task.targetPanNo, sourceBoxNo)) {
+            when (val in1 = executeLoggedAction(task, AtomicActions.in1, sourceBoxNo, sourceBoxNo)) {
                 AtomicActionResult.Success -> Unit
                 else -> return PrefetchResult.Failed("in1", in1, describe(in1), sourceBoxNo)
             }
@@ -229,7 +230,7 @@ class InActionGroupPrefetchPipelineRunner(
                 AtomicActions.in2,
                 sourceBoxNo,
                 AtomicActionCodes.IR_PICK_FAILED,
-                task.targetPanNo,
+                task,
                 sourceBoxNo,
                 maxAttempts = 2
             )) {
@@ -267,7 +268,7 @@ class InActionGroupPrefetchPipelineRunner(
             }
 
             recordCurrentAction(sourceBoxNo, "in3")
-            when (val in3 = executeLoggedAction(AtomicActions.in3, 0, task.targetPanNo, sourceBoxNo)) {
+            when (val in3 = executeLoggedAction(task, AtomicActions.in3, 0, sourceBoxNo)) {
                 AtomicActionResult.Success -> return PrefetchResult.Success(sourceBoxNo)
                 else -> return PrefetchResult.Failed("in3", in3, describe(in3), sourceBoxNo)
             }
@@ -320,12 +321,13 @@ class InActionGroupPrefetchPipelineRunner(
     }
 
     private suspend fun executeAction(
+        actionClient: AtomicActionClient,
         spec: AtomicActionSpec,
         infoValue: Int,
         onCommandDispatched: (suspend () -> Unit)? = null
     ): AtomicActionResult {
         return try {
-            client.execute(spec, infoValue, onCommandDispatched)
+            actionClient.execute(spec, infoValue, onCommandDispatched)
         } catch (e: CancellationException) {
             throw e
         } catch (throwable: Throwable) {
@@ -334,21 +336,27 @@ class InActionGroupPrefetchPipelineRunner(
     }
 
     private suspend fun executeLoggedAction(
+        task: InActionGroupPipelineTask,
         spec: AtomicActionSpec,
         infoValue: Int,
-        targetPanNo: Int,
         sourceBoxNo: Int,
         onCommandDispatched: (suspend () -> Unit)? = null
     ): AtomicActionResult {
+        val actionContext = InActionGroupPipelineActionContext(
+            task = task,
+            sourceBoxNo = sourceBoxNo,
+            targetPanNo = task.targetPanNo,
+            actionName = spec.name
+        )
         val startedAtMs = System.currentTimeMillis()
-        operationLogger("【补肠】烤盘$targetPanNo ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo")
-        val result = executeAction(spec, infoValue, onCommandDispatched)
+        operationLogger("【补肠】烤盘${task.targetPanNo} ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo")
+        val result = executeAction(actionClientProvider(actionContext), spec, infoValue, onCommandDispatched)
         val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
         if (result == AtomicActionResult.Success) {
             val suffix = if (spec.name == "in7") "，烤盘开始烤制计时" else ""
-            operationLogger("【补肠】烤盘$targetPanNo ${actionFinishLabel(spec)} 完成$suffix，用时=${formatElapsedSeconds(elapsedMs)}秒")
+            operationLogger("【补肠】烤盘${task.targetPanNo} ${actionFinishLabel(spec)} 完成$suffix，用时=${formatElapsedSeconds(elapsedMs)}秒")
         } else {
-            failureLogger("【失败原因】补肠烤盘$targetPanNo ${failureText(spec, result)}")
+            failureLogger("【失败原因】补肠烤盘${task.targetPanNo} ${failureText(spec, result)}")
         }
         return result
     }
@@ -357,28 +365,34 @@ class InActionGroupPrefetchPipelineRunner(
         spec: AtomicActionSpec,
         infoValue: Int,
         retryableErrorCode: Int,
-        targetPanNo: Int,
+        task: InActionGroupPipelineTask,
         sourceBoxNo: Int,
         maxAttempts: Int = 3
     ): AtomicActionResult {
         var lastResult: AtomicActionResult = AtomicActionResult.Success
         for (attempt in 1..maxAttempts) {
+            val actionContext = InActionGroupPipelineActionContext(
+                task = task,
+                sourceBoxNo = sourceBoxNo,
+                targetPanNo = task.targetPanNo,
+                actionName = spec.name
+            )
             val startedAtMs = System.currentTimeMillis()
-            operationLogger("【补肠】烤盘$targetPanNo ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo，第$attempt/${maxAttempts}次")
-            val result = executeAction(spec, infoValue)
+            operationLogger("【补肠】烤盘${task.targetPanNo} ${actionLabel(spec)}开始：来源烤肠箱=$sourceBoxNo，第$attempt/${maxAttempts}次")
+            val result = executeAction(actionClientProvider(actionContext), spec, infoValue)
             val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
             lastResult = result
             if (result == AtomicActionResult.Success) {
-                operationLogger("【补肠】烤盘$targetPanNo ${actionFinishLabel(spec)} 完成，用时=${formatElapsedSeconds(elapsedMs)}秒")
+                operationLogger("【补肠】烤盘${task.targetPanNo} ${actionFinishLabel(spec)} 完成，用时=${formatElapsedSeconds(elapsedMs)}秒")
                 return AtomicActionResult.Success
             }
             if (!isRetryable(result, retryableErrorCode) || attempt == maxAttempts) {
-                failureLogger("【失败原因】补肠烤盘$targetPanNo ${failureText(spec, result)}")
+                failureLogger("【失败原因】补肠烤盘${task.targetPanNo} ${failureText(spec, result)}")
                 return result
             }
             logger("重试原子动作：action=${spec.name}，attempt=$attempt/$maxAttempts，reason=${describe(result)}")
             operationLogger(
-                "【补肠】烤盘$targetPanNo ${actionFinishLabel(spec)} 第$attempt/${maxAttempts}次失败：${describe(result)}，准备重试"
+                "【补肠】烤盘${task.targetPanNo} ${actionFinishLabel(spec)} 第$attempt/${maxAttempts}次失败：${describe(result)}，准备重试"
             )
         }
         return lastResult

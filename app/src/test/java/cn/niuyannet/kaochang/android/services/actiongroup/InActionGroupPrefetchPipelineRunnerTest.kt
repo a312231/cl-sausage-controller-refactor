@@ -84,6 +84,67 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldProvideBoxAndPanContextForEveryExecutedAction() = runBlocking {
+        val calls = mutableListOf<String>()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = FakeClient(),
+            actionClientProvider = { context -> ContextCapturingClient(context, calls) }
+        )
+
+        val result = runner.run(
+            listOf(
+                InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+            )
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Success)
+        assertEquals(
+            listOf(
+                "in1:17->13", "in2:17->13", "in3:17->13",
+                "in4:17->13", "in5:17->13", "in6:17->13", "dispatch:in6:17->13",
+                "in1:18->14", "in2:18->14", "in3:18->14",
+                "in7:17->13", "in4:18->14", "in5:18->14", "in6:18->14",
+                "dispatch:in6:18->14", "in7:18->14"
+            ),
+            calls
+        )
+    }
+
+    @Test
+    fun pipeline_shouldProvideAttemptContextForIn2RetryAndCandidateSwitch() = runBlocking {
+        val calls = mutableListOf<String>()
+        val client = ContextCapturingClient(
+            calls = calls,
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success
+            )
+        )
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = FakeClient(),
+            actionClientProvider = { context -> client.withContext(context) }
+        )
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17, 18), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Success)
+        assertEquals(
+            listOf("in2:17->13", "in2:17->13", "in2:18->13"),
+            calls.filter { it.startsWith("in2:") }
+        )
+        assertTrue(calls.contains("in1:18->13"))
+    }
+
+    @Test
     fun pipeline_shouldPauseAfterCurrentTaskWithoutStartingNextPrefetchWhenOrderIsWaiting() = runBlocking {
         val client = FakeClient()
         val runner = InActionGroupPrefetchPipelineRunner(
@@ -444,6 +505,41 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 yield()
             }
             return AtomicActionResult.Success
+        }
+    }
+
+    private class ContextCapturingClient private constructor(
+        private val context: InActionGroupPipelineActionContext?,
+        private val calls: MutableList<String>,
+        private val results: ArrayDeque<AtomicActionResult>
+    ) : AtomicActionClient {
+        constructor(
+            context: InActionGroupPipelineActionContext,
+            calls: MutableList<String>
+        ) : this(context, calls, ArrayDeque())
+
+        constructor(
+            calls: MutableList<String>,
+            results: ArrayDeque<AtomicActionResult>
+        ) : this(null, calls, results)
+
+        fun withContext(context: InActionGroupPipelineActionContext): ContextCapturingClient {
+            return ContextCapturingClient(context, calls, results)
+        }
+
+        override suspend fun execute(
+            spec: AtomicActionSpec,
+            infoValue: Int,
+            onCommandDispatched: (suspend () -> Unit)?
+        ): AtomicActionResult {
+            val currentContext = requireNotNull(context) { "ContextCapturingClient requires action context" }
+            calls += "${spec.name}:${currentContext.sourceBoxNo}->${currentContext.targetPanNo}"
+            if (spec.name == "in6" && onCommandDispatched != null) {
+                onCommandDispatched()
+                calls += "dispatch:in6:${currentContext.sourceBoxNo}->${currentContext.targetPanNo}"
+                yield()
+            }
+            return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }
     }
 
