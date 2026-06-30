@@ -330,12 +330,17 @@ object SendServerHelper {
         val payload = JSONObject()
         payload["messageType"] = MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY
         payload["deviceCode"] = AppConfig.getDeviceId()
-        payload["reportedAt"] = System.currentTimeMillis()
+        payload["eventId"] = telemetry.eventId
+        payload["eventPhase"] = telemetry.eventPhase
+        payload["reportedAt"] = telemetry.reportedAt
         payload["actionProtocolVersion"] = telemetry.actionProtocolVersion
         payload["sessionId"] = telemetry.sessionId
         payload["actionName"] = telemetry.actionName
         payload["registerAddress"] = telemetry.registerAddress
         payload["resultRegister"] = telemetry.resultRegister
+        payload["infoValue"] = telemetry.infoValue
+        payload["commandValue"] = telemetry.commandValue
+        payload["resultCode"] = telemetry.resultCode
         payload["errorCode"] = telemetry.errorCode
         payload["errorMessage"] = telemetry.errorMessage
         payload["boxNo"] = telemetry.boxNo
@@ -354,12 +359,14 @@ object SendServerHelper {
             LogUtils.d(
                 "【300/400动作组】结构化动作日志已进入 MQTT 发送队列：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
+                    "eventPhase=${telemetry.eventPhase}，eventId=${telemetry.eventId}，" +
                     "errorCode=${telemetry.errorCode}，elapsedMs=${telemetry.elapsedMs}"
             )
         } else {
             LogUtils.w(
                 "【300/400动作组】结构化动作日志进入 MQTT 发送队列失败：" +
-                    "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，errorCode=${telemetry.errorCode}"
+                    "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
+                    "eventPhase=${telemetry.eventPhase}，eventId=${telemetry.eventId}，errorCode=${telemetry.errorCode}"
             )
         }
         return ok

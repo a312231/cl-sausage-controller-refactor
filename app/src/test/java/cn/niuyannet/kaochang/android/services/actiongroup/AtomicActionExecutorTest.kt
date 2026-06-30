@@ -713,17 +713,75 @@ class AtomicActionExecutorTest {
         val result = executor.execute(AtomicActions.in7, infoValue = 2)
 
         assertEquals(AtomicActionResult.Success, result)
-        assertEquals(1, telemetry.size)
-        assertEquals("300_400", telemetry.first().actionProtocolVersion)
-        assertEquals("session-1", telemetry.first().sessionId)
-        assertEquals("in7", telemetry.first().actionName)
-        assertEquals(370, telemetry.first().registerAddress)
-        assertEquals(371, telemetry.first().resultRegister)
-        assertEquals(17, telemetry.first().boxNo)
-        assertEquals(2, telemetry.first().panNo)
-        assertEquals("order-1", telemetry.first().orderId)
-        assertEquals("BOTTOM|LIFT|ABOVE", telemetry.first().resourceLocks)
-        assertEquals(null, telemetry.first().errorCode)
+        val finishedTelemetry = telemetry.first { it.eventPhase == "finished" }
+        assertEquals("300_400", finishedTelemetry.actionProtocolVersion)
+        assertEquals("session-1", finishedTelemetry.sessionId)
+        assertEquals("in7", finishedTelemetry.actionName)
+        assertEquals(370, finishedTelemetry.registerAddress)
+        assertEquals(371, finishedTelemetry.resultRegister)
+        assertEquals(17, finishedTelemetry.boxNo)
+        assertEquals(2, finishedTelemetry.panNo)
+        assertEquals("order-1", finishedTelemetry.orderId)
+        assertEquals("BOTTOM|LIFT|ABOVE", finishedTelemetry.resourceLocks)
+        assertEquals(null, finishedTelemetry.errorCode)
+    }
+
+    @Test
+    fun execute_shouldEmitStructuredTelemetryForStartedRunningAndFinishedPhases() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(371 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))
+        )
+        val telemetry = mutableListOf<ActionGroupTelemetry>()
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            telemetryContext = ActionGroupTelemetryContext(
+                sessionId = "session-1",
+                boxNo = 17,
+                panNo = 2,
+                orderId = "order-1",
+                resourceLocks = "BOTTOM|LIFT|ABOVE"
+            ),
+            telemetrySink = { telemetry += it }
+        )
+
+        val result = executor.execute(AtomicActions.in7, infoValue = 2)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(listOf("started", "running_confirmed", "finished"), telemetry.map { it.eventPhase })
+        assertEquals(3, telemetry.map { it.eventId }.distinct().size)
+        assertTrue(telemetry.all { it.eventId.isNotBlank() })
+        assertTrue(telemetry.all { it.reportedAt > 0L })
+        assertEquals(2, telemetry.first { it.eventPhase == "started" }.infoValue)
+        assertEquals(AtomicActionCodes.RUNNING, telemetry.first { it.eventPhase == "started" }.commandValue)
+        assertEquals(AtomicActionCodes.RUNNING, telemetry.first { it.eventPhase == "running_confirmed" }.resultCode)
+        assertEquals(COMPLETED, telemetry.first { it.eventPhase == "finished" }.resultCode)
+    }
+
+    @Test
+    fun execute_shouldEmitRunningConfirmedWhenTakingOverAlreadyRunningAction() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(321 to queueOf(AtomicActionCodes.RUNNING, COMPLETED))
+        )
+        val telemetry = mutableListOf<ActionGroupTelemetry>()
+        val executor = AtomicActionExecutor(
+            gateway = gateway,
+            logger = {},
+            telemetryContext = ActionGroupTelemetryContext(
+                sessionId = "session-takeover",
+                boxNo = 5,
+                panNo = 9,
+                resourceLocks = "BOTTOM|LIFT|ABOVE"
+            ),
+            telemetrySink = { telemetry += it }
+        )
+
+        val result = executor.execute(AtomicActions.in2, infoValue = 5)
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(listOf("running_confirmed", "finished"), telemetry.map { it.eventPhase })
+        assertEquals(AtomicActionCodes.RUNNING, telemetry.first { it.eventPhase == "running_confirmed" }.resultCode)
+        assertEquals(COMPLETED, telemetry.first { it.eventPhase == "finished" }.resultCode)
     }
 
     @Test

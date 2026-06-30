@@ -10,10 +10,16 @@ data class ActionGroupTelemetryContext(
 
 data class ActionGroupTelemetry(
     val actionProtocolVersion: String = "300_400",
+    val eventId: String = "",
+    val eventPhase: String = "finished",
+    val reportedAt: Long = System.currentTimeMillis(),
     val sessionId: String?,
     val actionName: String,
     val registerAddress: Int,
     val resultRegister: Int,
+    val infoValue: Int? = null,
+    val commandValue: Int? = null,
+    val resultCode: Int? = null,
     val errorCode: Int?,
     val errorMessage: String?,
     val boxNo: Int?,

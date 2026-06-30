@@ -157,6 +157,12 @@ class AtomicActionExecutor(
                         "接管原子动作轮询：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                             "resultRegister=${spec.resultRegister}，resultCode=${formatCode(current.value)}"
                     )
+                    emitTelemetry(
+                        spec = spec,
+                        startedAtMs = startedAtMs,
+                        eventPhase = ACTION_EVENT_PHASE_RUNNING_CONFIRMED,
+                        resultCode = current.value
+                    )
                     onCommandDispatched?.invoke()
                     pollUntilFinish(
                         spec = spec,
@@ -247,7 +253,7 @@ class AtomicActionExecutor(
                     "infoRegister（信息寄存器）=${spec.infoRegister}，infoValue（信息值）=$infoValue"
             )
         }
-        when (val writeCommand = gateway.writeRegister(spec.commandRegister, 1)) {
+        when (val writeCommand = gateway.writeRegister(spec.commandRegister, AtomicActionCodes.RUNNING)) {
             is AtomicIoResult.Failure -> {
                 logger(
                     "写入命令寄存器失败：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
@@ -285,6 +291,13 @@ class AtomicActionExecutor(
                             "结果寄存器=${spec.resultRegister}"
                         )
                     )
+                )
+                emitTelemetry(
+                    spec = spec,
+                    startedAtMs = startedAtMs,
+                    eventPhase = ACTION_EVENT_PHASE_STARTED,
+                    infoValue = infoValue,
+                    commandValue = AtomicActionCodes.RUNNING
                 )
                 onCommandDispatched?.invoke()
             }
@@ -512,6 +525,12 @@ class AtomicActionExecutor(
                             hasObservedFreshState = true
                             if (!hasObservedRunning) {
                                 hasObservedRunning = true
+                                emitTelemetry(
+                                    spec = spec,
+                                    startedAtMs = startedAtMs,
+                                    eventPhase = ACTION_EVENT_PHASE_RUNNING_CONFIRMED,
+                                    resultCode = code
+                                )
                                 logger(
                                     "动作启动确认成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                                         "resultRegister（结果寄存器）=${spec.resultRegister}，resultCode=${formatCode(code)}，elapsedMs=$elapsedMs"
@@ -775,12 +794,47 @@ class AtomicActionExecutor(
             is AtomicActionResult.ModbusError -> null to result.message
             is AtomicActionResult.Timeout -> null to result.message
         }
+        val resultCode = when (result) {
+            AtomicActionResult.Success -> AtomicActionCodes.COMPLETED
+            is AtomicActionResult.Failed -> result.errorCode
+            is AtomicActionResult.ModbusError,
+            is AtomicActionResult.Timeout -> null
+        }
+        emitTelemetry(
+            spec = spec,
+            startedAtMs = startedAtMs,
+            eventPhase = ACTION_EVENT_PHASE_FINISHED,
+            resultCode = resultCode,
+            errorCode = errorCode,
+            errorMessage = errorMessage,
+            elapsedMs = elapsedMs
+        )
+        return result
+    }
+
+    private fun emitTelemetry(
+        spec: AtomicActionSpec,
+        startedAtMs: Long,
+        eventPhase: String,
+        infoValue: Int? = null,
+        commandValue: Int? = null,
+        resultCode: Int? = null,
+        errorCode: Int? = null,
+        errorMessage: String? = null,
+        elapsedMs: Long = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
+    ) {
         telemetrySink(
             ActionGroupTelemetry(
+                eventId = buildActionEventId(startedAtMs, spec.name, eventPhase),
+                eventPhase = eventPhase,
+                reportedAt = System.currentTimeMillis(),
                 sessionId = telemetryContext.sessionId,
                 actionName = spec.name,
                 registerAddress = spec.commandRegister,
                 resultRegister = spec.resultRegister,
+                infoValue = infoValue,
+                commandValue = commandValue,
+                resultCode = resultCode,
                 errorCode = errorCode,
                 errorMessage = errorMessage,
                 boxNo = telemetryContext.boxNo,
@@ -790,7 +844,11 @@ class AtomicActionExecutor(
                 elapsedMs = elapsedMs
             )
         )
-        return result
+    }
+
+    private fun buildActionEventId(startedAtMs: Long, actionName: String, eventPhase: String): String {
+        val sessionPart = telemetryContext.sessionId ?: "no-session"
+        return "$sessionPart:$actionName:$startedAtMs:$eventPhase"
     }
 
     private fun buildCommunicationLog(
@@ -830,6 +888,9 @@ class AtomicActionExecutor(
         private const val COMMAND_PENDING_CONFIRM_TIMEOUT_MS = 40_000L
         private const val MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH = 300
         private const val IDLE_AFTER_RUNNING_CONFIRM_THRESHOLD = 2
+        const val ACTION_EVENT_PHASE_STARTED = "started"
+        const val ACTION_EVENT_PHASE_RUNNING_CONFIRMED = "running_confirmed"
+        const val ACTION_EVENT_PHASE_FINISHED = "finished"
 
         fun formatCode(code: Int): String = "0x${code.toString(16).uppercase().padStart(4, '0')}"
 
