@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.model
 
 import cn.niuyannet.kaochang.android.init.AppConfig.getAppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
@@ -60,6 +61,9 @@ object KaoPanHelper {
 
     internal fun supplyBoxAutoSupplementExclusionReasons(box: KaoPanBox): List<String> {
         val reasons = mutableListOf<String>()
+        if (getAppConfig().supplementEnabled == AppConfigBean.SUPPLEMENT_ENABLED_NO) {
+            reasons += "supplementEnabled=0"
+        }
         if (box.num <= 0) {
             reasons += "num<=0"
         }

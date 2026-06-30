@@ -1,13 +1,27 @@
 package cn.niuyannet.kaochang.android.model
 
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
+import org.junit.After
 
 class KaoPanHelperRatioTest {
+
+    @Before
+    fun setUpAppConfig() {
+        setAppConfigInMemory(AppConfigBean())
+    }
+
+    @After
+    fun resetAppConfig() {
+        setAppConfigInMemory(AppConfigBean())
+    }
 
     @Test
     fun createDefaultKaoPanList_shouldBuildThirtyThreeEmptyPansForFreshInstall() {
@@ -144,6 +158,19 @@ class KaoPanHelperRatioTest {
     }
 
     @Test
+    fun isSupplyBoxAvailableForAutoSupplement_shouldRejectValidBoxWhenSupplementDisabled() {
+        setAppConfigInMemory(AppConfigBean().apply {
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        })
+        val box = box(positionSn = 2, tasteCode = "A", num = 15)
+        val exclusionReasons = KaoPanHelper.supplyBoxAutoSupplementExclusionReasons(box)
+
+        assertFalse(KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(box))
+        assertEquals(listOf("supplementEnabled=0"), exclusionReasons)
+        assertEquals(0, KaoPanHelper.availableSupplyNumForAutoSupplement(box))
+    }
+
+    @Test
     fun restoreKaoPanBoxList_shouldReturnMutableEmptyListWhenPreferenceMissing() {
         val restored = KaoPanHelper.restoreKaoPanBoxList(null)
 
@@ -159,5 +186,11 @@ class KaoPanHelperRatioTest {
             this.num = num
             this.cmdStatusTake = cmdStatusTake
         }
+    }
+
+    private fun setAppConfigInMemory(config: AppConfigBean) {
+        val field = AppConfig::class.java.getDeclaredField("appConfigBean")
+        field.isAccessible = true
+        field.set(AppConfig, config)
     }
 }
