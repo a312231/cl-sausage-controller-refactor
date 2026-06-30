@@ -7,6 +7,13 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
 object LowerPlatformRuntimeStateReporter {
+    fun applyLowerPlatformIsolated(config: AppConfigBean) {
+        config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+        config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        config.orderBlockReason = ""
+        config.moveStatus = 0
+    }
+
     fun markSupplyDegraded(reason: String) {
         val config = AppConfig.getAppConfig()
         val previousLowerPlatformStatus = config.lowerPlatformStatus
@@ -25,6 +32,26 @@ object LowerPlatformRuntimeStateReporter {
         )
         AppConfig.saveAppConfig(config)
         publishOrFallback("runtime_state:supply_degraded")
+    }
+
+    fun markIsolated(reason: String) {
+        val config = AppConfig.getAppConfig()
+        val previousLowerPlatformStatus = config.lowerPlatformStatus
+        val previousSupplementEnabled = config.supplementEnabled
+        val previousOrderBlockReason = config.orderBlockReason
+        val previousMoveStatus = config.moveStatus
+        applyLowerPlatformIsolated(config)
+        LogUtils.e(
+            "【下平台隔离】补肠链路已隔离，不切整机维护，已停止自动补肠：" +
+                "lowerPlatformStatus=$previousLowerPlatformStatus->${config.lowerPlatformStatus}，" +
+                "supplementEnabled=$previousSupplementEnabled->${config.supplementEnabled}，" +
+                "orderBlockReason=${previousOrderBlockReason ?: "null"}->空，" +
+                "moveStatus=$previousMoveStatus->${config.moveStatus}，" +
+                "onlineStatus=${config.onlineStatus}，errorStatus=${config.errorStatus}，isEnable=${config.isEnable}，" +
+                "reason=$reason"
+        )
+        AppConfig.saveAppConfig(config)
+        publishOrFallback("runtime_state:lower_platform_isolated")
     }
 
     fun markNormalAfterManualBoxMaintenance(reason: String) {
@@ -53,6 +80,7 @@ object LowerPlatformRuntimeStateReporter {
 
     fun shouldRecoverAfterManualBoxMaintenance(config: AppConfigBean): Boolean {
         return config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED ||
+            config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED ||
             config.orderBlockReason == AppConfigBean.ORDER_BLOCK_REASON_LOWER_PLATFORM_RECOVERY_REQUIRED
     }
 

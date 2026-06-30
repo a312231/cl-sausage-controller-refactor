@@ -122,6 +122,13 @@ object KaoChangOperate {
             val targetPanNo: Int,
             val failedBoxNos: List<Int>
         ) : SupplementMoveResult()
+        data class LowerPlatformIsolated(
+            val reason: String,
+            val targetPanNo: Int,
+            val sourceBoxNo: Int?,
+            val actionName: String,
+            val code: Int
+        ) : SupplementMoveResult()
         data class HardFailure(
             val reason: String,
             val code: Int
@@ -130,7 +137,8 @@ object KaoChangOperate {
 
     private data class SingleSupplementMoveResult(
         val success: Boolean,
-        val actionGroupResult: ActionGroupResult? = null
+        val actionGroupResult: ActionGroupResult? = null,
+        val lowerPlatformIsolationReason: String? = null
     )
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     /**
@@ -346,6 +354,12 @@ object KaoChangOperate {
     private fun markSupplyDegradedRuntimeState(reason: String) {
         operateScope.launch {
             LowerPlatformRuntimeStateReporter.markSupplyDegraded(reason)
+        }
+    }
+
+    private fun markLowerPlatformIsolatedRuntimeState(reason: String) {
+        operateScope.launch {
+            LowerPlatformRuntimeStateReporter.markIsolated(reason)
         }
     }
 
@@ -1379,9 +1393,9 @@ object KaoChangOperate {
     private suspend fun moveSausageToKaoPanByTasteDetailed(kaoPan: KaoPan, tasteCode: String?): SupplementMoveResult {
         val candidates = TrafficModeHelper.findSupplyBoxesByTaste(KaoPanHelper.getKaoPanBoxList(), tasteCode)
         if (candidates.isEmpty()) {
-            val reason = "串行补肠失败：找不到同口味可用烤肠箱，targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
-            logE(LOG_SUPPLEMENT, reason)
-            return SupplementMoveResult.HardFailure(reason = reason, code = 0)
+            val reason = "补肠供给不可用跳过：targetPan=${kaoPan.positionSn}，tasteCode=${tasteCode ?: "未知"}，同口味无可用烤肠箱"
+            logW(LOG_SUPPLEMENT, reason)
+            return SupplementMoveResult.SupplyDegraded(reason, kaoPan.positionSn, emptyList())
         }
         val irPickFailedBoxNos = mutableListOf<Int>()
         candidates.forEachIndexed { index, box ->
@@ -1416,6 +1430,16 @@ object KaoChangOperate {
                         "cmdStatusTake=${AtomicActionExecutor.formatCode(box.cmdStatusTake)}"
                 )
                 val failureCode = atomicFailureCodeOrZero(moveResult.actionGroupResult)
+                if (moveResult.lowerPlatformIsolationReason != null) {
+                    val failedActionName = (moveResult.actionGroupResult as? ActionGroupResult.Failed)?.actionName ?: "in"
+                    return SupplementMoveResult.LowerPlatformIsolated(
+                        reason = moveResult.lowerPlatformIsolationReason,
+                        targetPanNo = kaoPan.positionSn,
+                        sourceBoxNo = box.positionSn,
+                        actionName = failedActionName,
+                        code = failureCode
+                    )
+                }
                 return SupplementMoveResult.HardFailure(
                     reason = "串行补肠失败：${AtomicActionExecutor.formatCode(failureCode)}（${AtomicActionExecutor.messageOf(failureCode)}）",
                     code = failureCode
@@ -1678,6 +1702,20 @@ object KaoChangOperate {
                         LOG_SUPPLEMENT,
                         "$stage 供给降级跳过当前目标并结束本轮旧计划：targetPan=${target.kaoPan.positionSn}，" +
                             "failedBoxes=${result.failedBoxNos}，reason=${result.reason}"
+                    )
+                    break
+                }
+                is SupplementMoveResult.LowerPlatformIsolated -> {
+                    supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                        batchId = batchId,
+                        targetPanNo = target.kaoPan.positionSn,
+                        reason = result.reason
+                    )
+                    logW(
+                        LOG_SUPPLEMENT,
+                        "$stage 下平台隔离跳过当前目标并结束本轮旧计划：targetPan=${target.kaoPan.positionSn}，" +
+                            "sourceBox=${result.sourceBoxNo ?: "未知"}，action=${result.actionName}，" +
+                            "error=${AtomicActionExecutor.formatCode(result.code)}，reason=${result.reason}"
                     )
                     break
                 }
@@ -2284,6 +2322,35 @@ object KaoChangOperate {
             )
             return
         }
+        if (LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
+                actionName = result.actionName,
+                result = result.result,
+                hasPrefetchedNext = result.hasPrefetchedNext
+            )
+        ) {
+            val isolationReason = LowerPlatformIsolationPolicy.buildIsolationReason(
+                actionName = result.actionName,
+                result = result.result,
+                targetPanNo = targetPanNo,
+                sourceBoxNo = sourceBoxNo,
+                hasPrefetchedNext = result.hasPrefetchedNext
+            )
+            targetPanNo?.let {
+                supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                    batchId = batchId,
+                    targetPanNo = it,
+                    reason = isolationReason
+                )
+            }
+            markLowerPlatformIsolatedRuntimeState(isolationReason)
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠预取流水线下平台失败已隔离，不进入维护、不要求人工确认：" +
+                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
+                    "result=${describeAtomicActionResult(result.result)}，reason=$isolationReason"
+            )
+            return
+        }
         supplementBatchIntentRepository.markFailure(
             batchId = batchId,
             targetPanNo = targetPanNo,
@@ -2467,6 +2534,23 @@ object KaoChangOperate {
 
         val moveSuccess = actionGroupResult == ActionGroupResult.Success
         val failureCode = atomicFailureCode(actionGroupResult)
+        val lowerPlatformIsolationReason = if (!moveSuccess && actionGroupResult is ActionGroupResult.Failed &&
+            LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
+                actionName = actionGroupResult.actionName,
+                result = actionGroupResult.result,
+                hasPrefetchedNext = false
+            )
+        ) {
+            LowerPlatformIsolationPolicy.buildIsolationReason(
+                actionName = actionGroupResult.actionName,
+                result = actionGroupResult.result,
+                targetPanNo = kaoPan.positionSn,
+                sourceBoxNo = kaoPanBox.positionSn,
+                hasPrefetchedNext = false
+            )
+        } else {
+            null
+        }
         kaoPanBox.cmdStatusTake = when {
             moveSuccess -> 0
             failureCode == AtomicActionCodes.IR_PICK_FAILED -> failureCode
@@ -2528,6 +2612,13 @@ object KaoChangOperate {
                     LOG_SUPPLEMENT,
                     "补肠取肠失败由同口味切箱逻辑接管，暂不切维护：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}"
                 )
+            } else if (lowerPlatformIsolationReason != null) {
+                markLowerPlatformIsolatedRuntimeState(lowerPlatformIsolationReason)
+                logW(
+                    LOG_SUPPLEMENT,
+                    "补肠下平台动作失败，已隔离下平台并停止自动补肠，不切整机维护：" +
+                        "targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, reason=$lowerPlatformIsolationReason"
+                )
             } else {
                 markActionGroupFailure("补肠", actionGroupResult)
             }
@@ -2558,7 +2649,8 @@ object KaoChangOperate {
         }
         return SingleSupplementMoveResult(
             success = moveSuccess && supplementStateApplied,
-            actionGroupResult = actionGroupResult
+            actionGroupResult = actionGroupResult,
+            lowerPlatformIsolationReason = lowerPlatformIsolationReason
         )
     }
 

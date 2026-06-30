@@ -26,12 +26,12 @@ class SupplementSupplyDegradeSourceTest {
             .let { if (it >= 0) it else functionBlock.length }
         val noCandidateBlock = functionBlock.substring(noCandidateStart, noCandidateEnd)
         assertTrue(
-            "无同口味候选箱不能按供给降级跳过，应保持硬失败/原有失败收口",
-            noCandidateBlock.contains("SupplementMoveResult.HardFailure(")
+            "无同口味候选箱应按供给不可用跳过，不应锁存整机硬故障",
+            noCandidateBlock.contains("SupplementMoveResult.SupplyDegraded(")
         )
         assertFalse(
-            "无同口味候选箱不是 in2 / IR_PICK_FAILED，不能返回 SupplyDegraded",
-            noCandidateBlock.contains("SupplyDegraded")
+            "无同口味候选箱不应返回 HardFailure",
+            noCandidateBlock.contains("HardFailure")
         )
         assertTrue(
             "串行同口味候选箱全部取肠失败应返回 SupplyDegraded",
