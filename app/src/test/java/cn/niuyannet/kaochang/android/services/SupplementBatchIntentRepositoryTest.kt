@@ -159,6 +159,40 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun markSkippedBySupplyDegrade_shouldRemoveTargetFromRemainingWithoutManualConfirmation() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(listOf(target(13, "B"), target(14, "B"), target(15, "B")))!!
+
+        repository.markSkippedBySupplyDegrade(
+            batchId = intent.batchId,
+            targetPanNo = 13,
+            reason = "in2 / IR_PICK_FAILED"
+        )
+
+        val saved = store.intent!!
+        assertFalse(saved.requiresManualConfirm)
+        assertEquals(listOf(14, 15), saved.remainingTargets().map { it.positionSn })
+        assertTrue(saved.targets.first { it.positionSn == 13 }.skippedBySupplyDegrade)
+        assertEquals("in2 / IR_PICK_FAILED", saved.targets.first { it.positionSn == 13 }.skipReason)
+        assertNull(saved.failedActionName)
+        assertNull(saved.failedTargetPanNo)
+        assertNull(saved.failureMessage)
+    }
+
+    @Test
+    fun markSkippedBySupplyDegrade_shouldClearWhenAllTargetsCompletedOrSkipped() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(listOf(target(13, "B"), target(14, "B")))!!
+
+        repository.markCompleted(intent.batchId, 13)
+        repository.markSkippedBySupplyDegrade(intent.batchId, 14, "无可用供给")
+
+        assertNull(store.intent)
+    }
+
+    @Test
     fun clear_shouldDropPendingIntentWhenPanIsManuallyReset() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)

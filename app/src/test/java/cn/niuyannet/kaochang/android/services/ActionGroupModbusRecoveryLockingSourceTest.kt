@@ -31,7 +31,7 @@ class ActionGroupModbusRecoveryLockingSourceTest {
             source = source,
             ensureActionName = "补肠动作组恢复检查",
             recoverReason = "补肠入口前恢复检查",
-            returnText = "return false"
+            returnText = "return SingleSupplementMoveResult(false)"
         )
         assertEntry(
             source = source,

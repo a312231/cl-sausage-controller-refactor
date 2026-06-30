@@ -162,33 +162,13 @@ object SendServerHelper {
         val now = System.currentTimeMillis()
         val stateSignature = buildRuntimeStateSignature(config)
         val (seq, reusedSeq) = resolveRuntimeStateSeq(stateSignature)
-        val payload = JSONObject()
-        payload["messageType"] = MqttProtocol.TYPE_RUNTIME_STATE
-        payload["deviceCode"] = AppConfig.getDeviceId()
-        payload["runtimeSeq"] = seq
-        payload["onlineStatus"] = config.onlineStatus
-        payload["supplyStatus"] = config.supplyStatus
-        payload["inspectionMode"] = config.inspectionMode
-        payload["isEnable"] = AppConfig.getAlgorithmEnableFlag()
-        payload["modeType"] = config.modeType
-        payload["transitionMode"] = config.transitionMode
-        payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
-        payload["moveStatus"] = config.moveStatus
-        payload["errorStatus"] = config.errorStatus
-        payload["sourceBoxPolicyVersion"] = SourceBoxPositionPolicy.POLICY_VERSION
-        payload["validSourceBoxRanges"] = SourceBoxPositionPolicy.validRangePayloadText()
-        payload["disabledSourceBoxes"] = SourceBoxPositionPolicy.disabledBoxes()
-        payload["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
-        payload["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
-        payload["pendingDiscardPositions"] = config.pendingDiscardPositions
-        if (config.errorStatus != 0) {
-            config.errorCode?.takeIf { it.isNotBlank() }?.let { payload["errorCode"] = it }
-            config.errorCategory?.takeIf { it.isNotBlank() }?.let { payload["errorCategory"] = it }
-            config.errorReason?.takeIf { it.isNotBlank() }?.let { payload["errorReason"] = it }
-        }
-        payload["restStatusSource"] = config.restStatusSource
-        payload["source"] = source
-        payload["reportedAt"] = now
+        val payload = RuntimeStatePayloadBuilder.build(
+            deviceCode = AppConfig.getDeviceId(),
+            runtimeSeq = seq,
+            config = config,
+            source = source,
+            reportedAt = now
+        )
         val ok = VMMqttHelper.publishService(
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_SERVICE_STATE

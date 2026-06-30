@@ -158,6 +158,42 @@ object AppConfig {
         return key in LOCAL_RUNTIME_ONLY_FIELDS
     }
 
+    fun normalizeLowerPlatformStatus(value: String?): String {
+        return when (value) {
+            AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL,
+            AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED,
+            AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED -> value
+            else -> AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        }
+    }
+
+    fun normalizeSupplementEnabled(value: Int): Int =
+        if (value == AppConfigBean.SUPPLEMENT_ENABLED_NO) {
+            AppConfigBean.SUPPLEMENT_ENABLED_NO
+        } else {
+            AppConfigBean.SUPPLEMENT_ENABLED_YES
+        }
+
+    fun applyLowerPlatformRuntimeFieldsFromRemote(config: AppConfigBean, jsonData: JSONObject): List<String> {
+        val preservedFields = mutableListOf<String>()
+        if (jsonData.containsKey("lowerPlatformStatus") && jsonData.get("lowerPlatformStatus") != null) {
+            config.lowerPlatformStatus = normalizeLowerPlatformStatus(jsonData.getString("lowerPlatformStatus"))
+        } else {
+            preservedFields.add("lowerPlatformStatus")
+        }
+        if (jsonData.containsKey("supplementEnabled") && jsonData.get("supplementEnabled") != null) {
+            config.supplementEnabled = normalizeSupplementEnabled(jsonData.getIntValue("supplementEnabled"))
+        } else {
+            preservedFields.add("supplementEnabled")
+        }
+        if (jsonData.containsKey("orderBlockReason")) {
+            config.orderBlockReason = jsonData.getString("orderBlockReason") ?: ""
+        } else {
+            preservedFields.add("orderBlockReason")
+        }
+        return preservedFields
+    }
+
     fun getBoxRefillTargetNum(): Int {
         val config = getAppConfig()
         val normalized = normalizeBoxRefillTargetNum(config.boxRefillTargetNum)
@@ -205,6 +241,7 @@ object AppConfig {
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
         val faultSafetyMigrated = normalizeFaultSafetyConfig(config, "配置加载")
+        val lowerPlatformRuntimeMigrated = normalizeLowerPlatformRuntimeConfig(config, "配置加载")
         val adminPasswordMigrated = normalizeAdminPasswordHash(config)
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
@@ -213,6 +250,7 @@ object AppConfig {
             forceVisionSuccessMigrated ||
             boxRefillTargetNumMigrated ||
             faultSafetyMigrated ||
+            lowerPlatformRuntimeMigrated ||
             adminPasswordMigrated ||
             oldModeType != config.modeType ||
             oldTransitionMode != config.transitionMode
@@ -260,6 +298,33 @@ object AppConfig {
                     "原值=${config.httpFallbackMinIntervalMs}，已回退默认值=$DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS"
             )
             config.httpFallbackMinIntervalMs = DEFAULT_HTTP_FALLBACK_MIN_INTERVAL_MS
+            changed = true
+        }
+        return changed
+    }
+
+    private fun normalizeLowerPlatformRuntimeConfig(config: AppConfigBean, logPrefix: String): Boolean {
+        var changed = false
+        val normalizedStatus = normalizeLowerPlatformStatus(config.lowerPlatformStatus)
+        if (config.lowerPlatformStatus != normalizedStatus) {
+            LogUtils.w(
+                "[$logPrefix] lowerPlatformStatus（下平台/补肠链路状态）非法，" +
+                    "原值=${config.lowerPlatformStatus ?: "null"}，已回退为$normalizedStatus"
+            )
+            config.lowerPlatformStatus = normalizedStatus
+            changed = true
+        }
+        val normalizedSupplementEnabled = normalizeSupplementEnabled(config.supplementEnabled)
+        if (config.supplementEnabled != normalizedSupplementEnabled) {
+            LogUtils.w(
+                "[$logPrefix] supplementEnabled（自动补肠开关）非法，" +
+                    "原值=${config.supplementEnabled}，已回退为$normalizedSupplementEnabled"
+            )
+            config.supplementEnabled = normalizedSupplementEnabled
+            changed = true
+        }
+        if (config.orderBlockReason == null) {
+            config.orderBlockReason = ""
             changed = true
         }
         return changed
@@ -671,6 +736,7 @@ object AppConfig {
             }
         }
         mergeGuardedRuntimeInt("errorStatus", "errorStatus") { config.errorStatus = it }
+        preservedFields.addAll(applyLowerPlatformRuntimeFieldsFromRemote(config, jsonData))
         mergeInt("available", "available") { config.available = it.toLong() }
         mergeInt("availableCountdownLatched", "availableCountdownLatched") { config.availableCountdownLatched = it }
         mergeInt("keepWarmTemperature", "keepWarmTemperature") {

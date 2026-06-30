@@ -86,6 +86,24 @@ class UpdateDeviceInfoPayloadBuilderTest {
         assertEquals(1, payload.getIntValue("highConcurrencyResidualDrain"))
     }
 
+    @Test
+    fun buildUpdateDeviceInfoPayload_shouldIncludeLowerPlatformRuntimeFieldsForHttpCompensation() {
+        val payload = NetApi.buildUpdateDeviceInfoPayload(
+            deviceCode = "device-001",
+            config = baseConfig().apply {
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+                supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+                orderBlockReason = ""
+            },
+            source = "runtime_state:supply_degraded"
+        )
+
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, payload.getString("lowerPlatformStatus"))
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, payload.getIntValue("supplementEnabled"))
+        assertTrue(payload.containsKey("orderBlockReason"))
+        assertEquals("", payload.getString("orderBlockReason"))
+    }
+
     private fun baseConfig(): AppConfigBean =
         AppConfigBean().apply {
             errorStatus = 0

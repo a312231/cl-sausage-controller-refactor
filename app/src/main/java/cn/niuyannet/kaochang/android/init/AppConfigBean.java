@@ -20,6 +20,13 @@ public class AppConfigBean implements Serializable {
     public static final String REST_SOURCE_AUTO_END_BUSINESS = "AUTO_END_BUSINESS";
     public static final String REST_SOURCE_MANUAL_REMOTE = "MANUAL_REMOTE";
     public static final String REST_SOURCE_MANUAL_LOCAL = "MANUAL_LOCAL";
+    public static final String LOWER_PLATFORM_STATUS_NORMAL = "NORMAL";
+    public static final String LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED = "SUPPLY_DEGRADED";
+    public static final String LOWER_PLATFORM_STATUS_ISOLATED = "ISOLATED";
+    public static final int SUPPLEMENT_ENABLED_NO = 0;
+    public static final int SUPPLEMENT_ENABLED_YES = 1;
+    public static final String ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING = "DISPATCH_SAFETY_CHECKING";
+    public static final String ORDER_BLOCK_REASON_LOWER_PLATFORM_RECOVERY_REQUIRED = "LOWER_PLATFORM_RECOVERY_REQUIRED";
 
     // MQTT 与云端通信配置
     public String mqttHost = "tcp://mqtt.cheerluck.com";
@@ -58,6 +65,15 @@ public class AppConfigBean implements Serializable {
 
     // 补货状态：0=正常，1=售罄/待补货
     public int supplyStatus = SUPPLY_STATUS_NORMAL;
+
+    // 下平台/补肠链路状态：NORMAL=正常，SUPPLY_DEGRADED=供给降级，ISOLATED=下平台隔离
+    public String lowerPlatformStatus = LOWER_PLATFORM_STATUS_NORMAL;
+
+    // 自动补肠开关：0=禁止，1=允许；不等同于烤制算法开关 isEnable
+    public int supplementEnabled = SUPPLEMENT_ENABLED_YES;
+
+    // 下单阻断原因：空字符串/空表示不阻断，非空由后端按原因阻断下单
+    public String orderBlockReason = "";
 
     // 首页二维码隐藏：0=正常显示首页二维码，1=隐藏首页二维码
     public int homeQrHidden = HOME_QR_HIDDEN_SHOW;

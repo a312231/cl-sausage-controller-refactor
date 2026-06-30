@@ -77,6 +77,37 @@ class SendServerHelperSignatureTest {
         assertNotEquals(RuntimeStateSignatureBuilder.build(operating), RuntimeStateSignatureBuilder.build(resting))
     }
 
+    @Test
+    fun buildRuntimeStateSignature_shouldChangeWhenLowerPlatformRuntimeFieldsChange() {
+        val normal = baseConfig()
+        val degraded = baseConfig().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+            orderBlockReason = AppConfigBean.ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING
+        }
+
+        assertNotEquals(RuntimeStateSignatureBuilder.build(normal), RuntimeStateSignatureBuilder.build(degraded))
+    }
+
+    @Test
+    fun buildRuntimeStatePayload_shouldIncludeLowerPlatformRuntimeFields() {
+        val payload = RuntimeStatePayloadBuilder.build(
+            deviceCode = "device-001",
+            runtimeSeq = 100L,
+            config = baseConfig().apply {
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+                supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+                orderBlockReason = ""
+            },
+            source = "runtime_state:supply_degraded",
+            reportedAt = 123L
+        )
+
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, payload.getString("lowerPlatformStatus"))
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, payload.getIntValue("supplementEnabled"))
+        assertEquals("", payload.getString("orderBlockReason"))
+    }
+
     private fun baseConfig(): AppConfigBean =
         AppConfigBean().apply {
             status = 1

@@ -37,6 +37,32 @@ class AppConfigLocalRuntimeFieldsTest {
     }
 
     @Test
+    fun applyLowerPlatformRuntimeFieldsFromRemote_shouldMergePresentFieldsAndPreserveMissingFields() {
+        val config = AppConfigBean().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+            orderBlockReason = AppConfigBean.ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING
+        }
+        val remoteDegraded = JSONObject().apply {
+            put("lowerPlatformStatus", AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED)
+            put("supplementEnabled", AppConfigBean.SUPPLEMENT_ENABLED_NO)
+            put("orderBlockReason", "")
+        }
+
+        AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, remoteDegraded)
+
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, config.lowerPlatformStatus)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
+        assertEquals("", config.orderBlockReason)
+
+        AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, JSONObject())
+
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, config.lowerPlatformStatus)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
+        assertEquals("", config.orderBlockReason)
+    }
+
+    @Test
     fun mergeFaultSafetyRemoteConfigInto_shouldPreserveLocalRuntimeStateWhenRemotePushesEmptyValues() {
         val config = AppConfigBean().apply {
             deviceCode = "device-001"

@@ -25,6 +25,7 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.BoxRefillEligibilityPolicy
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -326,6 +327,7 @@ class MaintenanceBoxFragment : Fragment() {
                 val json = JSON.parseObject(content)
                 if (json.getIntValue("code") == 200) {
                     KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                    LowerPlatformRuntimeStateReporter.markNormalAfterManualBoxMaintenance("$actionName 成功")
                     kaoPanBoxAdapter.notifyDataSetChanged()
                     AdminOperationLogger.i(
                         action = actionName,
@@ -626,6 +628,7 @@ class MaintenanceBoxFragment : Fragment() {
                     val json = JSON.parseObject(content)
                     if (json.getIntValue("code") == 200) {
                         KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                        LowerPlatformRuntimeStateReporter.markNormalAfterManualBoxMaintenance("加满烤肠箱成功")
                         kaoPanBoxAdapter.notifyDataSetChanged()
                         AdminOperationLogger.i(
                             action = "加满烤肠箱",

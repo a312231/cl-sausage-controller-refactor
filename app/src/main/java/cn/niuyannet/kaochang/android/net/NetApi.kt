@@ -495,6 +495,9 @@ object NetApi {
         json["available"] = config.available
         json["availableCountdownLatched"] = config.availableCountdownLatched
         json["isEnable"] = if (config.isEnable == 1) 1 else 0
+        json["lowerPlatformStatus"] = config.lowerPlatformStatus ?: AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        json["supplementEnabled"] = config.supplementEnabled
+        json["orderBlockReason"] = config.orderBlockReason ?: ""
         json["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
         json["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
         json["pendingDiscardPositions"] = config.pendingDiscardPositions

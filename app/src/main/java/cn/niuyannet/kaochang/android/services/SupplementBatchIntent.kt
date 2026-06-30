@@ -19,7 +19,9 @@ data class SupplementBatchIntentTarget(
     var positionSn: Int = 0,
     var tasteCode: String? = null,
     var returnPositionSn: Int? = null,
-    var completed: Boolean = false
+    var completed: Boolean = false,
+    var skippedBySupplyDegrade: Boolean = false,
+    var skipReason: String? = null
 )
 
 data class SupplementBatchIntent(
@@ -34,10 +36,10 @@ data class SupplementBatchIntent(
     var updatedAtMs: Long = 0L
 ) {
     fun remainingTargets(): List<SupplementBatchIntentTarget> =
-        targets.filter { !it.completed }
+        targets.filter { !it.completed && !it.skippedBySupplyDegrade }
 
     fun isComplete(): Boolean =
-        targets.isNotEmpty() && targets.all { it.completed }
+        targets.isNotEmpty() && targets.all { it.completed || it.skippedBySupplyDegrade }
 }
 
 interface SupplementBatchIntentStore {
@@ -166,6 +168,37 @@ class SupplementBatchIntentRepository(
             infoLogger(
                 "【补肠批次恢复】补肠批次目标已完成：batchId=$batchId，targetPan=$targetPanNo，" +
                     "remaining=${intent.remainingTargets().map { it.positionSn }}"
+            )
+        }
+    }
+
+    fun markSkippedBySupplyDegrade(batchId: String?, targetPanNo: Int, reason: String) {
+        if (batchId.isNullOrBlank()) {
+            return
+        }
+        val intent = store.load() ?: return
+        if (intent.batchId != batchId) {
+            return
+        }
+        val target = intent.targets.firstOrNull { it.positionSn == targetPanNo } ?: return
+        if (target.completed || target.skippedBySupplyDegrade) {
+            return
+        }
+        target.skippedBySupplyDegrade = true
+        target.skipReason = reason
+        intent.updatedAtMs = clock()
+        intent.failedActionName = null
+        intent.failedTargetPanNo = null
+        intent.failureMessage = null
+        intent.requiresManualConfirm = false
+        if (intent.isComplete()) {
+            store.clear()
+            infoLogger("【补肠批次恢复】补肠批次已完成或供给降级跳过，清除批次意图：batchId=$batchId")
+        } else {
+            store.save(intent)
+            warnLogger(
+                "【补肠批次恢复】补肠批次目标因供给降级跳过：batchId=$batchId，targetPan=$targetPanNo，" +
+                    "reason=$reason，remaining=${intent.remainingTargets().map { it.positionSn }}"
             )
         }
     }

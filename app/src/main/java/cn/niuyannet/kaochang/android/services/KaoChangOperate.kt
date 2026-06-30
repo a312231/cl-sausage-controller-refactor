@@ -114,6 +114,24 @@ object KaoChangOperate {
         val tasteCode: String?,
         val returnPositionSn: Int? = null
     )
+
+    private sealed class SupplementMoveResult {
+        data object Success : SupplementMoveResult()
+        data class SupplyDegraded(
+            val reason: String,
+            val targetPanNo: Int,
+            val failedBoxNos: List<Int>
+        ) : SupplementMoveResult()
+        data class HardFailure(
+            val reason: String,
+            val code: Int
+        ) : SupplementMoveResult()
+    }
+
+    private data class SingleSupplementMoveResult(
+        val success: Boolean,
+        val actionGroupResult: ActionGroupResult? = null
+    )
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     /**
      * 机械动作对象内部的主线程作用域。
@@ -323,6 +341,12 @@ object KaoChangOperate {
                 "errorCode=${code.name}"
         )
         logE(LOG_DEVICE, logMessage)
+    }
+
+    private fun markSupplyDegradedRuntimeState(reason: String) {
+        operateScope.launch {
+            LowerPlatformRuntimeStateReporter.markSupplyDegraded(reason)
+        }
     }
 
     private fun armPostSellSupplementGuard(
@@ -1349,10 +1373,15 @@ object KaoChangOperate {
      * 才允许扣减烤肠箱库存并写入目标烤盘状态。
      */
     suspend fun moveSausageToKaoPanByTaste(kaoPan: KaoPan, tasteCode: String?): Boolean {
+        return moveSausageToKaoPanByTasteDetailed(kaoPan, tasteCode) == SupplementMoveResult.Success
+    }
+
+    private suspend fun moveSausageToKaoPanByTasteDetailed(kaoPan: KaoPan, tasteCode: String?): SupplementMoveResult {
         val candidates = TrafficModeHelper.findSupplyBoxesByTaste(KaoPanHelper.getKaoPanBoxList(), tasteCode)
         if (candidates.isEmpty()) {
-            logE(LOG_SUPPLEMENT, "补肠失败：找不到同口味可用烤肠箱，targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode")
-            return false
+            val reason = "串行补肠失败：找不到同口味可用烤肠箱，targetPan=${kaoPan.positionSn}，tasteCode=$tasteCode"
+            logE(LOG_SUPPLEMENT, reason)
+            return SupplementMoveResult.HardFailure(reason = reason, code = 0)
         }
         val irPickFailedBoxNos = mutableListOf<Int>()
         candidates.forEachIndexed { index, box ->
@@ -1360,11 +1389,14 @@ object KaoChangOperate {
                 "【补肠】按口味补肠尝试：目标烤盘=${kaoPan.positionSn}，tasteCode（口味编码）=$tasteCode，" +
                     "候选=${index + 1}/${candidates.size}，来源烤肠箱=${box.positionSn}，本地库存=${box.num}"
             )
-            val moved = moveSausageToKaoPan(kaoPan, box, allowPickFailureFallback = true)
-            if (moved) {
-                return true
+            val moveResult = moveSausageToKaoPanDetailed(kaoPan, box, allowPickFailureFallback = true)
+            if (moveResult.success) {
+                return SupplementMoveResult.Success
             }
-            if (box.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
+            val failedResult = moveResult.actionGroupResult as? ActionGroupResult.Failed
+            if (failedResult != null &&
+                SupplementPickFailurePolicy.isSerialIn2IrPickFailure(failedResult.actionName, failedResult.result)
+            ) {
                 irPickFailedBoxNos += box.positionSn
                 val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(box, candidates)
                 KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
@@ -1383,18 +1415,30 @@ object KaoChangOperate {
                     "补肠遇到非取肠红外失败，停止切箱：targetPan=${kaoPan.positionSn}，box=${box.positionSn}，" +
                         "cmdStatusTake=${AtomicActionExecutor.formatCode(box.cmdStatusTake)}"
                 )
-                return false
+                val failureCode = atomicFailureCodeOrZero(moveResult.actionGroupResult)
+                return SupplementMoveResult.HardFailure(
+                    reason = "串行补肠失败：${AtomicActionExecutor.formatCode(failureCode)}（${AtomicActionExecutor.messageOf(failureCode)}）",
+                    code = failureCode
+                )
             }
         }
-        val faultReason = SupplementPickFailurePolicy.buildAllCandidatesFailedFaultReason(
+        val degradeReason = SupplementPickFailurePolicy.buildSupplyDegradedReason(
             targetPanNo = kaoPan.positionSn,
             tasteCode = tasteCode,
             failedBoxNos = irPickFailedBoxNos,
-            lastErrorCode = AtomicActionCodes.IR_PICK_FAILED
+            actionName = "in2"
         )
-        logE(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败：$faultReason，boxCount=${candidates.size}")
-        markDeviceErrorAndUpload(FaultCode.ACTION_GROUP_FAILED, faultReason)
-        return false
+        logW(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败，按供给降级跳过：$degradeReason，boxCount=${candidates.size}")
+        markSupplyDegradedRuntimeState(degradeReason)
+        return SupplementMoveResult.SupplyDegraded(degradeReason, kaoPan.positionSn, irPickFailedBoxNos)
+    }
+
+    private fun atomicFailureCodeOrZero(result: ActionGroupResult?): Int {
+        return if (result == null) {
+            0
+        } else {
+            atomicFailureCode(result)
+        }
     }
 
     private fun shouldPauseSupplementForOrder(stage: String): Boolean {
@@ -1503,11 +1547,11 @@ object KaoChangOperate {
             return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
         }
         if (!schedulingEnabled || !boxSupplyAvailable || AppConfig.getAppConfig().errorStatus != 0 || isBeforeCloseWindow) {
-            if (intent.type == SupplementBatchType.HIGH_INITIALIZATION_1_21 && !boxSupplyAvailable) {
-                supplementBatchIntentRepository.clear("高并发初始化部分开盘收口：烤肠箱无可用库存:$reason")
+            if (isInitializationBatch(intent.type) && !boxSupplyAvailable) {
+                supplementBatchIntentRepository.clear("${SupplementBatchIntentRepository.typeText(intent.type)}部分开盘收口：烤肠箱无可用库存:$reason")
                 logW(
                     LOG_SUPPLEMENT,
-                    "高并发初始化存在未完成补肠批次，但烤肠箱无可用库存，按部分开盘收口，不再阻塞已上盘烤肠成熟检查：" +
+                    "${SupplementBatchIntentRepository.typeText(intent.type)}存在未完成补肠批次，但烤肠箱无可用库存，按部分开盘收口，不再阻塞已上盘烤肠成熟检查：" +
                         "reason=$reason，batchId=${intent.batchId}，remaining=${intent.remainingTargets().map { it.positionSn }}"
                 )
                 return PendingSupplementBatchHandling.NONE
@@ -1548,11 +1592,11 @@ object KaoChangOperate {
             listBox = KaoPanHelper.getKaoPanBoxList()
         )
         val executableTargets = availability.executableTargets
-        if (executableTargets.isEmpty() && intent.type == SupplementBatchType.HIGH_INITIALIZATION_1_21) {
-            supplementBatchIntentRepository.clear("高并发初始化部分开盘收口：剩余目标无同口味可用库存:$reason")
+        if (executableTargets.isEmpty() && isInitializationBatch(intent.type)) {
+            supplementBatchIntentRepository.clear("${SupplementBatchIntentRepository.typeText(intent.type)}部分开盘收口：剩余目标无同口味可用库存:$reason")
             logW(
                 LOG_SUPPLEMENT,
-                "高并发初始化未完成批次剩余目标无同口味可用库存，按部分开盘收口：" +
+                "${SupplementBatchIntentRepository.typeText(intent.type)}未完成批次剩余目标无同口味可用库存，按部分开盘收口：" +
                     "reason=$reason，batchId=${intent.batchId}，remaining=${targets.map { it.kaoPan.positionSn }}，" +
                     "skippedDetails=${availability.describeSkippedTargets()}"
             )
@@ -1588,6 +1632,10 @@ object KaoChangOperate {
         return PendingSupplementBatchHandling.RESUMED
     }
 
+    private fun isInitializationBatch(type: SupplementBatchType): Boolean =
+        type == SupplementBatchType.LOW_INITIALIZATION_1_9 ||
+            type == SupplementBatchType.HIGH_INITIALIZATION_1_21
+
     private fun applyHeatingForSupplementBatch(type: SupplementBatchType) {
         when (type) {
             SupplementBatchType.LOW_INITIALIZATION_1_9 -> heating(1)
@@ -1615,19 +1663,34 @@ object KaoChangOperate {
             if (!ensureSupplementBatchStartAllowed("$stage-单根下发前")) {
                 break
             }
-            if (moveSausageToKaoPanByTaste(target.kaoPan, target.tasteCode)) {
-                movedCount += 1
-                supplementBatchIntentRepository.markCompleted(batchId, target.kaoPan.positionSn)
-            } else {
-                val failureCode = target.kaoPan.cmdStatusMove.takeIf { it != 0 } ?: target.kaoPan.cmdStatusTake
-                supplementBatchIntentRepository.markFailure(
-                    batchId = batchId,
-                    targetPanNo = target.kaoPan.positionSn,
-                    actionName = "in",
-                    failureMessage = "串行补肠失败：${AtomicActionExecutor.formatCode(failureCode)}（${AtomicActionExecutor.messageOf(failureCode)}）",
-                    requiresManualConfirm = true
-                )
-                break
+            when (val result = moveSausageToKaoPanByTasteDetailed(target.kaoPan, target.tasteCode)) {
+                SupplementMoveResult.Success -> {
+                    movedCount += 1
+                    supplementBatchIntentRepository.markCompleted(batchId, target.kaoPan.positionSn)
+                }
+                is SupplementMoveResult.SupplyDegraded -> {
+                    supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                        batchId = batchId,
+                        targetPanNo = target.kaoPan.positionSn,
+                        reason = result.reason
+                    )
+                    logW(
+                        LOG_SUPPLEMENT,
+                        "$stage 供给降级跳过当前目标并结束本轮旧计划：targetPan=${target.kaoPan.positionSn}，" +
+                            "failedBoxes=${result.failedBoxNos}，reason=${result.reason}"
+                    )
+                    break
+                }
+                is SupplementMoveResult.HardFailure -> {
+                    supplementBatchIntentRepository.markFailure(
+                        batchId = batchId,
+                        targetPanNo = target.kaoPan.positionSn,
+                        actionName = "in",
+                        failureMessage = result.reason,
+                        requiresManualConfirm = true
+                    )
+                    break
+                }
             }
             if (shouldPauseSupplementForOrder("$stage-单根完成后")) {
                 break
@@ -2179,6 +2242,43 @@ object KaoChangOperate {
                 "action=${result.actionName}，result=${describeAtomicActionResult(result.result)}，" +
                 "failedSourceBoxes=${result.failedSourceBoxNos}，hasPrefetchedNext=${result.hasPrefetchedNext}"
         )
+        if (SupplementPickFailurePolicy.isPipelineSupplyDegradableFailure(
+                actionName = result.actionName,
+                result = result.result,
+                hasPrefetchedNext = result.hasPrefetchedNext
+            )
+        ) {
+            val failedBoxNos = (result.failedSourceBoxNos + sourceBoxNo).filterNotNull().distinct()
+            if (failedBoxNos.isNotEmpty()) {
+                val boxList = KaoPanHelper.getKaoPanBoxList()
+                failedBoxNos.mapNotNull { boxNo ->
+                    boxList.firstOrNull { it.positionSn == boxNo }
+                }.forEach { failedBox ->
+                    SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
+                }
+                KaoPanHelper.saveKaoPanBoxListSync(boxList)
+            }
+            val degradeReason = SupplementPickFailurePolicy.buildSupplyDegradedReason(
+                targetPanNo = targetPanNo,
+                tasteCode = plannedMove?.tasteCode,
+                failedBoxNos = failedBoxNos,
+                actionName = result.actionName
+            )
+            targetPanNo?.let {
+                supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                    batchId = batchId,
+                    targetPanNo = it,
+                    reason = degradeReason
+                )
+            }
+            markSupplyDegradedRuntimeState(degradeReason)
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠预取流水线供给降级跳过当前目标，不进入维护、不要求人工确认：" +
+                    "targetPan=$targetPanNo，failedBoxes=$failedBoxNos，reason=$degradeReason"
+            )
+            return
+        }
         supplementBatchIntentRepository.markFailure(
             batchId = batchId,
             targetPanNo = targetPanNo,
@@ -2238,17 +2338,17 @@ object KaoChangOperate {
     }
 
     suspend fun moveSausageToKaoPan(kaoPan: KaoPan, kaoPanBox: KaoPanBox): Boolean {
-        return moveSausageToKaoPan(kaoPan, kaoPanBox, allowPickFailureFallback = false)
+        return moveSausageToKaoPanDetailed(kaoPan, kaoPanBox, allowPickFailureFallback = false).success
     }
 
-    private suspend fun moveSausageToKaoPan(
+    private suspend fun moveSausageToKaoPanDetailed(
         kaoPan: KaoPan,
         kaoPanBox: KaoPanBox,
         allowPickFailureFallback: Boolean
-    ):Boolean {
+    ): SingleSupplementMoveResult {
         if (AppConfig.getAppConfig().errorStatus>0){
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠操作")
-            return false
+            return SingleSupplementMoveResult(false)
         }
         if (!SourceBoxPositionPolicy.isValidSourceBox(kaoPanBox.positionSn)) {
             val reason = "补肠取消：烤肠箱${kaoPanBox.positionSn}为 4F 保留/非法源肠箱，合法源肠箱=${SourceBoxPositionPolicy.validRangeText()}"
@@ -2257,21 +2357,21 @@ object KaoChangOperate {
                 reason
             )
             SendServerHelper.publishIllegalSourceBoxBlocked(kaoPanBox.positionSn, kaoPan.positionSn, reason)
-            return false
+            return SingleSupplementMoveResult(false)
         }
         if (kaoPanBox.num <= 0) {
             logE(LOG_SUPPLEMENT, "补肠取消：烤肠箱${kaoPanBox.positionSn}库存不足，当前库存=${kaoPanBox.num}")
-            return false
+            return SingleSupplementMoveResult(false)
         }
         if (!ensureModbusReady("补肠动作组恢复检查")) {
             enterActionGroupMaintenance(
                 "补肠入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=普通补肠",
                 FaultCode.MODBUS_COMM_DROP
             )
-            return false
+            return SingleSupplementMoveResult(false)
         }
         if (!recoverActionGroupStateAfterModbusReady("补肠入口前恢复检查")) {
-            return false
+            return SingleSupplementMoveResult(false)
         }
 
         var appState = AppConfig.getAppConfig().moveStatus
@@ -2282,7 +2382,7 @@ object KaoChangOperate {
         }
         waitForPostSellSupplementGuardIfNeeded()
         if (!ensureSupplementBatchStartAllowed("补肠单根动作组下发前")) {
-            return false
+            return SingleSupplementMoveResult(false)
         }
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -2297,7 +2397,7 @@ object KaoChangOperate {
         if (!isActionGroupEnabledOrEnterMaintenance("补肠")) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            return false
+            return SingleSupplementMoveResult(false)
         }
 
         val owner = "in:${kaoPanBox.positionSn}->${kaoPan.positionSn}:${System.currentTimeMillis()}"
@@ -2310,7 +2410,7 @@ object KaoChangOperate {
                 "补肠动作组资源忙，拒绝下发：sourceBox=${kaoPanBox.positionSn}，targetPan=${kaoPan.positionSn}，" +
                     "need=${ResourceLocks.describe(lockMask)}，held=${actionGroupLocks.snapshot()}"
             )
-            return false
+            return SingleSupplementMoveResult(false)
         }
 
         var actionGroupCompleted = false
@@ -2451,7 +2551,10 @@ object KaoChangOperate {
             delay(5000L)
             logD(LOG_SUPPLEMENT, "等待当前售卖结束后再补下一根烤肠")
         }
-        return moveSuccess && supplementStateApplied
+        return SingleSupplementMoveResult(
+            success = moveSuccess && supplementStateApplied,
+            actionGroupResult = actionGroupResult
+        )
     }
 
     /**
