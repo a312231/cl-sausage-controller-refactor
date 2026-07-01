@@ -2186,6 +2186,9 @@ object KaoChangOperate {
                 "$source 动作级物理状态已回写：in2 已从肠箱取肠并扣库存，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
             )
             LogUtils.i("【补肠】烤盘${telemetry.panNo} in2 完成：已从烤肠箱${telemetry.boxNo}取肠并扣减库存")
+            SnapshotSyncPolicy.maybeUploadSnapshot(
+                reason = "action_physical:in2:picked_from_box:box=${telemetry.boxNo}:pan=${telemetry.panNo}"
+            )
             return AppliedSupplementPhysicalTelemetry(boxDeducted = true)
         }
 
@@ -2234,6 +2237,9 @@ object KaoChangOperate {
                 "$source 动作级物理状态已回写：in7 已夹肠落盘并开始烤制，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
             )
             LogUtils.i("【补肠】烤盘${telemetry.panNo} in7 完成：烤肠已落入烤盘并开始烤制计时")
+            SnapshotSyncPolicy.maybeUploadSnapshot(
+                reason = "action_physical:in7:placed_on_pan:box=${telemetry.boxNo}:pan=${telemetry.panNo}"
+            )
             return AppliedSupplementPhysicalTelemetry(panPlaced = true)
         }
 

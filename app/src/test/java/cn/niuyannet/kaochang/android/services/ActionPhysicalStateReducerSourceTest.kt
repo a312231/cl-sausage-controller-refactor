@@ -49,6 +49,20 @@ class ActionPhysicalStateReducerSourceTest {
         assertTrue("坐标不一致时必须阻止本地落盘", block.contains("已阻止本地落盘"))
     }
 
+    @Test
+    fun supplementPhysicalTelemetryReducer_shouldTriggerSnapshotAfterTrustedPhysicalWrite() {
+        val source = sourceText()
+        val functionStart = source.indexOf("private fun applySupplementPhysicalTelemetry(")
+        assertTrue("必须存在补肠动作级物理状态 reducer", functionStart >= 0)
+        val functionEnd = source.indexOf("private fun applySuccessfulSupplementMove(", functionStart)
+            .let { if (it >= 0) it else source.length }
+        val block = source.substring(functionStart, functionEnd)
+
+        assertTrue("in2 扣箱成功后必须触发云端快照补偿", block.contains("action_physical:in2:picked_from_box"))
+        assertTrue("in7 落盘成功后必须触发云端快照补偿", block.contains("action_physical:in7:placed_on_pan"))
+        assertTrue("物理状态补偿必须复用 SnapshotSyncPolicy.maybeUploadSnapshot", block.contains("SnapshotSyncPolicy.maybeUploadSnapshot("))
+    }
+
     private fun sourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"),
