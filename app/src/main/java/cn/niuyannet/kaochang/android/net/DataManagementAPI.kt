@@ -1575,6 +1575,10 @@ object DataManagementAPI {
         NetApi.uploadConsumableEvent(event, callback)
     }
 
+    fun uploadActionGroupTelemetry(payload: JSONObject, callback: ((code: Int, content: String?) -> Unit)? = null) {
+        NetApi.uploadActionGroupTelemetry(payload, callback)
+    }
+
     fun refreshConsumableState(callback: (code: Int, content: String?) -> Unit) {
         NetApi.getConsumableState(AppConfig.getDeviceId(), callback)
     }

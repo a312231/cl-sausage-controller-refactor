@@ -38,6 +38,7 @@ object NetApi {
     var updateKaoPanList_url = "$API_URL_START/updateKaoPanList"
     var reportSnapshot_url = "$API_URL_START/reportSnapshot"
     var updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
+    var actionTelemetry_url = "$API_URL_START/actionTelemetry"
     var consumableEvent_url = "$API_URL_START/consumable/event"
     var consumableRefillStickFull_url = "$API_URL_START/consumable/refillStickFull"
     var consumableClearWaste_url = "$API_URL_START/consumable/clearWaste"
@@ -419,6 +420,40 @@ object NetApi {
                     LogUtils.e(
                         "【耗材事件】HTTP 兜底上报失败：" +
                             "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}，" +
+                            "error=${response?.exception?.message}"
+                    )
+                    callback?.invoke(1, response?.body())
+                }
+            })
+    }
+
+    fun uploadActionGroupTelemetry(
+        payload: JSONObject,
+        callback: ((code: Int, content: String?) -> Unit)? = null
+    ) {
+        val eventId = payload.getString("eventId").orEmpty()
+        val actionName = payload.getString("actionName").orEmpty()
+        val eventPhase = payload.getString("eventPhase").orEmpty()
+        LogUtils.d(
+            "【300/400动作组】开始 HTTP 兜底上报结构化动作日志：" +
+                "eventId=$eventId，actionName=$actionName，eventPhase=$eventPhase"
+        )
+        OkGo.post<String>(actionTelemetry_url)
+            .upJson(payload.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.i(
+                        "【300/400动作组】HTTP 兜底上报成功：" +
+                            "eventId=$eventId，actionName=$actionName，eventPhase=$eventPhase"
+                    )
+                    callback?.invoke(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【300/400动作组】HTTP 兜底上报失败：" +
+                            "eventId=$eventId，actionName=$actionName，eventPhase=$eventPhase，" +
                             "error=${response?.exception?.message}"
                     )
                     callback?.invoke(1, response?.body())

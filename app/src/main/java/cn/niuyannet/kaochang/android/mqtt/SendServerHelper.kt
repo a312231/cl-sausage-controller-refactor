@@ -348,12 +348,13 @@ object SendServerHelper {
             )
         } else {
             LogUtils.w(
-                "【300/400动作组】结构化动作日志进入 MQTT 发送队列失败：" +
+                "【300/400动作组】结构化动作日志进入 MQTT 发送队列失败，触发 HTTP 兜底：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
                     "eventPhase=${telemetry.eventPhase}，eventId=${telemetry.eventId}，" +
                     "physicalCheckpoint=${telemetry.physicalCheckpoint}，physicalLocation=${telemetry.physicalLocation}，" +
                     "errorCode=${telemetry.errorCode}"
             )
+            DataManagementAPI.uploadActionGroupTelemetry(payload)
         }
         return ok
     }
