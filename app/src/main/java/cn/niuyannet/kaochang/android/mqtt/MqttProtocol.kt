@@ -16,6 +16,7 @@ object MqttProtocol {
     const val TYPE_RUNTIME_CONTROL_ACK = "runtime_control_ack"
     const val TYPE_CONCURRENCY_CONTROL_ACK = "concurrency_control_ack"
     const val TYPE_ACTION_GROUP_TELEMETRY = "action_group_telemetry"
+    const val TYPE_ACTION_GROUP_TELEMETRY_ACK = "action_group_telemetry_ack"
     const val TYPE_ILLEGAL_SOURCE_BOX_BLOCKED = "illegal_source_box_blocked"
     const val TYPE_APP_LOG_ENTRY = "app_log_entry"
     const val TYPE_APP_UPGRADE_NOTICE = "app_upgrade_notice"

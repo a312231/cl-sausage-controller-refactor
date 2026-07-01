@@ -15,8 +15,37 @@ class ActionGroupTelemetryHttpFallbackSourceTest {
         assertTrue("publishActionGroupTelemetry 必须保留 MQTT 入队结果判断", body.contains("val ok = VMMqttHelper.publishService"))
         assertTrue(
             "action_group_telemetry MQTT 入队失败时必须调用 HTTP 兜底，避免动作轨迹只停留在本地日志",
-            failureBranch.contains("DataManagementAPI.uploadActionGroupTelemetry(payload)")
+            failureBranch.contains("triggerActionGroupTelemetryHttpFallback(snapshot)")
         )
+        assertTrue(
+            "动作遥测 HTTP 兜底路径最终必须调用 DataManagementAPI.uploadActionGroupTelemetry",
+            source.contains("DataManagementAPI.uploadActionGroupTelemetry(pending.payload)")
+        )
+    }
+
+    @Test
+    fun publishActionGroupTelemetry_shouldKeepPendingUntilBackendAckOrHttpFallback() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
+        val body = extractFunctionBody(source, "fun publishActionGroupTelemetry")
+
+        assertTrue("action_group_telemetry 必须有独立 ACK 超时时间", source.contains("ACTION_GROUP_TELEMETRY_ACK_TIMEOUT_MS"))
+        assertTrue("action_group_telemetry 必须有 pending ack map", source.contains("pendingActionGroupTelemetryAcks"))
+        assertTrue("MQTT 入队成功后必须登记 pending，不能把入队成功当作云端已落库", body.contains("pendingActionGroupTelemetryAcks[eventId]"))
+        assertTrue("MQTT 入队成功后必须安排 ACK 超时检查", body.contains("scheduleActionGroupTelemetryAckTimeout(snapshot)"))
+        assertTrue("ACK 超时后必须 HTTP 兜底补发", source.contains("triggerActionGroupTelemetryHttpFallback(pending)"))
+        assertTrue("HTTP 失败必须进入有上限的内存重试队列", source.contains("enqueueActionGroupTelemetryRetry(pending)"))
+    }
+
+    @Test
+    fun actionGroupTelemetryAck_shouldRemovePendingEvent() {
+        val protocol = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/MqttProtocol.kt")
+        val sender = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
+        val receiver = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/VMMqttHelper.kt")
+
+        assertTrue("协议必须声明 action_group_telemetry_ack", protocol.contains("TYPE_ACTION_GROUP_TELEMETRY_ACK = \"action_group_telemetry_ack\""))
+        assertTrue("SendServerHelper 必须提供动作遥测 ACK 标记入口", sender.contains("fun markActionGroupTelemetryAcked(eventId: String?)"))
+        assertTrue("VMMqttHelper 必须消费动作遥测 ACK", receiver.contains("consumeActionGroupTelemetryAckIfNeeded"))
+        assertTrue("动作遥测 ACK 必须通过 SendServerHelper 移除 pending", receiver.contains("SendServerHelper.markActionGroupTelemetryAcked(eventId)"))
     }
 
     @Test

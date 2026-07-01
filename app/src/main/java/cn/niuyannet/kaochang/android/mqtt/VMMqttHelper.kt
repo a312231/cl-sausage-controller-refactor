@@ -154,6 +154,37 @@ object VMMqttHelper : VMMqtt() {
         return true
     }
 
+    private fun consumeActionGroupTelemetryAckIfNeeded(topicMessage: TopicMessage): Boolean {
+        if (topicMessage.action != MqttProtocol.ACTION_DEVICE_LOG) {
+            return false
+        }
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        if (content.getString("messageType").orEmpty() != MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY_ACK) {
+            return false
+        }
+        val eventId = content.getString("eventId")
+        val accepted = content.getBooleanValue("accepted")
+        val duplicate = content.getBooleanValue("duplicate")
+        val persisted = content.getBooleanValue("persisted")
+        val reason = content.getString("reason").orEmpty()
+        val ackTs = content.getLongValue("ackTs")
+        val ackResult = SendServerHelper.markActionGroupTelemetryAcked(eventId)
+        if (accepted || duplicate || persisted) {
+            LogUtils.d(
+                "【300/400动作组】服务端已确认结构化动作日志：" +
+                    "eventId=$eventId，freshAck=${ackResult.freshAck}，accepted=$accepted，" +
+                    "duplicate=$duplicate，persisted=$persisted，reason=$reason，ackTs=$ackTs，" +
+                    "ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}"
+            )
+        } else {
+            LogUtils.w(
+                "【300/400动作组】服务端未接收结构化动作日志：" +
+                    "eventId=$eventId，freshAck=${ackResult.freshAck}，reason=$reason，ackTs=$ackTs"
+            )
+        }
+        return true
+    }
+
     private fun summarizeServiceStateMessage(payload: String): String {
         val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
         val content = JSON.parseObject(topicMessage.content ?: "{}")
@@ -186,6 +217,10 @@ object VMMqttHelper : VMMqtt() {
                 val availableSeq = content.getLongValue("availableSeq")
                 "收到首页展示态回执：action=2（设备状态同步），availableSeq=$availableSeq, payloadLength=${payload.length}"
             }
+            MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY_ACK -> {
+                val eventId = content.getString("eventId").orEmpty()
+                "收到动作组遥测回执：action=3（设备动作日志），eventId=$eventId, payloadLength=${payload.length}"
+            }
             MqttProtocol.TYPE_AVAILABLE_STATE ->
                 "收到首页展示态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
             MqttProtocol.TYPE_RUNTIME_STATE ->
@@ -207,8 +242,17 @@ object VMMqttHelper : VMMqtt() {
                     "收到下发订单：action=1（订单指令），orderNo=${orderNo.ifBlank { "未知" }}, itemCount=$itemCount"
                 }
                 MqttProtocol.ACTION_SERVICE_STATE -> summarizeServiceStateMessage(payload)
-                MqttProtocol.ACTION_DEVICE_LOG ->
-                    "收到设备动作日志消息：action=3，payloadLength=${payload.length}"
+                MqttProtocol.ACTION_DEVICE_LOG -> {
+                    val topicMessage = JSON.parseObject(payload, TopicMessage::class.java)
+                    val content = JSON.parseObject(topicMessage.content ?: "{}")
+                    val messageType = content.getString("messageType").orEmpty()
+                    if (messageType == MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY_ACK) {
+                        val eventId = content.getString("eventId").orEmpty()
+                        "收到动作组遥测回执：action=3（设备动作日志），eventId=$eventId, payloadLength=${payload.length}"
+                    } else {
+                        "收到设备动作日志消息：action=3，payloadLength=${payload.length}"
+                    }
+                }
                 else -> "收到下发消息：action=$action，payloadLength=${payload.length}"
             }
         } catch (_: Exception) {
@@ -267,6 +311,9 @@ object VMMqttHelper : VMMqtt() {
                             return
                         }
                         if (consumeConsumableEventAckIfNeeded(bean)) {
+                            return
+                        }
+                        if (consumeActionGroupTelemetryAckIfNeeded(bean)) {
                             return
                         }
                         LogUtils.d(

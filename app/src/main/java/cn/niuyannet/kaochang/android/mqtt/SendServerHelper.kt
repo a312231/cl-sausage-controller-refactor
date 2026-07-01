@@ -17,6 +17,10 @@ object SendServerHelper {
     private const val RUNTIME_STATE_ACK_TIMEOUT_MS = 8_000L
     private const val AVAILABLE_STATE_ACK_TIMEOUT_MS = 8_000L
     private const val CONSUMABLE_EVENT_ACK_TIMEOUT_MS = 8_000L
+    private const val ACTION_GROUP_TELEMETRY_ACK_TIMEOUT_MS = 8_000L
+    private const val ACTION_GROUP_TELEMETRY_RETRY_DELAY_MS = 15_000L
+    private const val ACTION_GROUP_TELEMETRY_MAX_RETRY = 3
+    private const val ACTION_GROUP_TELEMETRY_MAX_PENDING = 200
 
     private val runtimeStateSeq = AtomicLong(System.currentTimeMillis())
     private val runtimeStateAckHandler = Handler(Looper.getMainLooper())
@@ -27,6 +31,8 @@ object SendServerHelper {
     private val pendingAvailableStateAcks = ConcurrentHashMap<Long, AvailableStatePublishSnapshot>()
     private val consumableEventAckHandler = Handler(Looper.getMainLooper())
     private val pendingConsumableEventAcks = ConcurrentHashMap<String, ConsumableEventPublishSnapshot>()
+    private val actionGroupTelemetryAckHandler = Handler(Looper.getMainLooper())
+    private val pendingActionGroupTelemetryAcks = ConcurrentHashMap<String, ActionGroupTelemetryPublishSnapshot>()
     @Volatile
     private var lastPublishedRuntimeStateSeq: Long = -1L
     @Volatile
@@ -119,6 +125,22 @@ object SendServerHelper {
     data class ConsumableEventAckResult(
         val freshAck: Boolean,
         val snapshot: ConsumableEventPublishSnapshot?,
+        val ackLatencyMs: Long?
+    )
+
+    data class ActionGroupTelemetryPublishSnapshot(
+        val eventId: String,
+        val payload: JSONObject,
+        val sessionId: String,
+        val actionName: String,
+        val eventPhase: String,
+        val publishedAt: Long,
+        val retryCount: Int = 0
+    )
+
+    data class ActionGroupTelemetryAckResult(
+        val freshAck: Boolean,
+        val snapshot: ActionGroupTelemetryPublishSnapshot?,
         val ackLatencyMs: Long?
     )
 
@@ -331,6 +353,10 @@ object SendServerHelper {
             deviceCode = AppConfig.getDeviceId(),
             telemetry = telemetry
         )
+        val eventId = payload.getString("eventId").orEmpty()
+        val sessionId = payload.getString("sessionId").orEmpty()
+        val actionName = payload.getString("actionName").orEmpty()
+        val eventPhase = payload.getString("eventPhase").orEmpty()
         val ok = VMMqttHelper.publishService(
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_DEVICE_LOG
@@ -339,6 +365,17 @@ object SendServerHelper {
             priority = MqttPublishPriority.LOW
         )
         if (ok) {
+            val snapshot = ActionGroupTelemetryPublishSnapshot(
+                eventId = eventId,
+                payload = payload,
+                sessionId = sessionId,
+                actionName = actionName,
+                eventPhase = eventPhase,
+                publishedAt = System.currentTimeMillis()
+            )
+            trimActionGroupTelemetryPendingIfNeeded()
+            pendingActionGroupTelemetryAcks[eventId] = snapshot
+            scheduleActionGroupTelemetryAckTimeout(snapshot)
             LogUtils.d(
                 "【300/400动作组】结构化动作日志已进入 MQTT 发送队列：" +
                     "sessionId=${telemetry.sessionId}，actionName=${telemetry.actionName}，" +
@@ -354,7 +391,15 @@ object SendServerHelper {
                     "physicalCheckpoint=${telemetry.physicalCheckpoint}，physicalLocation=${telemetry.physicalLocation}，" +
                     "errorCode=${telemetry.errorCode}"
             )
-            DataManagementAPI.uploadActionGroupTelemetry(payload)
+            val snapshot = ActionGroupTelemetryPublishSnapshot(
+                eventId = eventId,
+                payload = payload,
+                sessionId = sessionId,
+                actionName = actionName,
+                eventPhase = eventPhase,
+                publishedAt = System.currentTimeMillis()
+            )
+            triggerActionGroupTelemetryHttpFallback(snapshot)
         }
         return ok
     }
@@ -485,6 +530,95 @@ object SendServerHelper {
         }, CONSUMABLE_EVENT_ACK_TIMEOUT_MS)
     }
 
+    private fun scheduleActionGroupTelemetryAckTimeout(snapshot: ActionGroupTelemetryPublishSnapshot) {
+        actionGroupTelemetryAckHandler.postDelayed({
+            val pending = pendingActionGroupTelemetryAcks[snapshot.eventId] ?: return@postDelayed
+            if (pending.publishedAt != snapshot.publishedAt) {
+                return@postDelayed
+            }
+            val ageMs = System.currentTimeMillis() - pending.publishedAt
+            LogUtils.w(
+                "【300/400动作组】结构化动作日志上报后仍未收到服务端确认，触发 HTTP 兜底：" +
+                    "eventId=${pending.eventId}，actionName=${pending.actionName}，" +
+                    "eventPhase=${pending.eventPhase}，ageMs=$ageMs"
+            )
+            triggerActionGroupTelemetryHttpFallback(pending)
+        }, ACTION_GROUP_TELEMETRY_ACK_TIMEOUT_MS)
+    }
+
+    private fun triggerActionGroupTelemetryHttpFallback(pending: ActionGroupTelemetryPublishSnapshot) {
+        DataManagementAPI.uploadActionGroupTelemetry(pending.payload) { code, content ->
+            if (code == 0 && isActionGroupTelemetryHttpAccepted(content)) {
+                pendingActionGroupTelemetryAcks.remove(pending.eventId)
+                LogUtils.i(
+                    "【300/400动作组】结构化动作日志 HTTP 兜底已被服务端接收：" +
+                        "eventId=${pending.eventId}，actionName=${pending.actionName}，eventPhase=${pending.eventPhase}"
+                )
+            } else {
+                LogUtils.w(
+                    "【300/400动作组】结构化动作日志 HTTP 兜底未确认接收，进入有界重试：" +
+                        "eventId=${pending.eventId}，actionName=${pending.actionName}，" +
+                        "eventPhase=${pending.eventPhase}，code=$code"
+                )
+                enqueueActionGroupTelemetryRetry(pending)
+            }
+        }
+    }
+
+    private fun enqueueActionGroupTelemetryRetry(snapshot: ActionGroupTelemetryPublishSnapshot) {
+        if (snapshot.retryCount >= ACTION_GROUP_TELEMETRY_MAX_RETRY) {
+            pendingActionGroupTelemetryAcks.remove(snapshot.eventId)
+            LogUtils.e(
+                "【300/400动作组】结构化动作日志 HTTP 兜底重试已达上限，停止内存重试：" +
+                    "eventId=${snapshot.eventId}，actionName=${snapshot.actionName}，eventPhase=${snapshot.eventPhase}"
+            )
+            return
+        }
+        val retrySnapshot = snapshot.copy(
+            publishedAt = System.currentTimeMillis(),
+            retryCount = snapshot.retryCount + 1
+        )
+        pendingActionGroupTelemetryAcks[retrySnapshot.eventId] = retrySnapshot
+        actionGroupTelemetryAckHandler.postDelayed({
+            val pending = pendingActionGroupTelemetryAcks[retrySnapshot.eventId] ?: return@postDelayed
+            if (pending.publishedAt != retrySnapshot.publishedAt) {
+                return@postDelayed
+            }
+            triggerActionGroupTelemetryHttpFallback(pending)
+        }, ACTION_GROUP_TELEMETRY_RETRY_DELAY_MS)
+    }
+
+    private fun isActionGroupTelemetryHttpAccepted(content: String?): Boolean {
+        if (content.isNullOrBlank()) {
+            return false
+        }
+        return try {
+            val root = JSON.parseObject(content)
+            val code = root.getIntValue("code")
+            val data = root.getJSONObject("data")
+            code == 200 && (
+                data == null ||
+                    data.getBooleanValue("accepted") ||
+                    data.getBooleanValue("duplicate") ||
+                    data.getBooleanValue("persisted")
+                )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun trimActionGroupTelemetryPendingIfNeeded() {
+        if (pendingActionGroupTelemetryAcks.size < ACTION_GROUP_TELEMETRY_MAX_PENDING) {
+            return
+        }
+        val oldest = pendingActionGroupTelemetryAcks.values.minByOrNull { it.publishedAt } ?: return
+        pendingActionGroupTelemetryAcks.remove(oldest.eventId)
+        LogUtils.w(
+            "【300/400动作组】结构化动作日志 pending 队列达到上限，丢弃最旧待确认事件：" +
+                "eventId=${oldest.eventId}，actionName=${oldest.actionName}，eventPhase=${oldest.eventPhase}"
+        )
+    }
+
     fun markAvailableStateAcked(availableSeq: Long): AvailableStateAckResult {
         if (availableSeq <= 0L) {
             return AvailableStateAckResult(
@@ -515,6 +649,15 @@ object SendServerHelper {
         val snapshot = pendingConsumableEventAcks.remove(sourceEventKey)
         val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
         return ConsumableEventAckResult(snapshot != null, snapshot, ackLatencyMs)
+    }
+
+    fun markActionGroupTelemetryAcked(eventId: String?): ActionGroupTelemetryAckResult {
+        if (eventId.isNullOrBlank()) {
+            return ActionGroupTelemetryAckResult(false, null, null)
+        }
+        val snapshot = pendingActionGroupTelemetryAcks.remove(eventId)
+        val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
+        return ActionGroupTelemetryAckResult(snapshot != null, snapshot, ackLatencyMs)
     }
 
     fun markRuntimeStateAcked(runtimeSeq: Long): RuntimeStateAckResult {
@@ -562,6 +705,7 @@ object SendServerHelper {
     fun lastAckedRuntimeStateSeq(): Long = lastAckedRuntimeStateSeq
     fun pendingRuntimeAckCount(): Int = pendingRuntimeStateAcks.size
     fun pendingAvailableAckCount(): Int = pendingAvailableStateAcks.size
+    fun pendingActionGroupTelemetryAckCount(): Int = pendingActionGroupTelemetryAcks.size
 
     fun publishAppUpgradeNotice(
         currentVersionCode: Int,
