@@ -43,6 +43,34 @@ class ActionPhysicalStateReducerPolicyTest {
     }
 
     @Test
+    fun shouldRejectSupplementPhysicalCheckpointWhenTelemetryCoordinatesDifferFromPlan() {
+        val plannedBoxNo = 3
+        val plannedPanNo = 9
+
+        assertTrue(
+            ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
+                telemetry("in2", "SUPPLEMENT_PICKED_FROM_BOX", boxNo = plannedBoxNo, panNo = plannedPanNo),
+                plannedBoxNo = plannedBoxNo,
+                plannedPanNo = plannedPanNo
+            )
+        )
+        assertFalse(
+            ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
+                telemetry("in2", "SUPPLEMENT_PICKED_FROM_BOX", boxNo = 4, panNo = plannedPanNo),
+                plannedBoxNo = plannedBoxNo,
+                plannedPanNo = plannedPanNo
+            )
+        )
+        assertFalse(
+            ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
+                telemetry("in7", "SUPPLEMENT_PLACED_ON_PAN", boxNo = plannedBoxNo, panNo = 10),
+                plannedBoxNo = plannedBoxNo,
+                plannedPanNo = plannedPanNo
+            )
+        )
+    }
+
+    @Test
     fun shouldApplyOutRemovedFromPan_onlyForFinishedOut1CheckpointWithPan() {
         assertTrue(
             ActionPhysicalStateReducerPolicy.shouldApplyOutRemovedFromPan(

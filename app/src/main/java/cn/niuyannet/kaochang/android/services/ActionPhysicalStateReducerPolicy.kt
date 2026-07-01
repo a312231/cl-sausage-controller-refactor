@@ -22,6 +22,13 @@ internal object ActionPhysicalStateReducerPolicy {
         isFinishedCheckpoint(telemetry, "out1", CHECKPOINT_OUT_REMOVED_FROM_PAN) &&
             telemetry.panNo != null
 
+    fun isSupplementTelemetryForPlannedMove(
+        telemetry: ActionGroupTelemetry,
+        plannedBoxNo: Int,
+        plannedPanNo: Int
+    ): Boolean =
+        telemetry.boxNo == plannedBoxNo && telemetry.panNo == plannedPanNo
+
     private fun isFinishedCheckpoint(
         telemetry: ActionGroupTelemetry,
         actionName: String,

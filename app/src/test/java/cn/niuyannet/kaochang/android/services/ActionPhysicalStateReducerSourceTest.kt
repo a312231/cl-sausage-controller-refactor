@@ -35,6 +35,20 @@ class ActionPhysicalStateReducerSourceTest {
         assertTrue("流水线完成收口必须把动作级状态传给最终回写，避免双扣", block.contains("boxAlreadyDeducted ="))
     }
 
+    @Test
+    fun supplementPhysicalTelemetryReducer_shouldVerifyTelemetryCoordinatesBeforeApplyingState() {
+        val source = sourceText()
+        val functionStart = source.indexOf("private fun applySupplementPhysicalTelemetry(")
+        assertTrue("必须存在补肠动作级物理状态 reducer", functionStart >= 0)
+        val functionEnd = source.indexOf("private fun applySuccessfulSupplementMove(", functionStart)
+            .let { if (it >= 0) it else source.length }
+        val block = source.substring(functionStart, functionEnd)
+
+        assertTrue("reducer 回写 in2/in7 前必须校验 telemetry 与计划盘箱一致", block.contains("isSupplementTelemetryForPlannedMove("))
+        assertTrue("坐标不一致时必须阻止本地扣箱", block.contains("已阻止本地扣箱"))
+        assertTrue("坐标不一致时必须阻止本地落盘", block.contains("已阻止本地落盘"))
+    }
+
     private fun sourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"),

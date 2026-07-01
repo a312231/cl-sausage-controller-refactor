@@ -2147,6 +2147,19 @@ object KaoChangOperate {
         panAlreadyPlaced: Boolean
     ): AppliedSupplementPhysicalTelemetry {
         if (ActionPhysicalStateReducerPolicy.shouldApplySupplementPickedFromBox(telemetry)) {
+            if (!ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
+                    telemetry = telemetry,
+                    plannedBoxNo = plannedBox.positionSn,
+                    plannedPanNo = plannedPan.positionSn
+                )
+            ) {
+                enterActionGroupMaintenance(
+                    "$source in2 物理检查点坐标与计划不一致，已阻止本地扣箱，需人工确认：" +
+                        "plannedBox=${plannedBox.positionSn}，plannedPan=${plannedPan.positionSn}，" +
+                        "telemetryBox=${telemetry.boxNo}，telemetryPan=${telemetry.panNo}"
+                )
+                return AppliedSupplementPhysicalTelemetry()
+            }
             if (boxAlreadyDeducted) {
                 logW(
                     LOG_SUPPLEMENT,
@@ -2177,6 +2190,19 @@ object KaoChangOperate {
         }
 
         if (ActionPhysicalStateReducerPolicy.shouldApplySupplementPlacedOnPan(telemetry)) {
+            if (!ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
+                    telemetry = telemetry,
+                    plannedBoxNo = plannedBox.positionSn,
+                    plannedPanNo = plannedPan.positionSn
+                )
+            ) {
+                enterActionGroupMaintenance(
+                    "$source in7 物理检查点坐标与计划不一致，已阻止本地落盘，需人工确认：" +
+                        "plannedBox=${plannedBox.positionSn}，plannedPan=${plannedPan.positionSn}，" +
+                        "telemetryBox=${telemetry.boxNo}，telemetryPan=${telemetry.panNo}"
+                )
+                return AppliedSupplementPhysicalTelemetry()
+            }
             if (panAlreadyPlaced) {
                 logW(
                     LOG_SUPPLEMENT,

@@ -64,6 +64,93 @@ class SupplementPanStateWriterTest {
     }
 
     @Test
+    fun pipelineInterleavedPhysicalCheckpoints_shouldKeepEachTargetBoundToItsOwnBoxAndPan() {
+        val plannedPanA = pan(positionSn = 13, tasteCode = "A")
+        val plannedPanB = pan(positionSn = 14, tasteCode = "B")
+        val currentPanA = pan(positionSn = 13, tasteCode = "A")
+        val currentPanB = pan(positionSn = 14, tasteCode = "B")
+        val plannedBoxA = box(positionSn = 17, stock = 2, tasteCode = "A")
+        val plannedBoxB = box(positionSn = 18, stock = 2, tasteCode = "B")
+        val currentBoxA = box(positionSn = 17, stock = 2, tasteCode = "A")
+        val currentBoxB = box(positionSn = 18, stock = 2, tasteCode = "B")
+        val currentPans = listOf(currentPanA, currentPanB)
+        val currentBoxes = listOf(currentBoxA, currentBoxB)
+        val config = AppConfigBean().apply {
+            bakingTime = 40
+            discardTime = 6
+        }
+
+        assertTrue(
+            applySupplementTelemetryForPlannedMove(
+                telemetry("in2", "SUPPLEMENT_PICKED_FROM_BOX", boxNo = 17, panNo = 13),
+                plannedPan = plannedPanA,
+                plannedBox = plannedBoxA,
+                currentPans = currentPans,
+                currentBoxes = currentBoxes,
+                config = config
+            )
+        )
+        assertTrue(
+            applySupplementTelemetryForPlannedMove(
+                telemetry("in2", "SUPPLEMENT_PICKED_FROM_BOX", boxNo = 18, panNo = 14),
+                plannedPan = plannedPanB,
+                plannedBox = plannedBoxB,
+                currentPans = currentPans,
+                currentBoxes = currentBoxes,
+                config = config
+            )
+        )
+        assertTrue(
+            applySupplementTelemetryForPlannedMove(
+                telemetry("in7", "SUPPLEMENT_PLACED_ON_PAN", boxNo = 17, panNo = 13),
+                plannedPan = plannedPanA,
+                plannedBox = plannedBoxA,
+                currentPans = currentPans,
+                currentBoxes = currentBoxes,
+                config = config
+            )
+        )
+        assertTrue(
+            applySupplementTelemetryForPlannedMove(
+                telemetry("in7", "SUPPLEMENT_PLACED_ON_PAN", boxNo = 18, panNo = 14),
+                plannedPan = plannedPanB,
+                plannedBox = plannedBoxB,
+                currentPans = currentPans,
+                currentBoxes = currentBoxes,
+                config = config
+            )
+        )
+
+        assertEquals(1, currentBoxA.num)
+        assertEquals(1, currentBoxB.num)
+        assertTrue(currentPanA.isHasSausage)
+        assertTrue(currentPanB.isHasSausage)
+        assertEquals("A", currentPanA.taste?.tasteCode)
+        assertEquals("B", currentPanB.taste?.tasteCode)
+    }
+
+    @Test
+    fun pipelinePhysicalCheckpoint_shouldNotApplyWhenTelemetryBelongsToAnotherTarget() {
+        val plannedPanA = pan(positionSn = 13, tasteCode = "A")
+        val currentPanA = pan(positionSn = 13, tasteCode = "A")
+        val plannedBoxA = box(positionSn = 17, stock = 2, tasteCode = "A")
+        val currentBoxA = box(positionSn = 17, stock = 2, tasteCode = "A")
+
+        val applied = applySupplementTelemetryForPlannedMove(
+            telemetry("in2", "SUPPLEMENT_PICKED_FROM_BOX", boxNo = 18, panNo = 14),
+            plannedPan = plannedPanA,
+            plannedBox = plannedBoxA,
+            currentPans = listOf(currentPanA),
+            currentBoxes = listOf(currentBoxA),
+            config = AppConfigBean()
+        )
+
+        assertFalse(applied)
+        assertEquals(2, currentBoxA.num)
+        assertFalse(currentPanA.isHasSausage)
+    }
+
+    @Test
     fun applyPhysicalCheckpoint_shouldClearCurrentPanOnOut1() {
         val plannedPan = pan(positionSn = 4, tasteCode = "B").apply {
             isHasSausage = true
@@ -278,4 +365,67 @@ class SupplementPanStateWriterTest {
             this.tasteCode = tasteCode
             this.tasteName = "测试肠"
         }
+
+    private fun applySupplementTelemetryForPlannedMove(
+        telemetry: cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry,
+        plannedPan: KaoPan,
+        plannedBox: KaoPanBox,
+        currentPans: List<KaoPan>,
+        currentBoxes: List<KaoPanBox>,
+        config: AppConfigBean
+    ): Boolean {
+        if (!ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
+                telemetry = telemetry,
+                plannedBoxNo = plannedBox.positionSn,
+                plannedPanNo = plannedPan.positionSn
+            )
+        ) {
+            return false
+        }
+        return when {
+            ActionPhysicalStateReducerPolicy.shouldApplySupplementPickedFromBox(telemetry) ->
+                SupplementPanStateWriter.applySupplementPickedFromBox(
+                    plannedPan = plannedPan,
+                    plannedBox = plannedBox,
+                    currentPans = currentPans,
+                    currentBoxes = currentBoxes
+                )
+            ActionPhysicalStateReducerPolicy.shouldApplySupplementPlacedOnPan(telemetry) ->
+                SupplementPanStateWriter.applySupplementPlacedOnPan(
+                    plannedPan = plannedPan,
+                    plannedBox = plannedBox,
+                    currentPans = currentPans,
+                    currentBoxes = currentBoxes,
+                    nowMs = 12_345L,
+                    clearPendingDiscard = false,
+                    config = config,
+                    tasteBuilder = { sourceBox, _ -> Taste(sourceBox.tasteCode) }
+                )
+            else -> false
+        }
+    }
+
+    private fun telemetry(
+        actionName: String,
+        checkpoint: String,
+        boxNo: Int,
+        panNo: Int
+    ): cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry =
+        cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry(
+            eventId = "$actionName:$boxNo->$panNo",
+            eventPhase = cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor.ACTION_EVENT_PHASE_FINISHED,
+            sessionId = "session",
+            actionName = actionName,
+            registerAddress = 1,
+            resultRegister = 2,
+            errorCode = null,
+            errorMessage = null,
+            boxNo = boxNo,
+            panNo = panNo,
+            orderId = null,
+            resourceLocks = null,
+            physicalCheckpoint = checkpoint,
+            physicalLocation = null,
+            elapsedMs = 10L
+        )
 }
