@@ -33,6 +33,7 @@ object SendServerHelper {
     private val pendingConsumableEventAcks = ConcurrentHashMap<String, ConsumableEventPublishSnapshot>()
     private val actionGroupTelemetryAckHandler = Handler(Looper.getMainLooper())
     private val pendingActionGroupTelemetryAcks = ConcurrentHashMap<String, ActionGroupTelemetryPublishSnapshot>()
+    private val actionGroupTelemetryHttpFallbackInFlight = ConcurrentHashMap<String, Boolean>()
     @Volatile
     private var lastPublishedRuntimeStateSeq: Long = -1L
     @Volatile
@@ -547,7 +548,22 @@ object SendServerHelper {
     }
 
     private fun triggerActionGroupTelemetryHttpFallback(pending: ActionGroupTelemetryPublishSnapshot) {
+        if (actionGroupTelemetryHttpFallbackInFlight.putIfAbsent(pending.eventId, true) != null) {
+            LogUtils.w(
+                "【300/400动作组】结构化动作日志 HTTP 兜底已在途，跳过重复请求：" +
+                    "eventId=${pending.eventId}，actionName=${pending.actionName}，eventPhase=${pending.eventPhase}"
+            )
+            return
+        }
         DataManagementAPI.uploadActionGroupTelemetry(pending.payload) { code, content ->
+            actionGroupTelemetryHttpFallbackInFlight.remove(pending.eventId)
+            if (pendingActionGroupTelemetryAcks[pending.eventId]?.publishedAt != pending.publishedAt) {
+                LogUtils.d(
+                    "【300/400动作组】结构化动作日志 HTTP 兜底回调已过期，忽略：" +
+                        "eventId=${pending.eventId}，actionName=${pending.actionName}，eventPhase=${pending.eventPhase}"
+                )
+                return@uploadActionGroupTelemetry
+            }
             if (code == 0 && isActionGroupTelemetryHttpAccepted(content)) {
                 pendingActionGroupTelemetryAcks.remove(pending.eventId)
                 LogUtils.i(
@@ -656,6 +672,7 @@ object SendServerHelper {
             return ActionGroupTelemetryAckResult(false, null, null)
         }
         val snapshot = pendingActionGroupTelemetryAcks.remove(eventId)
+        actionGroupTelemetryHttpFallbackInFlight.remove(eventId)
         val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
         return ActionGroupTelemetryAckResult(snapshot != null, snapshot, ackLatencyMs)
     }

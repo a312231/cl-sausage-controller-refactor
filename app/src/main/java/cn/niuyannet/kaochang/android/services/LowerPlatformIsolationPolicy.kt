@@ -7,17 +7,47 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 object LowerPlatformIsolationPolicy {
     private val ISOLATABLE_SUPPLEMENT_ACTIONS = setOf("in1", "in2", "in3", "in4", "in5")
 
+    enum class Decision {
+        NotIsolatable,
+        IsolatedSilent,
+        IsolatedRequiresManualConfirm
+    }
+
+    fun classifySupplementActionFailure(
+        actionName: String,
+        result: AtomicActionResult,
+        hasPrefetchedNext: Boolean
+    ): Decision {
+        if (actionName !in ISOLATABLE_SUPPLEMENT_ACTIONS) {
+            return Decision.NotIsolatable
+        }
+        val failed = result as? AtomicActionResult.Failed ?: return Decision.NotIsolatable
+        if (actionName == "in5" && failed.errorCode == AtomicActionCodes.IR_THROW_FAILED) {
+            return Decision.IsolatedRequiresManualConfirm
+        }
+        if (hasPrefetchedNext) {
+            return Decision.NotIsolatable
+        }
+        if (actionName == "in2" && failed.errorCode == AtomicActionCodes.IR_PICK_FAILED) {
+            return Decision.NotIsolatable
+        }
+        return Decision.IsolatedSilent
+    }
+
     fun isSupplementActionIsolatable(
         actionName: String,
         result: AtomicActionResult,
         hasPrefetchedNext: Boolean
-    ): Boolean {
-        if (hasPrefetchedNext || actionName !in ISOLATABLE_SUPPLEMENT_ACTIONS) {
-            return false
-        }
-        val failed = result as? AtomicActionResult.Failed ?: return false
-        return !(actionName == "in2" && failed.errorCode == AtomicActionCodes.IR_PICK_FAILED)
-    }
+    ): Boolean = classifySupplementActionFailure(actionName, result, hasPrefetchedNext) != Decision.NotIsolatable
+
+    fun requiresManualConfirmAfterIsolation(
+        actionName: String,
+        result: AtomicActionResult
+    ): Boolean = classifySupplementActionFailure(
+        actionName = actionName,
+        result = result,
+        hasPrefetchedNext = false
+    ) == Decision.IsolatedRequiresManualConfirm
 
     fun buildIsolationReason(
         actionName: String,

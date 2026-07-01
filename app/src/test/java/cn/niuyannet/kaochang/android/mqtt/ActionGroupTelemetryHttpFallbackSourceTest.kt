@@ -37,6 +37,27 @@ class ActionGroupTelemetryHttpFallbackSourceTest {
     }
 
     @Test
+    fun actionGroupTelemetryHttpFallback_shouldDeduplicateInFlightByEventId() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
+        val fallbackBody = extractFunctionBody(source, "private fun triggerActionGroupTelemetryHttpFallback")
+        val ackBody = extractFunctionBody(source, "fun markActionGroupTelemetryAcked")
+
+        assertTrue("动作遥测 HTTP 兜底必须有 eventId 在途去重集合", source.contains("actionGroupTelemetryHttpFallbackInFlight"))
+        assertTrue(
+            "同一 eventId 已有 HTTP 兜底在途时必须直接返回，避免 rejected/timeout 并发重复打后端",
+            fallbackBody.contains("putIfAbsent(pending.eventId") && fallbackBody.contains("return")
+        )
+        assertTrue(
+            "HTTP 兜底回调结束必须清理 in-flight，失败后才能进入有上限重试",
+            fallbackBody.contains("actionGroupTelemetryHttpFallbackInFlight.remove(pending.eventId)")
+        )
+        assertTrue(
+            "MQTT ACK 成功也必须清理 in-flight，避免迟到 HTTP 回调之外的长期占用",
+            ackBody.contains("actionGroupTelemetryHttpFallbackInFlight.remove(eventId)")
+        )
+    }
+
+    @Test
     fun actionGroupTelemetryAck_shouldRemovePendingEvent() {
         val protocol = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/MqttProtocol.kt")
         val sender = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")

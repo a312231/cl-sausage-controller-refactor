@@ -9,7 +9,7 @@ import org.junit.Test
 class LowerPlatformIsolationPolicyTest {
 
     @Test
-    fun supplementActionFailure_shouldIsolateLowerPlatformForIn1ToIn5ExplicitFailuresExceptIrPickDegrade() {
+    fun supplementActionFailure_shouldClassifyLowerPlatformFailuresWithoutHidingIn5ResidueRisk() {
         assertTrue(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in1",
             failed(AtomicActionCodes.IN1_X_RESET_FAILED),
@@ -34,6 +34,10 @@ class LowerPlatformIsolationPolicyTest {
             "in5",
             failed(AtomicActionCodes.IR_THROW_FAILED),
             hasPrefetchedNext = false
+        ))
+        assertTrue(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
+            "in5",
+            failed(AtomicActionCodes.IR_THROW_FAILED)
         ))
 
         assertFalse(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
@@ -60,10 +64,14 @@ class LowerPlatformIsolationPolicyTest {
             failed(AtomicActionCodes.OUT_SLOT_PARAM),
             hasPrefetchedNext = false
         ))
-        assertFalse(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
+        assertTrue(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in5",
             failed(AtomicActionCodes.IR_THROW_FAILED),
             hasPrefetchedNext = true
+        ))
+        assertTrue(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
+            "in5",
+            failed(AtomicActionCodes.IR_THROW_FAILED)
         ))
         assertFalse(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in5",
@@ -74,6 +82,10 @@ class LowerPlatformIsolationPolicyTest {
             "in5",
             AtomicActionResult.ModbusError("通信失败"),
             hasPrefetchedNext = false
+        ))
+        assertFalse(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
+            "in4",
+            failed(AtomicActionCodes.LIFT_NOT_BOTTOM)
         ))
     }
 

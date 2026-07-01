@@ -127,7 +127,8 @@ object KaoChangOperate {
             val targetPanNo: Int,
             val sourceBoxNo: Int?,
             val actionName: String,
-            val code: Int
+            val code: Int,
+            val requiresManualConfirm: Boolean
         ) : SupplementMoveResult()
         data class HardFailure(
             val reason: String,
@@ -138,7 +139,8 @@ object KaoChangOperate {
     private data class SingleSupplementMoveResult(
         val success: Boolean,
         val actionGroupResult: ActionGroupResult? = null,
-        val lowerPlatformIsolationReason: String? = null
+        val lowerPlatformIsolationReason: String? = null,
+        val lowerPlatformIsolationRequiresManualConfirm: Boolean = false
     )
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     /**
@@ -1437,7 +1439,8 @@ object KaoChangOperate {
                         targetPanNo = kaoPan.positionSn,
                         sourceBoxNo = box.positionSn,
                         actionName = failedActionName,
-                        code = failureCode
+                        code = failureCode,
+                        requiresManualConfirm = moveResult.lowerPlatformIsolationRequiresManualConfirm
                     )
                 }
                 return SupplementMoveResult.HardFailure(
@@ -1706,16 +1709,27 @@ object KaoChangOperate {
                     break
                 }
                 is SupplementMoveResult.LowerPlatformIsolated -> {
-                    supplementBatchIntentRepository.markSkippedBySupplyDegrade(
-                        batchId = batchId,
-                        targetPanNo = target.kaoPan.positionSn,
-                        reason = result.reason
-                    )
+                    if (result.requiresManualConfirm) {
+                        supplementBatchIntentRepository.markFailure(
+                            batchId = batchId,
+                            targetPanNo = target.kaoPan.positionSn,
+                            actionName = result.actionName,
+                            failureMessage = result.reason,
+                            requiresManualConfirm = true
+                        )
+                    } else {
+                        supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                            batchId = batchId,
+                            targetPanNo = target.kaoPan.positionSn,
+                            reason = result.reason
+                        )
+                    }
                     logW(
                         LOG_SUPPLEMENT,
-                        "$stage 下平台隔离跳过当前目标并结束本轮旧计划：targetPan=${target.kaoPan.positionSn}，" +
+                        "$stage 下平台隔离并结束本轮旧计划：targetPan=${target.kaoPan.positionSn}，" +
                             "sourceBox=${result.sourceBoxNo ?: "未知"}，action=${result.actionName}，" +
-                            "error=${AtomicActionExecutor.formatCode(result.code)}，reason=${result.reason}"
+                            "error=${AtomicActionExecutor.formatCode(result.code)}，" +
+                            "requiresManualConfirm=${result.requiresManualConfirm}，reason=${result.reason}"
                     )
                     break
                 }
@@ -2487,12 +2501,12 @@ object KaoChangOperate {
             )
             return
         }
-        if (LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
-                actionName = result.actionName,
-                result = result.result,
-                hasPrefetchedNext = result.hasPrefetchedNext
-            )
-        ) {
+        val lowerPlatformIsolationDecision = LowerPlatformIsolationPolicy.classifySupplementActionFailure(
+            actionName = result.actionName,
+            result = result.result,
+            hasPrefetchedNext = result.hasPrefetchedNext
+        )
+        if (lowerPlatformIsolationDecision != LowerPlatformIsolationPolicy.Decision.NotIsolatable) {
             val isolationReason = LowerPlatformIsolationPolicy.buildIsolationReason(
                 actionName = result.actionName,
                 result = result.result,
@@ -2500,19 +2514,32 @@ object KaoChangOperate {
                 sourceBoxNo = sourceBoxNo,
                 hasPrefetchedNext = result.hasPrefetchedNext
             )
-            targetPanNo?.let {
-                supplementBatchIntentRepository.markSkippedBySupplyDegrade(
-                    batchId = batchId,
-                    targetPanNo = it,
-                    reason = isolationReason
-                )
+            val requiresManualConfirm =
+                lowerPlatformIsolationDecision == LowerPlatformIsolationPolicy.Decision.IsolatedRequiresManualConfirm
+            targetPanNo?.let { panNo ->
+                if (requiresManualConfirm) {
+                    supplementBatchIntentRepository.markFailure(
+                        batchId = batchId,
+                        targetPanNo = panNo,
+                        actionName = result.actionName,
+                        failureMessage = isolationReason,
+                        requiresManualConfirm = true
+                    )
+                } else {
+                    supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                        batchId = batchId,
+                        targetPanNo = panNo,
+                        reason = isolationReason
+                    )
+                }
             }
             markLowerPlatformIsolatedRuntimeState(isolationReason)
             logW(
                 LOG_SUPPLEMENT,
-                "补肠预取流水线下平台失败已隔离，不进入维护、不要求人工确认：" +
+                "补肠预取流水线下平台失败已隔离，不进入维护：" +
                     "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
-                    "result=${describeAtomicActionResult(result.result)}，reason=$isolationReason"
+                    "result=${describeAtomicActionResult(result.result)}，" +
+                    "requiresManualConfirm=$requiresManualConfirm，reason=$isolationReason"
             )
             return
         }
@@ -2716,12 +2743,17 @@ object KaoChangOperate {
 
         val moveSuccess = actionGroupResult == ActionGroupResult.Success
         val failureCode = atomicFailureCode(actionGroupResult)
-        val lowerPlatformIsolationReason = if (!moveSuccess && actionGroupResult is ActionGroupResult.Failed &&
-            LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
+        val lowerPlatformIsolationDecision = if (!moveSuccess && actionGroupResult is ActionGroupResult.Failed) {
+            LowerPlatformIsolationPolicy.classifySupplementActionFailure(
                 actionName = actionGroupResult.actionName,
                 result = actionGroupResult.result,
                 hasPrefetchedNext = false
             )
+        } else {
+            LowerPlatformIsolationPolicy.Decision.NotIsolatable
+        }
+        val lowerPlatformIsolationReason = if (actionGroupResult is ActionGroupResult.Failed &&
+            lowerPlatformIsolationDecision != LowerPlatformIsolationPolicy.Decision.NotIsolatable
         ) {
             LowerPlatformIsolationPolicy.buildIsolationReason(
                 actionName = actionGroupResult.actionName,
@@ -2849,7 +2881,9 @@ object KaoChangOperate {
         return SingleSupplementMoveResult(
             success = moveSuccess && supplementStateApplied,
             actionGroupResult = actionGroupResult,
-            lowerPlatformIsolationReason = lowerPlatformIsolationReason
+            lowerPlatformIsolationReason = lowerPlatformIsolationReason,
+            lowerPlatformIsolationRequiresManualConfirm =
+                lowerPlatformIsolationDecision == LowerPlatformIsolationPolicy.Decision.IsolatedRequiresManualConfirm
         )
     }
 
