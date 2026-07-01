@@ -56,6 +56,7 @@ class InActionGroupPrefetchPipelineRunner(
     private val onPickFailureSkipped: (Int) -> Unit = {},
     private val onCurrentActionChanged: (InActionGroupPipelineActionContext) -> Unit = {},
     private val actionClientProvider: (InActionGroupPipelineActionContext) -> AtomicActionClient = { client },
+    private val pauseReasonAfterFallbackSource: (InActionGroupPipelineTask, Int) -> String? = { _, _ -> null },
     private val shouldPauseAfterCurrentTask: () -> Boolean = { false },
     private val pauseReasonAfterCurrentTask: () -> String? = {
         if (shouldPauseAfterCurrentTask()) "检测到订单待出餐" else null
@@ -79,9 +80,14 @@ class InActionGroupPrefetchPipelineRunner(
 
             var nextPrefetch: Deferred<PrefetchResult>? = null
             var pauseRequestedAfterCurrent = false
+            val fallbackPauseReason = if (prefetched.sourceBoxNo != task.sourceBoxCandidates.first()) {
+                pauseReasonAfterFallbackSource(task, prefetched.sourceBoxNo)
+            } else {
+                null
+            }
             val startNextPrefetchIfNeeded = {
                 if (nextPrefetch == null && index + 1 < tasks.size) {
-                    val pauseReason = pauseReasonAfterCurrentTask()
+                    val pauseReason = fallbackPauseReason ?: pauseReasonAfterCurrentTask()
                     if (pauseReason != null) {
                         pauseRequestedAfterCurrent = true
                         logger(

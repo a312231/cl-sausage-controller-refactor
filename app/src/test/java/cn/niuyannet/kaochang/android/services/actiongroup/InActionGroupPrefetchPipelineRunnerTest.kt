@@ -277,6 +277,47 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldPauseAfterFallbackSourceCompletesWithoutStartingStaleNextPrefetch() = runBlocking {
+        val client = FakeClient(
+            results = queueOf(
+                AtomicActionResult.Success,
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "取肠红外未确认有肠"),
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success,
+                AtomicActionResult.Success
+            )
+        )
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            pauseReasonAfterFallbackSource = { task, actualSourceBoxNo ->
+                "实际来源箱 $actualSourceBoxNo 已偏离主计划箱 ${task.sourceBoxCandidates.first()}，重新规划剩余目标"
+            }
+        )
+
+        val result = runner.run(
+            listOf(
+                InActionGroupPipelineTask(listOf(21, 20), targetPanNo = 1),
+                InActionGroupPipelineTask(listOf(20), targetPanNo = 4)
+            )
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        val paused = result as InActionGroupPipelineResult.Paused
+        assertEquals(listOf(1), paused.completed.map { it.targetPanNo })
+        assertEquals(20, paused.completed.single().sourceBoxNo)
+        assertEquals(
+            "备用箱被实际消耗后，不应继续启动旧计划里的下一根预取",
+            1,
+            client.calls.count { it == "in1:20" }
+        )
+    }
+
+    @Test
     fun pipeline_shouldReportActualFailedBoxWhenAllCandidateIn2PickFailuresExhaust() = runBlocking {
         val client = FakeClient(
             results = queueOf(

@@ -44,6 +44,9 @@ internal object SupplementPanStateWriter {
     ): Boolean {
         resolveCurrentTargetPan(plannedPan, currentPans) ?: return false
         val sourceBox = resolveCurrentSourceBox(plannedBox, currentBoxes) ?: return false
+        if (sourceBox.num <= 0) {
+            return false
+        }
         sourceBox.num = maxOf(0, sourceBox.num - 1)
         sourceBox.cmdStatusTake = 0
         return true

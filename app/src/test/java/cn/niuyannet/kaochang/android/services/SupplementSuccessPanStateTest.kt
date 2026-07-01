@@ -83,4 +83,37 @@ class SupplementSuccessPanStateTest {
         assertEquals(0, pan.cmdStatusMove)
         assertEquals(0, box.cmdStatusTake)
     }
+
+    @Test
+    fun applySuccessfulSupplementPanState_shouldNotSilentlyClampZeroStockAsSuccessfulDeduction() {
+        val pan = KaoPan().apply {
+            positionSn = 9
+            isHasSausage = false
+            status = 0
+        }
+        val box = KaoPanBox().apply {
+            positionSn = 20
+            num = 0
+            tasteCode = "C"
+            tasteName = "测试肠"
+        }
+
+        val applied = KaoChangOperate.applySuccessfulSupplementPanStateIfStockAvailable(
+            kaoPan = pan,
+            kaoPanBox = box,
+            demandGateReason = "单测",
+            nowMs = 12_345L,
+            clearPendingDiscard = false,
+            config = AppConfigBean().apply {
+                bakingTime = 30
+                discardTime = 15
+            },
+            tasteBuilder = { sourceBox, _ -> Taste(sourceBox.tasteCode) }
+        )
+
+        assertFalse("0 库存成功取肠应暴露一致性异常，不能当作正常扣箱落盘", applied)
+        assertFalse(pan.isHasSausage)
+        assertEquals(0, pan.status)
+        assertEquals(0, box.num)
+    }
 }

@@ -35,6 +35,25 @@ class SupplementPanStateWriterTest {
     }
 
     @Test
+    fun applyPhysicalCheckpoint_shouldRejectIn2DeductionWhenCurrentBoxStockAlreadyZero() {
+        val plannedPan = pan(positionSn = 4, tasteCode = "B")
+        val currentPan = pan(positionSn = 4, tasteCode = "B")
+        val plannedBox = box(positionSn = 20, stock = 0, tasteCode = "B")
+        val currentBox = box(positionSn = 20, stock = 0, tasteCode = "B")
+
+        val applied = SupplementPanStateWriter.applySupplementPickedFromBox(
+            plannedPan = plannedPan,
+            plannedBox = plannedBox,
+            currentPans = listOf(currentPan),
+            currentBoxes = listOf(currentBox)
+        )
+
+        assertFalse("0 库存下 in2 成功不能被静默当作已扣库存", applied)
+        assertEquals(0, currentBox.num)
+        assertFalse(currentPan.isHasSausage)
+    }
+
+    @Test
     fun applyPhysicalCheckpoint_shouldPlaceCurrentPanOnIn7WithoutDeductingBoxAgain() {
         val plannedPan = pan(positionSn = 4, tasteCode = "B")
         val currentPan = pan(positionSn = 4, tasteCode = "B")
