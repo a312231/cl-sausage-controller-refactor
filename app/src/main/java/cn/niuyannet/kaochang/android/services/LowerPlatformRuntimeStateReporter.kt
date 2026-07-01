@@ -80,7 +80,6 @@ object LowerPlatformRuntimeStateReporter {
 
     fun shouldRecoverAfterManualBoxMaintenance(config: AppConfigBean): Boolean {
         return config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED ||
-            config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED ||
             config.orderBlockReason == AppConfigBean.ORDER_BLOCK_REASON_LOWER_PLATFORM_RECOVERY_REQUIRED
     }
 

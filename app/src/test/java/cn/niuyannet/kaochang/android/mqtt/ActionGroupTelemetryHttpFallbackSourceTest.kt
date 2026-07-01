@@ -41,11 +41,15 @@ class ActionGroupTelemetryHttpFallbackSourceTest {
         val protocol = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/MqttProtocol.kt")
         val sender = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
         val receiver = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/VMMqttHelper.kt")
+        val consumeBody = extractFunctionBody(receiver, "private fun consumeActionGroupTelemetryAckIfNeeded")
 
         assertTrue("协议必须声明 action_group_telemetry_ack", protocol.contains("TYPE_ACTION_GROUP_TELEMETRY_ACK = \"action_group_telemetry_ack\""))
         assertTrue("SendServerHelper 必须提供动作遥测 ACK 标记入口", sender.contains("fun markActionGroupTelemetryAcked(eventId: String?)"))
+        assertTrue("SendServerHelper 必须提供 rejected ACK 兜底入口", sender.contains("fun handleRejectedActionGroupTelemetryAck(eventId: String?, reason: String)"))
         assertTrue("VMMqttHelper 必须消费动作遥测 ACK", receiver.contains("consumeActionGroupTelemetryAckIfNeeded"))
-        assertTrue("动作遥测 ACK 必须通过 SendServerHelper 移除 pending", receiver.contains("SendServerHelper.markActionGroupTelemetryAcked(eventId)"))
+        assertTrue("成功/重复/已持久化 ACK 才能移除 pending", consumeBody.contains("if (accepted || duplicate || persisted)"))
+        assertTrue("成功 ACK 必须通过 SendServerHelper 移除 pending", consumeBody.contains("SendServerHelper.markActionGroupTelemetryAcked(eventId)"))
+        assertTrue("rejected ACK 必须保留 pending 并触发 HTTP 兜底", consumeBody.contains("SendServerHelper.handleRejectedActionGroupTelemetryAck(eventId, reason)"))
     }
 
     @Test

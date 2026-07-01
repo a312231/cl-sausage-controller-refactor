@@ -660,6 +660,23 @@ object SendServerHelper {
         return ActionGroupTelemetryAckResult(snapshot != null, snapshot, ackLatencyMs)
     }
 
+    fun handleRejectedActionGroupTelemetryAck(eventId: String?, reason: String) {
+        if (eventId.isNullOrBlank()) {
+            LogUtils.w("【300/400动作组】服务端拒绝结构化动作日志但未携带 eventId，无法触发精确兜底：reason=$reason")
+            return
+        }
+        val pending = pendingActionGroupTelemetryAcks[eventId]
+        if (pending == null) {
+            LogUtils.w("【300/400动作组】服务端拒绝结构化动作日志，但本地已无 pending 事件：eventId=$eventId，reason=$reason")
+            return
+        }
+        LogUtils.w(
+            "【300/400动作组】服务端拒绝结构化动作日志，保留 pending 并触发 HTTP 兜底：" +
+                "eventId=$eventId，actionName=${pending.actionName}，eventPhase=${pending.eventPhase}，reason=$reason"
+        )
+        triggerActionGroupTelemetryHttpFallback(pending)
+    }
+
     fun markRuntimeStateAcked(runtimeSeq: Long): RuntimeStateAckResult {
         if (runtimeSeq <= 0L) {
             return RuntimeStateAckResult(

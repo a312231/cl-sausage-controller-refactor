@@ -71,7 +71,7 @@ class LowerPlatformRuntimeStateReporterTest {
             )
         )
 
-        assertTrue(LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualBoxMaintenance(isolated))
+        assertFalse(LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualBoxMaintenance(isolated))
         assertFalse(
             LowerPlatformRuntimeStateReporter.shouldClearOrderBlockReasonAfterManualBoxMaintenance(
                 isolated

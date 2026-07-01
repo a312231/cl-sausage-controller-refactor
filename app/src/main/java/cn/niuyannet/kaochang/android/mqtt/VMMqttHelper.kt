@@ -168,8 +168,8 @@ object VMMqttHelper : VMMqtt() {
         val persisted = content.getBooleanValue("persisted")
         val reason = content.getString("reason").orEmpty()
         val ackTs = content.getLongValue("ackTs")
-        val ackResult = SendServerHelper.markActionGroupTelemetryAcked(eventId)
         if (accepted || duplicate || persisted) {
+            val ackResult = SendServerHelper.markActionGroupTelemetryAcked(eventId)
             LogUtils.d(
                 "【300/400动作组】服务端已确认结构化动作日志：" +
                     "eventId=$eventId，freshAck=${ackResult.freshAck}，accepted=$accepted，" +
@@ -177,9 +177,10 @@ object VMMqttHelper : VMMqtt() {
                     "ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}"
             )
         } else {
+            SendServerHelper.handleRejectedActionGroupTelemetryAck(eventId, reason)
             LogUtils.w(
                 "【300/400动作组】服务端未接收结构化动作日志：" +
-                    "eventId=$eventId，freshAck=${ackResult.freshAck}，reason=$reason，ackTs=$ackTs"
+                    "eventId=$eventId，reason=$reason，ackTs=$ackTs"
             )
         }
         return true
