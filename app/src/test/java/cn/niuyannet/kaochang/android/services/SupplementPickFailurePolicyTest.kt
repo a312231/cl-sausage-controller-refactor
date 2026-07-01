@@ -1,14 +1,30 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 
 class SupplementPickFailurePolicyTest {
+
+    @Before
+    fun setUpAppConfig() {
+        setAppConfigInMemory(AppConfigBean().apply {
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+        })
+    }
+
+    @After
+    fun resetAppConfig() {
+        setAppConfigInMemory(AppConfigBean())
+    }
 
     @Test
     fun recordIrPickFailedBox_shouldKeepStockAndExcludeFailedCandidates() {
@@ -104,5 +120,11 @@ class SupplementPickFailurePolicyTest {
             this.tasteCode = "A"
             this.cmdStatusTake = 0
         }
+    }
+
+    private fun setAppConfigInMemory(config: AppConfigBean) {
+        val field = AppConfig::class.java.getDeclaredField("appConfigBean")
+        field.isAccessible = true
+        field.set(AppConfig, config)
     }
 }

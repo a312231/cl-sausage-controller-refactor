@@ -1915,6 +1915,8 @@ object KaoChangOperate {
         var completedCount = 0
         val supplementWriteRecords = mutableListOf<SupplementWriteRecord>()
         val appliedCompletedPanNos = mutableSetOf<Int>()
+        val physicallyDeductedTargetPanNos = mutableSetOf<Int>()
+        val physicallyPlacedTargetPanNos = mutableSetOf<Int>()
         fun applyCompletedPipelineTask(completedTask: CompletedInActionGroupPipelineTask) {
             if (completedTask.targetPanNo in appliedCompletedPanNos) {
                 logW(
@@ -1938,7 +1940,12 @@ object KaoChangOperate {
                 return
             }
 
-            val appliedMove = applySuccessfulSupplementMove(move.kaoPan, box)
+            val appliedMove = applySuccessfulSupplementMove(
+                kaoPan = move.kaoPan,
+                kaoPanBox = box,
+                boxAlreadyDeducted = completedTask.targetPanNo in physicallyDeductedTargetPanNos,
+                panAlreadyPlaced = completedTask.targetPanNo in physicallyPlacedTargetPanNos
+            )
             if (appliedMove == null) {
                 enterActionGroupMaintenance(
                     "补肠预取流水线单根完成后找不到当前烤盘缓存对象，需人工确认：sourceBox=${completedTask.sourceBoxNo}，targetPan=${completedTask.targetPanNo}"
@@ -2000,7 +2007,32 @@ object KaoChangOperate {
                             panNo = context.targetPanNo,
                             resourceLocks = actionGroupLocks.snapshot()
                         )
-                    )
+                    ) { telemetry ->
+                        val move = taskByPanNo[context.targetPanNo]
+                        val box = KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == context.sourceBoxNo }
+                        if (move == null || box == null) {
+                            logE(
+                                LOG_SUPPLEMENT,
+                                "补肠预取流水线动作级物理状态回写缺少计划或肠箱：targetPan=${context.targetPanNo}，" +
+                                    "sourceBox=${context.sourceBoxNo}，action=${telemetry.actionName}"
+                            )
+                            return@createAtomicActionClient
+                        }
+                        val applied = applySupplementPhysicalTelemetry(
+                            telemetry = telemetry,
+                            plannedPan = move.kaoPan,
+                            plannedBox = box,
+                            source = "补肠预取流水线",
+                            boxAlreadyDeducted = context.targetPanNo in physicallyDeductedTargetPanNos,
+                            panAlreadyPlaced = context.targetPanNo in physicallyPlacedTargetPanNos
+                        )
+                        if (applied.boxDeducted) {
+                            physicallyDeductedTargetPanNos += context.targetPanNo
+                        }
+                        if (applied.panPlaced) {
+                            physicallyPlacedTargetPanNos += context.targetPanNo
+                        }
+                    }
                 },
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogger = { message -> LogUtils.i(message) },
@@ -2101,7 +2133,93 @@ object KaoChangOperate {
         val writeRecord: SupplementWriteRecord
     )
 
-    private fun applySuccessfulSupplementMove(kaoPan: KaoPan, kaoPanBox: KaoPanBox): AppliedSupplementMove? {
+    private data class AppliedSupplementPhysicalTelemetry(
+        val boxDeducted: Boolean = false,
+        val panPlaced: Boolean = false
+    )
+
+    private fun applySupplementPhysicalTelemetry(
+        telemetry: ActionGroupTelemetry,
+        plannedPan: KaoPan,
+        plannedBox: KaoPanBox,
+        source: String,
+        boxAlreadyDeducted: Boolean,
+        panAlreadyPlaced: Boolean
+    ): AppliedSupplementPhysicalTelemetry {
+        if (ActionPhysicalStateReducerPolicy.shouldApplySupplementPickedFromBox(telemetry)) {
+            if (boxAlreadyDeducted) {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "$source 跳过重复 in2 动作级扣箱：sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
+                )
+                return AppliedSupplementPhysicalTelemetry()
+            }
+            val applied = SupplementPanStateWriter.applySupplementPickedFromBox(
+                plannedPan = plannedPan,
+                plannedBox = plannedBox,
+                currentPans = KaoPanHelper.getKaoPanList(),
+                currentBoxes = KaoPanHelper.getKaoPanBoxList()
+            )
+            if (!applied) {
+                enterActionGroupMaintenance(
+                    "$source in2 已成功但本地找不到当前盘箱缓存，库存状态不可确认，需人工确认：" +
+                        "sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
+                )
+                return AppliedSupplementPhysicalTelemetry()
+            }
+            KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+            logD(
+                LOG_SUPPLEMENT,
+                "$source 动作级物理状态已回写：in2 已从肠箱取肠并扣库存，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
+            )
+            LogUtils.i("【补肠】烤盘${telemetry.panNo} in2 完成：已从烤肠箱${telemetry.boxNo}取肠并扣减库存")
+            return AppliedSupplementPhysicalTelemetry(boxDeducted = true)
+        }
+
+        if (ActionPhysicalStateReducerPolicy.shouldApplySupplementPlacedOnPan(telemetry)) {
+            if (panAlreadyPlaced) {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "$source 跳过重复 in7 动作级落盘：sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
+                )
+                return AppliedSupplementPhysicalTelemetry()
+            }
+            val applied = SupplementPanStateWriter.applySupplementPlacedOnPan(
+                plannedPan = plannedPan,
+                plannedBox = plannedBox,
+                currentPans = KaoPanHelper.getKaoPanList(),
+                currentBoxes = KaoPanHelper.getKaoPanBoxList(),
+                nowMs = System.currentTimeMillis(),
+                clearPendingDiscard = true,
+                config = AppConfig.getAppConfig(),
+                tasteBuilder = KaoPanHelper::buildTasteFromBox
+            )
+            if (!applied) {
+                enterActionGroupMaintenance(
+                    "$source in7 已成功但本地找不到当前盘箱缓存，烤盘状态不可确认，需人工确认：" +
+                        "sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
+                )
+                return AppliedSupplementPhysicalTelemetry()
+            }
+            KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+            KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            logD(
+                LOG_SUPPLEMENT,
+                "$source 动作级物理状态已回写：in7 已夹肠落盘并开始烤制，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
+            )
+            LogUtils.i("【补肠】烤盘${telemetry.panNo} in7 完成：烤肠已落入烤盘并开始烤制计时")
+            return AppliedSupplementPhysicalTelemetry(panPlaced = true)
+        }
+
+        return AppliedSupplementPhysicalTelemetry()
+    }
+
+    private fun applySuccessfulSupplementMove(
+        kaoPan: KaoPan,
+        kaoPanBox: KaoPanBox,
+        boxAlreadyDeducted: Boolean = false,
+        panAlreadyPlaced: Boolean = false
+    ): AppliedSupplementMove? {
         val sausageName = getBoxTasteLabel(kaoPanBox)
         val currentState = SupplementPanStateWriter.resolveCurrentSupplementState(
             plannedPan = kaoPan,
@@ -2119,16 +2237,31 @@ object KaoChangOperate {
         val targetPan = currentState.targetPan
         val sourceBox = currentState.sourceBox
         val boxStockBefore = sourceBox.num
-        applySuccessfulSupplementPanState(
-            targetPan,
-            sourceBox,
-            "补肠预取流水线完成",
-            config = AppConfig.getAppConfig()
-        )
+        if (!panAlreadyPlaced) {
+            if (boxAlreadyDeducted) {
+                applySuccessfulSupplementPanStateWithoutBoxDeduction(
+                    targetPan,
+                    sourceBox,
+                    "补肠预取流水线完成",
+                    config = AppConfig.getAppConfig()
+                )
+            } else {
+                applySuccessfulSupplementPanState(
+                    targetPan,
+                    sourceBox,
+                    "补肠预取流水线完成",
+                    config = AppConfig.getAppConfig()
+                )
+            }
+        } else {
+            targetPan.cmdStatusMove = 0
+            sourceBox.cmdStatusTake = 0
+        }
         logD(
             LOG_SUPPLEMENT,
             "补肠完成：来源烤肠箱=${sourceBox.positionSn}，目标烤盘=${targetPan.positionSn}，口味=$sausageName，" +
-                "箱库存=$boxStockBefore->${sourceBox.num}，panStatus=${targetPan.status}，startTime=${targetPan.startTime}"
+                "箱库存=$boxStockBefore->${sourceBox.num}，panStatus=${targetPan.status}，startTime=${targetPan.startTime}，" +
+                "boxAlreadyDeducted=$boxAlreadyDeducted，panAlreadyPlaced=$panAlreadyPlaced"
         )
         LogUtils.i(
             "【补肠】烤盘${targetPan.positionSn} 补肠完成：来源烤肠箱=${sourceBox.positionSn}，" +
@@ -2141,7 +2274,7 @@ object KaoChangOperate {
                 targetPanNo = targetPan.positionSn,
                 sourceBoxNo = sourceBox.positionSn,
                 panApplied = targetPan.isHasSausage && targetPan.status == 1,
-                boxDeducted = boxStockBefore > 0 && sourceBox.num == boxStockBefore - 1
+                boxDeducted = boxAlreadyDeducted || (boxStockBefore > 0 && sourceBox.num == boxStockBefore - 1)
             )
         )
     }
@@ -2486,6 +2619,8 @@ object KaoChangOperate {
         }
 
         var actionGroupCompleted = false
+        var physicalBoxDeducted = false
+        var physicalPanPlaced = false
         val actionGroupResult = try {
             actionGroupSessionStore.save(
                 ActionGroupSession(
@@ -2513,7 +2648,22 @@ object KaoChangOperate {
                         panNo = kaoPan.positionSn,
                         resourceLocks = actionGroupLocks.snapshot()
                     )
-                ),
+                ) { telemetry ->
+                    val applied = applySupplementPhysicalTelemetry(
+                        telemetry = telemetry,
+                        plannedPan = kaoPan,
+                        plannedBox = kaoPanBox,
+                        source = "补肠动作组",
+                        boxAlreadyDeducted = physicalBoxDeducted,
+                        panAlreadyPlaced = physicalPanPlaced
+                    )
+                    if (applied.boxDeducted) {
+                        physicalBoxDeducted = true
+                    }
+                    if (applied.panPlaced) {
+                        physicalPanPlaced = true
+                    }
+                },
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
                 operationLogContext = ActionGroupOperationLogContext(
                     category = "补肠",
@@ -2581,24 +2731,41 @@ object KaoChangOperate {
                 val currentPan = currentState.targetPan
                 val currentBox = currentState.sourceBox
                 val currentBoxStockBefore = currentBox.num
-                val cfg = applySuccessfulSupplementPanState(
-                    currentPan,
-                    currentBox,
-                    "补肠动作组完成",
-                    config = AppConfig.getAppConfig()
-                )
+                val cfg = if (!physicalPanPlaced) {
+                    if (physicalBoxDeducted) {
+                        applySuccessfulSupplementPanStateWithoutBoxDeduction(
+                            currentPan,
+                            currentBox,
+                            "补肠动作组完成",
+                            config = AppConfig.getAppConfig()
+                        )
+                    } else {
+                        applySuccessfulSupplementPanState(
+                            currentPan,
+                            currentBox,
+                            "补肠动作组完成",
+                            config = AppConfig.getAppConfig()
+                        )
+                    }
+                } else {
+                    currentPan.cmdStatusMove = 0
+                    currentBox.cmdStatusTake = 0
+                    AppConfig.getAppConfig()
+                }
                 supplementWriteRecords += SupplementWriteRecord(
                     targetPanNo = currentPan.positionSn,
                     sourceBoxNo = currentBox.positionSn,
                     panApplied = currentPan.isHasSausage && currentPan.status == 1,
-                    boxDeducted = currentBoxStockBefore > 0 && currentBox.num == currentBoxStockBefore - 1
+                    boxDeducted = physicalBoxDeducted ||
+                        (currentBoxStockBefore > 0 && currentBox.num == currentBoxStockBefore - 1)
                 )
                 supplementStateApplied = true
                 logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${currentPan.id}")
                 logD(
                     LOG_SUPPLEMENT,
                     "补肠完成：来源烤肠箱=${currentBox.positionSn}，目标烤盘=${currentPan.positionSn}，口味=$sausageName，" +
-                        "箱库存=$currentBoxStockBefore->${currentBox.num}，panStatus=${currentPan.status}，startTime=${currentPan.startTime}"
+                        "箱库存=$currentBoxStockBefore->${currentBox.num}，panStatus=${currentPan.status}，startTime=${currentPan.startTime}，" +
+                        "physicalBoxDeducted=$physicalBoxDeducted，physicalPanPlaced=$physicalPanPlaced"
                 )
             }
         } else {
@@ -3206,11 +3373,31 @@ object KaoChangOperate {
         config: AppConfigBean,
         tasteBuilder: (KaoPanBox, Taste?) -> Taste = KaoPanHelper::buildTasteFromBox
     ): AppConfigBean {
+        kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
+        return applySuccessfulSupplementPanStateWithoutBoxDeduction(
+            kaoPan = kaoPan,
+            kaoPanBox = kaoPanBox,
+            demandGateReason = demandGateReason,
+            nowMs = nowMs,
+            clearPendingDiscard = clearPendingDiscard,
+            config = config,
+            tasteBuilder = tasteBuilder
+        )
+    }
+
+    internal fun applySuccessfulSupplementPanStateWithoutBoxDeduction(
+        kaoPan: KaoPan,
+        kaoPanBox: KaoPanBox,
+        demandGateReason: String,
+        nowMs: Long = System.currentTimeMillis(),
+        clearPendingDiscard: Boolean = true,
+        config: AppConfigBean,
+        tasteBuilder: (KaoPanBox, Taste?) -> Taste = KaoPanHelper::buildTasteFromBox
+    ): AppConfigBean {
         val cfg = config
         kaoPan.isHasSausage = true
         kaoPan.isHasGrilling = false
         LowToHighDemandGate.clearPosition(kaoPan.positionSn, demandGateReason)
-        kaoPanBox.num = maxOf(0, kaoPanBox.num - 1)
         kaoPan.taste = tasteBuilder(kaoPanBox, kaoPan.taste)
         kaoPan.status = 1
         kaoPan.startTime = nowMs

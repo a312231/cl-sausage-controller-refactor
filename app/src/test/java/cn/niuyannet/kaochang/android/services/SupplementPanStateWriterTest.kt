@@ -13,6 +13,82 @@ import org.junit.Test
 class SupplementPanStateWriterTest {
 
     @Test
+    fun applyPhysicalCheckpoint_shouldDeductCurrentBoxOnIn2WithoutWritingPan() {
+        val plannedPan = pan(positionSn = 4, tasteCode = "B")
+        val currentPan = pan(positionSn = 4, tasteCode = "B")
+        val plannedBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+        val currentBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+
+        val applied = SupplementPanStateWriter.applySupplementPickedFromBox(
+            plannedPan = plannedPan,
+            plannedBox = plannedBox,
+            currentPans = listOf(currentPan),
+            currentBoxes = listOf(currentBox)
+        )
+
+        assertTrue(applied)
+        assertEquals(6, plannedBox.num)
+        assertEquals(5, currentBox.num)
+        assertFalse(plannedPan.isHasSausage)
+        assertFalse(currentPan.isHasSausage)
+        assertEquals(0, currentPan.status)
+    }
+
+    @Test
+    fun applyPhysicalCheckpoint_shouldPlaceCurrentPanOnIn7WithoutDeductingBoxAgain() {
+        val plannedPan = pan(positionSn = 4, tasteCode = "B")
+        val currentPan = pan(positionSn = 4, tasteCode = "B")
+        val plannedBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+        val currentBox = box(positionSn = 21, stock = 5, tasteCode = "B")
+
+        val applied = SupplementPanStateWriter.applySupplementPlacedOnPan(
+            plannedPan = plannedPan,
+            plannedBox = plannedBox,
+            currentPans = listOf(currentPan),
+            currentBoxes = listOf(currentBox),
+            nowMs = 12_345L,
+            clearPendingDiscard = false,
+            config = AppConfigBean().apply {
+                bakingTime = 40
+                discardTime = 6
+            },
+            tasteBuilder = { sourceBox, _ -> Taste(sourceBox.tasteCode) }
+        )
+
+        assertTrue(applied)
+        assertFalse(plannedPan.isHasSausage)
+        assertTrue(currentPan.isHasSausage)
+        assertEquals(1, currentPan.status)
+        assertEquals(12_345L, currentPan.startTime)
+        assertEquals(5, currentBox.num)
+    }
+
+    @Test
+    fun applyPhysicalCheckpoint_shouldClearCurrentPanOnOut1() {
+        val plannedPan = pan(positionSn = 4, tasteCode = "B").apply {
+            isHasSausage = true
+            status = 2
+            holdingTime = 10_000L
+        }
+        val currentPan = pan(positionSn = 4, tasteCode = "B").apply {
+            isHasSausage = true
+            status = 2
+            holdingTime = 10_000L
+        }
+
+        val applied = SupplementPanStateWriter.applyOutRemovedFromPan(
+            plannedPan = plannedPan,
+            currentPans = listOf(currentPan)
+        )
+
+        assertTrue(applied)
+        assertTrue(plannedPan.isHasSausage)
+        assertFalse(currentPan.isHasSausage)
+        assertEquals(0, currentPan.status)
+        assertEquals(0L, currentPan.holdingTime)
+    }
+
+    @Test
     fun resolveCurrentTargetPan_shouldUseCurrentCacheObjectWhenPlannedPanBecameOrphan() {
         val oldPlannedPan = pan(positionSn = 4, tasteCode = "B")
         val currentCachePan = pan(positionSn = 4, tasteCode = "B")
