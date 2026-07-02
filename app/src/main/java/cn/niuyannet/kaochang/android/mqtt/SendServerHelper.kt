@@ -2,7 +2,9 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.services.KaoPanCloudSyncReporter
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
+import cn.niuyannet.kaochang.android.services.SnapshotSyncPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -16,6 +18,7 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 object SendServerHelper {
     private const val RUNTIME_STATE_ACK_TIMEOUT_MS = 8_000L
     private const val AVAILABLE_STATE_ACK_TIMEOUT_MS = 8_000L
+    private const val PAN_STATE_DELTA_ACK_TIMEOUT_MS = 8_000L
     private const val CONSUMABLE_EVENT_ACK_TIMEOUT_MS = 8_000L
     private const val ACTION_GROUP_TELEMETRY_ACK_TIMEOUT_MS = 8_000L
     private const val ACTION_GROUP_TELEMETRY_RETRY_DELAY_MS = 15_000L
@@ -29,6 +32,9 @@ object SendServerHelper {
     private val availableStateSeq = AtomicLong(System.currentTimeMillis())
     private val availableStateAckHandler = Handler(Looper.getMainLooper())
     private val pendingAvailableStateAcks = ConcurrentHashMap<Long, AvailableStatePublishSnapshot>()
+    private val panStateDeltaSeq = AtomicLong(System.currentTimeMillis())
+    private val panStateDeltaAckHandler = Handler(Looper.getMainLooper())
+    private val pendingPanStateDeltaAcks = ConcurrentHashMap<Long, PanStateDeltaPublishSnapshot>()
     private val consumableEventAckHandler = Handler(Looper.getMainLooper())
     private val pendingConsumableEventAcks = ConcurrentHashMap<String, ConsumableEventPublishSnapshot>()
     private val actionGroupTelemetryAckHandler = Handler(Looper.getMainLooper())
@@ -48,6 +54,8 @@ object SendServerHelper {
     private var activeRuntimeStateSeq: Long = -1L
     @Volatile
     private var lastRuntimeStateHttpFallbackAtMs: Long = 0L
+    @Volatile
+    private var lastPanStateDeltaHttpFallbackAtMs: Long = 0L
 
     data class RuntimeControlAckPayload(
         val controlSeq: Long,
@@ -115,6 +123,20 @@ object SendServerHelper {
     data class AvailableStateAckResult(
         val freshAck: Boolean,
         val snapshot: AvailableStatePublishSnapshot?,
+        val ackLatencyMs: Long?
+    )
+
+    data class PanStateDeltaPublishSnapshot(
+        val panDeltaSeq: Long,
+        val eventId: String,
+        val reason: String,
+        val source: String,
+        val publishedAt: Long
+    )
+
+    data class PanStateDeltaAckResult(
+        val freshAck: Boolean,
+        val snapshot: PanStateDeltaPublishSnapshot?,
         val ackLatencyMs: Long?
     )
 
@@ -288,6 +310,61 @@ object SendServerHelper {
                 "【MQTT展示态】首页展示态进入 MQTT 发送队列失败：" +
                     "source=$source，available=${config.available}，" +
                     "availableCountdownLatched=${config.availableCountdownLatched}"
+            )
+        }
+        return ok
+    }
+
+    /**
+     * 通过 MQTT 上报可售烤盘投影增量（action=2）。
+     * 这是轻量热状态，不替代 HTTP 全量快照的权威落库。
+     */
+    fun publishPanStateDelta(
+        before: KaoPanCloudSyncReporter.SellableSnapshot,
+        after: KaoPanCloudSyncReporter.SellableSnapshot,
+        reason: String,
+        source: String = "sellable_state_changed"
+    ): Boolean {
+        val seq = panStateDeltaSeq.incrementAndGet()
+        val eventId = "${AppConfig.getDeviceId()}:pan_delta:$seq"
+        val now = System.currentTimeMillis()
+        val payload = PanStateDeltaPayloadBuilder.build(
+            deviceCode = AppConfig.getDeviceId(),
+            panDeltaSeq = seq,
+            eventId = eventId,
+            before = before,
+            after = after,
+            reason = reason,
+            source = source,
+            changedAt = now
+        )
+        val ok = VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH,
+            coalesceKey = "pan_state_delta"
+        )
+        if (ok) {
+            val snapshot = PanStateDeltaPublishSnapshot(
+                panDeltaSeq = seq,
+                eventId = eventId,
+                reason = reason,
+                source = source,
+                publishedAt = now
+            )
+            pendingPanStateDeltaAcks.clear()
+            pendingPanStateDeltaAcks[seq] = snapshot
+            schedulePanStateDeltaAckTimeout(snapshot)
+            LogUtils.d(
+                "【烤盘增量】可售烤盘投影已进入 MQTT 发送队列：" +
+                    "panDeltaSeq=$seq，eventId=$eventId，reason=$reason，source=$source"
+            )
+        } else {
+            LogUtils.w(
+                "【烤盘增量】可售烤盘投影进入 MQTT 发送队列失败：" +
+                    "panDeltaSeq=$seq，reason=$reason，source=$source"
             )
         }
         return ok
@@ -516,6 +593,23 @@ object SendServerHelper {
         }, AVAILABLE_STATE_ACK_TIMEOUT_MS)
     }
 
+    private fun schedulePanStateDeltaAckTimeout(snapshot: PanStateDeltaPublishSnapshot) {
+        panStateDeltaAckHandler.postDelayed({
+            val pending = pendingPanStateDeltaAcks[snapshot.panDeltaSeq] ?: return@postDelayed
+            if (pending.publishedAt != snapshot.publishedAt) {
+                return@postDelayed
+            }
+            pendingPanStateDeltaAcks.remove(snapshot.panDeltaSeq)
+            val ageMs = System.currentTimeMillis() - pending.publishedAt
+            LogUtils.w(
+                "【烤盘增量】可售烤盘投影上报后仍未收到服务端确认，触发 HTTP 快照兜底：" +
+                    "panDeltaSeq=${pending.panDeltaSeq}，eventId=${pending.eventId}，" +
+                    "reason=${pending.reason}，source=${pending.source}，ageMs=$ageMs"
+            )
+            triggerPanStateDeltaSnapshotFallback("pan_delta_ack_timeout:${pending.reason}")
+        }, PAN_STATE_DELTA_ACK_TIMEOUT_MS)
+    }
+
     private fun scheduleConsumableEventAckTimeout(snapshot: ConsumableEventPublishSnapshot) {
         consumableEventAckHandler.postDelayed({
             val pending = pendingConsumableEventAcks[snapshot.event.sourceEventKey] ?: return@postDelayed
@@ -658,6 +752,37 @@ object SendServerHelper {
         )
     }
 
+    fun markPanStateDeltaAcked(panDeltaSeq: Long): PanStateDeltaAckResult {
+        if (panDeltaSeq <= 0L) {
+            return PanStateDeltaAckResult(false, null, null)
+        }
+        val snapshot = pendingPanStateDeltaAcks.remove(panDeltaSeq)
+        val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
+        return PanStateDeltaAckResult(
+            freshAck = snapshot != null,
+            snapshot = snapshot,
+            ackLatencyMs = ackLatencyMs
+        )
+    }
+
+    fun handleRejectedPanStateDeltaAck(panDeltaSeq: Long, reason: String) {
+        triggerPanStateDeltaSnapshotFallback("pan_delta_rejected:$panDeltaSeq:${reason.ifBlank { "unknown" }}")
+    }
+
+    private fun triggerPanStateDeltaSnapshotFallback(reason: String) {
+        val now = System.currentTimeMillis()
+        val minIntervalMs = AppConfig.getAppConfig().httpFallbackMinIntervalMs.takeIf { it > 0L } ?: 30_000L
+        if (lastPanStateDeltaHttpFallbackAtMs > 0L && now - lastPanStateDeltaHttpFallbackAtMs < minIntervalMs) {
+            LogUtils.w(
+                "【烤盘增量】HTTP 快照兜底被限频跳过：" +
+                    "reason=$reason，minIntervalMs=$minIntervalMs"
+            )
+            return
+        }
+        lastPanStateDeltaHttpFallbackAtMs = now
+        SnapshotSyncPolicy.maybeUploadSnapshot(reason)
+    }
+
     fun markConsumableEventAcked(sourceEventKey: String?): ConsumableEventAckResult {
         if (sourceEventKey.isNullOrBlank()) {
             return ConsumableEventAckResult(false, null, null)
@@ -739,6 +864,7 @@ object SendServerHelper {
     fun lastAckedRuntimeStateSeq(): Long = lastAckedRuntimeStateSeq
     fun pendingRuntimeAckCount(): Int = pendingRuntimeStateAcks.size
     fun pendingAvailableAckCount(): Int = pendingAvailableStateAcks.size
+    fun pendingPanStateDeltaAckCount(): Int = pendingPanStateDeltaAcks.size
     fun pendingActionGroupTelemetryAckCount(): Int = pendingActionGroupTelemetryAcks.size
 
     fun publishAppUpgradeNotice(

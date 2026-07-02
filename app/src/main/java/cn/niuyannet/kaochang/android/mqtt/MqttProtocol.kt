@@ -11,6 +11,8 @@ object MqttProtocol {
     const val TYPE_RUNTIME_STATE_ACK = "runtime_state_ack"
     const val TYPE_AVAILABLE_STATE = "available_state"
     const val TYPE_AVAILABLE_STATE_ACK = "available_state_ack"
+    const val TYPE_PAN_STATE_DELTA = "pan_state_delta"
+    const val TYPE_PAN_STATE_DELTA_ACK = "pan_state_delta_ack"
     const val TYPE_CONSUMABLE_EVENT = "consumable_event"
     const val TYPE_CONSUMABLE_EVENT_ACK = "consumable_event_ack"
     const val TYPE_RUNTIME_CONTROL_ACK = "runtime_control_ack"

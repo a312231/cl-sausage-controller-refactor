@@ -58,12 +58,17 @@ class KaoPanCloudSyncReporterTest {
         val before = listOf(sellablePan(7, "A"), bakingPan(9, "A"))
         val after = listOf(sellablePan(7, "A"), sellablePan(9, "A"))
         var uploadCount = 0
+        var uploadReason: String? = null
 
-        KaoPanCloudSyncReporter.withUploaderForTest({ uploadCount++ }) {
+        KaoPanCloudSyncReporter.withUploaderForTest({ reason ->
+            uploadCount++
+            uploadReason = reason
+        }) {
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(before, after, "测试可售变化")
         }
 
         assertEquals(1, uploadCount)
+        assertEquals("测试可售变化", uploadReason)
     }
 
     @Test
@@ -96,6 +101,47 @@ class KaoPanCloudSyncReporterTest {
         }
 
         assertEquals(1, uploadCount)
+    }
+
+    @Test
+    fun uploadIfSellableStateChanged_shouldFallbackSnapshotPolicyWhenMqttDeltaPublishFails() {
+        val before = listOf(sellablePan(7, "A"), bakingPan(9, "A"))
+        val after = listOf(sellablePan(7, "A"), sellablePan(9, "A"))
+        var publishCount = 0
+        var fallbackReason: String? = null
+
+        KaoPanCloudSyncReporter.withDependenciesForTest(
+            testDeltaPublisher = { _, _, _ ->
+                publishCount++
+                false
+            },
+            testFallbackUploader = { reason -> fallbackReason = reason }
+        ) {
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(before, after, "测试可售变化")
+        }
+
+        assertEquals(1, publishCount)
+        assertEquals("pan_delta_publish_failed:测试可售变化", fallbackReason)
+    }
+
+    @Test
+    fun uploadIfSellableStateChanged_shouldThrottleFallbackSnapshotWhenMqttDeltaKeepsFailing() {
+        val before = listOf(sellablePan(7, "A"), bakingPan(9, "A"))
+        val after = listOf(sellablePan(7, "A"), sellablePan(9, "A"))
+        var now = 100_000L
+        var fallbackCount = 0
+
+        KaoPanCloudSyncReporter.withDependenciesForTest(
+            testDeltaPublisher = { _, _, _ -> false },
+            testFallbackUploader = { fallbackCount++ },
+            testClock = { now }
+        ) {
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(before, after, "第一次变化")
+            now += 1_000L
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(before, after, "第二次变化")
+        }
+
+        assertEquals(1, fallbackCount)
     }
 
     private fun sellablePan(positionSn: Int, tasteCode: String): KaoPan =

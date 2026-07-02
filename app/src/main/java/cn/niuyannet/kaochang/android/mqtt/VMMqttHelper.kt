@@ -127,6 +127,43 @@ object VMMqttHelper : VMMqtt() {
         return true
     }
 
+    private fun consumePanStateDeltaAckIfNeeded(topicMessage: TopicMessage): Boolean {
+        if (topicMessage.action != MqttProtocol.ACTION_SERVICE_STATE) {
+            return false
+        }
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        if (content.getString("messageType").orEmpty() != MqttProtocol.TYPE_PAN_STATE_DELTA_ACK) {
+            return false
+        }
+        val panDeltaSeq = content.getLongValue("panDeltaSeq")
+        val eventId = content.getString("eventId").orEmpty()
+        val accepted = content.getBooleanValue("accepted")
+        val duplicate = content.getBooleanValue("duplicate")
+        val stale = content.getBooleanValue("stale")
+        val reason = content.getString("reason").orEmpty()
+        val ackTs = content.getLongValue("ackTs")
+        val ackResult = SendServerHelper.markPanStateDeltaAcked(panDeltaSeq)
+        if (accepted || duplicate) {
+            LogUtils.d(
+                "【烤盘增量】服务端已确认可售烤盘投影：" +
+                    "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${ackResult.freshAck}，" +
+                    "accepted=$accepted，duplicate=$duplicate，stale=$stale，reason=$reason，" +
+                    "ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    "source=${ackResult.snapshot?.source ?: "unknown"}"
+            )
+        } else {
+            LogUtils.w(
+                "【烤盘增量】服务端未应用可售烤盘投影：" +
+                    "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${ackResult.freshAck}，" +
+                    "stale=$stale，reason=$reason，ackTs=$ackTs"
+            )
+            if (!stale && ackResult.freshAck) {
+                SendServerHelper.handleRejectedPanStateDeltaAck(panDeltaSeq, reason)
+            }
+        }
+        return true
+    }
+
     private fun consumeConsumableEventAckIfNeeded(topicMessage: TopicMessage): Boolean {
         if (topicMessage.action != MqttProtocol.ACTION_SERVICE_STATE) {
             return false
@@ -218,12 +255,18 @@ object VMMqttHelper : VMMqtt() {
                 val availableSeq = content.getLongValue("availableSeq")
                 "收到首页展示态回执：action=2（设备状态同步），availableSeq=$availableSeq, payloadLength=${payload.length}"
             }
+            MqttProtocol.TYPE_PAN_STATE_DELTA_ACK -> {
+                val panDeltaSeq = content.getLongValue("panDeltaSeq")
+                "收到烤盘增量回执：action=2（设备状态同步），panDeltaSeq=$panDeltaSeq, payloadLength=${payload.length}"
+            }
             MqttProtocol.TYPE_ACTION_GROUP_TELEMETRY_ACK -> {
                 val eventId = content.getString("eventId").orEmpty()
                 "收到动作组遥测回执：action=3（设备动作日志），eventId=$eventId, payloadLength=${payload.length}"
             }
             MqttProtocol.TYPE_AVAILABLE_STATE ->
                 "收到首页展示态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
+            MqttProtocol.TYPE_PAN_STATE_DELTA ->
+                "收到烤盘增量消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
             MqttProtocol.TYPE_RUNTIME_STATE ->
                 "收到运行时状态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
             else ->
@@ -309,6 +352,9 @@ object VMMqttHelper : VMMqtt() {
                             return
                         }
                         if (consumeAvailableStateAckIfNeeded(bean)) {
+                            return
+                        }
+                        if (consumePanStateDeltaAckIfNeeded(bean)) {
                             return
                         }
                         if (consumeConsumableEventAckIfNeeded(bean)) {
