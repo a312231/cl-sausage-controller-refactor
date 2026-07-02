@@ -14,6 +14,16 @@ class CloudSnapshotReportResponseParserTest {
     }
 
     @Test
+    fun parse_shouldReadPhysicalPanDeltaSeqFromSuccessData() {
+        val result = CloudSnapshotReportResponseParser.parse(
+            """{"code":200,"msg":"快照同步成功","data":{"panDeltaSeq":7}}"""
+        )
+
+        assertTrue(result.accepted)
+        org.junit.Assert.assertEquals(7L, result.panDeltaSeq)
+    }
+
+    @Test
     fun parse_shouldRejectIgnoredOldSnapshotResponse() {
         val result = CloudSnapshotReportResponseParser.parse("""{"code":200,"msg":"已忽略旧快照"}""")
 

@@ -2248,8 +2248,10 @@ object KaoChangOperate {
                 "【补肠】烤盘${telemetry.panNo} in2 完成：已从烤肠箱${telemetry.boxNo}取肠并扣减库存，" +
                     "箱库存=$boxStockBefore->${plannedBox.num}"
             )
-            SnapshotSyncPolicy.maybeUploadSnapshot(
-                reason = "action_physical:in2:picked_from_box:box=${telemetry.boxNo}:pan=${telemetry.panNo}"
+            PanPhysicalStateDeltaReporter.reportStockChanged(
+                changedStock = plannedBox,
+                reason = "action_physical:in2:picked_from_box:box=${telemetry.boxNo}:pan=${telemetry.panNo}",
+                source = "action_physical_in2"
             )
             return AppliedSupplementPhysicalTelemetry(boxDeducted = true)
         }
@@ -2299,8 +2301,10 @@ object KaoChangOperate {
                 "$source 动作级物理状态已回写：in7 已夹肠落盘并开始烤制，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
             )
             LogUtils.i("【补肠】烤盘${telemetry.panNo} in7 完成：烤肠已落入烤盘并开始烤制计时")
-            SnapshotSyncPolicy.maybeUploadSnapshot(
-                reason = "action_physical:in7:placed_on_pan:box=${telemetry.boxNo}:pan=${telemetry.panNo}"
+            PanPhysicalStateDeltaReporter.reportPanChanged(
+                changedPan = plannedPan,
+                reason = "action_physical:in7:placed_on_pan:box=${telemetry.boxNo}:pan=${telemetry.panNo}",
+                source = "action_physical_in7"
             )
             return AppliedSupplementPhysicalTelemetry(panPlaced = true)
         }
@@ -2432,8 +2436,10 @@ object KaoChangOperate {
         KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
         logD(LOG_ACTION_GROUP, "$source 动作级物理状态已回写：out1 已从烤盘夹走烤肠，sourcePan=${telemetry.panNo}")
         LogUtils.i("【出餐】烤盘${telemetry.panNo} out1 完成：烤肠已离开烤盘，本地烤盘已清空")
-        SnapshotSyncPolicy.maybeUploadSnapshot(
-            reason = "action_physical:out1:removed_from_pan:pan=${telemetry.panNo}"
+        PanPhysicalStateDeltaReporter.reportPanChanged(
+            changedPan = plannedPan,
+            reason = "action_physical:out1:removed_from_pan:pan=${telemetry.panNo}",
+            source = "action_physical_out1"
         )
         return true
     }
@@ -3190,9 +3196,7 @@ object KaoChangOperate {
             kaoPan.status = 0
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            operateScope.launch {
-                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-            }
+            KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
             LogUtils.i(
                 "【搬盘】搬移完成：来源烤盘=$sourcePosition 已清空，目标烤盘=$targetPosition 进入保温可售"
             )
@@ -3200,6 +3204,11 @@ object KaoChangOperate {
                 LOG_PAN_MOVE,
                 "搬移完成：来源烤盘=$sourcePosition 已清空，目标烤盘=$targetPosition 已写入，" +
                     "targetHoldingTime=${newKaoPan.holdingTime}，targetStatus=${newKaoPan.status}"
+            )
+            PanPhysicalStateDeltaReporter.reportPansChanged(
+                changedPans = listOf(kaoPan, newKaoPan),
+                reason = "pan_move:$sourcePosition:$targetPosition",
+                source = "pan_move_success"
             )
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
                 beforeMoveSellable,

@@ -2,6 +2,8 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.services.KaoPanCloudSyncReporter
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import cn.niuyannet.kaochang.android.services.SnapshotSyncPolicy
@@ -35,6 +37,7 @@ object SendServerHelper {
     private val panStateDeltaSeq = AtomicLong(System.currentTimeMillis())
     private val panStateDeltaAckHandler = Handler(Looper.getMainLooper())
     private val pendingPanStateDeltaAcks = ConcurrentHashMap<Long, PanStateDeltaPublishSnapshot>()
+    private val pendingPanPhysicalStateDeltaAcks = ConcurrentHashMap<Long, PanPhysicalStateDeltaPublishSnapshot>()
     private val consumableEventAckHandler = Handler(Looper.getMainLooper())
     private val pendingConsumableEventAcks = ConcurrentHashMap<String, ConsumableEventPublishSnapshot>()
     private val actionGroupTelemetryAckHandler = Handler(Looper.getMainLooper())
@@ -137,6 +140,20 @@ object SendServerHelper {
     data class PanStateDeltaAckResult(
         val freshAck: Boolean,
         val snapshot: PanStateDeltaPublishSnapshot?,
+        val ackLatencyMs: Long?
+    )
+
+    data class PanPhysicalStateDeltaPublishSnapshot(
+        val panDeltaSeq: Long,
+        val eventId: String,
+        val reason: String,
+        val source: String,
+        val publishedAt: Long
+    )
+
+    data class PanPhysicalStateDeltaAckResult(
+        val freshAck: Boolean,
+        val snapshot: PanPhysicalStateDeltaPublishSnapshot?,
         val ackLatencyMs: Long?
     )
 
@@ -366,6 +383,76 @@ object SendServerHelper {
                 "【烤盘增量】可售烤盘投影进入 MQTT 发送队列失败：" +
                     "panDeltaSeq=$seq，reason=$reason，source=$source"
             )
+        }
+        return ok
+    }
+
+    /**
+     * 通过 MQTT 上报完整物理烤盘/箱位状态增量（action=2）。
+     * 这是服务端 Redis 热状态的主通道；HTTP reportSnapshot 仍作为基线和冲突兜底。
+     */
+    fun publishPanPhysicalStateDelta(
+        allPans: List<KaoPan>,
+        allStocks: List<KaoPanBox>,
+        changedPans: List<KaoPan>,
+        changedStocks: List<KaoPanBox>,
+        reason: String,
+        source: String = "physical_state_changed"
+    ): Boolean {
+        val baseline = PanPhysicalStateBaselineStore.currentBaseline()
+        if (baseline == null) {
+            LogUtils.w(
+                "【烤盘物理增量】缺少已确认 HTTP 快照基线，跳过 MQTT 增量并触发 HTTP 快照兜底：" +
+                    "reason=$reason，source=$source"
+            )
+            triggerPanPhysicalStateDeltaSnapshotFallback("pan_physical_delta_missing_base:$reason")
+            return false
+        }
+        val seq = PanPhysicalStateDeltaSequenceStore.nextSequence()
+        val eventId = "${AppConfig.getDeviceId()}:pan_physical_delta:$seq"
+        val now = System.currentTimeMillis()
+        val payload = PanPhysicalStateDeltaPayloadBuilder.build(
+            deviceCode = AppConfig.getDeviceId(),
+            panDeltaSeq = seq,
+            eventId = eventId,
+            baseSnapshotSequence = baseline.sequence,
+            baseSnapshotHash = baseline.snapshotHash,
+            allPans = allPans,
+            allStocks = allStocks,
+            changedPans = changedPans,
+            changedStocks = changedStocks,
+            reason = reason,
+            source = source,
+            changedAt = now
+        )
+        val ok = VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+        if (ok) {
+            val snapshot = PanPhysicalStateDeltaPublishSnapshot(
+                panDeltaSeq = seq,
+                eventId = eventId,
+                reason = reason,
+                source = source,
+                publishedAt = now
+            )
+            pendingPanPhysicalStateDeltaAcks[seq] = snapshot
+            schedulePanPhysicalStateDeltaAckTimeout(snapshot)
+            LogUtils.d(
+                "【烤盘物理增量】完整物理状态已进入 MQTT 发送队列：" +
+                    "panDeltaSeq=$seq，eventId=$eventId，reason=$reason，source=$source，" +
+                    "changedPans=${changedPans.map { it.positionSn }}，changedStocks=${changedStocks.map { it.positionSn }}"
+            )
+        } else {
+            LogUtils.w(
+                "【烤盘物理增量】完整物理状态进入 MQTT 发送队列失败，触发 HTTP 快照兜底：" +
+                    "panDeltaSeq=$seq，eventId=$eventId，reason=$reason，source=$source"
+            )
+            triggerPanPhysicalStateDeltaSnapshotFallback("pan_physical_delta_publish_failed:$reason")
         }
         return ok
     }
@@ -610,6 +697,23 @@ object SendServerHelper {
         }, PAN_STATE_DELTA_ACK_TIMEOUT_MS)
     }
 
+    private fun schedulePanPhysicalStateDeltaAckTimeout(snapshot: PanPhysicalStateDeltaPublishSnapshot) {
+        panStateDeltaAckHandler.postDelayed({
+            val pending = pendingPanPhysicalStateDeltaAcks[snapshot.panDeltaSeq] ?: return@postDelayed
+            if (pending.publishedAt != snapshot.publishedAt) {
+                return@postDelayed
+            }
+            pendingPanPhysicalStateDeltaAcks.remove(snapshot.panDeltaSeq)
+            val ageMs = System.currentTimeMillis() - pending.publishedAt
+            LogUtils.w(
+                "【烤盘物理增量】完整物理状态上报后仍未收到服务端确认，触发 HTTP 快照兜底：" +
+                    "panDeltaSeq=${pending.panDeltaSeq}，eventId=${pending.eventId}，" +
+                    "reason=${pending.reason}，source=${pending.source}，ageMs=$ageMs"
+            )
+            triggerPanPhysicalStateDeltaSnapshotFallback("pan_physical_delta_ack_timeout:${pending.reason}")
+        }, PAN_STATE_DELTA_ACK_TIMEOUT_MS)
+    }
+
     private fun scheduleConsumableEventAckTimeout(snapshot: ConsumableEventPublishSnapshot) {
         consumableEventAckHandler.postDelayed({
             val pending = pendingConsumableEventAcks[snapshot.event.sourceEventKey] ?: return@postDelayed
@@ -765,8 +869,47 @@ object SendServerHelper {
         )
     }
 
+    fun markPanPhysicalStateDeltaAcked(panDeltaSeq: Long, eventId: String? = null): PanPhysicalStateDeltaAckResult {
+        if (panDeltaSeq <= 0L) {
+            return PanPhysicalStateDeltaAckResult(false, null, null)
+        }
+        val snapshot = pendingPanPhysicalStateDeltaAcks[panDeltaSeq]
+        if (snapshot != null && (eventId.isNullOrBlank() || snapshot.eventId != eventId)) {
+            return PanPhysicalStateDeltaAckResult(false, null, null)
+        }
+        val removed = pendingPanPhysicalStateDeltaAcks.remove(panDeltaSeq)
+        val ackLatencyMs = removed?.let { System.currentTimeMillis() - it.publishedAt }
+        return PanPhysicalStateDeltaAckResult(
+            freshAck = removed != null,
+            snapshot = removed,
+            ackLatencyMs = ackLatencyMs
+        )
+    }
+
+    fun hasPendingPanPhysicalStateDelta(panDeltaSeq: Long): Boolean =
+        pendingPanPhysicalStateDeltaAcks.containsKey(panDeltaSeq)
+
     fun handleRejectedPanStateDeltaAck(panDeltaSeq: Long, reason: String) {
         triggerPanStateDeltaSnapshotFallback("pan_delta_rejected:$panDeltaSeq:${reason.ifBlank { "unknown" }}")
+    }
+
+    fun handleRejectedPanPhysicalStateDeltaAck(panDeltaSeq: Long, reason: String, needFullSnapshot: Boolean) {
+        if (!needFullSnapshot) {
+            LogUtils.w(
+                "【烤盘物理增量】服务端未应用完整物理状态，但未要求 HTTP 全量：" +
+                    "panDeltaSeq=$panDeltaSeq，reason=${reason.ifBlank { "unknown" }}"
+            )
+            return
+        }
+        triggerPanPhysicalStateDeltaSnapshotFallback(
+            "pan_physical_delta_rejected:$panDeltaSeq:${reason.ifBlank { "unknown" }}"
+        )
+    }
+
+    fun handleUnverifiedPanPhysicalStateDeltaAck(panDeltaSeq: Long, reason: String) {
+        triggerPanPhysicalStateDeltaSnapshotFallback(
+            "pan_physical_delta_ack_unverified:$panDeltaSeq:${reason.ifBlank { "unknown" }}"
+        )
     }
 
     private fun triggerPanStateDeltaSnapshotFallback(reason: String) {
@@ -775,6 +918,20 @@ object SendServerHelper {
         if (lastPanStateDeltaHttpFallbackAtMs > 0L && now - lastPanStateDeltaHttpFallbackAtMs < minIntervalMs) {
             LogUtils.w(
                 "【烤盘增量】HTTP 快照兜底被限频跳过：" +
+                    "reason=$reason，minIntervalMs=$minIntervalMs"
+            )
+            return
+        }
+        lastPanStateDeltaHttpFallbackAtMs = now
+        SnapshotSyncPolicy.maybeUploadSnapshot(reason)
+    }
+
+    private fun triggerPanPhysicalStateDeltaSnapshotFallback(reason: String) {
+        val now = System.currentTimeMillis()
+        val minIntervalMs = AppConfig.getAppConfig().httpFallbackMinIntervalMs.takeIf { it > 0L } ?: 30_000L
+        if (lastPanStateDeltaHttpFallbackAtMs > 0L && now - lastPanStateDeltaHttpFallbackAtMs < minIntervalMs) {
+            LogUtils.w(
+                "【烤盘物理增量】HTTP 快照兜底被限频跳过：" +
                     "reason=$reason，minIntervalMs=$minIntervalMs"
             )
             return
@@ -865,6 +1022,7 @@ object SendServerHelper {
     fun pendingRuntimeAckCount(): Int = pendingRuntimeStateAcks.size
     fun pendingAvailableAckCount(): Int = pendingAvailableStateAcks.size
     fun pendingPanStateDeltaAckCount(): Int = pendingPanStateDeltaAcks.size
+    fun pendingPanPhysicalStateDeltaAckCount(): Int = pendingPanPhysicalStateDeltaAcks.size
     fun pendingActionGroupTelemetryAckCount(): Int = pendingActionGroupTelemetryAcks.size
 
     fun publishAppUpgradeNotice(

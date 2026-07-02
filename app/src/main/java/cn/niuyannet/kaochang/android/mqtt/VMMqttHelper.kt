@@ -140,8 +140,61 @@ object VMMqttHelper : VMMqtt() {
         val accepted = content.getBooleanValue("accepted")
         val duplicate = content.getBooleanValue("duplicate")
         val stale = content.getBooleanValue("stale")
+        val needFullSnapshot = content.getBooleanValue("needFullSnapshot")
         val reason = content.getString("reason").orEmpty()
+        val serverPhysicalStateHash = content.getString("serverPhysicalStateHash").orEmpty()
         val ackTs = content.getLongValue("ackTs")
+        if (eventId.isBlank() && SendServerHelper.hasPendingPanPhysicalStateDelta(panDeltaSeq)) {
+            LogUtils.w(
+                "【烤盘物理增量】收到缺少 eventId 的烤盘增量回执，已忽略以避免仅凭 seq 误清 pending：" +
+                    "panDeltaSeq=$panDeltaSeq，accepted=$accepted，duplicate=$duplicate，" +
+                    "stale=$stale，reason=$reason，needFullSnapshot=$needFullSnapshot"
+            )
+            return true
+        }
+        val physicalAckResult = SendServerHelper.markPanPhysicalStateDeltaAcked(panDeltaSeq, eventId)
+        if (physicalAckResult.freshAck || physicalAckResult.snapshot != null) {
+            if (accepted || duplicate) {
+                if (serverPhysicalStateHash.isBlank()) {
+                    LogUtils.w(
+                        "【烤盘物理增量】服务端确认缺少完整物理状态哈希，疑似旧后端普通 pan_state_delta ACK，触发 HTTP 快照兜底：" +
+                            "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
+                            "accepted=$accepted，duplicate=$duplicate，stale=$stale，reason=$reason，" +
+                            "needFullSnapshot=$needFullSnapshot，ackTs=$ackTs，" +
+                            "ackLatencyMs=${physicalAckResult.ackLatencyMs ?: -1L}，" +
+                            "source=${physicalAckResult.snapshot?.source ?: "unknown"}"
+                    )
+                    SendServerHelper.handleUnverifiedPanPhysicalStateDeltaAck(panDeltaSeq, reason)
+                } else {
+                    LogUtils.d(
+                        "【烤盘物理增量】服务端已确认完整物理状态：" +
+                            "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
+                            "accepted=$accepted，duplicate=$duplicate，stale=$stale，reason=$reason，" +
+                            "needFullSnapshot=$needFullSnapshot，serverPhysicalStateHash=$serverPhysicalStateHash，" +
+                            "ackTs=$ackTs，ackLatencyMs=${physicalAckResult.ackLatencyMs ?: -1L}，" +
+                            "source=${physicalAckResult.snapshot?.source ?: "unknown"}"
+                    )
+                }
+            } else {
+                LogUtils.w(
+                    "【烤盘物理增量】服务端未应用完整物理状态：" +
+                        "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
+                        "stale=$stale，reason=$reason，needFullSnapshot=$needFullSnapshot，ackTs=$ackTs"
+                )
+                if (!stale) {
+                    SendServerHelper.handleRejectedPanPhysicalStateDeltaAck(panDeltaSeq, reason, needFullSnapshot)
+                }
+            }
+            return true
+        }
+        if (eventId.contains(":pan_physical_delta:")) {
+            LogUtils.d(
+                "【烤盘物理增量】收到完整物理状态回执，但本地已无对应 pending，忽略旧回执：" +
+                    "panDeltaSeq=$panDeltaSeq，eventId=$eventId，accepted=$accepted，" +
+                    "duplicate=$duplicate，stale=$stale，reason=$reason，needFullSnapshot=$needFullSnapshot"
+            )
+            return true
+        }
         val ackResult = SendServerHelper.markPanStateDeltaAcked(panDeltaSeq)
         if (accepted || duplicate) {
             LogUtils.d(

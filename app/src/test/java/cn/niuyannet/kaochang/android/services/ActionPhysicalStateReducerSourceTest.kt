@@ -53,7 +53,7 @@ class ActionPhysicalStateReducerSourceTest {
     }
 
     @Test
-    fun supplementPhysicalTelemetryReducer_shouldTriggerSnapshotAfterTrustedPhysicalWrite() {
+    fun supplementPhysicalTelemetryReducer_shouldPublishMqttPhysicalDeltaAfterTrustedPhysicalWrite() {
         val source = sourceText()
         val functionStart = source.indexOf("private fun applySupplementPhysicalTelemetry(")
         assertTrue("必须存在补肠动作级物理状态 reducer", functionStart >= 0)
@@ -61,9 +61,10 @@ class ActionPhysicalStateReducerSourceTest {
             .let { if (it >= 0) it else source.length }
         val block = source.substring(functionStart, functionEnd)
 
-        assertTrue("in2 扣箱成功后必须触发云端快照补偿", block.contains("action_physical:in2:picked_from_box"))
-        assertTrue("in7 落盘成功后必须触发云端快照补偿", block.contains("action_physical:in7:placed_on_pan"))
-        assertTrue("物理状态补偿必须复用 SnapshotSyncPolicy.maybeUploadSnapshot", block.contains("SnapshotSyncPolicy.maybeUploadSnapshot("))
+        assertTrue("in2 扣箱成功后必须触发 MQTT 物理增量", block.contains("action_physical:in2:picked_from_box"))
+        assertTrue("in2 扣箱成功后必须上报变化箱位", block.contains("PanPhysicalStateDeltaReporter.reportStockChanged("))
+        assertTrue("in7 落盘成功后必须触发 MQTT 物理增量", block.contains("action_physical:in7:placed_on_pan"))
+        assertTrue("in7 落盘成功后必须上报变化烤盘", block.contains("PanPhysicalStateDeltaReporter.reportPanChanged("))
     }
 
     @Test
@@ -115,7 +116,8 @@ class ActionPhysicalStateReducerSourceTest {
         val block = source.substring(functionStart, functionEnd)
 
         assertTrue("out1 reducer 必须识别 OUT_REMOVED_FROM_PAN", block.contains("shouldApplyOutRemovedFromPan("))
-        assertTrue("out1 离盘后必须触发快照补偿", block.contains("action_physical:out1:removed_from_pan"))
+        assertTrue("out1 离盘后必须触发 MQTT 物理增量", block.contains("action_physical:out1:removed_from_pan"))
+        assertTrue("out1 离盘后必须上报变化烤盘", block.contains("PanPhysicalStateDeltaReporter.reportPanChanged("))
         assertTrue("out1 reducer 必须保存当前烤盘列表", block.contains("saveKaoPanListSync("))
     }
 

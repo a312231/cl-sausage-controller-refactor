@@ -5,7 +5,8 @@ import com.alibaba.fastjson.JSON
 object CloudSnapshotReportResponseParser {
     data class Result(
         val accepted: Boolean,
-        val reason: String
+        val reason: String,
+        val panDeltaSeq: Long? = null
     )
 
     fun parse(content: String?): Result {
@@ -25,7 +26,7 @@ object CloudSnapshotReportResponseParser {
         val ignored = data?.getBoolean("ignored") == true
         val ignoredReason = data?.getString("reason").orEmpty()
         if (code == 200 && ignored && ignoredReason == "same_hash") {
-            return Result(true, "云端已确认相同快照：reason=$ignoredReason，message=$message")
+            return Result(true, "云端已确认相同快照：reason=$ignoredReason，message=$message", data?.getLong("panDeltaSeq"))
         }
         val messageIndicatesIgnoredSnapshot =
             message.contains("忽略") ||
@@ -43,6 +44,6 @@ object CloudSnapshotReportResponseParser {
         if (messageIndicatesIgnoredSnapshot) {
             return Result(false, "云端已忽略旧快照：message=$message")
         }
-        return Result(true, "云端已接收快照：code=$code，message=$message")
+        return Result(true, "云端已接收快照：code=$code，message=$message", data?.getLong("panDeltaSeq"))
     }
 }

@@ -5,6 +5,8 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
 import cn.niuyannet.kaochang.android.mqtt.ConsumableEvent
 import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
+import cn.niuyannet.kaochang.android.mqtt.PanPhysicalStateBaselineStore
+import cn.niuyannet.kaochang.android.mqtt.PanPhysicalStateDeltaSequenceStore
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
@@ -14,6 +16,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
 import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
+import cn.niuyannet.kaochang.android.services.SnapshotProjectionHash
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
@@ -1121,6 +1124,7 @@ object DataManagementAPI {
             return
         }
         val stockPayload = JSON.toJSONString(kaoPanBoxList)
+        val effectiveSnapshotHash = snapshotHash ?: SnapshotProjectionHash.hash(kaoPanList, kaoPanBoxList)
         val stockItemCount = kaoPanBoxList.size
         val physicalStockTotalCount = kaoPanBoxList.sumOf { box -> box.num }
         val availableStockTotalCount = kaoPanBoxList.sumOf { box ->
@@ -1133,15 +1137,15 @@ object DataManagementAPI {
         snapshotPayload["reportTime"] = reportTime
         snapshotPayload["kaoPanList"] = kaoPanPayload
         snapshotPayload["stockList"] = stockPayload
-        snapshotHash?.let { snapshotPayload["snapshotHash"] = it }
+        snapshotPayload["snapshotHash"] = effectiveSnapshotHash
         snapshotReason?.let { snapshotPayload["snapshotReason"] = it }
         snapshotPayload["forceFullSnapshot"] = forceFullSnapshot
         val snapshotSummary =
-            "sequence（设备快照版本号）=$sequence, " +
+                "sequence（设备快照版本号）=$sequence, " +
                 "reportTime（设备本机上报时间）=$reportTime, " +
                 "烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
                 "箱位数=$stockItemCount, 物理库存=$physicalStockTotalCount, 自动补肠可用库存=$availableStockTotalCount, " +
-                "snapshotHash=$snapshotHash, snapshotReason=$snapshotReason, forceFullSnapshot=$forceFullSnapshot"
+                "snapshotHash=$effectiveSnapshotHash, snapshotReason=$snapshotReason, forceFullSnapshot=$forceFullSnapshot"
 
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
         logPendingRetryIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
@@ -1151,7 +1155,7 @@ object DataManagementAPI {
             stockList = stockPayload,
             sequence = sequence,
             reportTime = reportTime,
-            snapshotHash = snapshotHash,
+            snapshotHash = effectiveSnapshotHash,
             snapshotReason = snapshotReason,
             forceFullSnapshot = forceFullSnapshot
         ) { code, content ->
@@ -1167,6 +1171,7 @@ object DataManagementAPI {
                 )
                 onResult?.invoke(false)
             } else {
+                val reportResult = CloudSnapshotReportResponseParser.parse(content)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.STOCK)
@@ -1174,6 +1179,8 @@ object DataManagementAPI {
                     "设备数据快照已同步：" +
                         "$snapshotSummary, cloudResponse（云端原始响应）=$content"
                 )
+                PanPhysicalStateBaselineStore.recordConfirmedSnapshot(sequence, effectiveSnapshotHash, reportResult.panDeltaSeq)
+                PanPhysicalStateDeltaSequenceStore.resetToServerSequence(reportResult.panDeltaSeq)
                 onResult?.invoke(true)
             }
         }
