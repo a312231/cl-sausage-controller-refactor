@@ -178,7 +178,9 @@ object OverKeepWarmDiscardScanner {
             onlineStatus = config.onlineStatus,
             errorStatus = config.errorStatus,
             inspectionMode = config.inspectionMode,
-            moveStatus = config.moveStatus
+            moveStatus = config.moveStatus,
+            lowerPlatformStatus = config.lowerPlatformStatus,
+            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
         )
     }
 }

@@ -97,6 +97,13 @@ object SelfCleanManager {
         if (config.zone3CleanPending != 1 || config.zone3Dirty != 1) {
             return false
         }
+        if (AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = config.lowerPlatformStatus,
+                lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
+            )
+        ) {
+            return false
+        }
         if (config.errorStatus != 0 || config.onlineStatus != 1 || config.moveStatus != 0) {
             return false
         }

@@ -32,6 +32,38 @@ class LowerPlatformRuntimeStateReporterTest {
     }
 
     @Test
+    fun confirmLowerPlatformIsolationAfterManualAction_shouldRecoverManualLowerPlatformIsolation() {
+        val isolatedLiftRisk = AppConfigBean().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+            lowerPlatformIsolationActionName = "in4"
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        }
+        val isolatedLowerPlatform = AppConfigBean().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+            lowerPlatformIsolationActionName = "in3"
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        }
+        val isolatedEarlyLowerPlatform = AppConfigBean().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+            lowerPlatformIsolationActionName = "in1"
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        }
+
+        val liftRiskSnapshot = LowerPlatformRuntimeStateReporter.recoverLowerPlatformIsolation(isolatedLiftRisk)
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED, liftRiskSnapshot.lowerPlatformStatus)
+        assertEquals("in4", liftRiskSnapshot.lowerPlatformIsolationActionName)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, liftRiskSnapshot.supplementEnabled)
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL, isolatedLiftRisk.lowerPlatformStatus)
+        assertEquals("", isolatedLiftRisk.lowerPlatformIsolationActionName)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, isolatedLiftRisk.supplementEnabled)
+
+        assertTrue(LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(isolatedLowerPlatform))
+        assertTrue(
+            LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(isolatedEarlyLowerPlatform)
+        )
+    }
+
+    @Test
     fun manualBoxMaintenanceRecovery_shouldOnlyApplyToSupplyDegradedOrRecoveryRequiredReason() {
         val degraded = AppConfigBean().apply {
             lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED

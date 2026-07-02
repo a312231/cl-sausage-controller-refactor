@@ -22,6 +22,7 @@ internal object RuntimeStateSignatureBuilder {
             append(config.errorCode ?: "").append('|')
             append(config.restStatusSource ?: "").append('|')
             append(config.lowerPlatformStatus ?: AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL).append('|')
+            append(config.lowerPlatformIsolationActionName ?: "").append('|')
             append(config.supplementEnabled).append('|')
             append(config.orderBlockReason ?: "").append('|')
             append(alertCode).append('|')

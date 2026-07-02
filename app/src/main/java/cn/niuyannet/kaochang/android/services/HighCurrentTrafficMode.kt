@@ -86,6 +86,23 @@ object HighCurrentTrafficMode {
         )
     }
 
+    private fun recordSupplementLaunchOutcome(
+        requestedTargetCount: Int,
+        movedCount: Int,
+        now: Long,
+        reason: String
+    ) {
+        applySupplementTrackingState(
+            nextState = recordHighTrafficSupplementLaunchOutcome(
+                previous = currentSupplementTrackingState(),
+                requestedTargetCount = requestedTargetCount,
+                movedCount = movedCount,
+                now = now
+            ),
+            reason = reason
+        )
+    }
+
     private fun clearPitCountAfterBatch(reason: String) {
         applySupplementTrackingState(
             nextState = currentSupplementTrackingState().copy(pitCount = 0),
@@ -305,11 +322,6 @@ object HighCurrentTrafficMode {
                         if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                             val movedCount = addHighHeatSausage(list, listBox)
                             if (movedCount > 0) {
-                                recordSupplementLaunch(
-                                    filledCount = movedCount,
-                                    now = System.currentTimeMillis(),
-                                    reason = "高并发正常态向25~33批量补肠"
-                                )
                                 LogUtils.i(
                                     TAG,
                                     "【高并发补肠】已向 25~33 补热区批量补肠：movedCount=$movedCount，lastFillPitTime=$lastFillPitTime"
@@ -459,10 +471,12 @@ object HighCurrentTrafficMode {
             schedulingEnabled = schedulingEnabled,
             isBeforeCloseWindow = isBeforeCloseWindow
         )
-        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+        if (pendingBatchHandling == KaoChangOperate.PendingSupplementBatchHandling.RESUMED) {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             return
         }
+        val pendingHighHeatBatchBlocksSupplement =
+            pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE
 
         val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
         val protectedOldLowHeatReturnPositions = collectProtectedOldLowHeatReturnPositions(
@@ -477,6 +491,7 @@ object HighCurrentTrafficMode {
         )
         val hasIncompleteHighHeatBatch = HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)
         if (
+            !pendingHighHeatBatchBlocksSupplement &&
             shouldResumeIncompleteHighHeatBatch(pitCount = pitCount, hasIncompleteBatch = hasIncompleteHighHeatBatch) &&
             boxSupplyAvailable &&
             schedulingEnabled &&
@@ -487,7 +502,7 @@ object HighCurrentTrafficMode {
                 listBox = listBox,
                 reason = "低转高过渡恢复25~33未完成批次"
             )
-        } else if (!hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
+        } else if (!pendingHighHeatBatchBlocksSupplement && !hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
             TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
             val plannedTargets = HighHeatSupplementResumePlanner.planInitialTargets(
@@ -527,12 +542,13 @@ object HighCurrentTrafficMode {
             if (movedCount > 0) {
                 val partialBatch = movedCount < targets.size
                 val batchResultText = if (partialBatch) {
-                    "已按实际库存启动高并发补热小批次，后续按本批实际数量成熟回补"
+                    "25~33 本次补肠被订单、供给降级或下平台隔离中断，保留未完成目标等待恢复续补"
                 } else {
                     "已启动完整高并发补热批次"
                 }
-                recordSupplementLaunch(
-                    filledCount = movedCount,
+                recordSupplementLaunchOutcome(
+                    requestedTargetCount = targets.size,
+                    movedCount = movedCount,
                     now = System.currentTimeMillis(),
                     reason = "低转高过渡启动25~33高并发补肠"
                 )
@@ -997,6 +1013,21 @@ object HighCurrentTrafficMode {
                 targets,
                 batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33
             )
+            if (movedCount > 0) {
+                recordSupplementLaunchOutcome(
+                    requestedTargetCount = targets.size,
+                    movedCount = movedCount,
+                    now = System.currentTimeMillis(),
+                    reason = "高并发正常态向25~33批量补肠"
+                )
+                if (movedCount < targets.size) {
+                    LogUtils.w(
+                        TAG,
+                        "【高并发补肠】25~33 补热区批量补肠被中断，保留未完成目标等待恢复续补：" +
+                            "requestedTargetCount=${targets.size}，movedCount=$movedCount，targetPositions=${targets.map { it.kaoPan.positionSn }}"
+                    )
+                }
+            }
             repeat(movedCount) {
                 SelfCleanManager.markZone3Dirty()
             }
@@ -1158,7 +1189,9 @@ object HighCurrentTrafficMode {
             onlineStatus = config.onlineStatus,
             errorStatus = config.errorStatus,
             inspectionMode = config.inspectionMode,
-            moveStatus = config.moveStatus
+            moveStatus = config.moveStatus,
+            lowerPlatformStatus = config.lowerPlatformStatus,
+            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
         )
         if (dispatchDecision.canStart) {
             return null
@@ -1189,7 +1222,9 @@ object HighCurrentTrafficMode {
             onlineStatus = AppConfig.getAppConfig().onlineStatus,
             errorStatus = AppConfig.getAppConfig().errorStatus,
             inspectionMode = AppConfig.getAppConfig().inspectionMode,
-            moveStatus = AppConfig.getAppConfig().moveStatus
+            moveStatus = AppConfig.getAppConfig().moveStatus,
+            lowerPlatformStatus = AppConfig.getAppConfig().lowerPlatformStatus,
+            lowerPlatformIsolationActionName = AppConfig.getAppConfig().lowerPlatformIsolationActionName
         )
         if (!dispatchDecision.canStart) {
             LogUtils.i(

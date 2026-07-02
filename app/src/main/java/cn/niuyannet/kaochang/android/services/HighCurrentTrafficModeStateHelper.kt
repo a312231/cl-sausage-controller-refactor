@@ -123,6 +123,27 @@ internal fun recordHighTrafficSupplementLaunch(
     )
 }
 
+internal fun recordHighTrafficSupplementLaunchOutcome(
+    previous: HighTrafficSupplementTrackingState,
+    requestedTargetCount: Int,
+    movedCount: Int,
+    now: Long
+): HighTrafficSupplementTrackingState {
+    if (movedCount <= 0) {
+        return previous
+    }
+    if (requestedTargetCount > 0 && movedCount < requestedTargetCount) {
+        return HighTrafficSupplementTrackingState(
+            pitCount = 0,
+            lastFillPitTime = now
+        )
+    }
+    return HighTrafficSupplementTrackingState(
+        pitCount = movedCount,
+        lastFillPitTime = now
+    )
+}
+
 internal fun resetHighTrafficSupplementTracking(): HighTrafficSupplementTrackingState =
     HighTrafficSupplementTrackingState(
         pitCount = 0,

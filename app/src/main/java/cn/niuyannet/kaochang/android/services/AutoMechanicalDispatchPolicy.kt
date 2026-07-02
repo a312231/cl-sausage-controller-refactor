@@ -19,11 +19,14 @@ object AutoMechanicalDispatchPolicy {
     private const val MOVE_STATUS_IDLE = 0
     private const val MOVE_STATUS_DELIVERING = 2
 
+    @Suppress("UNUSED_PARAMETER")
     fun evaluate(
         onlineStatus: Int,
         errorStatus: Int,
         inspectionMode: Int,
-        moveStatus: Int
+        moveStatus: Int,
+        lowerPlatformStatus: String = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL,
+        lowerPlatformIsolationActionName: String? = ""
     ): AutoMechanicalDispatchDecision {
         return when {
             onlineStatus == ONLINE_STATUS_DELIVERING -> AutoMechanicalDispatchDecision(
@@ -58,5 +61,15 @@ object AutoMechanicalDispatchPolicy {
         moveStatus: Int
     ): Boolean {
         return onlineStatus == ONLINE_STATUS_DELIVERING && moveStatus == MOVE_STATUS_DELIVERING
+    }
+
+    fun shouldBlockAutoDispatchForLowerPlatformIsolation(
+        lowerPlatformStatus: String?,
+        lowerPlatformIsolationActionName: String?
+    ): Boolean {
+        if (lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
+            return false
+        }
+        return lowerPlatformIsolationActionName in setOf("in4", "in5")
     }
 }

@@ -92,6 +92,7 @@ class UpdateDeviceInfoPayloadBuilderTest {
             deviceCode = "device-001",
             config = baseConfig().apply {
                 lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+                lowerPlatformIsolationActionName = "in5"
                 supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
                 orderBlockReason = ""
             },
@@ -99,6 +100,7 @@ class UpdateDeviceInfoPayloadBuilderTest {
         )
 
         assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, payload.getString("lowerPlatformStatus"))
+        assertEquals("in5", payload.getString("lowerPlatformIsolationActionName"))
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, payload.getIntValue("supplementEnabled"))
         assertTrue(payload.containsKey("orderBlockReason"))
         assertEquals("", payload.getString("orderBlockReason"))

@@ -33,6 +33,68 @@ class AutoMechanicalDispatchPolicyTest {
     }
 
     @Test
+    fun evaluate_shouldAllowUpperPlatformAutoDispatchWhenLowerPlatformIsolated() {
+        val decision = AutoMechanicalDispatchPolicy.evaluate(
+            onlineStatus = 1,
+            errorStatus = AppConfigBean.ERROR_STATUS_NORMAL,
+            inspectionMode = AppConfigBean.INSPECTION_MODE_NORMAL,
+            moveStatus = 0,
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED,
+            lowerPlatformIsolationActionName = "in5"
+        )
+
+        assertTrue(decision.canStart)
+    }
+
+    @Test
+    fun shouldBlockAutoDispatchForLowerPlatformIsolation_shouldBlockSelfCleanForLiftRiskActions() {
+        val decision = AutoMechanicalDispatchPolicy.evaluate(
+            onlineStatus = 1,
+            errorStatus = AppConfigBean.ERROR_STATUS_NORMAL,
+            inspectionMode = AppConfigBean.INSPECTION_MODE_NORMAL,
+            moveStatus = 0,
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED,
+            lowerPlatformIsolationActionName = "in4"
+        )
+
+        assertTrue(decision.canStart)
+        assertTrue(
+            AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED,
+                lowerPlatformIsolationActionName = "in4"
+            )
+        )
+    }
+
+    @Test
+    fun shouldBlockAutoDispatchForLowerPlatformIsolation_shouldOnlyBlockLiftRiskActions() {
+        assertFalse(
+            AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL,
+                lowerPlatformIsolationActionName = "in4"
+            )
+        )
+        assertTrue(
+            AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED,
+                lowerPlatformIsolationActionName = "in4"
+            )
+        )
+        assertTrue(
+            AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED,
+                lowerPlatformIsolationActionName = "in5"
+            )
+        )
+        assertFalse(
+            AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED,
+                lowerPlatformIsolationActionName = "in3"
+            )
+        )
+    }
+
+    @Test
     fun evaluate_shouldBlockAutoDispatchWhenMoveStatusIsBusy() {
         val decision = AutoMechanicalDispatchPolicy.evaluate(
             onlineStatus = 1,

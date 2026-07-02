@@ -25,6 +25,9 @@ object LowerPlatformIsolationPolicy {
         if (actionName == "in5" && failed.errorCode == AtomicActionCodes.IR_THROW_FAILED) {
             return Decision.IsolatedRequiresManualConfirm
         }
+        if (actionName == "in3" || actionName == "in4") {
+            return Decision.IsolatedRequiresManualConfirm
+        }
         if (hasPrefetchedNext) {
             return Decision.NotIsolatable
         }

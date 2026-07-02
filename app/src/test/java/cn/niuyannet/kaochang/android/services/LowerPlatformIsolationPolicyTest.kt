@@ -25,10 +25,18 @@ class LowerPlatformIsolationPolicyTest {
             failed(AtomicActionCodes.IN3_Y_RESET_FAILED),
             hasPrefetchedNext = false
         ))
+        assertTrue(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
+            "in3",
+            failed(AtomicActionCodes.IN3_X_RESET_FAILED)
+        ))
         assertTrue(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in4",
             failed(AtomicActionCodes.LIFT_NOT_BOTTOM),
             hasPrefetchedNext = false
+        ))
+        assertTrue(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
+            "in4",
+            failed(AtomicActionCodes.LIFT_NOT_BOTTOM)
         ))
         assertTrue(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in5",
@@ -84,8 +92,8 @@ class LowerPlatformIsolationPolicyTest {
             hasPrefetchedNext = false
         ))
         assertFalse(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
-            "in4",
-            failed(AtomicActionCodes.LIFT_NOT_BOTTOM)
+            "in1",
+            failed(AtomicActionCodes.IN1_X_RESET_FAILED)
         ))
     }
 

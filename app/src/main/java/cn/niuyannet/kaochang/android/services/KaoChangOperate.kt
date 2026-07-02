@@ -359,9 +359,9 @@ object KaoChangOperate {
         }
     }
 
-    private fun markLowerPlatformIsolatedRuntimeState(reason: String) {
+    private fun markLowerPlatformIsolatedRuntimeState(reason: String, actionName: String) {
         operateScope.launch {
-            LowerPlatformRuntimeStateReporter.markIsolated(reason)
+            LowerPlatformRuntimeStateReporter.markIsolated(reason, actionName)
         }
     }
 
@@ -1324,6 +1324,25 @@ object KaoChangOperate {
     ): SelfCleanSequenceResult {
         val uniquePositions = positionSnList.distinct().sorted()
         val config = AppConfig.getAppConfig()
+        if (AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus = config.lowerPlatformStatus,
+                lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
+            )
+        ) {
+            val report = SelfCleanExecutionReport(
+                success = false,
+                command = -1,
+                targetLabel = "自清洁前置检查",
+                status201 = -1,
+                message = "lower_platform_isolated:${config.lowerPlatformIsolationActionName}"
+            )
+            logW(
+                LOG_SELF_CLEAN,
+                "跳过自清洁：下平台隔离涉及升降台/残肠风险，source=$source，" +
+                    "lowerPlatformStatus=${config.lowerPlatformStatus}，action=${config.lowerPlatformIsolationActionName}"
+            )
+            return SelfCleanSequenceResult(false, listOf(report))
+        }
         if (config.errorStatus != 0) {
             val report = SelfCleanExecutionReport(false, -1, "自清洁前置检查", -1, "device_error")
             logW(LOG_SELF_CLEAN, "跳过自清洁：设备当前已处于故障态，source=$source")
@@ -2605,7 +2624,7 @@ object KaoChangOperate {
                     )
                 }
             }
-            markLowerPlatformIsolatedRuntimeState(isolationReason)
+            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName)
             logW(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线下平台失败已隔离，不进入维护：" +
@@ -2819,6 +2838,7 @@ object KaoChangOperate {
 
         val moveSuccess = actionGroupResult == ActionGroupResult.Success
         val failureCode = atomicFailureCode(actionGroupResult)
+        val failureActionName = (actionGroupResult as? ActionGroupResult.Failed)?.actionName.orEmpty()
         val lowerPlatformIsolationDecision = if (!moveSuccess && actionGroupResult is ActionGroupResult.Failed) {
             LowerPlatformIsolationPolicy.classifySupplementActionFailure(
                 actionName = actionGroupResult.actionName,
@@ -2935,7 +2955,7 @@ object KaoChangOperate {
                     "补肠取肠失败由同口味切箱逻辑接管，暂不切维护：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}"
                 )
             } else if (lowerPlatformIsolationReason != null) {
-                markLowerPlatformIsolatedRuntimeState(lowerPlatformIsolationReason)
+                markLowerPlatformIsolatedRuntimeState(lowerPlatformIsolationReason, failureActionName)
                 logW(
                     LOG_SUPPLEMENT,
                     "补肠下平台动作失败，已隔离下平台并停止自动补肠，不切整机维护：" +
@@ -3036,11 +3056,14 @@ object KaoChangOperate {
         }
 
         if (requireAutoDispatchGate) {
+            val config = AppConfig.getAppConfig()
             val dispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
-                onlineStatus = AppConfig.getAppConfig().onlineStatus,
-                errorStatus = AppConfig.getAppConfig().errorStatus,
-                inspectionMode = AppConfig.getAppConfig().inspectionMode,
-                moveStatus = AppConfig.getAppConfig().moveStatus
+                onlineStatus = config.onlineStatus,
+                errorStatus = config.errorStatus,
+                inspectionMode = config.inspectionMode,
+                moveStatus = config.moveStatus,
+                lowerPlatformStatus = config.lowerPlatformStatus,
+                lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
             )
             if (!dispatchDecision.canStart) {
                 logD(

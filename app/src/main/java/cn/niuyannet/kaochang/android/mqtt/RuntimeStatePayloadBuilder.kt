@@ -26,6 +26,7 @@ internal object RuntimeStatePayloadBuilder {
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
         payload["lowerPlatformStatus"] = config.lowerPlatformStatus ?: AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        payload["lowerPlatformIsolationActionName"] = config.lowerPlatformIsolationActionName ?: ""
         payload["supplementEnabled"] = config.supplementEnabled
         payload["orderBlockReason"] = config.orderBlockReason ?: ""
         payload["sourceBoxPolicyVersion"] = SourceBoxPositionPolicy.POLICY_VERSION

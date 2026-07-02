@@ -36,6 +36,7 @@ object AppConfig {
         "foodSafetyAlertCode",
         "foodSafetyAlertReason",
         "lastRuntimeAliveAtMs",
+        "lowerPlatformIsolationActionName",
         "zone3Dirty",
         "zone3CleanPending",
         "zone3CleanSuppressedFor4F"
@@ -181,6 +182,11 @@ object AppConfig {
         } else {
             preservedFields.add("lowerPlatformStatus")
         }
+        if (jsonData.containsKey("lowerPlatformIsolationActionName")) {
+            config.lowerPlatformIsolationActionName = jsonData.getString("lowerPlatformIsolationActionName") ?: ""
+        } else {
+            preservedFields.add("lowerPlatformIsolationActionName")
+        }
         if (jsonData.containsKey("supplementEnabled") && jsonData.get("supplementEnabled") != null) {
             config.supplementEnabled = normalizeSupplementEnabled(jsonData.getIntValue("supplementEnabled"))
         } else {
@@ -312,6 +318,10 @@ object AppConfig {
                     "原值=${config.lowerPlatformStatus ?: "null"}，已回退为$normalizedStatus"
             )
             config.lowerPlatformStatus = normalizedStatus
+            changed = true
+        }
+        if (config.lowerPlatformIsolationActionName == null) {
+            config.lowerPlatformIsolationActionName = ""
             changed = true
         }
         val normalizedSupplementEnabled = normalizeSupplementEnabled(config.supplementEnabled)

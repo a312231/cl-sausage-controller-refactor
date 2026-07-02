@@ -809,7 +809,9 @@ object KaoChangAlgorithm {
             onlineStatus = onlineStatus,
             errorStatus = config.errorStatus,
             inspectionMode = config.inspectionMode,
-            moveStatus = config.moveStatus
+            moveStatus = config.moveStatus,
+            lowerPlatformStatus = config.lowerPlatformStatus,
+            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
         )
         val schedulingEnabled =
             isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus) && autoDispatchDecision.canStart
@@ -818,6 +820,7 @@ object KaoChangAlgorithm {
             OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "pending_discard_priority")
             return
         }
+        refreshActiveBakingTimeBeforeMaturityCheck(config, kaoPanList)
         settleMaturedZonesBeforeDispatch(config, kaoPanList)
 
         val pollStateSnapshot =
@@ -947,6 +950,23 @@ object KaoChangAlgorithm {
             "机械门禁前整区成熟转保温"
         )
         return true
+    }
+
+    private fun refreshActiveBakingTimeBeforeMaturityCheck(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ): Int {
+        val correctedCount = KaoPanHelper.refreshActiveBakingTime(kaoPanList, config.bakingTime)
+        if (correctedCount <= 0) {
+            return 0
+        }
+        KaoPanHelper.saveKaoPanList(kaoPanList)
+        logW(
+            LOG_ALGORITHM,
+            "【烤制时间同步】调度轮询发现烤制中烤盘仍使用旧烤制时长，已按当前配置回刷：" +
+                "bakingTime=${config.bakingTime}分钟，correctedCount=$correctedCount"
+        )
+        return correctedCount
     }
 
     /**

@@ -440,7 +440,9 @@ object LowCurrentTrafficMode {
             onlineStatus = AppConfig.getAppConfig().onlineStatus,
             errorStatus = AppConfig.getAppConfig().errorStatus,
             inspectionMode = AppConfig.getAppConfig().inspectionMode,
-            moveStatus = AppConfig.getAppConfig().moveStatus
+            moveStatus = AppConfig.getAppConfig().moveStatus,
+            lowerPlatformStatus = AppConfig.getAppConfig().lowerPlatformStatus,
+            lowerPlatformIsolationActionName = AppConfig.getAppConfig().lowerPlatformIsolationActionName
         )
         if (!dispatchDecision.canStart) {
             LogUtils.i(

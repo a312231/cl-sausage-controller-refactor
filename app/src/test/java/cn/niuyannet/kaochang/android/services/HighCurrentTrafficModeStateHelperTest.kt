@@ -127,6 +127,48 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun recordSupplementLaunchOutcome_shouldKeepActualBatchSizeWhenPlannedSmallBatchCompletes() {
+        val previous = HighTrafficSupplementTrackingState(
+            pitCount = 0,
+            lastFillPitTime = 1_000L
+        )
+
+        val updated = recordHighTrafficSupplementLaunchOutcome(
+            previous = previous,
+            requestedTargetCount = 2,
+            movedCount = 2,
+            now = 20_000L
+        )
+
+        assertEquals(2, updated.pitCount)
+        assertEquals(20_000L, updated.lastFillPitTime)
+    }
+
+    @Test
+    fun recordSupplementLaunchOutcome_shouldForceResumeWhenLaunchWasInterruptedBeforeRequestedTargetsComplete() {
+        val previous = HighTrafficSupplementTrackingState(
+            pitCount = 0,
+            lastFillPitTime = 1_000L
+        )
+
+        val updated = recordHighTrafficSupplementLaunchOutcome(
+            previous = previous,
+            requestedTargetCount = 9,
+            movedCount = 2,
+            now = 20_000L
+        )
+
+        assertEquals("异常中断残缺批次不能记成 2 根小批次，否则恢复后不会续补 27~33", 0, updated.pitCount)
+        assertEquals(20_000L, updated.lastFillPitTime)
+        assertTrue(
+            shouldResumeIncompleteHighHeatBatch(
+                pitCount = updated.pitCount,
+                hasIncompleteBatch = true
+            )
+        )
+    }
+
+    @Test
     fun shouldResumeIncompleteHighHeatBatch_shouldTreatRecordedPartialCountAsCurrentBatchSize() {
         assertFalse(
             shouldResumeIncompleteHighHeatBatch(

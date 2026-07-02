@@ -69,6 +69,9 @@ public class AppConfigBean implements Serializable {
     // 下平台/补肠链路状态：NORMAL=正常，SUPPLY_DEGRADED=供给降级，ISOLATED=下平台隔离
     public String lowerPlatformStatus = LOWER_PLATFORM_STATUS_NORMAL;
 
+    // 最近一次下平台隔离对应的补肠动作名，用于区分只停补肠和需暂停自动搬盘的隔离态
+    public String lowerPlatformIsolationActionName = "";
+
     // 自动补肠开关：0=禁止，1=允许；不等同于烤制算法开关 isEnable
     public int supplementEnabled = SUPPLEMENT_ENABLED_YES;
 

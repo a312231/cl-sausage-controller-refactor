@@ -49,6 +49,22 @@ class AlgorithmFaultDiagnosticsSourceTest {
         )
     }
 
+    @Test
+    fun pollKaoPanStatus_shouldRefreshActiveBakingTimeBeforeMaturitySettlement() {
+        val source = algorithmSourceText()
+        val pollStart = source.indexOf("private suspend fun pollKaoPanStatus()")
+        assertTrue("必须存在 pollKaoPanStatus", pollStart >= 0)
+        val pollEnd = source.indexOf("private fun settleMaturedZonesBeforeDispatch", pollStart)
+            .let { if (it >= 0) it else source.length }
+        val pollBlock = source.substring(pollStart, pollEnd)
+
+        val refreshCall = pollBlock.indexOf("refreshActiveBakingTimeBeforeMaturityCheck(")
+        val settleCall = pollBlock.indexOf("settleMaturedZonesBeforeDispatch(")
+        assertTrue("调度轮询必须在成熟判断前回刷烤制中烤盘的 bakingTime", refreshCall >= 0)
+        assertTrue("必须存在成熟转保温/回搬判断入口", settleCall >= 0)
+        assertTrue("bakingTime 回刷必须早于成熟判断，避免后台改 15 分钟后烤盘仍按旧时长烤制", refreshCall < settleCall)
+    }
+
     private fun algorithmSourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt"),

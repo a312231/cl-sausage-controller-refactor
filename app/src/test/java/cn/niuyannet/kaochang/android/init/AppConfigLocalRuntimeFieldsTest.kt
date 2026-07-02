@@ -19,6 +19,7 @@ class AppConfigLocalRuntimeFieldsTest {
             "foodSafetyAlertCode",
             "foodSafetyAlertReason",
             "lastRuntimeAliveAtMs",
+            "lowerPlatformIsolationActionName",
             "zone3Dirty",
             "zone3CleanPending",
             "zone3CleanSuppressedFor4F"
@@ -40,11 +41,13 @@ class AppConfigLocalRuntimeFieldsTest {
     fun applyLowerPlatformRuntimeFieldsFromRemote_shouldMergePresentFieldsAndPreserveMissingFields() {
         val config = AppConfigBean().apply {
             lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+            lowerPlatformIsolationActionName = "in4"
             supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
             orderBlockReason = AppConfigBean.ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING
         }
         val remoteDegraded = JSONObject().apply {
             put("lowerPlatformStatus", AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED)
+            put("lowerPlatformIsolationActionName", "")
             put("supplementEnabled", AppConfigBean.SUPPLEMENT_ENABLED_NO)
             put("orderBlockReason", "")
         }
@@ -52,12 +55,16 @@ class AppConfigLocalRuntimeFieldsTest {
         AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, remoteDegraded)
 
         assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, config.lowerPlatformStatus)
+        assertEquals("", config.lowerPlatformIsolationActionName)
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
         assertEquals("", config.orderBlockReason)
+
+        config.lowerPlatformIsolationActionName = "in5"
 
         AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, JSONObject())
 
         assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, config.lowerPlatformStatus)
+        assertEquals("in5", config.lowerPlatformIsolationActionName)
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
         assertEquals("", config.orderBlockReason)
     }

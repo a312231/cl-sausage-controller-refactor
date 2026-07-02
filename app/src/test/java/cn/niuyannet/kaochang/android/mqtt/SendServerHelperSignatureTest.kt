@@ -96,6 +96,7 @@ class SendServerHelperSignatureTest {
             runtimeSeq = 100L,
             config = baseConfig().apply {
                 lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+                lowerPlatformIsolationActionName = "in4"
                 supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
                 orderBlockReason = ""
             },
@@ -104,6 +105,7 @@ class SendServerHelperSignatureTest {
         )
 
         assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, payload.getString("lowerPlatformStatus"))
+        assertEquals("in4", payload.getString("lowerPlatformIsolationActionName"))
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, payload.getIntValue("supplementEnabled"))
         assertEquals("", payload.getString("orderBlockReason"))
     }

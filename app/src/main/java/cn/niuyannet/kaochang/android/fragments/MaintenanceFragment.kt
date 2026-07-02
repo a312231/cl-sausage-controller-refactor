@@ -31,6 +31,7 @@ import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
+import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
 import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
@@ -261,7 +262,10 @@ class MaintenanceFragment : Fragment() {
 
     private fun updateManualSupplementConfirmButtonVisibility() {
         binding.btnConfirmSupplementSafety.visibility =
-            if (KaoChangOperate.pendingSupplementBatchRequiresManualConfirm() != null) View.VISIBLE else View.GONE
+            if (
+                KaoChangOperate.pendingSupplementBatchRequiresManualConfirm() != null ||
+                LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(AppConfig.getAppConfig())
+            ) View.VISIBLE else View.GONE
     }
 
     private fun setConsumableManualButtonsEnabled(enabled: Boolean) {
@@ -935,15 +939,35 @@ class MaintenanceFragment : Fragment() {
 
         binding.btnConfirmSupplementSafety.setOnClickListener {
             val intent = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
-            if (intent == null) {
+            if (intent == null && !LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(AppConfig.getAppConfig())) {
                 ToastUtils.showShort("当前没有需要人工确认的续补批次")
                 updateManualSupplementConfirmButtonVisibility()
+                return@setOnClickListener
+            }
+            if (intent == null) {
+                AlertDialog.Builder(requireContext())
+                    .setTitle("确认下平台隔离恢复")
+                    .setMessage(
+                        "请确认滚筒、升降台、下平台和机械臂现场已安全，可恢复自动补肠和自清洁。\n\n" +
+                            "当前隔离动作=${AppConfig.getAppConfig().lowerPlatformIsolationActionName}"
+                    )
+                    .setPositiveButton("已确认安全") { _, _ ->
+                        val ok = LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction("维护人员现场确认下平台隔离")
+                        if (ok) {
+                            ToastUtils.showShort("已恢复下平台自动调度")
+                            updateManualSupplementConfirmButtonVisibility()
+                        } else {
+                            ToastUtils.showShort("当前没有可恢复的下平台隔离状态")
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
                 return@setOnClickListener
             }
             AlertDialog.Builder(requireContext())
                 .setTitle("确认续补安全")
                 .setMessage(
-                    "请确认机械位置、25~33 半路烤肠和现场环境安全后再继续续补。\n\n" +
+                    "请确认滚筒、升降台、下平台、机械位置、25~33 半路烤肠和现场环境安全后再继续续补。\n\n" +
                         "批次=${intent.batchId}\n" +
                         "已补位置=${intent.targets.filter { it.completed }.map { it.positionSn }}\n" +
                         "待补位置=${intent.remainingTargets().map { it.positionSn }}"
@@ -951,12 +975,16 @@ class MaintenanceFragment : Fragment() {
                 .setPositiveButton("已确认安全") { _, _ ->
                     val ok = KaoChangOperate.confirmPendingSupplementBatchSafety("维护人员现场确认")
                     if (ok) {
-                        ToastUtils.showShort("已确认续补安全")
+                        val isolationRecovered =
+                            LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction(
+                                "维护人员现场确认续补安全"
+                            )
+                        ToastUtils.showShort(if (isolationRecovered) "已确认续补安全并恢复下平台补肠" else "已确认续补安全")
                         AdminOperationLogger.w(
                             action = "确认续补安全",
                             page = AdminOperationLogger.PAGE_PAN,
                             result = AdminOperationLogger.RESULT_DONE,
-                            detail = "批次=${intent.batchId}"
+                            detail = "批次=${intent.batchId}，下平台隔离恢复=${if (isolationRecovered) "是" else "否"}"
                         )
                     } else {
                         ToastUtils.showShort("确认失败，当前没有待确认批次")
