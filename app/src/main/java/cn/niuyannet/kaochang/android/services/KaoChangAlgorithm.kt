@@ -25,7 +25,8 @@ import kotlinx.coroutines.launch
  */
 object KaoChangAlgorithm {
     data class SupplyRuntimeContext(
-        val hasSupplyBoxesAvailable: Boolean,
+        val hasAutoSupplementSupplyBoxesAvailable: Boolean,
+        val hasPhysicalSupplyBoxesAvailable: Boolean,
         val hasSellableSausage: Boolean,
         val hasActiveBatch: Boolean
     )
@@ -534,7 +535,12 @@ object KaoChangAlgorithm {
     ): SupplyRuntimeContext {
         val sellArea = getSellArea(config, kaoPanList)
         val trackedArea = getTrackedArea(config, kaoPanList)
-        val hasSupplyBoxesAvailable = kaoPanBoxList.any { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) }
+        val hasAutoSupplementSupplyBoxesAvailable = kaoPanBoxList.any {
+            KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it)
+        }
+        val hasPhysicalSupplyBoxesAvailable = kaoPanBoxList.any {
+            KaoPanHelper.isSupplyBoxPhysicallyAvailableForSupplement(it)
+        }
         val hasSellableSausage = sellArea.any { isHoldingPan(it) }
         val hasActiveBatch =
             trackedArea.any { it.isHasGrilling } ||
@@ -544,7 +550,8 @@ object KaoChangAlgorithm {
                 config.transitionMode != 0 ||
                 config.zone3CleanPending == 1
         return SupplyRuntimeContext(
-            hasSupplyBoxesAvailable = hasSupplyBoxesAvailable,
+            hasAutoSupplementSupplyBoxesAvailable = hasAutoSupplementSupplyBoxesAvailable,
+            hasPhysicalSupplyBoxesAvailable = hasPhysicalSupplyBoxesAvailable,
             hasSellableSausage = hasSellableSausage,
             hasActiveBatch = hasActiveBatch
         )
@@ -614,7 +621,7 @@ object KaoChangAlgorithm {
     ): SupplyRuntimeContext {
         val context = evaluateSupplyRuntimeContext(config, kaoPanList, kaoPanBoxList)
         val targetSupplyStatus =
-            if (!context.hasSupplyBoxesAvailable && !context.hasSellableSausage && !context.hasActiveBatch) {
+            if (!context.hasPhysicalSupplyBoxesAvailable && !context.hasSellableSausage && !context.hasActiveBatch) {
                 AppConfigBean.SUPPLY_STATUS_SOLD_OUT
             } else {
                 AppConfigBean.SUPPLY_STATUS_NORMAL
@@ -877,7 +884,7 @@ object KaoChangAlgorithm {
                     config,
                     list = kaoPanList,
                     listBox = kaoPanBoxList,
-                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                    boxSupplyAvailable = supplyContext.hasAutoSupplementSupplyBoxesAvailable,
                     schedulingEnabled = schedulingEnabled
                 )
             }
@@ -900,7 +907,7 @@ object KaoChangAlgorithm {
                         config,
                         kaoPanList,
                         kaoPanBoxList,
-                        boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                        boxSupplyAvailable = supplyContext.hasAutoSupplementSupplyBoxesAvailable,
                         schedulingEnabled = schedulingEnabled
                     )
                 }
@@ -911,7 +918,7 @@ object KaoChangAlgorithm {
                     config,
                     list = kaoPanList,
                     listBox = kaoPanBoxList,
-                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+                    boxSupplyAvailable = supplyContext.hasAutoSupplementSupplyBoxesAvailable,
                     schedulingEnabled = schedulingEnabled
                 )
             }

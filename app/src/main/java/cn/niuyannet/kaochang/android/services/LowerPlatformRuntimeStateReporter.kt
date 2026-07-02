@@ -7,8 +7,6 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
 object LowerPlatformRuntimeStateReporter {
-    private val MANUAL_RECOVERABLE_ISOLATION_ACTIONS = setOf("in1", "in2", "in3", "in4", "in5")
-
     fun applyLowerPlatformIsolated(config: AppConfigBean) {
         config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
         config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
@@ -125,8 +123,7 @@ object LowerPlatformRuntimeStateReporter {
     }
 
     fun shouldRecoverAfterManualLowerPlatformAction(config: AppConfigBean): Boolean {
-        return config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
-            config.lowerPlatformIsolationActionName in MANUAL_RECOVERABLE_ISOLATION_ACTIONS
+        return config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
     }
 
     fun shouldClearOrderBlockReasonAfterManualBoxMaintenance(config: AppConfigBean): Boolean {

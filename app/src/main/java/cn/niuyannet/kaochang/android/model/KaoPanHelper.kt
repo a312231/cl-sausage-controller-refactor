@@ -64,6 +64,16 @@ object KaoPanHelper {
         if (getAppConfig().supplementEnabled == AppConfigBean.SUPPLEMENT_ENABLED_NO) {
             reasons += "supplementEnabled=0"
         }
+        reasons += supplyBoxPhysicalExclusionReasons(box)
+        return reasons
+    }
+
+    fun isSupplyBoxPhysicallyAvailableForSupplement(box: KaoPanBox): Boolean {
+        return supplyBoxPhysicalExclusionReasons(box).isEmpty()
+    }
+
+    private fun supplyBoxPhysicalExclusionReasons(box: KaoPanBox): List<String> {
+        val reasons = mutableListOf<String>()
         if (box.num <= 0) {
             reasons += "num<=0"
         }

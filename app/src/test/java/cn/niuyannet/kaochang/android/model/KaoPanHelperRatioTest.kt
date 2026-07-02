@@ -171,6 +171,28 @@ class KaoPanHelperRatioTest {
     }
 
     @Test
+    fun isSupplyBoxPhysicallyAvailableForSupplement_shouldIgnoreSupplementDisabled() {
+        setAppConfigInMemory(AppConfigBean().apply {
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        })
+        val box = box(positionSn = 2, tasteCode = "A", num = 15)
+
+        assertTrue(KaoPanHelper.isSupplyBoxPhysicallyAvailableForSupplement(box))
+    }
+
+    @Test
+    fun isSupplyBoxPhysicallyAvailableForSupplement_shouldRejectUnavailablePhysicalBoxes() {
+        assertFalse(
+            KaoPanHelper.isSupplyBoxPhysicallyAvailableForSupplement(
+                box(positionSn = 2, tasteCode = "A", num = 15, cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED)
+            )
+        )
+        assertFalse(KaoPanHelper.isSupplyBoxPhysicallyAvailableForSupplement(box(positionSn = 2, tasteCode = "", num = 15)))
+        assertFalse(KaoPanHelper.isSupplyBoxPhysicallyAvailableForSupplement(box(positionSn = 22, tasteCode = "A", num = 15)))
+        assertFalse(KaoPanHelper.isSupplyBoxPhysicallyAvailableForSupplement(box(positionSn = 2, tasteCode = "A", num = 0)))
+    }
+
+    @Test
     fun restoreKaoPanBoxList_shouldReturnMutableEmptyListWhenPreferenceMissing() {
         val restored = KaoPanHelper.restoreKaoPanBoxList(null)
 

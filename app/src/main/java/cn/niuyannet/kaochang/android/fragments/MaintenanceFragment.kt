@@ -945,11 +945,13 @@ class MaintenanceFragment : Fragment() {
                 return@setOnClickListener
             }
             if (intent == null) {
+                val isolationActionName =
+                    AppConfig.getAppConfig().lowerPlatformIsolationActionName.takeIf { it.isNotBlank() } ?: "未知动作"
                 AlertDialog.Builder(requireContext())
                     .setTitle("确认下平台隔离恢复")
                     .setMessage(
                         "请确认滚筒、升降台、下平台和机械臂现场已安全，可恢复自动补肠和自清洁。\n\n" +
-                            "当前隔离动作=${AppConfig.getAppConfig().lowerPlatformIsolationActionName}"
+                            "当前隔离动作=$isolationActionName"
                     )
                     .setPositiveButton("已确认安全") { _, _ ->
                         val ok = LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction("维护人员现场确认下平台隔离")

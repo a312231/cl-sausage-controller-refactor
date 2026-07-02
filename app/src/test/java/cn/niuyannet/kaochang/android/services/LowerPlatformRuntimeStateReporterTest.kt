@@ -64,6 +64,23 @@ class LowerPlatformRuntimeStateReporterTest {
     }
 
     @Test
+    fun shouldRecoverAfterManualLowerPlatformAction_shouldAllowUnknownActionIsolation() {
+        val isolatedWithoutAction = AppConfigBean().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+            lowerPlatformIsolationActionName = ""
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
+        }
+        val normalWithoutAction = AppConfigBean().apply {
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+            lowerPlatformIsolationActionName = ""
+            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+        }
+
+        assertTrue(LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(isolatedWithoutAction))
+        assertFalse(LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(normalWithoutAction))
+    }
+
+    @Test
     fun manualBoxMaintenanceRecovery_shouldOnlyApplyToSupplyDegradedOrRecoveryRequiredReason() {
         val degraded = AppConfigBean().apply {
             lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
