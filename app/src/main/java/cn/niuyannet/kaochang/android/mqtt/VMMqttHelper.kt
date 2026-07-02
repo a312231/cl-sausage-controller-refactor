@@ -154,8 +154,10 @@ object VMMqttHelper : VMMqtt() {
         }
         val physicalAckResult = SendServerHelper.markPanPhysicalStateDeltaAcked(panDeltaSeq, eventId)
         if (physicalAckResult.freshAck || physicalAckResult.snapshot != null) {
-            if (accepted || duplicate) {
-                if (serverPhysicalStateHash.isBlank()) {
+            val physicalAckDecision =
+                PanPhysicalStateDeltaAckPolicy.classify(accepted, duplicate, stale, serverPhysicalStateHash)
+            when (physicalAckDecision) {
+                PanPhysicalStateDeltaAckPolicy.Decision.UnverifiedAccepted -> {
                     LogUtils.w(
                         "【烤盘物理增量】服务端确认缺少完整物理状态哈希，疑似旧后端普通 pan_state_delta ACK，触发 HTTP 快照兜底：" +
                             "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
@@ -165,7 +167,8 @@ object VMMqttHelper : VMMqtt() {
                             "source=${physicalAckResult.snapshot?.source ?: "unknown"}"
                     )
                     SendServerHelper.handleUnverifiedPanPhysicalStateDeltaAck(panDeltaSeq, reason)
-                } else {
+                }
+                PanPhysicalStateDeltaAckPolicy.Decision.VerifiedAccepted -> {
                     LogUtils.d(
                         "【烤盘物理增量】服务端已确认完整物理状态：" +
                             "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
@@ -175,15 +178,17 @@ object VMMqttHelper : VMMqtt() {
                             "source=${physicalAckResult.snapshot?.source ?: "unknown"}"
                     )
                 }
-            } else {
-                LogUtils.w(
-                    "【烤盘物理增量】服务端未应用完整物理状态：" +
-                        "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
-                        "stale=$stale，reason=$reason，needFullSnapshot=$needFullSnapshot，ackTs=$ackTs"
-                )
-                if (!stale) {
-                    SendServerHelper.handleRejectedPanPhysicalStateDeltaAck(panDeltaSeq, reason, needFullSnapshot)
+                PanPhysicalStateDeltaAckPolicy.Decision.Rejected,
+                PanPhysicalStateDeltaAckPolicy.Decision.StaleRejected -> {
+                    LogUtils.w(
+                        "【烤盘物理增量】服务端未应用完整物理状态：" +
+                            "panDeltaSeq=$panDeltaSeq，eventId=$eventId，freshAck=${physicalAckResult.freshAck}，" +
+                            "stale=$stale，reason=$reason，needFullSnapshot=$needFullSnapshot，ackTs=$ackTs"
+                    )
                 }
+            }
+            if (physicalAckDecision == PanPhysicalStateDeltaAckPolicy.Decision.Rejected) {
+                SendServerHelper.handleRejectedPanPhysicalStateDeltaAck(panDeltaSeq, reason, needFullSnapshot)
             }
             return true
         }
