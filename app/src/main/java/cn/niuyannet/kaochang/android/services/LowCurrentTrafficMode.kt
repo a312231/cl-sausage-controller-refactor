@@ -465,6 +465,7 @@ object LowCurrentTrafficMode {
             "【低并发补肠】$groupName 补热区已熟批次开始回补 1~9：sourcePositions=${readyPans.map { it.positionSn }}，targetRange=1~9"
         )
         KaoChangOperate.keepWarm(1)
+        var movedAny = false
         readyPans.forEach { sourcePan ->
             val tasteCode = sourcePan.taste?.tasteCode
             val targetPan = TrafficModeHelper.selectFrontTargetPan(
@@ -489,6 +490,8 @@ object LowCurrentTrafficMode {
                     TAG,
                     "【低并发补肠】$groupName 补热区已熟回补失败：机械调度未启动或搬移失败，sourcePan=${sourcePan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
                 )
+            } else {
+                movedAny = true
             }
         }
 
@@ -497,11 +500,13 @@ object LowCurrentTrafficMode {
             LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
             KaoChangOperate.stopHeating(2)
         }
-        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
-            beforeSellable,
-            KaoPanHelper.getKaoPanList(),
-            "低并发补热区残缺批次烤熟搬回1~9"
-        )
+        if (!movedAny) {
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "低并发补热区残缺批次烤熟搬回1~9兜底同步"
+            )
+        }
         return true
     }
 

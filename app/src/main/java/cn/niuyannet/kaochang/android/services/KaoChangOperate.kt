@@ -3176,6 +3176,8 @@ object KaoChangOperate {
                     return false
                 }
             }
+            val beforeMoveSellable =
+                KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             kaoPan.cmdStatusMove = 0
             newKaoPan.isHasSausage = true
             LowToHighDemandGate.clearPosition(newKaoPan.positionSn, "烤盘搬移目标位写入")
@@ -3198,6 +3200,11 @@ object KaoChangOperate {
                 LOG_PAN_MOVE,
                 "搬移完成：来源烤盘=$sourcePosition 已清空，目标烤盘=$targetPosition 已写入，" +
                     "targetHoldingTime=${newKaoPan.holdingTime}，targetStatus=${newKaoPan.status}"
+            )
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeMoveSellable,
+                KaoPanHelper.getKaoPanList(),
+                "单根搬盘完成：$sourcePosition->$targetPosition"
             )
             return true
         } finally {
