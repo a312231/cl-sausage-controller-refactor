@@ -119,6 +119,176 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
         assertTrue("reporter 不应出现 action=1 订单/动作指令常量", !source.contains("ACTION_ORDER_EVENT"))
     }
 
+    @Test
+    fun actionGroupRecovery_shouldPublishPhysicalDeltaAfterRecoveredStateIsSaved() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val recoveredSupplement = extractBetween(
+            source,
+            "private fun handleRecoveredSuccess(",
+            "private fun handleRecoveredDiscarded("
+        )
+        assertOrder(
+            recoveredSupplement,
+            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
+            "reportSupplementCompletionPhysicalDeltaIfNeeded(",
+            "补肠恢复成功补偿物理增量必须在本地盘箱保存后发布"
+        )
+        assertTrue("补肠恢复必须使用同步保存烤盘", recoveredSupplement.contains("KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())"))
+        assertTrue("补肠恢复必须使用同步保存箱位", recoveredSupplement.contains("KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())"))
+        assertTrue("补肠恢复必须上报库存和烤盘变化", recoveredSupplement.contains("reportStock = true") && recoveredSupplement.contains("reportPan = true"))
+        assertTrue("补肠恢复必须使用恢复专用 source", recoveredSupplement.contains("source = \"action_recovery_in\""))
+
+        val recoveredOut = extractBetween(
+            source,
+            "private fun clearRecoveredOutPan(",
+            "private fun markDeviceErrorAndUpload"
+        )
+        assertOrder(
+            recoveredOut,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "reportOutCompletionPhysicalDelta(",
+            "出餐/维护取肠恢复成功补偿物理增量必须在本地清盘保存后发布"
+        )
+        assertTrue("出餐恢复必须使用恢复专用 source", recoveredOut.contains("source = \"action_recovery_out\""))
+    }
+
+    @Test
+    fun supplementCompletionFallback_shouldPublishOnlyMissingPhysicalDeltasAfterSave() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val singleSupplement = extractBetween(
+            source,
+            "private suspend fun moveSausageToKaoPanDetailed(",
+            "/**\n     * 烤盘间搬移。"
+        )
+        assertOrder(
+            singleSupplement,
+            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
+            "reportSupplementCompletionPhysicalDeltaIfNeeded(",
+            "单根补肠完成兜底物理增量必须在本地盘箱保存后发布"
+        )
+        assertTrue("单根补肠兜底不能重复已由 in2 telemetry 上报的扣箱", singleSupplement.contains("completionReportStock = !physicalBoxDeducted"))
+        assertTrue("单根补肠兜底不能重复已由 in7 telemetry 上报的落盘", singleSupplement.contains("completionReportPan = !physicalPanPlaced"))
+        assertTrue("单根补肠兜底必须使用完成收口 source", singleSupplement.contains("source = \"action_completion_in\""))
+
+        val pipelineCompletion = extractBetween(
+            source,
+            "val appliedMove = applySuccessfulSupplementMove(",
+            "logD(\n                LOG_SUPPLEMENT,\n                \"补肠预取流水线单根状态已回写"
+        )
+        assertOrder(
+            pipelineCompletion,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "reportSupplementCompletionPhysicalDeltaIfNeeded(",
+            "预取流水线单根完成兜底物理增量必须在本地盘箱保存后发布"
+        )
+        assertTrue("预取流水线兜底必须使用完成收口 source", pipelineCompletion.contains("source = \"action_completion_pipeline\""))
+    }
+
+    @Test
+    fun outCompletionFallback_shouldPublishPanDeltaOnlyWhenOut1TelemetryDidNotAlreadyClearPan() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "suspend fun takeSausageResult(")
+
+        assertTrue("正式出餐必须记录 out1 telemetry 是否已清盘", body.contains("var outPanClearedByTelemetry = false"))
+        assertTrue("正式出餐必须在 out1 telemetry 成功后置位", body.contains("outPanClearedByTelemetry = true"))
+        assertOrder(
+            body,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "if (!outPanClearedByTelemetry) {",
+            "正式出餐完成兜底物理增量必须在本地清盘保存后判断"
+        )
+        assertTrue("正式出餐兜底必须避免重复 out1 物理增量", body.contains("if (!outPanClearedByTelemetry) {"))
+        assertTrue("正式出餐兜底必须使用完成收口 source", body.contains("source = \"action_completion_out\""))
+    }
+
+    @Test
+    fun maintenanceManualOut_shouldPublishPhysicalDeltaAfterSuccessfulClearIsSaved() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "suspend fun takeSausage(")
+
+        assertOrder(
+            body,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "reportOutCompletionPhysicalDelta(",
+            "维护手动取肠完成物理增量必须在本地清盘保存后发布"
+        )
+        assertTrue("维护手动取肠必须使用专用 source", body.contains("source = \"maintenance_manual_out_completion\""))
+        assertTrue("维护手动取肠必须记录 out1 telemetry 是否已清盘", body.contains("var outPanClearedByTelemetry = false"))
+        assertTrue("维护手动取肠必须在 out1 telemetry 成功后置位", body.contains("outPanClearedByTelemetry = true"))
+        assertTrue("维护手动取肠完成兜底必须避免重复 out1 物理增量", body.contains("if (!outPanClearedByTelemetry) {"))
+    }
+
+    @Test
+    fun irPickFailureBoxMark_shouldPublishStockDeltaAfterFailureMarkIsSaved() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val serialBody = extractBetween(
+            source,
+            "private suspend fun moveSausageToKaoPanByTasteDetailed(",
+            "private fun continueAfterSupplementBatchFailure"
+        )
+        assertOrder(
+            serialBody,
+            "SupplementPickFailurePolicy.recordIrPickFailedBox(box, candidates)",
+            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
+            "串行 in2 失败箱必须先标记并同步保存"
+        )
+        assertOrder(
+            serialBody,
+            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
+            "reportIrPickFailedStocksDelta(",
+            "串行 in2 失败箱物理增量必须在箱状态保存后发布"
+        )
+        assertTrue("串行 in2 失败箱必须使用专用 source", serialBody.contains("source = \"action_failure_serial_in2_ir_pick\""))
+
+        val pipelineHelper = extractFunctionBody(source, "private fun recordIrPickFailureAndSave(")
+        assertOrder(
+            pipelineHelper,
+            "KaoPanHelper.saveKaoPanBoxListSync(boxList)",
+            "reportIrPickFailedStocksDelta(",
+            "预取流水线单箱 in2 失败箱物理增量必须在箱状态保存后发布"
+        )
+        assertTrue("预取流水线单箱 in2 失败箱必须使用专用 source", pipelineHelper.contains("source = \"action_failure_pipeline_in2_ir_pick\""))
+    }
+
+    @Test
+    fun maintenanceBoxOperations_shouldPublishStockDeltaAfterManualStockSave() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceBoxFragment.kt")
+        val refillBody = extractFunctionBody(source, "private fun showTasteSelectDialog(")
+
+        assertTrue("维护箱位页面必须引入 physical delta reporter", source.contains("PanPhysicalStateDeltaReporter"))
+        assertOrder(
+            source,
+            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
+            "PanPhysicalStateDeltaReporter.reportStocksChanged(",
+            "维护清空/加满烤肠箱必须在本地箱状态保存后发布物理增量"
+        )
+        assertTrue("维护清空箱必须使用专用 source", source.contains("source = \"maintenance_box_clear\""))
+        assertTrue("维护加满箱必须使用专用 source", source.contains("source = \"maintenance_box_refill\""))
+        assertOrder(
+            refillBody,
+            "val snapshots = selectedBoxes.map { box ->",
+            "for (box in selectedBoxes) {",
+            "加满烤肠箱必须在改内存前记录原始快照"
+        )
+        assertTrue("加满烤肠箱业务失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                        ToastUtils.showShort(json.getString(\"msg\"))"))
+        assertTrue("加满烤肠箱接口失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                    ToastUtils.showShort(\"添加失败\")"))
+    }
+
+    @Test
+    fun maintenancePanResetOperations_shouldPublishPanDeltaAfterManualPanReset() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+
+        assertTrue("维护烤盘页面必须引入 physical delta reporter", source.contains("PanPhysicalStateDeltaReporter"))
+        assertOrder(
+            source,
+            "KaoPanHelper.clearKaoPan()\n                    KaoPanHelper.init()",
+            "PanPhysicalStateDeltaReporter.reportPansChanged(",
+            "维护清空/重置烤盘必须在本地烤盘重建后发布物理增量"
+        )
+        assertTrue("维护清空烤盘必须使用专用 source", source.contains("source = \"maintenance_pan_clear_all\""))
+        assertTrue("维护重置烤盘必须使用专用 source", source.contains("source = \"maintenance_pan_reset_all\""))
+    }
+
     private fun assertOrder(source: String, before: String, after: String, message: String) {
         val beforeIndex = source.indexOf(before)
         val afterIndex = source.indexOf(after)

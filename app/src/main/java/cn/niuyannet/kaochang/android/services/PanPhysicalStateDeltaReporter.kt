@@ -55,8 +55,25 @@ object PanPhysicalStateDeltaReporter {
     }
 
     fun reportStockChanged(changedStock: KaoPanBox, reason: String, source: String) {
+        reportStocksChanged(
+            changedStocks = listOf(changedStock),
+            reason = reason,
+            source = source
+        )
+    }
+
+    fun reportStocksChanged(changedStocks: List<KaoPanBox>, reason: String, source: String) {
         report(
             changedPanNos = emptyList(),
+            changedStockNos = changedStocks.map { it.positionSn },
+            reason = reason,
+            source = source
+        )
+    }
+
+    fun reportPanAndStockChanged(changedPan: KaoPan, changedStock: KaoPanBox, reason: String, source: String) {
+        report(
+            changedPanNos = listOf(changedPan.positionSn),
             changedStockNos = listOf(changedStock.positionSn),
             reason = reason,
             source = source

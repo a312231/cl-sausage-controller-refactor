@@ -26,6 +26,7 @@ import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.BoxRefillEligibilityPolicy
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
+import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -326,7 +327,12 @@ class MaintenanceBoxFragment : Fragment() {
             if (code == 0) {
                 val json = JSON.parseObject(content)
                 if (json.getIntValue("code") == 200) {
-                    KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                    KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+                    PanPhysicalStateDeltaReporter.reportStocksChanged(
+                        changedStocks = targetBoxes,
+                        reason = "maintenance_box_clear:boxes=$targetText",
+                        source = "maintenance_box_clear"
+                    )
                     LowerPlatformRuntimeStateReporter.markNormalAfterManualBoxMaintenance("$actionName 成功")
                     kaoPanBoxAdapter.notifyDataSetChanged()
                     AdminOperationLogger.i(
@@ -612,6 +618,17 @@ class MaintenanceBoxFragment : Fragment() {
                     "加满目标库存=$boxRefillTargetNum"
             )
 
+            val snapshots = selectedBoxes.map { box ->
+                BoxClearSnapshot(
+                    box = box,
+                    productId = box.productId,
+                    tasteCode = box.tasteCode,
+                    tasteName = box.tasteName,
+                    checkStatus = box.checkStatus,
+                    num = box.num,
+                    cmdStatusTake = box.cmdStatusTake
+                )
+            }
             for (box in selectedBoxes) {
                 box.productId = selectedTaste.productId.toString()
                 box.tasteCode = selectedTaste.tasteCode
@@ -627,7 +644,12 @@ class MaintenanceBoxFragment : Fragment() {
                 if (code == 0) {
                     val json = JSON.parseObject(content)
                     if (json.getIntValue("code") == 200) {
-                        KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                        KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+                        PanPhysicalStateDeltaReporter.reportStocksChanged(
+                            changedStocks = selectedBoxes,
+                            reason = "maintenance_box_refill:boxes=${boxPositionListText(selectedBoxes)}",
+                            source = "maintenance_box_refill"
+                        )
                         LowerPlatformRuntimeStateReporter.markNormalAfterManualBoxMaintenance("加满烤肠箱成功")
                         kaoPanBoxAdapter.notifyDataSetChanged()
                         AdminOperationLogger.i(
@@ -647,6 +669,7 @@ class MaintenanceBoxFragment : Fragment() {
                             detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
                                 "失败原因=${json.getString("msg")}"
                         )
+                        restoreClearSnapshots(snapshots)
                         ToastUtils.showShort(json.getString("msg"))
                     }
                 } else {
@@ -657,6 +680,7 @@ class MaintenanceBoxFragment : Fragment() {
                         detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
                             "失败原因=接口请求失败"
                     )
+                    restoreClearSnapshots(snapshots)
                     ToastUtils.showShort("添加失败")
                 }
             }

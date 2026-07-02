@@ -1133,8 +1133,16 @@ object KaoChangOperate {
                     )
                     return false
                 }
-                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-                KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+                KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+                reportSupplementCompletionPhysicalDeltaIfNeeded(
+                    sourceBox = box,
+                    targetPan = pan,
+                    reportStock = true,
+                    reportPan = true,
+                    reason = "action_recovery:in:completed:box=${box.positionSn}:pan=${pan.positionSn}",
+                    source = "action_recovery_in"
+                )
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 actionGroupSessionStore.clear()
@@ -1187,7 +1195,12 @@ object KaoChangOperate {
         if (isManualTake) {
             LowToHighDemandGate.clearPosition(pan.positionSn, "维护手动取肠动作组恢复完成")
         }
-        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+        reportOutCompletionPhysicalDelta(
+            kaoPan = pan,
+            reason = "action_recovery:out:completed:pan=${pan.positionSn}:manual=$isManualTake",
+            source = "action_recovery_out"
+        )
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
         val actionText = if (isManualTake) "维护手动取肠" else "出餐"
@@ -1441,7 +1454,12 @@ object KaoChangOperate {
             ) {
                 irPickFailedBoxNos += box.positionSn
                 val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(box, candidates)
-                KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
+                KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+                reportIrPickFailedStocksDelta(
+                    failedBoxes = listOf(box),
+                    reason = "action_failure:serial_in2_ir_pick:targetPan=${kaoPan.positionSn}:tasteCode=${tasteCode ?: "unknown"}",
+                    source = "action_failure_serial_in2_ir_pick"
+                )
                 val nextBoxNo = markResult.remainingCandidateBoxNos.firstOrNull()
                 logW(
                     LOG_SUPPLEMENT,
@@ -2007,6 +2025,14 @@ object KaoChangOperate {
             supplementBatchIntentRepository.markCompleted(batchId, completedTask.targetPanNo)
             KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            reportSupplementCompletionPhysicalDeltaIfNeeded(
+                sourceBox = appliedMove.sourceBox,
+                targetPan = appliedMove.targetPan,
+                reportStock = appliedMove.reportStockDelta,
+                reportPan = appliedMove.reportPanDelta,
+                reason = "action_completion:pipeline:box=${appliedMove.sourceBox.positionSn}:pan=${appliedMove.targetPan.positionSn}",
+                source = "action_completion_pipeline"
+            )
             logD(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线单根状态已回写：sourceBox=${completedTask.sourceBoxNo}，" +
@@ -2187,7 +2213,9 @@ object KaoChangOperate {
     private data class AppliedSupplementMove(
         val targetPan: KaoPan,
         val sourceBox: KaoPanBox,
-        val writeRecord: SupplementWriteRecord
+        val writeRecord: SupplementWriteRecord,
+        val reportStockDelta: Boolean,
+        val reportPanDelta: Boolean
     )
 
     private data class AppliedSupplementPhysicalTelemetry(
@@ -2373,15 +2401,67 @@ object KaoChangOperate {
             "【补肠】烤盘${targetPan.positionSn} 补肠完成：来源烤肠箱=${sourceBox.positionSn}，" +
                 "口味=$sausageName，烤盘开始烤制计时，箱库存=$boxStockBefore->${sourceBox.num}"
         )
+        val panApplied = targetPan.isHasSausage && targetPan.status == 1
+        val boxDeducted = boxAlreadyDeducted || (boxStockBefore > 0 && sourceBox.num == boxStockBefore - 1)
         return AppliedSupplementMove(
             targetPan = targetPan,
             sourceBox = sourceBox,
             writeRecord = SupplementWriteRecord(
                 targetPanNo = targetPan.positionSn,
                 sourceBoxNo = sourceBox.positionSn,
-                panApplied = targetPan.isHasSausage && targetPan.status == 1,
-                boxDeducted = boxAlreadyDeducted || (boxStockBefore > 0 && sourceBox.num == boxStockBefore - 1)
+                panApplied = panApplied,
+                boxDeducted = boxDeducted
+            ),
+            reportStockDelta = !boxAlreadyDeducted && boxDeducted,
+            reportPanDelta = !panAlreadyPlaced && panApplied
+        )
+    }
+
+    private fun reportSupplementCompletionPhysicalDeltaIfNeeded(
+        sourceBox: KaoPanBox,
+        targetPan: KaoPan,
+        reportStock: Boolean,
+        reportPan: Boolean,
+        reason: String,
+        source: String
+    ) {
+        when {
+            reportStock && reportPan -> PanPhysicalStateDeltaReporter.reportPanAndStockChanged(
+                changedPan = targetPan,
+                changedStock = sourceBox,
+                reason = reason,
+                source = source
             )
+            reportStock -> PanPhysicalStateDeltaReporter.reportStockChanged(
+                changedStock = sourceBox,
+                reason = reason,
+                source = source
+            )
+            reportPan -> PanPhysicalStateDeltaReporter.reportPanChanged(
+                changedPan = targetPan,
+                reason = reason,
+                source = source
+            )
+        }
+    }
+
+    private fun reportOutCompletionPhysicalDelta(kaoPan: KaoPan, reason: String, source: String) {
+        PanPhysicalStateDeltaReporter.reportPanChanged(
+            changedPan = kaoPan,
+            reason = reason,
+            source = source
+        )
+    }
+
+    private fun reportIrPickFailedStocksDelta(failedBoxes: List<KaoPanBox>, reason: String, source: String) {
+        val distinctBoxes = failedBoxes.distinctBy { it.positionSn }
+        if (distinctBoxes.isEmpty()) {
+            return
+        }
+        PanPhysicalStateDeltaReporter.reportStocksChanged(
+            changedStocks = distinctBoxes,
+            reason = "$reason:boxes=${distinctBoxes.joinToString(",") { it.positionSn.toString() }}",
+            source = source
         )
     }
 
@@ -2476,6 +2556,11 @@ object KaoChangOperate {
         val failedBox = boxList.firstOrNull { it.positionSn == sourceBoxNo } ?: return
         val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
         KaoPanHelper.saveKaoPanBoxListSync(boxList)
+        reportIrPickFailedStocksDelta(
+            failedBoxes = listOf(failedBox),
+            reason = "action_failure:pipeline_in2_ir_pick:$reason",
+            source = "action_failure_pipeline_in2_ir_pick"
+        )
         logW(
             LOG_SUPPLEMENT,
             "$reason：烤肠箱=${markResult.boxNo}，保留库存=${markResult.previousNum}，remainingCandidates=${markResult.remainingCandidateBoxNos}"
@@ -2570,12 +2655,18 @@ object KaoChangOperate {
             val failedBoxNos = (result.failedSourceBoxNos + sourceBoxNo).filterNotNull().distinct()
             if (failedBoxNos.isNotEmpty()) {
                 val boxList = KaoPanHelper.getKaoPanBoxList()
-                failedBoxNos.mapNotNull { boxNo ->
+                val failedBoxes = failedBoxNos.mapNotNull { boxNo ->
                     boxList.firstOrNull { it.positionSn == boxNo }
-                }.forEach { failedBox ->
+                }
+                failedBoxes.forEach { failedBox ->
                     SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
                 }
                 KaoPanHelper.saveKaoPanBoxListSync(boxList)
+                reportIrPickFailedStocksDelta(
+                    failedBoxes = failedBoxes,
+                    reason = "action_failure:pipeline_supply_degrade:targetPan=$targetPanNo:action=${result.actionName}",
+                    source = "action_failure_pipeline_supply_degrade"
+                )
             }
             val degradeReason = SupplementPickFailurePolicy.buildSupplyDegradedReason(
                 targetPanNo = targetPanNo,
@@ -2658,12 +2749,18 @@ object KaoChangOperate {
             val failedBoxNos = (result.failedSourceBoxNos + sourceBoxNo).filterNotNull().distinct()
             if (failedBoxNos.isNotEmpty()) {
                 val boxList = KaoPanHelper.getKaoPanBoxList()
-                failedBoxNos.mapNotNull { boxNo ->
+                val failedBoxes = failedBoxNos.mapNotNull { boxNo ->
                     boxList.firstOrNull { it.positionSn == boxNo }
-                }.forEach { failedBox ->
+                }
+                failedBoxes.forEach { failedBox ->
                     SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
                 }
                 KaoPanHelper.saveKaoPanBoxListSync(boxList)
+                reportIrPickFailedStocksDelta(
+                    failedBoxes = failedBoxes,
+                    reason = "action_failure:pipeline_ir_pick_maintenance:targetPan=$targetPanNo:action=${result.actionName}",
+                    source = "action_failure_pipeline_ir_pick_maintenance"
+                )
             }
             enterActionGroupMaintenance(
                 "补肠预取流水线同口味候选箱取肠均失败（0x00E5），设备进入维护等待人工确认：" +
@@ -2882,6 +2979,10 @@ object KaoChangOperate {
 
         val supplementWriteRecords = mutableListOf<SupplementWriteRecord>()
         var supplementStateApplied = false
+        var completionTargetPan: KaoPan? = null
+        var completionSourceBox: KaoPanBox? = null
+        var completionReportStock = false
+        var completionReportPan = false
         if (moveSuccess){
             val currentState = SupplementPanStateWriter.resolveCurrentSupplementState(
                 plannedPan = kaoPan,
@@ -2940,6 +3041,11 @@ object KaoChangOperate {
                     boxDeducted = physicalBoxDeducted ||
                         (currentBoxStockBefore > 0 && currentBox.num == currentBoxStockBefore - 1)
                 )
+                completionTargetPan = currentPan
+                completionSourceBox = currentBox
+                completionReportStock = !physicalBoxDeducted &&
+                    (currentBoxStockBefore > 0 && currentBox.num == currentBoxStockBefore - 1)
+                completionReportPan = !physicalPanPlaced && currentPan.isHasSausage && currentPan.status == 1
                 supplementStateApplied = stateAppliedForThisMove
                 logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${currentPan.id}")
                 logD(
@@ -2984,11 +3090,19 @@ object KaoChangOperate {
         }
 
         //更新烤肠箱的库存和烤盘的状态
-        operateScope.launch {
-            KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-        logD(LOG_SUPPLEMENT, "补肠后烤盘状态更新完成")
+        KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+        KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+        if (moveSuccess && supplementStateApplied && completionTargetPan != null && completionSourceBox != null) {
+            reportSupplementCompletionPhysicalDeltaIfNeeded(
+                sourceBox = completionSourceBox,
+                targetPan = completionTargetPan,
+                reportStock = completionReportStock,
+                reportPan = completionReportPan,
+                reason = "action_completion:in:box=${completionSourceBox.positionSn}:pan=${completionTargetPan.positionSn}",
+                source = "action_completion_in"
+            )
         }
+        logD(LOG_SUPPLEMENT, "补肠后烤盘状态更新完成")
         logD(LOG_SUPPLEMENT, "补肠流程结束：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，success=$moveSuccess")
 
         while (AppConfig.getAppConfig().onlineStatus == 4) {
@@ -3282,6 +3396,7 @@ object KaoChangOperate {
                 return false
             }
 
+            var outPanClearedByTelemetry = false
             val actionGroupResult = try {
                 actionGroupSessionStore.save(
                     ActionGroupSession(
@@ -3305,11 +3420,13 @@ object KaoChangOperate {
                             resourceLocks = actionGroupLocks.snapshot()
                         )
                     ) { telemetry ->
-                        applyOutPhysicalTelemetry(
+                        if (applyOutPhysicalTelemetry(
                             telemetry = telemetry,
                             plannedPan = kaoPan,
                             source = "维护手动取肠"
-                        )
+                        )) {
+                            outPanClearedByTelemetry = true
+                        }
                     }
                 ) { message -> logD(LOG_ACTION_GROUP, message) }
                     .run(
@@ -3330,8 +3447,13 @@ object KaoChangOperate {
                 ActionGroupResult.Discarded -> {
                     applySuccessfulTakePanState(kaoPan)
                     LowToHighDemandGate.clearPosition(kaoPan.positionSn, "维护手动取肠完成")
-                    operateScope.launch {
-                        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                    KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+                    if (!outPanClearedByTelemetry) {
+                        reportOutCompletionPhysicalDelta(
+                            kaoPan = kaoPan,
+                            reason = "maintenance_manual_out:completed:pan=${kaoPan.positionSn}",
+                            source = "maintenance_manual_out_completion"
+                        )
                     }
                     actionGroupSessionStore.clear()
                     if (actionGroupResult == ActionGroupResult.Discarded) {
@@ -3428,6 +3550,7 @@ object KaoChangOperate {
                 return TakeSausageResult.ERROR
             }
 
+            var outPanClearedByTelemetry = false
             val actionGroupResult = try {
                 actionGroupSessionStore.save(
                     ActionGroupSession(
@@ -3455,11 +3578,13 @@ object KaoChangOperate {
                             resourceLocks = actionGroupLocks.snapshot()
                         )
                     ) { telemetry ->
-                        applyOutPhysicalTelemetry(
+                        if (applyOutPhysicalTelemetry(
                             telemetry = telemetry,
                             plannedPan = kaoPan,
                             source = "正式出餐"
-                        )
+                        )) {
+                            outPanClearedByTelemetry = true
+                        }
                         persistOutTerminalEventFromTelemetry(telemetry, orderContext, kaoPan.positionSn)
                     },
                     logger = { message -> logD(LOG_ACTION_GROUP, message) },
@@ -3542,8 +3667,13 @@ object KaoChangOperate {
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             applySuccessfulTakePanState(kaoPan)
             armPostSellSupplementGuard("out5 已完成关门回零/出餐收尾")
-            operateScope.launch {
-                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            if (!outPanClearedByTelemetry) {
+                reportOutCompletionPhysicalDelta(
+                    kaoPan = kaoPan,
+                    reason = "action_completion:out:pan=${kaoPan.positionSn}",
+                    source = "action_completion_out"
+                )
             }
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
                 beforeSellable,

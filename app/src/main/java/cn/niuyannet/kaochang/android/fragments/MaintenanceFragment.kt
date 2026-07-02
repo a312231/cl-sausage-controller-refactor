@@ -32,6 +32,7 @@ import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
+import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
@@ -702,6 +703,11 @@ class MaintenanceFragment : Fragment() {
                     }
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
+                    PanPhysicalStateDeltaReporter.reportPansChanged(
+                        changedPans = KaoPanHelper.getKaoPanList(),
+                        reason = "maintenance_pan_clear:all",
+                        source = "maintenance_pan_clear_all"
+                    )
                     FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击清空烤盘")
                     KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
                     KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
@@ -1059,6 +1065,11 @@ class MaintenanceFragment : Fragment() {
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
+                PanPhysicalStateDeltaReporter.reportPansChanged(
+                    changedPans = KaoPanHelper.getKaoPanList(),
+                    reason = "maintenance_pan_reset_after_discard:all",
+                    source = "maintenance_pan_reset_all"
+                )
                 FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击丢弃所有烤肠并重置烤盘")
                 KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)

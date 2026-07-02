@@ -65,6 +65,34 @@ class PanPhysicalStateDeltaReporterTest {
     }
 
     @Test
+    fun reportStocksChanged_shouldPublishMultipleChangedStocks() {
+        val pan1 = pan(1, hasSausage = false)
+        val box1 = box(1, num = 7)
+        val box2 = box(2, num = 9)
+        val box3 = box(3, num = 0)
+        var captured: PublishCall? = null
+
+        PanPhysicalStateDeltaReporter.withDependenciesForTest(
+            snapshotSource = testSource(pans = listOf(pan1), boxes = listOf(box1, box2, box3)),
+            publisher = { allPans, allStocks, changedPans, changedStocks, reason, source ->
+                captured = PublishCall(allPans, allStocks, changedPans, changedStocks, reason, source)
+                true
+            }
+        ) {
+            PanPhysicalStateDeltaReporter.reportStocksChanged(
+                changedStocks = listOf(box1, box3),
+                reason = "maintenance_box_update:boxes=1,3",
+                source = "maintenance_box_update"
+            )
+        }
+
+        assertEquals(listOf(1, 2, 3), captured!!.allStocks.map { it.positionSn })
+        assertEquals(emptyList<Int>(), captured!!.changedPans.map { it.positionSn })
+        assertEquals(listOf(1, 3), captured!!.changedStocks.map { it.positionSn })
+        assertEquals("maintenance_box_update", captured!!.source)
+    }
+
+    @Test
     fun reportPanMoveChanged_shouldPublishSourceAndTargetPans() {
         val sourcePan = pan(13, hasSausage = false)
         val targetPan = pan(1, hasSausage = true)
@@ -87,6 +115,33 @@ class PanPhysicalStateDeltaReporterTest {
         assertEquals(listOf(13, 1), captured!!.changedPans.map { it.positionSn })
         assertEquals(emptyList<Int>(), captured!!.changedStocks.map { it.positionSn })
         assertEquals("pan_move_success", captured!!.source)
+    }
+
+    @Test
+    fun reportPanAndStockChanged_shouldPublishSinglePhysicalDeltaWithBothChanges() {
+        val pan1 = pan(13, hasSausage = true)
+        val box1 = box(17, num = 21)
+        var captured: PublishCall? = null
+
+        PanPhysicalStateDeltaReporter.withDependenciesForTest(
+            snapshotSource = testSource(pans = listOf(pan1), boxes = listOf(box1)),
+            publisher = { allPans, allStocks, changedPans, changedStocks, reason, source ->
+                captured = PublishCall(allPans, allStocks, changedPans, changedStocks, reason, source)
+                true
+            }
+        ) {
+            PanPhysicalStateDeltaReporter.reportPanAndStockChanged(
+                changedPan = pan1,
+                changedStock = box1,
+                reason = "action_completion:in:box=17:pan=13",
+                source = "action_completion_in"
+            )
+        }
+
+        assertEquals(listOf(13), captured!!.changedPans.map { it.positionSn })
+        assertEquals(listOf(17), captured!!.changedStocks.map { it.positionSn })
+        assertEquals("action_completion:in:box=17:pan=13", captured!!.reason)
+        assertEquals("action_completion_in", captured!!.source)
     }
 
     private data class PublishCall(
