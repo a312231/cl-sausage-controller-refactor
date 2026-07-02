@@ -3708,11 +3708,19 @@ object KaoChangOperate {
                 "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail，" +
                     "panHasSausage=${kaoPan.isHasSausage}，panStatus=${kaoPan.status}"
             )
+            KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            PanPhysicalStateDeltaReporter.reportPanChanged(
+                changedPan = kaoPan,
+                reason = "discardSausage_success:pan=${kaoPan.positionSn}:source=$source",
+                source = "discardSausage_success"
+            )
         }
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
-        operateScope.launch {
-            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        if (result != ActionExecutionResult.SUCCESS) {
+            operateScope.launch {
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            }
         }
         if (beforeSellable != null) {
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(

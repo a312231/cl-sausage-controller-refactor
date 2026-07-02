@@ -71,6 +71,47 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
     }
 
     @Test
+    fun manualPanPositionClear_shouldPublishPhysicalDeltaAfterSavedAndKeepSnapshotFallback() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/ManualPanPositionDataClearExecutor.kt")
+        val body = extractFunctionBody(source, "fun execute(")
+
+        assertOrder(
+            body,
+            "dependencies.savePansSync(result.pans)",
+            "dependencies.reportPhysicalDelta(",
+            "维护页清盘物理增量必须在本地清盘保存后发布"
+        )
+        assertOrder(
+            body,
+            "dependencies.reportPhysicalDelta(",
+            "dependencies.uploadSnapshot(\"maintenance_clear_pan_position:${'$'}positionSn\")",
+            "维护页清盘必须保留 HTTP 快照兜底，且在物理增量之后"
+        )
+        assertTrue("维护页清盘必须用 maintenance_clear_pan_position source", source.contains("\"maintenance_clear_pan_position\""))
+        assertTrue("维护页清盘默认 reporter 必须调用物理增量上报", source.contains("PanPhysicalStateDeltaReporter.reportPanChanged("))
+    }
+
+    @Test
+    fun discardSausage_shouldPublishPhysicalDeltaAfterSuccessfulClearIsSavedAndKeepSnapshotFallback() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "suspend fun discardSausage(")
+
+        assertOrder(
+            body,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "PanPhysicalStateDeltaReporter.reportPanChanged(",
+            "丢弃成功清盘物理增量必须在本地清盘保存后发布"
+        )
+        assertOrder(
+            body,
+            "PanPhysicalStateDeltaReporter.reportPanChanged(",
+            "KaoPanCloudSyncReporter.uploadIfSellableStateChanged(",
+            "丢弃成功清盘必须保留 HTTP 快照兜底，且在物理增量之后"
+        )
+        assertTrue("丢弃成功清盘必须用 discardSausage_success source", body.contains("source = \"discardSausage_success\""))
+    }
+
+    @Test
     fun physicalDeltaReporter_shouldUseAction2PublisherNotOrderAction() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/PanPhysicalStateDeltaReporter.kt")
 

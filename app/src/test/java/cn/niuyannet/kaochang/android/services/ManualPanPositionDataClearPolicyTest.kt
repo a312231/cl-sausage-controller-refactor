@@ -148,6 +148,9 @@ class ManualPanPositionDataClearPolicyTest {
                 savePansSync = {
                     events.add("save:${it.first().isHasSausage}")
                 },
+                reportPhysicalDelta = { pan, reason, source ->
+                    events.add("physical:${pan.positionSn}:$reason:$source")
+                },
                 clearDiscardPosition = {
                     events.add("clearDiscard:$it")
                 },
@@ -165,6 +168,7 @@ class ManualPanPositionDataClearPolicyTest {
             listOf(
                 "get",
                 "save:false",
+                "physical:1:maintenance_clear_pan_position:1:maintenance_clear_pan_position",
                 "clearDiscard:1",
                 "stopHeat:维护页仅清除烤盘位数据:1",
                 "upload:maintenance_clear_pan_position:1"
