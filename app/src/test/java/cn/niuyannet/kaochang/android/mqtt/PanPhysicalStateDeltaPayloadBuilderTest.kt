@@ -99,6 +99,10 @@ class PanPhysicalStateDeltaPayloadBuilderTest {
         )
 
         assertEquals(payloadA.getString("fullStateHash"), payloadB.getString("fullStateHash"))
+        assertEquals(
+            "f8f0389b27f7a67b8bf315ee8fece84a01b6458059431a420cb94030d6aea48b",
+            payloadA.getString("fullStateHash")
+        )
 
         val changedPayload = PanPhysicalStateDeltaPayloadBuilder.build(
             deviceCode = "device-001",
