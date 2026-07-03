@@ -40,6 +40,7 @@
                 android:layout_marginLeft="20dp"
                 android:text="状态：正常"
                 android:layout_height="wrap_content"/>
+
             <Button
                 android:id="@+id/btn_erro_status"
                 android:text="恢复正常状态"
@@ -123,6 +124,19 @@
                 android:textSize="14sp" />
 
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_lower_platform_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="20dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginRight="20dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="下平台：正常"
+            android:textColor="@android:color/holo_green_dark"
+            android:textSize="16sp" />
 
         <LinearLayout
             android:layout_width="match_parent"

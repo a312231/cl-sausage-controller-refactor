@@ -262,11 +262,43 @@ class MaintenanceFragment : Fragment() {
     }
 
     private fun updateManualSupplementConfirmButtonVisibility() {
+        updateLowerPlatformUi()
+    }
+
+    private fun updateLowerPlatformUi() {
+        val config = AppConfig.getAppConfig()
+        val intent = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+        val needsLowerPlatformRecovery =
+            LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(config)
+
+        val actionName = config.lowerPlatformIsolationActionName.takeIf { it.isNotBlank() } ?: "未知动作"
+        val statusText: String
+        val statusColor: Int
+        when (config.lowerPlatformStatus) {
+            AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED -> {
+                statusText = "下平台半故障：暂停自动补肠，待人工确认，动作=$actionName"
+                statusColor = AndroidR.color.holo_orange_dark
+            }
+            AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED -> {
+                statusText = "下平台：供给降级，请检查烤肠箱/取肠红外"
+                statusColor = AndroidR.color.holo_orange_dark
+            }
+            else -> {
+                statusText = "下平台：正常"
+                statusColor = AndroidR.color.holo_green_dark
+            }
+        }
+        binding.tvLowerPlatformStatus.text = statusText
+        binding.tvLowerPlatformStatus.setTextColor(resources.getColor(statusColor))
+
         binding.btnConfirmSupplementSafety.visibility =
-            if (
-                KaoChangOperate.pendingSupplementBatchRequiresManualConfirm() != null ||
-                LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(AppConfig.getAppConfig())
-            ) View.VISIBLE else View.GONE
+            if (intent != null || needsLowerPlatformRecovery) View.VISIBLE else View.GONE
+        binding.btnConfirmSupplementSafety.text = when {
+            intent != null && needsLowerPlatformRecovery -> "确认续补安全并恢复补肠"
+            intent != null -> "确认续补安全"
+            needsLowerPlatformRecovery -> "确认下平台安全并恢复补肠"
+            else -> "确认续补安全"
+        }
     }
 
     private fun setConsumableManualButtonsEnabled(enabled: Boolean) {
@@ -947,7 +979,7 @@ class MaintenanceFragment : Fragment() {
             val intent = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
             if (intent == null && !LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(AppConfig.getAppConfig())) {
                 ToastUtils.showShort("当前没有需要人工确认的续补批次")
-                updateManualSupplementConfirmButtonVisibility()
+                updateLowerPlatformUi()
                 return@setOnClickListener
             }
             if (intent == null) {
@@ -1502,7 +1534,7 @@ class MaintenanceFragment : Fragment() {
                     syncAlgorithmSwitchFromRuntimeState("5秒低频兜底同步")
                     syncInspectionSwitchFromRuntimeState("5秒低频兜底同步")
                 }
-                updateManualSupplementConfirmButtonVisibility()
+                updateLowerPlatformUi()
                 binding.tvAppUpdateStatus.text = "更新：${AppUpdateManager.lastStatusText()}"
                 binding.tvErroStatus.apply {
                     val isNormal = AppConfig.getAppConfig().errorStatus == 0
