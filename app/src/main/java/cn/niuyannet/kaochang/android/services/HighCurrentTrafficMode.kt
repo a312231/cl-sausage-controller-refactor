@@ -364,7 +364,7 @@ object HighCurrentTrafficMode {
             }
 
             2 -> {
-                highTrafficModeTransition(config, list, listBox, schedulingEnabled)
+                highTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
             }
         }
     }
@@ -789,9 +789,20 @@ object HighCurrentTrafficMode {
         config: AppConfigBean,
         list: List<KaoPan>,
         listBox: List<KaoPanBox>,
+        boxSupplyAvailable: Boolean,
         schedulingEnabled: Boolean
     ) {
-        KaoChangOperate.clearPendingSupplementBatchIntent("高转低过渡不再启动新的25~33补肠")
+        val pendingHighHeatManualConfirmation =
+            KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+                ?.type == SupplementBatchType.HIGH_HEAT_25_33
+        if (pendingHighHeatManualConfirmation) {
+            LogUtils.i(
+                TAG,
+                "【并发切换】高转低过渡保留25~33补热故障批次意图：等待人工确认后按10分钟窗口续补或取消未完成目标"
+            )
+        } else {
+            KaoChangOperate.clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation("高转低过渡不再启动新的25~33补肠")
+        }
 
         if (AppConfig.getAppConfig().onlineStatus == 4 || AppConfig.getAppConfig().moveStatus != 0) {
             LogUtils.i(
@@ -806,6 +817,26 @@ object HighCurrentTrafficMode {
         if (!schedulingEnabled) {
             LogUtils.i(TAG, "【并发切换】高转低过渡暂停自动搬盘：schedulingEnabled=false")
             return
+        }
+        val pendingHighHeatIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        if (pendingHighHeatIntent?.type == SupplementBatchType.HIGH_HEAT_25_33 &&
+            !pendingHighHeatIntent.requiresManualConfirm &&
+            pendingHighHeatIntent.remainingTargets().isNotEmpty()
+        ) {
+            val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
+            val isBeforeCloseWindow =
+                KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
+            val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
+                allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                reason = "高转低过渡恢复25~33已确认未完成批次",
+                boxSupplyAvailable = boxSupplyAvailable,
+                schedulingEnabled = schedulingEnabled,
+                isBeforeCloseWindow = isBeforeCloseWindow
+            )
+            if (pendingBatchHandling == KaoChangOperate.PendingSupplementBatchHandling.RESUMED) {
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+                return
+            }
         }
         checkHighHeatSausage(list)
 
@@ -1215,6 +1246,13 @@ object HighCurrentTrafficMode {
         list: List<KaoPan>,
         list25_33: List<KaoPan>
     ): Boolean {
+        if (KaoChangOperate.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.HIGH_HEAT_25_33))) {
+            LogUtils.i(
+                TAG,
+                "【高并发补肠】25~33 残缺补热批次已熟但暂不拆批回搬：下平台故障仍在10分钟续补窗口内，等待人工确认后优先补齐整批"
+            )
+            return true
+        }
         if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
             return false
         }
@@ -1478,7 +1516,7 @@ object HighCurrentTrafficMode {
         }
         config.modeType = resolvedTransition.modeType
         config.transitionMode = resolvedTransition.transitionMode
-        KaoChangOperate.clearPendingSupplementBatchIntent("写入高转低过渡态后停止25~33未完成补肠意图")
+        KaoChangOperate.clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation("写入高转低过渡态后停止25~33未完成补肠意图")
         LogUtils.w(
             TAG,
             "【并发切换诊断】写入 transitionMode=2（高转低过渡）：source=HighCurrentTrafficMode.switchHighToLow，reason=$reason，" +

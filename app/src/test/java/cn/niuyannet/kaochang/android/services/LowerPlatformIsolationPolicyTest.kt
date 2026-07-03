@@ -98,6 +98,40 @@ class LowerPlatformIsolationPolicyTest {
     }
 
     @Test
+    fun supplementBatchFailure_shouldIsolateAllLowerPlatformActionsForHeatBatchButNotInitialization() {
+        assertTrue(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+            batchType = SupplementBatchType.LOW_HEAT_13_15,
+            actionName = "in2",
+            result = failed(AtomicActionCodes.IR_PICK_FAILED),
+            hasPrefetchedNext = true
+        ))
+        assertTrue(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+            batchType = SupplementBatchType.HIGH_HEAT_25_33,
+            actionName = "in5",
+            result = failed(AtomicActionCodes.IR_THROW_FAILED),
+            hasPrefetchedNext = true
+        ))
+        assertFalse(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+            batchType = SupplementBatchType.LOW_HEAT_13_15,
+            actionName = "in6",
+            result = failed(AtomicActionCodes.LIFT_UP_LOCKED_ROTOR),
+            hasPrefetchedNext = false
+        ))
+        assertFalse(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+            batchType = SupplementBatchType.LOW_INITIALIZATION_1_9,
+            actionName = "in3",
+            result = failed(AtomicActionCodes.IN3_Y_RESET_FAILED),
+            hasPrefetchedNext = false
+        ))
+        assertFalse(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+            batchType = SupplementBatchType.HIGH_INITIALIZATION_1_21,
+            actionName = "in5",
+            result = failed(AtomicActionCodes.IR_THROW_FAILED),
+            hasPrefetchedNext = false
+        ))
+    }
+
+    @Test
     fun buildReason_shouldDescribeIsolationWithoutMaintenanceWording() {
         val reason = LowerPlatformIsolationPolicy.buildIsolationReason(
             actionName = "in5",

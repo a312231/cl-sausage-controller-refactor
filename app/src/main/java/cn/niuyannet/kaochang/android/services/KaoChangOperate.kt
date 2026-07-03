@@ -1431,24 +1431,55 @@ object KaoChangOperate {
         return moveSausageToKaoPanByTasteDetailed(kaoPan, tasteCode) == SupplementMoveResult.Success
     }
 
-    private suspend fun moveSausageToKaoPanByTasteDetailed(kaoPan: KaoPan, tasteCode: String?): SupplementMoveResult {
+    private suspend fun moveSausageToKaoPanByTasteDetailed(
+        kaoPan: KaoPan,
+        tasteCode: String?,
+        batchType: SupplementBatchType? = null
+    ): SupplementMoveResult {
         val candidates = TrafficModeHelper.findSupplyBoxesByTaste(KaoPanHelper.getKaoPanBoxList(), tasteCode)
         if (candidates.isEmpty()) {
             val reason = "补肠供给不可用跳过：targetPan=${kaoPan.positionSn}，tasteCode=${tasteCode ?: "未知"}，同口味无可用烤肠箱"
             logW(LOG_SUPPLEMENT, reason)
             return SupplementMoveResult.SupplyDegraded(reason, kaoPan.positionSn, emptyList())
         }
+        val isInitializationBatch = batchType?.let { SupplementBatchIntentRepository.isInitializationBatch(it) } == true
         val irPickFailedBoxNos = mutableListOf<Int>()
         candidates.forEachIndexed { index, box ->
             LogUtils.i(
                 "【补肠】按口味补肠尝试：目标烤盘=${kaoPan.positionSn}，tasteCode（口味编码）=$tasteCode，" +
                     "候选=${index + 1}/${candidates.size}，来源烤肠箱=${box.positionSn}，本地库存=${box.num}"
             )
-            val moveResult = moveSausageToKaoPanDetailed(kaoPan, box, allowPickFailureFallback = true)
+            val moveResult = moveSausageToKaoPanDetailed(
+                kaoPan,
+                box,
+                allowPickFailureFallback = !isInitializationBatch,
+                batchType = batchType
+            )
             if (moveResult.success) {
                 return SupplementMoveResult.Success
             }
             val failedResult = moveResult.actionGroupResult as? ActionGroupResult.Failed
+            if (moveResult.lowerPlatformIsolationReason != null) {
+                val failedActionName = (moveResult.actionGroupResult as? ActionGroupResult.Failed)?.actionName ?: "in"
+                val failureCode = atomicFailureCodeOrZero(moveResult.actionGroupResult)
+                return SupplementMoveResult.LowerPlatformIsolated(
+                    reason = moveResult.lowerPlatformIsolationReason,
+                    targetPanNo = kaoPan.positionSn,
+                    sourceBoxNo = box.positionSn,
+                    actionName = failedActionName,
+                    code = failureCode,
+                    requiresManualConfirm = moveResult.lowerPlatformIsolationRequiresManualConfirm
+                )
+            }
+            if (isInitializationBatch) {
+                val failureCode = atomicFailureCodeOrZero(moveResult.actionGroupResult)
+                return SupplementMoveResult.HardFailure(
+                    reason = "初始化补肠失败，按整机维护处理：targetPan=${kaoPan.positionSn}，sourceBox=${box.positionSn}，" +
+                        "action=${failedResult?.actionName ?: "in"}，" +
+                        "result=${AtomicActionExecutor.formatCode(failureCode)}（${AtomicActionExecutor.messageOf(failureCode)}）",
+                    code = failureCode
+                )
+            }
             if (failedResult != null &&
                 SupplementPickFailurePolicy.isSerialIn2IrPickFailure(failedResult.actionName, failedResult.result)
             ) {
@@ -1476,17 +1507,6 @@ object KaoChangOperate {
                         "cmdStatusTake=${AtomicActionExecutor.formatCode(box.cmdStatusTake)}"
                 )
                 val failureCode = atomicFailureCodeOrZero(moveResult.actionGroupResult)
-                if (moveResult.lowerPlatformIsolationReason != null) {
-                    val failedActionName = (moveResult.actionGroupResult as? ActionGroupResult.Failed)?.actionName ?: "in"
-                    return SupplementMoveResult.LowerPlatformIsolated(
-                        reason = moveResult.lowerPlatformIsolationReason,
-                        targetPanNo = kaoPan.positionSn,
-                        sourceBoxNo = box.positionSn,
-                        actionName = failedActionName,
-                        code = failureCode,
-                        requiresManualConfirm = moveResult.lowerPlatformIsolationRequiresManualConfirm
-                    )
-                }
                 return SupplementMoveResult.HardFailure(
                     reason = "串行补肠失败：${AtomicActionExecutor.formatCode(failureCode)}（${AtomicActionExecutor.messageOf(failureCode)}）",
                     code = failureCode
@@ -1558,6 +1578,7 @@ object KaoChangOperate {
 
     fun confirmPendingSupplementBatchSafety(reason: String): Boolean {
         val confirmed = supplementBatchIntentRepository.confirmManualSafety(reason) ?: return false
+        clearFaultTimeoutCancelledReturnReservations(confirmed, reason)
         actionGroupSessionStore.clear()
         actionGroupLocks.clear()
         val config = AppConfig.getAppConfig()
@@ -1573,8 +1594,67 @@ object KaoChangOperate {
         return true
     }
 
+    private fun clearFaultTimeoutCancelledReturnReservations(intent: SupplementBatchIntent, reason: String) {
+        val cancelledReturnPositions = intent.targets
+            .filter { it.cancelledByFaultTimeout }
+            .mapNotNull { it.returnPositionSn }
+            .filter { it in 1..21 }
+            .distinct()
+        if (cancelledReturnPositions.isEmpty()) {
+            return
+        }
+        val pans = KaoPanHelper.getKaoPanList()
+        val changedPans = mutableListOf<KaoPan>()
+        cancelledReturnPositions.forEach { returnPosition ->
+            val pan = pans.firstOrNull { it.positionSn == returnPosition } ?: return@forEach
+            if (!pan.isHasSausage && pan.isHasGrilling) {
+                pan.isHasGrilling = false
+                pan.taste = null
+                changedPans += pan
+            }
+        }
+        if (changedPans.isEmpty()) {
+            logD(
+                LOG_SUPPLEMENT,
+                "【补肠批次恢复】故障超时未找到需要清理的前区预留：batchId=${intent.batchId}，" +
+                    "returnPositions=$cancelledReturnPositions，reason=$reason"
+            )
+            return
+        }
+        KaoPanHelper.saveKaoPanListSync(pans)
+        PanPhysicalStateDeltaReporter.reportPansChanged(
+            changedPans = changedPans,
+            reason = "supplement_fault_timeout_cancel:batch=${intent.batchId}:returnPositions=${changedPans.joinToString(",") { it.positionSn.toString() }}",
+            source = "supplement_fault_timeout_cancel"
+        )
+        logW(
+            LOG_SUPPLEMENT,
+            "【补肠批次恢复】故障超过10分钟，已清除未完成目标对应前区预留：" +
+                "batchId=${intent.batchId}，returnPositions=${changedPans.map { it.positionSn }}，reason=$reason"
+        )
+    }
+
     fun clearPendingSupplementBatchIntent(reason: String) {
         supplementBatchIntentRepository.clear(reason)
+    }
+
+    fun clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(reason: String): Boolean {
+        val intent = supplementBatchIntentRepository.loadActive()
+        if (intent?.type == SupplementBatchType.HIGH_HEAT_25_33 &&
+            intent.remainingTargets().isNotEmpty() &&
+            (intent.requiresManualConfirm || intent.failureAtMs > 0L)
+        ) {
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠批次恢复】保留25~33补热故障批次意图：reason=$reason，" +
+                    "requiresManualConfirm=${intent.requiresManualConfirm}，" +
+                    "batchId=${intent.batchId}，failureAtMs=${intent.failureAtMs}，" +
+                    "remaining=${intent.remainingTargets().map { it.positionSn }}"
+            )
+            return false
+        }
+        clearPendingSupplementBatchIntent(reason)
+        return true
     }
 
     fun activeSupplementBatchTargetPositions(types: Set<SupplementBatchType>): Set<Int> {
@@ -1590,6 +1670,10 @@ object KaoChangOperate {
 
     fun activeSupplementBatchIntentForUi(): SupplementBatchIntent? {
         return supplementBatchIntentRepository.loadActive()
+    }
+
+    fun shouldDelayHeatReturnForBatchCompleteness(types: Set<SupplementBatchType>): Boolean {
+        return supplementBatchIntentRepository.shouldDelayHeatReturnForBatchCompleteness(types)
     }
 
     suspend fun handlePendingSupplementBatchIfAny(
@@ -1724,7 +1808,8 @@ object KaoChangOperate {
     private suspend fun moveSausagesToKaoPansByTasteSerial(
         validTargets: List<SupplementTarget>,
         stage: String,
-        batchId: String?
+        batchId: String?,
+        batchType: SupplementBatchType?
     ): Int {
         var movedCount = 0
         for (target in validTargets) {
@@ -1734,7 +1819,11 @@ object KaoChangOperate {
             if (!ensureSupplementBatchStartAllowed("$stage-单根下发前")) {
                 break
             }
-            when (val result = moveSausageToKaoPanByTasteDetailed(target.kaoPan, target.tasteCode)) {
+            when (val result = moveSausageToKaoPanByTasteDetailed(
+                kaoPan = target.kaoPan,
+                tasteCode = target.tasteCode,
+                batchType = batchType
+            )) {
                 SupplementMoveResult.Success -> {
                     movedCount += 1
                     supplementBatchIntentRepository.markCompleted(batchId, target.kaoPan.positionSn)
@@ -1863,7 +1952,10 @@ object KaoChangOperate {
             } else {
                 null
             }
-            return moveSausagesToKaoPansByTasteSerial(executableTargets, stageForSerial, batchId)
+            val batchType = batchTypeOverride ?: batchId?.let {
+                supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
+            }
+            return moveSausagesToKaoPansByTasteSerial(executableTargets, stageForSerial, batchId, batchType)
         }
         if (AppConfig.getAppConfig().errorStatus > 0) {
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠预取流水线")
@@ -1913,7 +2005,10 @@ object KaoChangOperate {
                     )
                 },
                 "补肠预取流水线降级串行",
-                batchId
+                batchId,
+                batchTypeOverride ?: batchId?.let {
+                    supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
+                }
             )
         }
         val batchId = existingBatchId ?: if (createIntent) {
@@ -2629,6 +2724,9 @@ object KaoChangOperate {
         taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
         batchId: String?
     ) {
+        val batchType = batchId?.let {
+            supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
+        }
         val targetPanNo = result.task?.targetPanNo
         val plannedMove = targetPanNo?.let { taskByPanNo[it] }
         val failureCode = when (val atomicResult = result.result) {
@@ -2644,8 +2742,70 @@ object KaoChangOperate {
             LOG_SUPPLEMENT,
             "补肠预取流水线失败：targetPan=$targetPanNo，sourceBox=$sourceBoxNo，" +
                 "action=${result.actionName}，result=${describeAtomicActionResult(result.result)}，" +
-                "failedSourceBoxes=${result.failedSourceBoxNos}，hasPrefetchedNext=${result.hasPrefetchedNext}"
+                "failedSourceBoxes=${result.failedSourceBoxNos}，hasPrefetchedNext=${result.hasPrefetchedNext}，" +
+                "batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}"
         )
+        val lowerPlatformIsolationDecision = LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+            batchType = batchType,
+            actionName = result.actionName,
+            result = result.result,
+            hasPrefetchedNext = result.hasPrefetchedNext
+        )
+        if (lowerPlatformIsolationDecision != LowerPlatformIsolationPolicy.Decision.NotIsolatable) {
+            val isolationReason = LowerPlatformIsolationPolicy.buildIsolationReason(
+                actionName = result.actionName,
+                result = result.result,
+                targetPanNo = targetPanNo,
+                sourceBoxNo = sourceBoxNo,
+                hasPrefetchedNext = result.hasPrefetchedNext
+            )
+            val requiresManualConfirm =
+                lowerPlatformIsolationDecision == LowerPlatformIsolationPolicy.Decision.IsolatedRequiresManualConfirm
+            targetPanNo?.let { panNo ->
+                if (requiresManualConfirm) {
+                    supplementBatchIntentRepository.markFailure(
+                        batchId = batchId,
+                        targetPanNo = panNo,
+                        actionName = result.actionName,
+                        failureMessage = isolationReason,
+                        requiresManualConfirm = true
+                    )
+                } else {
+                    supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+                        batchId = batchId,
+                        targetPanNo = panNo,
+                        reason = isolationReason
+                    )
+                }
+            }
+            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName)
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠预取流水线下平台失败已隔离，不进入维护：" +
+                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
+                    "result=${describeAtomicActionResult(result.result)}，batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}，" +
+                    "requiresManualConfirm=$requiresManualConfirm，reason=$isolationReason"
+            )
+            return
+        }
+        if (batchType != null &&
+            SupplementBatchIntentRepository.isInitializationBatch(batchType) &&
+            result.actionName.startsWith("in")
+        ) {
+            supplementBatchIntentRepository.markFailure(
+                batchId = batchId,
+                targetPanNo = targetPanNo,
+                actionName = result.actionName,
+                failureMessage = describeAtomicActionResult(result.result),
+                requiresManualConfirm = true
+            )
+            enterActionGroupMaintenance(
+                "${SupplementBatchIntentRepository.typeText(batchType)}补肠失败，初始化阶段不降级，设备进入维护停售：" +
+                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
+                    "result=${describeAtomicActionResult(result.result)}"
+            )
+            return
+        }
         if (SupplementPickFailurePolicy.isPipelineSupplyDegradableFailure(
                 actionName = result.actionName,
                 result = result.result,
@@ -2686,48 +2846,6 @@ object KaoChangOperate {
                 LOG_SUPPLEMENT,
                 "补肠预取流水线供给降级跳过当前目标，不进入维护、不要求人工确认：" +
                     "targetPan=$targetPanNo，failedBoxes=$failedBoxNos，reason=$degradeReason"
-            )
-            return
-        }
-        val lowerPlatformIsolationDecision = LowerPlatformIsolationPolicy.classifySupplementActionFailure(
-            actionName = result.actionName,
-            result = result.result,
-            hasPrefetchedNext = result.hasPrefetchedNext
-        )
-        if (lowerPlatformIsolationDecision != LowerPlatformIsolationPolicy.Decision.NotIsolatable) {
-            val isolationReason = LowerPlatformIsolationPolicy.buildIsolationReason(
-                actionName = result.actionName,
-                result = result.result,
-                targetPanNo = targetPanNo,
-                sourceBoxNo = sourceBoxNo,
-                hasPrefetchedNext = result.hasPrefetchedNext
-            )
-            val requiresManualConfirm =
-                lowerPlatformIsolationDecision == LowerPlatformIsolationPolicy.Decision.IsolatedRequiresManualConfirm
-            targetPanNo?.let { panNo ->
-                if (requiresManualConfirm) {
-                    supplementBatchIntentRepository.markFailure(
-                        batchId = batchId,
-                        targetPanNo = panNo,
-                        actionName = result.actionName,
-                        failureMessage = isolationReason,
-                        requiresManualConfirm = true
-                    )
-                } else {
-                    supplementBatchIntentRepository.markSkippedBySupplyDegrade(
-                        batchId = batchId,
-                        targetPanNo = panNo,
-                        reason = isolationReason
-                    )
-                }
-            }
-            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName)
-            logW(
-                LOG_SUPPLEMENT,
-                "补肠预取流水线下平台失败已隔离，不进入维护：" +
-                    "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
-                    "result=${describeAtomicActionResult(result.result)}，" +
-                    "requiresManualConfirm=$requiresManualConfirm，reason=$isolationReason"
             )
             return
         }
@@ -2802,7 +2920,8 @@ object KaoChangOperate {
     private suspend fun moveSausageToKaoPanDetailed(
         kaoPan: KaoPan,
         kaoPanBox: KaoPanBox,
-        allowPickFailureFallback: Boolean
+        allowPickFailureFallback: Boolean,
+        batchType: SupplementBatchType? = null
     ): SingleSupplementMoveResult {
         if (AppConfig.getAppConfig().errorStatus>0){
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠操作")
@@ -2943,7 +3062,8 @@ object KaoChangOperate {
         val failureCode = atomicFailureCode(actionGroupResult)
         val failureActionName = (actionGroupResult as? ActionGroupResult.Failed)?.actionName.orEmpty()
         val lowerPlatformIsolationDecision = if (!moveSuccess && actionGroupResult is ActionGroupResult.Failed) {
-            LowerPlatformIsolationPolicy.classifySupplementActionFailure(
+            LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+                batchType = batchType,
                 actionName = actionGroupResult.actionName,
                 result = actionGroupResult.result,
                 hasPrefetchedNext = false
@@ -3061,17 +3181,17 @@ object KaoChangOperate {
                 "补肠失败，未更新烤盘状态和库存：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, " +
                     "result=${actionGroupResultDesc(actionGroupResult)}"
             )
-            if (allowPickFailureFallback && atomicFailureCode(actionGroupResult) == AtomicActionCodes.IR_PICK_FAILED) {
-                logW(
-                    LOG_SUPPLEMENT,
-                    "补肠取肠失败由同口味切箱逻辑接管，暂不切维护：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}"
-                )
-            } else if (lowerPlatformIsolationReason != null) {
+            if (lowerPlatformIsolationReason != null) {
                 markLowerPlatformIsolatedRuntimeState(lowerPlatformIsolationReason, failureActionName)
                 logW(
                     LOG_SUPPLEMENT,
                     "补肠下平台动作失败，已隔离下平台并停止自动补肠，不切整机维护：" +
                         "targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, reason=$lowerPlatformIsolationReason"
+                )
+            } else if (allowPickFailureFallback && atomicFailureCode(actionGroupResult) == AtomicActionCodes.IR_PICK_FAILED) {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "补肠取肠失败由同口味切箱逻辑接管，暂不切维护：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}"
                 )
             } else {
                 markActionGroupFailure("补肠", actionGroupResult)
@@ -4113,7 +4233,7 @@ object KaoChangOperate {
             return
         }
         if (config.transitionMode == 2) {
-            clearPendingSupplementBatchIntent("过保丢弃进入高转低/残留消化，停止25~33未完成补肠意图")
+            clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation("过保丢弃进入高转低/残留消化，停止25~33未完成补肠意图")
         }
         AppConfig.saveAppConfig(config)
         LogUtils.w(

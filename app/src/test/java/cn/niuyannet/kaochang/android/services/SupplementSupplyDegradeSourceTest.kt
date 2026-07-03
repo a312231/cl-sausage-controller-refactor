@@ -64,7 +64,7 @@ class SupplementSupplyDegradeSourceTest {
     }
 
     @Test
-    fun pipelineFailure_shouldCheckSupplyDegradeBeforeManualFailureAndMaintenance() {
+    fun pipelineFailure_shouldCheckHeatSemiFaultBeforeSupplyDegradeAndMaintenance() {
         val source = sourceText()
         val functionStart = source.indexOf("private fun handlePipelineSupplementFailure(")
         assertTrue("必须存在预取流水线失败处理函数", functionStart >= 0)
@@ -72,15 +72,47 @@ class SupplementSupplyDegradeSourceTest {
             .let { if (it >= 0) it else source.length }
         val functionBlock = source.substring(functionStart, functionEnd)
 
+        val heatSemiFaultCheck = functionBlock.indexOf("LowerPlatformIsolationPolicy.classifyForSupplementBatch(")
         val degradeCheck = functionBlock.indexOf("SupplementPickFailurePolicy.isPipelineSupplyDegradableFailure(")
-        val markFailure = functionBlock.indexOf("supplementBatchIntentRepository.markFailure(")
-        val maintenance = functionBlock.indexOf("enterActionGroupMaintenance(")
+        val initializationHardFailureCheck = functionBlock.indexOf("SupplementBatchIntentRepository.isInitializationBatch(batchType)")
+        assertTrue("补热区半故障判断必须存在", heatSemiFaultCheck >= 0)
         assertTrue("降级判断必须存在", degradeCheck >= 0)
-        assertTrue("降级判断必须先于 markFailure", markFailure > degradeCheck)
-        assertTrue("降级判断必须先于 enterActionGroupMaintenance", maintenance > degradeCheck)
+        assertTrue("初始化硬故障判断必须存在", initializationHardFailureCheck >= 0)
+        assertTrue("补热区半故障判断必须先于供给降级，避免 in2 被静默跳过", heatSemiFaultCheck < degradeCheck)
+        assertTrue("初始化硬故障判断必须先于供给降级", initializationHardFailureCheck < degradeCheck)
         assertTrue(
             "预取供给降级必须标记 skipped",
             functionBlock.contains("markSkippedBySupplyDegrade(")
+        )
+    }
+
+    @Test
+    fun serialTasteSupplement_shouldPassBatchTypeSoHeatAndInitializationCanDiverge() {
+        val source = sourceText()
+        val serialStart = source.indexOf("private suspend fun moveSausagesToKaoPansByTasteSerial(")
+        assertTrue("必须存在串行补肠批次函数", serialStart >= 0)
+        val serialEnd = source.indexOf("suspend fun moveSausagesToKaoPansByTaste(", serialStart)
+            .let { if (it >= 0) it else source.length }
+        val serialBlock = source.substring(serialStart, serialEnd)
+        assertTrue(
+            "串行补肠必须把 batchType 传入按口味补肠，才能区分补热半故障和初始化硬故障",
+            serialBlock.contains("batchType = batchType")
+        )
+
+        val byTasteStart = source.indexOf("private suspend fun moveSausageToKaoPanByTasteDetailed(")
+        assertTrue("必须存在按口味补肠详细结果函数", byTasteStart >= 0)
+        val byTasteEnd = source.indexOf("private fun atomicFailureCodeOrZero", byTasteStart)
+            .let { if (it >= 0) it else source.length }
+        val byTasteBlock = source.substring(byTasteStart, byTasteEnd)
+        assertTrue(
+            "初始化批次任意 in 失败必须直接硬故障，不能继续切箱或供给降级",
+            byTasteBlock.contains("val isInitializationBatch = batchType?.let { SupplementBatchIntentRepository.isInitializationBatch(it) } == true") &&
+                byTasteBlock.contains("if (isInitializationBatch)")
+        )
+        assertTrue(
+            "补热半故障必须优先返回 LowerPlatformIsolated",
+            byTasteBlock.indexOf("moveResult.lowerPlatformIsolationReason != null") in 0 until
+                byTasteBlock.indexOf("SupplementPickFailurePolicy.isSerialIn2IrPickFailure(")
         )
     }
 

@@ -105,10 +105,16 @@ object LowCurrentTrafficMode {
             schedulingEnabled = schedulingEnabled,
             isBeforeCloseWindow = isBeforeCloseWindow
         )
-        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+        val pendingLowHeatManualConfirmation =
+            pendingBatchHandling == KaoChangOperate.PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION &&
+                KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+                    ?.type
+                    ?.let { SupplementBatchIntentRepository.isHeatSupplementBatch(it) } == true
+        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE && !pendingLowHeatManualConfirmation) {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             return totalEmpty
         }
+        val canStartSupplement = schedulingEnabled && !pendingLowHeatManualConfirmation
 
         val activeLowHeatIntentTargetPositions = KaoChangOperate.activeSupplementBatchTargetPositions(
             setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
@@ -131,14 +137,14 @@ object LowCurrentTrafficMode {
             frontCapacity = list1_9.size,
             heatEmpty = p13_18,
             heatCapacity = list13_18.size,
-            schedulingEnabled = schedulingEnabled,
+            schedulingEnabled = canStartSupplement,
             boxSupplyAvailable = boxSupplyAvailable,
             errorStatus = config.errorStatus,
             isBeforeCloseWindow = isBeforeCloseWindow
         )
 
         if (totalEmpty == list1_9.size + list13_18.size) {
-            if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            if (canStartSupplement && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 initLowTrafficMode(kaoPanList, listBox)
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
@@ -150,7 +156,7 @@ object LowCurrentTrafficMode {
                 checkLowHeatSausage(kaoPanList)
             }
 
-            if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            if (canStartSupplement && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 if (resumeLowInitialization(listBox, list1_9, list13_18)) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     return totalEmpty
@@ -167,7 +173,7 @@ object LowCurrentTrafficMode {
 
             logLowHeatSupplementGate(
                 supplementDecision = supplementDecision,
-                schedulingEnabled = schedulingEnabled,
+                schedulingEnabled = canStartSupplement,
                 boxSupplyAvailable = boxSupplyAvailable,
                 errorStatus = config.errorStatus,
                 isBeforeCloseWindow = isBeforeCloseWindow,
@@ -178,12 +184,12 @@ object LowCurrentTrafficMode {
                 }
             )
 
-            if (schedulingEnabled && supplementDecision == 1 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            if (canStartSupplement && supplementDecision == 1 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
                 if (addLowHeatSausage(kaoPanList, listBox, list13_15.size)) {
                     LogUtils.i(TAG, "【低并发补肠】已向 13~15 补热区补肠")
                 }
-            } else if (schedulingEnabled && supplementDecision == 2 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            } else if (canStartSupplement && supplementDecision == 2 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
                 if (addLowHeatSausage16_18(kaoPanList, listBox, list16_18.size)) {
                     LogUtils.i(TAG, "【低并发补肠】已向 16~18 补热区补肠")
@@ -421,6 +427,20 @@ object LowCurrentTrafficMode {
         supplementGroup: List<KaoPan>,
         groupName: String
     ): Boolean {
+        val batchType = when (groupName) {
+            "13~15" -> SupplementBatchType.LOW_HEAT_13_15
+            "16~18" -> SupplementBatchType.LOW_HEAT_16_18
+            else -> null
+        }
+        if (batchType != null &&
+            KaoChangOperate.shouldDelayHeatReturnForBatchCompleteness(setOf(batchType))
+        ) {
+            LogUtils.i(
+                TAG,
+                "【低并发补肠】$groupName 补热区已熟烤肠暂不拆批回搬：下平台故障仍在10分钟续补窗口内，等待人工确认后优先补齐整批"
+            )
+            return true
+        }
         if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
             return false
         }

@@ -15,7 +15,7 @@ class LowerPlatformIsolationSourceTest {
         val functionEnd = source.indexOf("/**\n     * 烤盘间搬移。", functionStart)
             .let { if (it >= 0) it else source.length }
         val functionBlock = source.substring(functionStart, functionEnd)
-        val isolationCheck = functionBlock.indexOf("LowerPlatformIsolationPolicy.classifySupplementActionFailure(")
+        val isolationCheck = functionBlock.indexOf("LowerPlatformIsolationPolicy.classifyForSupplementBatch(")
         val maintenance = functionBlock.indexOf("markActionGroupFailure(\"补肠\", actionGroupResult)")
 
         assertTrue("单根补肠失败必须存在下平台隔离判断", isolationCheck >= 0)
@@ -32,13 +32,13 @@ class LowerPlatformIsolationSourceTest {
             .let { if (it >= 0) it else source.length }
         val functionBlock = source.substring(functionStart, functionEnd)
         val supplyDegradeCheck = functionBlock.indexOf("SupplementPickFailurePolicy.isPipelineSupplyDegradableFailure(")
-        val isolationCheck = functionBlock.indexOf("LowerPlatformIsolationPolicy.classifySupplementActionFailure(")
+        val isolationCheck = functionBlock.indexOf("LowerPlatformIsolationPolicy.classifyForSupplementBatch(")
         val markFailure = functionBlock.indexOf("supplementBatchIntentRepository.markFailure(", isolationCheck)
         val maintenance = functionBlock.indexOf("enterActionGroupMaintenance(")
 
         assertTrue("供给降级判断必须存在", supplyDegradeCheck >= 0)
         assertTrue("下平台隔离判断必须存在", isolationCheck >= 0)
-        assertTrue("下平台隔离判断应在供给降级之后，避免覆盖 in2/IR_PICK_FAILED", isolationCheck > supplyDegradeCheck)
+        assertTrue("下平台隔离判断应在供给降级之前，补热区 in1~in5 不能被 in2 供给降级静默跳过", isolationCheck < supplyDegradeCheck)
         assertTrue("下平台隔离分支必须能为 in5 残肠风险 markFailure", markFailure > isolationCheck)
         assertTrue("下平台隔离判断必须先于 enterActionGroupMaintenance", maintenance > isolationCheck)
         assertTrue("流水线隔离分支必须支持低风险目标跳过", functionBlock.contains("markSkippedBySupplyDegrade("))
@@ -71,7 +71,7 @@ class LowerPlatformIsolationSourceTest {
             .let { if (it >= 0) it else source.length }
         val serialBlock = source.substring(serialStart, serialEnd)
 
-        assertTrue("串行补肠必须计算下平台隔离三态", serialBlock.contains("classifySupplementActionFailure("))
+        assertTrue("串行补肠必须按批次类型计算下平台隔离三态", serialBlock.contains("classifyForSupplementBatch("))
         assertTrue("串行补肠必须把人工确认要求传给批次层", serialBlock.contains("lowerPlatformIsolationRequiresManualConfirm"))
         assertTrue("串行批次层必须保留 in5 残肠目标并要求人工确认", source.contains("result.requiresManualConfirm") &&
             source.contains("supplementBatchIntentRepository.markFailure("))

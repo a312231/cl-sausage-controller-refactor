@@ -21,7 +21,9 @@ data class SupplementBatchIntentTarget(
     var returnPositionSn: Int? = null,
     var completed: Boolean = false,
     var skippedBySupplyDegrade: Boolean = false,
-    var skipReason: String? = null
+    var skipReason: String? = null,
+    var cancelledByFaultTimeout: Boolean = false,
+    var cancelReason: String? = null
 )
 
 data class SupplementBatchIntent(
@@ -31,15 +33,16 @@ data class SupplementBatchIntent(
     var failedActionName: String? = null,
     var failedTargetPanNo: Int? = null,
     var failureMessage: String? = null,
+    var failureAtMs: Long = 0L,
     var requiresManualConfirm: Boolean = false,
     var createdAtMs: Long = 0L,
     var updatedAtMs: Long = 0L
 ) {
     fun remainingTargets(): List<SupplementBatchIntentTarget> =
-        targets.filter { !it.completed && !it.skippedBySupplyDegrade }
+        targets.filter { !it.completed && !it.skippedBySupplyDegrade && !it.cancelledByFaultTimeout }
 
     fun isComplete(): Boolean =
-        targets.isNotEmpty() && targets.all { it.completed || it.skippedBySupplyDegrade }
+        targets.isNotEmpty() && targets.all { it.completed || it.skippedBySupplyDegrade || it.cancelledByFaultTimeout }
 }
 
 interface SupplementBatchIntentStore {
@@ -220,6 +223,9 @@ class SupplementBatchIntentRepository(
         intent.failedActionName = actionName
         intent.failedTargetPanNo = targetPanNo
         intent.failureMessage = failureMessage
+        if (requiresManualConfirm || intent.failureAtMs <= 0L) {
+            intent.failureAtMs = clock()
+        }
         intent.requiresManualConfirm = requiresManualConfirm
         intent.updatedAtMs = clock()
         store.save(intent)
@@ -236,15 +242,61 @@ class SupplementBatchIntentRepository(
         if (!intent.requiresManualConfirm) {
             return intent
         }
+        val faultElapsedMs = if (intent.failureAtMs > 0L) {
+            clock() - intent.failureAtMs
+        } else {
+            0L
+        }
+        val cancelledTargets = if (isHeatSupplementBatch(intent.type) &&
+            faultElapsedMs > HEAT_FAULT_RESUME_WINDOW_MS
+        ) {
+            cancelRemainingTargetsByFaultTimeout(intent)
+        } else {
+            emptyList()
+        }
         intent.requiresManualConfirm = false
         intent.updatedAtMs = clock()
-        store.save(intent)
-        warnLogger(
-            "【补肠批次恢复】人工已确认半路烤肠/机械位置安全，允许续补未完成批次：reason=$reason，" +
-                "batchId=${intent.batchId}，targets=${intent.targets.map { it.positionSn }}，" +
-                "remaining=${intent.remainingTargets().map { it.positionSn }}"
-        )
+        if (intent.isComplete()) {
+            store.clear()
+        } else {
+            store.save(intent)
+        }
+        if (cancelledTargets.isEmpty()) {
+            warnLogger(
+                "【补肠批次恢复】人工已确认半路烤肠/机械位置安全，允许续补未完成批次：reason=$reason，" +
+                    "batchId=${intent.batchId}，targets=${intent.targets.map { it.positionSn }}，" +
+                    "remaining=${intent.remainingTargets().map { it.positionSn }}，failureAtMs=${intent.failureAtMs}，" +
+                    "faultElapsedMs=$faultElapsedMs"
+            )
+        } else {
+            warnLogger(
+                "【补肠批次恢复】人工确认时故障已超过10分钟，取消未完成补热目标并停止续补：" +
+                    "reason=$reason，batchId=${intent.batchId}，cancelled=$cancelledTargets，" +
+                    "remaining=${intent.remainingTargets().map { it.positionSn }}，failureAtMs=${intent.failureAtMs}，" +
+                    "faultElapsedMs=$faultElapsedMs"
+            )
+        }
         return intent
+    }
+
+    fun shouldDelayHeatReturnForBatchCompleteness(types: Set<SupplementBatchType>): Boolean {
+        val intent = loadActive() ?: return false
+        if (intent.type !in types ||
+            !isHeatSupplementBatch(intent.type) ||
+            intent.remainingTargets().isEmpty() ||
+            intent.failureAtMs <= 0L
+        ) {
+            return false
+        }
+        if (!intent.requiresManualConfirm) {
+            return true
+        }
+        val faultElapsedMs = if (intent.failureAtMs > 0L) {
+            clock() - intent.failureAtMs
+        } else {
+            0L
+        }
+        return faultElapsedMs <= HEAT_FAULT_RESUME_WINDOW_MS
     }
 
     fun clear(reason: String) {
@@ -259,6 +311,8 @@ class SupplementBatchIntentRepository(
     }
 
     companion object {
+        const val HEAT_FAULT_RESUME_WINDOW_MS: Long = 10 * 60 * 1000L
+
         fun inferType(positions: List<Int>): SupplementBatchType {
             val sorted = positions.sorted()
             return when {
@@ -279,6 +333,24 @@ class SupplementBatchIntentRepository(
             SupplementBatchType.HIGH_HEAT_25_33 -> "高并发补热25~33"
             SupplementBatchType.UNKNOWN -> "未知补肠批次"
         }
+
+        fun isHeatSupplementBatch(type: SupplementBatchType): Boolean =
+            type == SupplementBatchType.LOW_HEAT_13_15 ||
+                type == SupplementBatchType.LOW_HEAT_16_18 ||
+                type == SupplementBatchType.HIGH_HEAT_25_33
+
+        fun isInitializationBatch(type: SupplementBatchType): Boolean =
+            type == SupplementBatchType.LOW_INITIALIZATION_1_9 ||
+                type == SupplementBatchType.HIGH_INITIALIZATION_1_21
+    }
+
+    private fun cancelRemainingTargetsByFaultTimeout(intent: SupplementBatchIntent): List<Int> {
+        val remaining = intent.remainingTargets()
+        remaining.forEach { target ->
+            target.cancelledByFaultTimeout = true
+            target.cancelReason = "故障超过10分钟，取消未完成补热目标"
+        }
+        return remaining.map { it.positionSn }
     }
 }
 

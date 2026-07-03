@@ -104,7 +104,143 @@ class SupplementBatchIntentRepositoryTest {
         assertTrue(saved.requiresManualConfirm)
         assertEquals("in3", saved.failedActionName)
         assertEquals(13, saved.failedTargetPanNo)
+        assertEquals(1000L, saved.failureAtMs)
         assertEquals(listOf(13, 14, 15), saved.remainingTargets().map { it.positionSn })
+    }
+
+    @Test
+    fun markFailure_shouldRefreshFailureAtForEachManualConfirmFailure() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(target(13, "A"), target(14, "A"), target(15, "A")),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )!!
+
+        repository.markFailure(intent.batchId, 13, "in3", "第一次故障", true)
+        assertEquals(1000L, store.load()!!.failureAtMs)
+
+        now = 2000L
+        repository.markFailure(intent.batchId, 14, "in4", "第二次故障", true)
+
+        assertEquals(2000L, store.load()!!.failureAtMs)
+        assertEquals("in4", store.load()!!.failedActionName)
+    }
+
+    @Test
+    fun confirmManualSafety_shouldCancelUnfinishedHeatTargetsAfterTenMinuteFaultTimeout() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(
+                target(13, "A", returnPositionSn = 1),
+                target(14, "A", returnPositionSn = 2),
+                target(15, "A", returnPositionSn = 3)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )!!
+
+        repository.markCompleted(intent.batchId, 13)
+        repository.markCompleted(intent.batchId, 14)
+        repository.markFailure(intent.batchId, 15, "in3", "in3 的 Y 复位失败", true)
+        now = 1000L + 10 * 60 * 1000L + 1L
+
+        val confirmed = repository.confirmManualSafety("超10分钟确认")!!
+
+        assertFalse(confirmed.requiresManualConfirm)
+        assertEquals(listOf<Int>(), confirmed.remainingTargets().map { it.positionSn })
+        assertFalse(confirmed.targets.first { it.positionSn == 13 }.cancelledByFaultTimeout)
+        assertFalse(confirmed.targets.first { it.positionSn == 14 }.cancelledByFaultTimeout)
+        assertTrue(confirmed.targets.first { it.positionSn == 15 }.cancelledByFaultTimeout)
+        assertEquals("故障超过10分钟，取消未完成补热目标", confirmed.targets.first { it.positionSn == 15 }.cancelReason)
+    }
+
+    @Test
+    fun confirmManualSafety_shouldKeepUnfinishedHeatTargetsWithinTenMinuteFaultWindow() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(target(25, "A", returnPositionSn = 1), target(26, "A", returnPositionSn = 2)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+
+        repository.markCompleted(intent.batchId, 25)
+        repository.markFailure(intent.batchId, 26, "in5", "in5 抛肠失败", true)
+        now = 1000L + 10 * 60 * 1000L
+
+        val confirmed = repository.confirmManualSafety("10分钟内确认")!!
+
+        assertFalse(confirmed.requiresManualConfirm)
+        assertEquals(listOf(26), confirmed.remainingTargets().map { it.positionSn })
+        assertFalse(confirmed.targets.first { it.positionSn == 26 }.cancelledByFaultTimeout)
+    }
+
+    @Test
+    fun shouldDelayHeatReturnForBatchCompleteness_shouldOnlyDelayWithinFaultWindow() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(
+                target(13, "A", returnPositionSn = 1),
+                target(14, "A", returnPositionSn = 2),
+                target(15, "A", returnPositionSn = 3)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )!!
+
+        repository.markCompleted(intent.batchId, 13)
+        repository.markCompleted(intent.batchId, 14)
+        repository.markFailure(intent.batchId, 15, "in3", "in3 的 Y 复位失败", true)
+
+        now = 1000L + 10 * 60 * 1000L
+        assertTrue(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.LOW_HEAT_13_15)))
+        assertFalse(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.LOW_HEAT_16_18)))
+
+        now = 1000L + 10 * 60 * 1000L + 1L
+        assertFalse(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.LOW_HEAT_13_15)))
+    }
+
+    @Test
+    fun shouldDelayHeatReturnForBatchCompleteness_shouldKeepDelayingAfterSafetyConfirmedWithinWindow() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(
+                target(25, "A", returnPositionSn = 1),
+                target(26, "A", returnPositionSn = 2),
+                target(27, "A", returnPositionSn = 3)
+            ),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+
+        repository.markCompleted(intent.batchId, 25)
+        repository.markCompleted(intent.batchId, 26)
+        repository.markFailure(intent.batchId, 27, "in3", "in3 的 Y 复位失败", true)
+        now = 1000L + 5 * 60 * 1000L
+        repository.confirmManualSafety("5分钟内确认")
+        now = 1000L + 20 * 60 * 1000L
+
+        assertTrue(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.HIGH_HEAT_25_33)))
+    }
+
+    @Test
+    fun shouldDelayHeatReturnForBatchCompleteness_shouldIgnoreInitializationBatch() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store) { 1000L }
+        val intent = repository.begin(
+            listOf(target(1, "A"), target(2, "A")),
+            typeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
+        )!!
+
+        repository.markCompleted(intent.batchId, 1)
+        repository.markFailure(intent.batchId, 2, "in3", "in3 的 Y 复位失败", true)
+
+        assertFalse(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.LOW_INITIALIZATION_1_9)))
     }
 
     @Test
@@ -217,10 +353,13 @@ class SupplementBatchIntentRepositoryTest {
             returnPositionSn
         )
 
-    private fun repository(store: SupplementBatchIntentStore): SupplementBatchIntentRepository =
+    private fun repository(
+        store: SupplementBatchIntentStore,
+        clock: () -> Long = { 1000L }
+    ): SupplementBatchIntentRepository =
         SupplementBatchIntentRepository(
             store = store,
-            clock = { 1000L },
+            clock = clock,
             infoLogger = {},
             warnLogger = {}
         )

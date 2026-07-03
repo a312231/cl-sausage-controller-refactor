@@ -37,6 +37,40 @@ object LowerPlatformIsolationPolicy {
         return Decision.IsolatedSilent
     }
 
+    fun classifyForSupplementBatch(
+        batchType: SupplementBatchType?,
+        actionName: String,
+        result: AtomicActionResult,
+        hasPrefetchedNext: Boolean
+    ): Decision {
+        if (batchType != null && SupplementBatchIntentRepository.isInitializationBatch(batchType)) {
+            return Decision.NotIsolatable
+        }
+        if (shouldTreatAsLowerPlatformSemiFault(batchType, actionName, result, hasPrefetchedNext)) {
+            return Decision.IsolatedRequiresManualConfirm
+        }
+        return classifySupplementActionFailure(
+            actionName = actionName,
+            result = result,
+            hasPrefetchedNext = hasPrefetchedNext
+        )
+    }
+
+    fun shouldTreatAsLowerPlatformSemiFault(
+        batchType: SupplementBatchType?,
+        actionName: String,
+        result: AtomicActionResult,
+        hasPrefetchedNext: Boolean
+    ): Boolean {
+        if (batchType == null || !SupplementBatchIntentRepository.isHeatSupplementBatch(batchType)) {
+            return false
+        }
+        if (actionName !in ISOLATABLE_SUPPLEMENT_ACTIONS) {
+            return false
+        }
+        return result is AtomicActionResult.Failed
+    }
+
     fun isSupplementActionIsolatable(
         actionName: String,
         result: AtomicActionResult,
