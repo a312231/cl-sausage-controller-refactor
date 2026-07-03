@@ -70,6 +70,24 @@ class ProtocolStatusPolicyTest {
     }
 
     @Test
+    fun moveStatusRecovery_shouldRejectIdleRecoveryWhenActionGroupIsBusy() {
+        assertEquals(
+            false,
+            MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(
+                statusReadings = listOf(0, 0),
+                actionGroupIdle = false
+            )
+        )
+        assertEquals(
+            true,
+            MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(
+                statusReadings = listOf(0, 0),
+                actionGroupIdle = true
+            )
+        )
+    }
+
+    @Test
     fun zone3SelfClean_shouldNotMarkPendingWhenFourFNoOpSuppressed() {
         assertEquals(
             false,

@@ -93,8 +93,11 @@ object Legacy201Policy {
 }
 
 object MoveStatusRecoveryPolicy {
-    fun canRecoverIdleFromLegacy201(statusReadings: List<Int>): Boolean {
-        return statusReadings.size >= 2 && statusReadings.all { status201 ->
+    fun canRecoverIdleFromLegacy201(
+        statusReadings: List<Int>,
+        actionGroupIdle: Boolean = true
+    ): Boolean {
+        return actionGroupIdle && statusReadings.size >= 2 && statusReadings.all { status201 ->
             Legacy201Policy.evaluateAfterCommand(status201, hasObservedRunning = false) == Legacy201Decision.WaitingForStart
         }
     }

@@ -47,4 +47,40 @@ class OrderMoveStatusPolicyTest {
         assertFalse(OrderMoveStatusPolicy.shouldNormalizeToDelivering(status))
         assertFalse(OrderMoveStatusPolicy.shouldWaitForBlockingAction(status))
     }
+
+    @Test
+    fun incomingOrder_shouldRejectWhenActionGroupBusyEvenIfMoveStatusIdle() {
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
+                onlineStatus = 1,
+                actionGroupBusy = true
+            )
+        )
+    }
+
+    @Test
+    fun incomingOrder_shouldAcceptOnlyWhenBusinessAndActionGroupAreIdle() {
+        assertTrue(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
+                onlineStatus = 1,
+                actionGroupBusy = false
+            )
+        )
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING,
+                onlineStatus = 1,
+                actionGroupBusy = false
+            )
+        )
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
+                onlineStatus = 4,
+                actionGroupBusy = false
+            )
+        )
+    }
 }

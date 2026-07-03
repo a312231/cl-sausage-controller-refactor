@@ -437,19 +437,23 @@ class MaintenanceFragment : Fragment() {
                 listOf(first, second)
             }
         }
-        if (MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings)) {
+        val actionGroupIdle = KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
+        if (MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings, actionGroupIdle)) {
             val oldMoveStatus = config.moveStatus
             config.moveStatus = 0
             AppConfig.saveAppConfig(config)
             LogUtils.w(
                 "【维护操作】检测到本地机械状态与下位机空闲状态不一致，已自动收口：" +
-                    "reason=$reason，moveStatus（机械动作状态）=$oldMoveStatus->0，status201连续读数=$statusReadings"
+                    "reason=$reason，moveStatus（机械动作状态）=$oldMoveStatus->0，" +
+                    "status201连续读数=$statusReadings，actionGroup=${KaoChangOperate.actionGroupRuntimeSnapshotForLog()}"
             )
             return true
         }
         LogUtils.w(
             "【维护操作】跳过本地机械状态自动收口：" +
-                "reason=$reason，moveStatus（机械动作状态）=${config.moveStatus}，status201连续读数=$statusReadings"
+                "reason=$reason，moveStatus（机械动作状态）=${config.moveStatus}，" +
+                "status201连续读数=$statusReadings，actionGroupIdle=$actionGroupIdle，" +
+                "actionGroup=${KaoChangOperate.actionGroupRuntimeSnapshotForLog()}"
         )
         return false
     }
@@ -650,16 +654,23 @@ class MaintenanceFragment : Fragment() {
         timeoutMs: Long = MANUAL_ACTION_IDLE_TIMEOUT_MS
     ): Boolean {
         val result = withTimeoutOrNull(timeoutMs) {
-            while (AppConfig.getAppConfig().moveStatus != 0) {
+            while (
+                AppConfig.getAppConfig().moveStatus != 0 ||
+                !KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
+            ) {
                 update?.invoke(waitingText)
                 if (tryRecoverIdleMoveStatus(reason)) {
-                    break
+                    if (KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()) {
+                        break
+                    }
                 }
                 delay(1_000L)
             }
             true
         }
-        return result == true && AppConfig.getAppConfig().moveStatus == 0
+        return result == true &&
+            AppConfig.getAppConfig().moveStatus == 0 &&
+            KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
     }
 
     private fun startCountdown(

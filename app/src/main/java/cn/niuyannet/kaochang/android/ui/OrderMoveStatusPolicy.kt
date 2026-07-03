@@ -11,6 +11,16 @@ internal object OrderMoveStatusPolicy {
     fun canStartSingleDelivery(status: Int): Boolean =
         status == MOVE_STATUS_IDLE || status == MOVE_STATUS_DELIVERING
 
+    fun canAcceptIncomingOrder(
+        moveStatus: Int,
+        onlineStatus: Int,
+        actionGroupBusy: Boolean
+    ): Boolean {
+        return moveStatus == MOVE_STATUS_IDLE &&
+            onlineStatus != 4 &&
+            !actionGroupBusy
+    }
+
     fun shouldWaitForBlockingAction(status: Int): Boolean =
         status == MOVE_STATUS_SUPPLEMENTING ||
             status == MOVE_STATUS_PAN_MOVING ||

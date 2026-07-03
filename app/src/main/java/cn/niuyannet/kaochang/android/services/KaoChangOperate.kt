@@ -165,6 +165,19 @@ object KaoChangOperate {
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
 
+    fun isActionGroupBusyForOrderGate(): Boolean {
+        return !actionGroupLocks.isIdle()
+    }
+
+    fun isActionGroupIdleForMoveStatusRecovery(): Boolean {
+        return actionGroupSessionStore.load() == null && actionGroupLocks.isIdle()
+    }
+
+    fun actionGroupRuntimeSnapshotForLog(): String {
+        val session = actionGroupSessionStore.load()
+        return "session=${session?.sessionId ?: "无"}，resourceLocks=${actionGroupLocks.snapshot()}"
+    }
+
     private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
     private fun logI(category: String, message: String) = LogUtils.i("[$category] $message")
     private fun logW(category: String, message: String) = LogUtils.w("[$category] $message")
@@ -254,11 +267,14 @@ object KaoChangOperate {
         Thread.sleep(500L)
         val second = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
         val statusReadings = listOf(first, second)
-        if (!MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings)) {
+        val actionGroupIdle = isActionGroupIdleForMoveStatusRecovery()
+        if (!MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings, actionGroupIdle)) {
             logW(
                 LOG_ACTION,
                 "跳过本地机械状态自动收口：reason=$reason，" +
-                    "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，status201连续读数=$statusReadings"
+                    "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，" +
+                    "status201连续读数=$statusReadings，actionGroupIdle=$actionGroupIdle，" +
+                    "actionGroup=${actionGroupRuntimeSnapshotForLog()}"
             )
             return false
         }
@@ -269,7 +285,7 @@ object KaoChangOperate {
             LOG_ACTION,
             "检测到本地机械状态残留，已按下位机连续空闲状态自动收口：" +
                 "reason=$reason，moveStatus（机械动作状态）=${moveStatusDesc(oldMoveStatus)}->${moveStatusDesc(config.moveStatus)}，" +
-                "status201连续读数=$statusReadings"
+                "status201连续读数=$statusReadings，actionGroup=${actionGroupRuntimeSnapshotForLog()}"
         )
         return true
     }

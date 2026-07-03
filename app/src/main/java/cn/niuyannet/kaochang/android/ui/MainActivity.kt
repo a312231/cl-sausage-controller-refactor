@@ -25,6 +25,7 @@ import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
+import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.PowerLossRecoveryGuard
 import cn.niuyannet.kaochang.android.services.SupplementPauseController
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
@@ -210,8 +211,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                         logIncomingOrder(orderMessage)
                         val moveStatus = AppConfig.getAppConfig().moveStatus
                         val onlineStatus = AppConfig.getAppConfig().onlineStatus
-                        if (moveStatus == 2 || moveStatus == 5 || onlineStatus == 4) {
-                            logBusyOrderRejected(orderNo, moveStatus, onlineStatus)
+                        val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+                        if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(moveStatus, onlineStatus, actionGroupBusy)) {
+                            logBusyOrderRejected(orderNo, moveStatus, onlineStatus, actionGroupBusy)
                             OrderStateManager.recordBusyIgnored(orderNo)
                         } else {
                             if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
@@ -381,7 +383,12 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
      * 设备忙时可能短时间重复收到相同订单或多个订单，这里按订单号做短时间节流，
      * 避免主日志被同类“忙拒单”提示刷满，同时保留足够的定位参数。
      */
-    private fun logBusyOrderRejected(orderNo: String, moveStatus: Int, onlineStatus: Int) {
+    private fun logBusyOrderRejected(
+        orderNo: String,
+        moveStatus: Int,
+        onlineStatus: Int,
+        actionGroupBusy: Boolean
+    ) {
         val logKey = if (orderNo.isBlank()) "unknown" else orderNo
         val now = System.currentTimeMillis()
         recentBusyOrderLogAtMs.entries.removeIf { now - it.value >= 5 * 60_000L }
@@ -393,7 +400,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         LogUtils.w(
             "【订单流转】设备当前正忙，拒绝接入新的下单请求：" +
                 "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
-                "onlineStatus=$onlineStatus, moveStatus=$moveStatus，后续应走退款或重试"
+                "onlineStatus=$onlineStatus, moveStatus=$moveStatus, actionGroupBusy=$actionGroupBusy，" +
+                "actionGroup=${KaoChangOperate.actionGroupRuntimeSnapshotForLog()}，后续应走退款或重试"
         )
     }
 
