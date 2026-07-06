@@ -2061,10 +2061,12 @@ object KaoChangOperate {
         }
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        publishRuntimeStateWithHttpFallback("补肠预取流水线开始")
 
         if (!isActionGroupEnabledOrEnterMaintenance("补肠预取流水线")) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            publishRuntimeStateWithHttpFallback("补肠预取流水线启动前终止")
             return 0
         }
 
@@ -2073,6 +2075,7 @@ object KaoChangOperate {
         if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            publishRuntimeStateWithHttpFallback("补肠预取流水线资源忙终止")
             logW(
                 LOG_ACTION_GROUP,
                 "补肠预取流水线资源忙，拒绝下发：need=${ResourceLocks.describe(lockMask)}，held=${actionGroupLocks.snapshot()}"
@@ -2280,6 +2283,7 @@ object KaoChangOperate {
             actionGroupLocks.release(owner)
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
             KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
             applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")

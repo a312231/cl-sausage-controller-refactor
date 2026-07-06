@@ -728,7 +728,7 @@ abstract class OrderActivity: BaseSauceDetection() {
      * 上报订单事件到服务端（MQTT），并在发送失败时记录错误日志。
      * MQTT 发送失败不阻断出餐流程，但必须记录以便排查订单状态不同步问题。
      */
-    protected fun reportOrderEvent(orderNo: String, itemId: Int, productId: Int, tasteCode: String, status: Int) {
+    protected fun reportOrderEvent(orderNo: String, itemId: Int, productId: Int, tasteCode: String, status: Int): Boolean {
         val eventDesc = orderEventStatusText(status)
         val payload = com.alibaba.fastjson.JSONObject().apply {
             put("order_no", orderNo)
@@ -766,6 +766,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     "status（订单事件状态）=$eventDesc"
             )
         }
+        return ok
     }
 
     /**

@@ -215,6 +215,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                         if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(moveStatus, onlineStatus, actionGroupBusy)) {
                             logBusyOrderRejected(orderNo, moveStatus, onlineStatus, actionGroupBusy)
                             OrderStateManager.recordBusyIgnored(orderNo)
+                            reportBusyRejectedOrderFailure(orderMessage, orderNo, moveStatus, onlineStatus, actionGroupBusy)
                         } else {
                             if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
                                 return@runOnUiThread
@@ -403,6 +404,51 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 "onlineStatus=$onlineStatus, moveStatus=$moveStatus, actionGroupBusy=$actionGroupBusy，" +
                 "actionGroup=${KaoChangOperate.actionGroupRuntimeSnapshotForLog()}，后续应走退款或重试"
         )
+    }
+
+    private fun reportBusyRejectedOrderFailure(
+        orderMessage: String,
+        orderNo: String,
+        moveStatus: Int,
+        onlineStatus: Int,
+        actionGroupBusy: Boolean
+    ) {
+        val goodsList = try {
+            val json = JSON.parseObject(orderMessage)
+            JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java).orEmpty()
+        } catch (e: Exception) {
+            LogUtils.e(
+                "【订单流转】忙态拒单失败事件上报前解析订单明细失败：" +
+                    "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, error=${e.message}"
+            )
+            emptyList()
+        }
+        if (goodsList.isEmpty()) {
+            LogUtils.e(
+                "【订单流转】忙态拒单无法上报失败事件：订单明细为空，" +
+                    "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}"
+            )
+            return
+        }
+        var allQueued = true
+        goodsList.forEach { item ->
+            val queued = reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode.orEmpty(), 5)
+            allQueued = allQueued && queued
+        }
+        if (allQueued) {
+            OrderStateManager.markAsFailed(orderNo)
+            LogUtils.w(
+                "【订单流转】忙态拒单失败事件已全部进入 MQTT 队列，本地标记订单失败：" +
+                    "orderNo=$orderNo, itemCount=${goodsList.size}, onlineStatus=$onlineStatus, " +
+                    "moveStatus=$moveStatus, actionGroupBusy=$actionGroupBusy"
+            )
+        } else {
+            LogUtils.e(
+                "【订单流转】忙态拒单失败事件未全部进入 MQTT 队列，保留 BUSY 状态等待云端兜底或重投：" +
+                    "orderNo=$orderNo, itemCount=${goodsList.size}, onlineStatus=$onlineStatus, " +
+                    "moveStatus=$moveStatus, actionGroupBusy=$actionGroupBusy"
+            )
+        }
     }
 
     private fun logIncomingOrder(orderMessage: String) {
