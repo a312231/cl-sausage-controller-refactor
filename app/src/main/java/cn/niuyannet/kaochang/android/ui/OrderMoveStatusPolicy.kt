@@ -16,9 +16,15 @@ internal object OrderMoveStatusPolicy {
         onlineStatus: Int,
         actionGroupBusy: Boolean
     ): Boolean {
-        return moveStatus == MOVE_STATUS_IDLE &&
-            onlineStatus != 4 &&
-            !actionGroupBusy
+        if (onlineStatus == 4) {
+            return false
+        }
+        if (moveStatus == MOVE_STATUS_IDLE) {
+            return !actionGroupBusy
+        }
+        return moveStatus == MOVE_STATUS_SUPPLEMENTING ||
+            moveStatus == MOVE_STATUS_PAN_MOVING ||
+            moveStatus == MOVE_STATUS_DISCARDING
     }
 
     fun shouldWaitForBlockingAction(status: Int): Boolean =
@@ -29,6 +35,14 @@ internal object OrderMoveStatusPolicy {
 
     fun shouldNormalizeToDelivering(status: Int): Boolean =
         status == MOVE_STATUS_IDLE
+
+    fun waitTimeoutMsForBlockingAction(status: Int): Long? = when (status) {
+        MOVE_STATUS_SUPPLEMENTING -> 240_000L
+        MOVE_STATUS_PAN_MOVING -> 90_000L
+        MOVE_STATUS_DISCARDING -> 150_000L
+        MOVE_STATUS_SELF_CLEANING -> 0L
+        else -> null
+    }
 
     fun describe(status: Int): String = when (status) {
         MOVE_STATUS_IDLE -> "0（机械臂空闲）"

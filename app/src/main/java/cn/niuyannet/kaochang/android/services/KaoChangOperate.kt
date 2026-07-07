@@ -220,6 +220,14 @@ object KaoChangOperate {
         else -> "$status(未知)"
     }
 
+    private fun sellPriorityWaitTimeoutMs(status: Int): Long = when (status) {
+        1 -> 240_000L
+        3 -> 90_000L
+        4 -> 150_000L
+        5 -> 0L
+        else -> 0L
+    }
+
     private fun modeTypeDesc(value: Int): String = when (value) {
         1 -> "1(低并发)"
         2 -> "2(高并发)"
@@ -3651,10 +3659,20 @@ object KaoChangOperate {
             return TakeSausageResult.ERROR
         }
         var appState = AppConfig.getAppConfig().moveStatus
+        var waitedMs = 0L
+        var maxWaitMs = sellPriorityWaitTimeoutMs(appState)
         while (appState == 1 || appState == 3 || appState == 4 || appState == 5) {
+            if (appState == 5 || maxWaitMs <= 0L || waitedMs >= maxWaitMs) {
+                val reason = "正式出餐入口等待当前机械动作安全收口超时或不可抢占：" +
+                    "moveStatus=$appState，waitedMs=$waitedMs/$maxWaitMs"
+                enterActionGroupMaintenance(reason, FaultCode.ACTION_BUSY_TIMEOUT)
+                return TakeSausageResult.ERROR
+            }
             delay(2000)
+            waitedMs += 2000
             appState = AppConfig.getAppConfig().moveStatus
-            logD(LOG_ACTION, "正式出餐前等待机械动作收尾：moveStatus=$appState")
+            maxWaitMs = maxOf(maxWaitMs, sellPriorityWaitTimeoutMs(appState))
+            logD(LOG_ACTION, "正式出餐前等待机械动作收尾：moveStatus=$appState，waitedMs=$waitedMs/$maxWaitMs")
         }
         var acquiredByThisCall = false
         if (appState == 0) {

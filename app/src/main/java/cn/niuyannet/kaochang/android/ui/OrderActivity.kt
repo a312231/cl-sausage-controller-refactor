@@ -205,24 +205,42 @@ abstract class OrderActivity: BaseSauceDetection() {
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
 
-                // 最多等待机械臂空闲 240 秒
-                val maxWaitTime = 240_000L
+                // 售卖优先不代表硬中断动作：等待当前补肠/搬盘/丢弃动作安全收口后再出餐。
+                val fallbackMaxWaitTime = 240_000L
                 val checkInterval = 1000L
                 var waited = 0L
+                var preDeliveryReady = false
 
-                // 运动状态不为 0 时，说明机械臂仍在忙碌。
+                // 运动状态不为 0 或动作组资源锁未释放时，说明机械臂仍在忙碌。
                 // moveStatus 是本地机械动作状态，不是设备营业状态：
-                // 0 = 空闲，2 = 正在执行取肠/出餐动作
+                // 0 = 空闲，2 = 正在执行取肠/出餐动作。
                 var appState = AppConfig.getAppConfig().moveStatus
-                while (appState != 0 && waited < maxWaitTime) {
+                var actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+                var maxWaitTime = OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(appState)
+                    ?: fallbackMaxWaitTime
+                while ((appState != 0 || actionGroupBusy) && waited < maxWaitTime) {
                     delay(checkInterval)
-                    LogUtils.d("【订单流转】等待机械臂空闲中：currentMoveStatus=$appState, waitedMs=$waited")
+                    LogUtils.d(
+                        "【订单流转】售卖优先等待当前机械动作安全收口：" +
+                            "currentMoveStatus=${OrderMoveStatusPolicy.describe(appState)}, " +
+                            "actionGroupBusy=$actionGroupBusy, waitedMs=$waited/$maxWaitTime"
+                    )
                     appState = AppConfig.getAppConfig().moveStatus
+                    actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+                    maxWaitTime = maxOf(
+                        maxWaitTime,
+                        OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(appState)
+                            ?: fallbackMaxWaitTime
+                    )
                     waited += checkInterval
                 }
 
-                if (appState != 0) {
-                    LogUtils.w("【订单流转】等待机械臂空闲超时，放弃本次取肠")
+                if (appState != 0 || actionGroupBusy) {
+                    LogUtils.w(
+                        "【订单流转】售卖优先等待当前机械动作安全收口超时，暂不硬出餐：" +
+                            "moveStatus=${OrderMoveStatusPolicy.describe(appState)}, " +
+                            "actionGroupBusy=$actionGroupBusy, waitedMs=$waited/$maxWaitTime"
+                    )
                 }
                 else {
                     // 机械臂开始执行当前订单，本地动作状态置为 2。
@@ -230,6 +248,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     appState = 2
                     AppConfig.getAppConfig().moveStatus = appState
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                    preDeliveryReady = true
                 }
 
                 val json = JSON.parseObject(orderMessage)
@@ -246,26 +265,36 @@ abstract class OrderActivity: BaseSauceDetection() {
                 )
                 var deliveredTotal = 0
                 var orderCompleted = true
-                for (item in goodsList) {
-                    val result = handleOrderItemDelivery(
-                        orderNo = orderNo,
-                        item = item,
-                        totalCount = totalCount,
-                        deliveredBase = deliveredTotal
-                    )
-                    deliveredTotal += result.deliveredCount
-                    if (!result.success) {
-                        orderCompleted = false
-                        break
+                if (!preDeliveryReady) {
+                    orderCompleted = false
+                    goodsList.forEach { item ->
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
+                    }
+                } else {
+                    for (item in goodsList) {
+                        val result = handleOrderItemDelivery(
+                            orderNo = orderNo,
+                            item = item,
+                            totalCount = totalCount,
+                            deliveredBase = deliveredTotal
+                        )
+                        deliveredTotal += result.deliveredCount
+                        if (!result.success) {
+                            orderCompleted = false
+                            break
+                        }
                     }
                 }
                 orderCompleted = orderCompleted && deliveredTotal == totalCount
                 cn.niuyannet.kaochang.android.services.SelfCleanManager.finishOrderTracking(orderNo, orderCompleted)
                 if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
-                // 当前订单动作结束后，本地动作状态恢复为空闲。
-                AppConfig.getAppConfig().moveStatus = 0
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                // 当前订单动作结束后，本地动作状态恢复为空闲；如果本单没有拿到出餐控制权，
+                // 不能清掉补肠/搬盘/丢弃等其他动作的 moveStatus。
+                if (preDeliveryReady) {
+                    AppConfig.getAppConfig().moveStatus = 0
+                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                }
                 withContext(Dispatchers.Main) {
                     val config = AppConfig.getAppConfig()
                     val status = config.onlineStatus
@@ -351,6 +380,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                         "finalMoveStatus=${OrderMoveStatusPolicy.describe(moveStatusResult.finalStatus)}，" +
                         "waitedMs=${moveStatusResult.waitedMs}，reason=${moveStatusResult.reason}"
                 )
+                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
                 return DeliveryResult(false, deliveredCount)
             }
 
@@ -534,21 +564,32 @@ abstract class OrderActivity: BaseSauceDetection() {
     ): MoveStatusNormalizationResult {
         val initialStatus = AppConfig.getAppConfig().moveStatus
         var currentStatus = initialStatus
+        var actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
         var waitedMs = 0L
+        var effectiveMaxWaitMs = OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(currentStatus)
+            ?: maxWaitMs
 
-        while (OrderMoveStatusPolicy.shouldWaitForBlockingAction(currentStatus) && waitedMs < maxWaitMs) {
+        while ((OrderMoveStatusPolicy.shouldWaitForBlockingAction(currentStatus)
+                    || (currentStatus == OrderMoveStatusPolicy.MOVE_STATUS_IDLE && actionGroupBusy))
+            && waitedMs < effectiveMaxWaitMs) {
             LogUtils.d(
                 "【订单流转】单根出餐前等待冲突机械动作收尾：orderNo=$orderNo, itemId=$itemId, " +
                     "current=$currentIndex/$totalCount, itemProgress=$itemProgress/$itemQuantity, " +
                     "attempt=$attemptCount/$maxAttempts, moveStatus（机械动作状态）=${OrderMoveStatusPolicy.describe(currentStatus)}，" +
-                    "waitedMs=$waitedMs/$maxWaitMs"
+                    "actionGroupBusy=$actionGroupBusy，waitedMs=$waitedMs/$effectiveMaxWaitMs"
             )
             delay(checkIntervalMs)
             waitedMs += checkIntervalMs
             currentStatus = AppConfig.getAppConfig().moveStatus
+            actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+            effectiveMaxWaitMs = maxOf(
+                effectiveMaxWaitMs,
+                OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(currentStatus)
+                    ?: maxWaitMs
+            )
         }
 
-        if (OrderMoveStatusPolicy.shouldNormalizeToDelivering(currentStatus)) {
+        if (OrderMoveStatusPolicy.shouldNormalizeToDelivering(currentStatus) && !actionGroupBusy) {
             val config = AppConfig.getAppConfig()
             config.moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING
             AppConfig.saveAppConfig(config)
@@ -584,6 +625,8 @@ abstract class OrderActivity: BaseSauceDetection() {
 
         val reason = if (OrderMoveStatusPolicy.shouldWaitForBlockingAction(currentStatus)) {
             "等待冲突机械动作收尾超时"
+        } else if (currentStatus == OrderMoveStatusPolicy.MOVE_STATUS_IDLE && actionGroupBusy) {
+            "等待动作组资源锁释放超时"
         } else {
             "未知 moveStatus，不下发 out1"
         }

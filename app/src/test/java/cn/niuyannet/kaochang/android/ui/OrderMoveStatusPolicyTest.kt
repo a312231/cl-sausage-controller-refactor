@@ -1,7 +1,9 @@
 package cn.niuyannet.kaochang.android.ui
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class OrderMoveStatusPolicyTest {
@@ -49,6 +51,15 @@ class OrderMoveStatusPolicyTest {
     }
 
     @Test
+    fun waitTimeout_shouldMatchSellPrioritySafeCloseoutBudget() {
+        assertEquals(240_000L, OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING))
+        assertEquals(90_000L, OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(OrderMoveStatusPolicy.MOVE_STATUS_PAN_MOVING))
+        assertEquals(150_000L, OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(OrderMoveStatusPolicy.MOVE_STATUS_DISCARDING))
+        assertEquals(0L, OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(OrderMoveStatusPolicy.MOVE_STATUS_SELF_CLEANING))
+        assertNull(OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(OrderMoveStatusPolicy.MOVE_STATUS_IDLE))
+    }
+
+    @Test
     fun incomingOrder_shouldRejectWhenActionGroupBusyEvenIfMoveStatusIdle() {
         assertFalse(
             OrderMoveStatusPolicy.canAcceptIncomingOrder(
@@ -60,7 +71,7 @@ class OrderMoveStatusPolicyTest {
     }
 
     @Test
-    fun incomingOrder_shouldAcceptOnlyWhenBusinessAndActionGroupAreIdle() {
+    fun incomingOrder_shouldAcceptIdleOrWaitableSafeCloseoutStates() {
         assertTrue(
             OrderMoveStatusPolicy.canAcceptIncomingOrder(
                 moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
@@ -68,11 +79,39 @@ class OrderMoveStatusPolicyTest {
                 actionGroupBusy = false
             )
         )
+        assertTrue(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING,
+                onlineStatus = 1,
+                actionGroupBusy = true
+            )
+        )
+        assertTrue(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_PAN_MOVING,
+                onlineStatus = 1,
+                actionGroupBusy = true
+            )
+        )
+        assertTrue(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DISCARDING,
+                onlineStatus = 1,
+                actionGroupBusy = true
+            )
+        )
         assertFalse(
             OrderMoveStatusPolicy.canAcceptIncomingOrder(
                 moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING,
                 onlineStatus = 1,
                 actionGroupBusy = false
+            )
+        )
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_SELF_CLEANING,
+                onlineStatus = 1,
+                actionGroupBusy = true
             )
         )
         assertFalse(
