@@ -26,7 +26,9 @@ object KaoPanUiReservationStateBuilder {
     ) {
         val intent = activeIntent ?: return
         val remainingTargetPositions = intent.remainingTargets().map { it.positionSn }.toSet()
-        intent.targets.forEach { target ->
+        intent.targets
+            .filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
+            .forEach { target ->
             val taste = target.tasteCode.toUiTaste()
             if (target.positionSn in remainingTargetPositions) {
                 pans.firstOrNull { it.positionSn == target.positionSn && it.status == 0 && !it.isHasSausage }
@@ -42,7 +44,7 @@ object KaoPanUiReservationStateBuilder {
                     uiReservationState = KaoPan.UI_RESERVATION_WAIT_RETURN
                     uiReservationTaste = taste
                 }
-        }
+            }
     }
 
     private fun inferLowHeatReturnTargets(
@@ -100,7 +102,11 @@ object KaoPanUiReservationStateBuilder {
             .filter {
                 it.positionSn in 25..33 &&
                     it.isHasSausage &&
-                    it.status in setOf(1, 2) &&
+                    it.status in setOf(
+                        KaoPan.STATUS_BAKING,
+                        KaoPan.STATUS_SELLABLE_KEEP_WARM,
+                        KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+                    ) &&
                     !it.taste?.tasteCode.isNullOrBlank()
             }
             .sortedBy { it.positionSn }

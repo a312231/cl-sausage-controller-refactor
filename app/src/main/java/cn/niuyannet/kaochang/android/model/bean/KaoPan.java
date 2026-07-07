@@ -8,6 +8,11 @@ import java.io.Serializable;
  * 烤盘数据结构
  */
 public class KaoPan implements Serializable {
+    public static final int STATUS_EMPTY = 0;
+    public static final int STATUS_BAKING = 1;
+    public static final int STATUS_SELLABLE_KEEP_WARM = 2;
+    public static final int STATUS_WAITING_RETURN_KEEP_WARM = 3;
+
     @SerializedName("id")
     private int id; // 序列id
     
@@ -36,7 +41,7 @@ public class KaoPan implements Serializable {
     private int temperature; // 烤盘温度 0是未工作，60是保温中，160是烤制中
     
     @SerializedName("status")
-    private int status; // 当前烤盘状态：0空缺，1烤制中，2保温（可以售卖）
+    private int status; // 当前烤盘状态：0空缺，1烤制中，2保温可售，3等待回搬保温不可售
     
     @SerializedName("has_sausage")
     private boolean hasSausage; // 是否有烤肠
@@ -82,7 +87,7 @@ public class KaoPan implements Serializable {
         this.closeTime = 0L;
         this.taste = null;
         this.temperature = 0;
-        this.status = 0;
+        this.status = STATUS_EMPTY;
         this.hasSausage = false;
         this.hasGrilling = false;
         this.cmdValueMove = 0;

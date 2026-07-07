@@ -69,6 +69,7 @@ object KaoChangAlgorithm {
     private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
     private var lastFaultHeatDiagnosticLogKey: String? = null
+    private var lastStableHighOldLowHeatDiagnosticKey: String? = null
     var isEnabled = false
 
     private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
@@ -614,6 +615,40 @@ object KaoChangAlgorithm {
         return true
     }
 
+    private fun diagnoseStableHighSuspiciousOldLowHeatSources(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ) {
+        val oldLowHeatPans = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val suspiciousPositions = collectStableHighSuspiciousOldLowHeatSources(
+            modeType = config.modeType,
+            transitionMode = config.transitionMode,
+            oldLowHeatPans = oldLowHeatPans,
+            activeIntent = activeIntent
+        )
+        val logKey = if (suspiciousPositions.isEmpty()) {
+            "none"
+        } else {
+            "positions=${suspiciousPositions.joinToString(",")}|batchId=${activeIntent?.batchId.orEmpty()}"
+        }
+        if (lastStableHighOldLowHeatDiagnosticKey == logKey) {
+            return
+        }
+        lastStableHighOldLowHeatDiagnosticKey = logKey
+        if (suspiciousPositions.isEmpty()) {
+            return
+        }
+        logW(
+            LOG_ALGORITHM,
+            "【并发切换诊断】高并发稳态检测到强疑似旧低补热源仍为可售保温：" +
+                "positions=$suspiciousPositions，batchId=${activeIntent?.batchId}，" +
+                "type=${activeIntent?.type?.let { SupplementBatchIntentRepository.typeText(it) }}，" +
+                "处理策略=仅告警并同步运行态，不自动改盘，避免误伤高并发正常前区可售"
+        )
+        publishRuntimeStateOrFallback("runtime_state:stable_high_suspected_old_low_heat_legacy")
+    }
+
     private fun refreshSupplyStatus(
         config: AppConfigBean,
         kaoPanList: List<KaoPan>,
@@ -754,6 +789,7 @@ object KaoChangAlgorithm {
         if (config.businessTime == null) {
             logW(LOG_ALGORITHM, "【营业时间】营业时间配置为空（businessTime=null），算法按非营业时间处理，设备将不会运营。请检查后台是否已配置营业时间")
         }
+        normalizeSupplementSourceKeepWarmBeforeEarlyReturns(config, kaoPanList)
         val currentTime = getCurrentTime()
         val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
         if (!isWithinBusinessHours) {
@@ -811,6 +847,7 @@ object KaoChangAlgorithm {
 
         selfHealHighToLowEmptyResidual(config, kaoPanList, kaoPanBoxList)
         refreshHighConcurrencyResidualDrain(config, kaoPanList, "pollKaoPanStatus")
+        diagnoseStableHighSuspiciousOldLowHeatSources(config, kaoPanList)
         val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
         val autoDispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
             onlineStatus = onlineStatus,
@@ -823,12 +860,14 @@ object KaoChangAlgorithm {
         val schedulingEnabled =
             isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus) && autoDispatchDecision.canStart
 
+        refreshActiveBakingTimeBeforeMaturityCheck(config, kaoPanList)
+        settleOldLowHeatSourcesBeforePendingDiscard(config, kaoPanList)
         if (config.pendingDiscardPositions.isNotEmpty()) {
             OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "pending_discard_priority")
             return
         }
-        refreshActiveBakingTimeBeforeMaturityCheck(config, kaoPanList)
         settleMaturedZonesBeforeDispatch(config, kaoPanList)
+        normalizeOldLowHeatSourcesBeforeAvailabilityProjection(config, kaoPanList)
 
         val pollStateSnapshot =
             "mode=${config.modeType},transition=${config.transitionMode},residual=${config.highConcurrencyResidualDrain},online=$onlineStatus,move=${config.moveStatus},error=${config.errorStatus},supply=${config.supplyStatus},homeQrHidden=${config.homeQrHidden},inspection=${config.inspectionMode},isEnable=${config.isEnable},enable=$schedulingEnabled"
@@ -955,6 +994,139 @@ object KaoChangAlgorithm {
             beforeSellable,
             KaoPanHelper.getKaoPanList(),
             "机械门禁前整区成熟转保温"
+        )
+        return true
+    }
+
+    private fun normalizeSupplementSourceKeepWarmBeforeEarlyReturns(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ): Boolean {
+        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val normalizedPositions = mutableListOf<Int>()
+        val lowSourcePans = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
+        val highSourcePans = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
+
+        if (
+            config.modeType == 1 &&
+            config.transitionMode == 0 &&
+            config.highConcurrencyResidualDrain != 1
+        ) {
+            normalizedPositions += LowHeatSupplementResumePlanner.normalizeLegacySellableKeepWarmSources(lowSourcePans)
+        } else if (config.modeType == 2 && config.transitionMode == 1) {
+            normalizedPositions += normalizeOldLowHeatWaitingSourcesForReturn(lowSourcePans)
+        }
+        normalizedPositions += HighHeatSupplementResumePlanner.normalizeLegacySellableKeepWarmSources(highSourcePans)
+
+        val distinctPositions = normalizedPositions.distinct().sorted()
+        if (distinctPositions.isEmpty()) {
+            return false
+        }
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        logW(
+            LOG_ALGORITHM,
+            "【烤盘状态自愈】调度早退前纠偏补热源区历史原地保温可售状态为等待回搬不可售：" +
+                "positions=$distinctPositions，mode=${config.modeType}，transition=${config.transitionMode}，residual=${config.highConcurrencyResidualDrain}"
+        )
+        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+            beforeSellable,
+            KaoPanHelper.getKaoPanList(),
+            "调度早退前补热源区历史可售状态纠偏"
+        )
+        return true
+    }
+
+    private fun settleOldLowHeatSourcesBeforePendingDiscard(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ): Boolean {
+        if (!(config.modeType == 2 && config.transitionMode == 1 && config.pendingDiscardPositions.isNotEmpty())) {
+            return false
+        }
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+            return false
+        }
+        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val nowMs = System.currentTimeMillis()
+        val oldLowHeatPans = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
+        val normalizedPositions = normalizeOldLowHeatWaitingSourcesForReturn(oldLowHeatPans)
+        val settledPositions = mutableListOf<Int>()
+
+        listOf(13..15, 16..18).forEach { range ->
+            val occupiedPans = oldLowHeatPans.filter { it.positionSn in range && it.isHasSausage }
+            if (occupiedPans.isEmpty()) {
+                return@forEach
+            }
+            val allReady = occupiedPans.all { pan ->
+                when {
+                    pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM &&
+                        pan.startTime <= 0L &&
+                        pan.holdingTime > 0L -> true
+
+                    pan.startTime > 0L &&
+                        pan.bakingTime > 0L &&
+                        FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime -> true
+
+                    else -> false
+                }
+            }
+            if (!allReady) {
+                return@forEach
+            }
+            occupiedPans
+                .filter { it.startTime > 0L }
+                .forEach { pan ->
+                    pan.startTime = 0L
+                    pan.holdingTime = nowMs
+                    pan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+                    settledPositions += pan.positionSn
+                }
+        }
+
+        val changedPositions = (normalizedPositions + settledPositions).distinct().sorted()
+        if (changedPositions.isEmpty()) {
+            return false
+        }
+        if (settledPositions.isNotEmpty()) {
+            KaoChangOperate.stopHeating(2)
+            KaoChangOperate.keepWarm(2)
+        }
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        logW(
+            LOG_ALGORITHM,
+            "【并发切换】低转高待丢弃优先前收口旧低补热源：13~18 已改为等待回搬保温不可售，" +
+                "positions=$changedPositions，pendingDiscard=${config.pendingDiscardPositions}"
+        )
+        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+            beforeSellable,
+            KaoPanHelper.getKaoPanList(),
+            "低转高待丢弃优先前旧低补热源收口"
+        )
+        return true
+    }
+
+    private fun normalizeOldLowHeatSourcesBeforeAvailabilityProjection(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>
+    ): Boolean {
+        if (!(config.modeType == 2 && config.transitionMode == 1)) {
+            return false
+        }
+        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val oldLowHeatPans = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
+        val normalizedPositions = normalizeOldLowHeatWaitingSourcesForReturn(oldLowHeatPans)
+        if (normalizedPositions.isEmpty()) {
+            return false
+        }
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        logW(
+            LOG_ALGORITHM,
+            "【并发切换】低转高可售投影前纠偏旧低补热源：13~18 历史原地保温可售已改为等待回搬不可售，positions=$normalizedPositions"
+        )
+        KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+            beforeSellable,
+            KaoPanHelper.getKaoPanList(),
+            "低转高可售投影前旧低补热源纠偏"
         )
         return true
     }

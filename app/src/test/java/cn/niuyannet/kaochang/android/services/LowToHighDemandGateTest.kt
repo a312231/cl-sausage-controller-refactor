@@ -162,6 +162,21 @@ class LowToHighDemandGateTest {
     }
 
     @Test
+    fun canTriggerLowToHigh_shouldAllowWhenLowHeatAreaIsWaitingReturnKeepWarm() {
+        val frontPans = frontPans(emptyPositions = setOf(1, 2, 3, 4, 5, 6, 7, 8))
+
+        assertTrue(
+            LowToHighDemandGate.canTriggerLowToHigh(
+                frontPans = frontPans,
+                lowHeatPans = lowHeatPans(
+                    activeBakingPositions = emptySet(),
+                    waitingReturnPositions = (13..18).toSet()
+                )
+            )
+        )
+    }
+
+    @Test
     fun markExpiredDiscardAndFoldToLow_shouldRecordFrontPositionAndEnterHighToLowTransition() {
         val config = AppConfigBean().apply {
             modeType = 2
@@ -254,15 +269,23 @@ class LowToHighDemandGateTest {
 
     private fun lowHeatPans(
         activeBakingPositions: Set<Int>,
-        keepWarmPositions: Set<Int> = emptySet()
+        keepWarmPositions: Set<Int> = emptySet(),
+        waitingReturnPositions: Set<Int> = emptySet()
     ): List<KaoPan> =
         (13..18).map { position ->
             KaoPan().apply {
                 positionSn = position
-                isHasSausage = position in activeBakingPositions || position in keepWarmPositions
+                isHasSausage = position in activeBakingPositions ||
+                    position in keepWarmPositions ||
+                    position in waitingReturnPositions
                 startTime = if (position in activeBakingPositions) 1_000L else 0L
-                holdingTime = if (position in keepWarmPositions) 2_000L else 0L
-                status = if (position in keepWarmPositions) 2 else if (position in activeBakingPositions) 1 else 0
+                holdingTime = if (position in keepWarmPositions || position in waitingReturnPositions) 2_000L else 0L
+                status = when (position) {
+                    in keepWarmPositions -> 2
+                    in waitingReturnPositions -> 3
+                    in activeBakingPositions -> 1
+                    else -> 0
+                }
             }
         }
 }

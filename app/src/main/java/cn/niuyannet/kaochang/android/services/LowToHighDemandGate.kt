@@ -163,7 +163,11 @@ object LowToHighDemandGate {
             .associateBy { it.positionSn }
         return lowHeatPositions.all { position ->
             val pan = byPosition[position] ?: return@all false
-            pan.isHasSausage && pan.startTime > 0L && pan.status != 2
+            pan.isHasSausage &&
+                (
+                    pan.startTime > 0L && pan.status != KaoPan.STATUS_SELLABLE_KEEP_WARM ||
+                        pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+                    )
         }
     }
 }

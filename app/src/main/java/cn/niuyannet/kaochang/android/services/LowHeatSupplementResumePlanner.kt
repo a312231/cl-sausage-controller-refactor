@@ -69,7 +69,7 @@ internal object LowHeatSupplementResumePlanner {
             if (pan.startTime > 0L) {
                 pan.startTime = 0L
                 pan.holdingTime = nowMs
-                pan.status = 2
+                pan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
             }
         }
         return finishedPans
@@ -83,6 +83,7 @@ internal object LowHeatSupplementResumePlanner {
         if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
             return emptyList()
         }
+        normalizeLegacySellableKeepWarmSources(supplementGroup)
         val occupiedPans = occupiedPans(supplementGroup)
         if (occupiedPans.isEmpty()) {
             return emptyList()
@@ -107,6 +108,23 @@ internal object LowHeatSupplementResumePlanner {
             .maxOrNull()
     }
 
+    fun normalizeLegacySellableKeepWarmSources(supplementGroup: List<KaoPan>): List<Int> {
+        val normalizedPositions = mutableListOf<Int>()
+        supplementGroup
+            .filter { pan ->
+                pan.positionSn in 13..18 &&
+                    pan.isHasSausage &&
+                    pan.status == KaoPan.STATUS_SELLABLE_KEEP_WARM &&
+                    pan.startTime <= 0L &&
+                    pan.holdingTime > 0L
+            }
+            .forEach { pan ->
+                pan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+                normalizedPositions += pan.positionSn
+            }
+        return normalizedPositions.sorted()
+    }
+
     private fun reservedTasteForGroupPosition(
         targetPan: KaoPan,
         groupStart: Int,
@@ -129,9 +147,11 @@ internal object LowHeatSupplementResumePlanner {
         pan: KaoPan,
         pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
     ): Boolean {
-        return KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
+        return pan.isHasSausage &&
+            pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM &&
             pan.startTime == 0L &&
-            pan.holdingTime > 0L
+            pan.holdingTime > 0L &&
+            pan.positionSn !in pendingDiscardPositions
     }
 
     private fun isBakingMatured(

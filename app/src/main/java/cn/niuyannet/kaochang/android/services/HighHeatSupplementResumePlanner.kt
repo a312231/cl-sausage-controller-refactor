@@ -142,13 +142,12 @@ internal object HighHeatSupplementResumePlanner {
         supplementGroup: List<KaoPan>,
         pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
     ): Boolean {
+        normalizeLegacySellableKeepWarmSources(supplementGroup)
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         if (!hasFullBatchStarted(sortedGroup)) {
             return false
         }
-        return sortedGroup.all {
-            it.status == 2 && it.positionSn !in pendingDiscardPositions
-        }
+        return sortedGroup.all { isKeepWarmReady(it, pendingDiscardPositions) }
     }
 
     fun findFinishedPartialBatch(
@@ -180,7 +179,7 @@ internal object HighHeatSupplementResumePlanner {
             if (pan.startTime > 0L) {
                 pan.startTime = 0L
                 pan.holdingTime = nowMs
-                pan.status = 2
+                pan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
             }
         }
         return finishedPans
@@ -194,6 +193,7 @@ internal object HighHeatSupplementResumePlanner {
         if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
             return emptyList()
         }
+        normalizeLegacySellableKeepWarmSources(supplementGroup)
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         val occupiedPans = sortedGroup.filter { it.isHasSausage }
         if (occupiedPans.size !in 1 until sortedGroup.size) {
@@ -203,6 +203,23 @@ internal object HighHeatSupplementResumePlanner {
             isKeepWarmReady(pan, pendingDiscardPositions)
         }
         return if (allKeepWarm) occupiedPans else emptyList()
+    }
+
+    fun normalizeLegacySellableKeepWarmSources(supplementGroup: List<KaoPan>): List<Int> {
+        val normalizedPositions = mutableListOf<Int>()
+        supplementGroup
+            .filter { pan ->
+                pan.positionSn in 25..33 &&
+                    pan.isHasSausage &&
+                    pan.status == KaoPan.STATUS_SELLABLE_KEEP_WARM &&
+                    pan.startTime <= 0L &&
+                    pan.holdingTime > 0L
+            }
+            .forEach { pan ->
+                pan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+                normalizedPositions += pan.positionSn
+            }
+        return normalizedPositions.sorted()
     }
 
     private fun reservedTasteForGroupPosition(
@@ -256,9 +273,11 @@ internal object HighHeatSupplementResumePlanner {
         pan: KaoPan,
         pendingDiscardPositions: Collection<Int> = KaoPanHelper.pendingDiscardPositionsOrEmpty()
     ): Boolean {
-        return KaoPanHelper.isSellable(pan, pendingDiscardPositions) &&
+        return pan.isHasSausage &&
+            pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM &&
             pan.startTime == 0L &&
-            pan.holdingTime > 0L
+            pan.holdingTime > 0L &&
+            pan.positionSn !in pendingDiscardPositions
     }
 
     private fun isBakingMatured(

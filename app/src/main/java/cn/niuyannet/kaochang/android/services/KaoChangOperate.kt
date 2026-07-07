@@ -1689,7 +1689,9 @@ object KaoChangOperate {
     }
 
     fun shouldDelayHeatReturnForBatchCompleteness(types: Set<SupplementBatchType>): Boolean {
-        return supplementBatchIntentRepository.shouldDelayHeatReturnForBatchCompleteness(types)
+        return supplementBatchIntentRepository.shouldDelayHeatReturnForBatchCompleteness(types) { intent ->
+            clearFaultTimeoutCancelledReturnReservations(intent, "补热批次故障超过10分钟，释放回搬预留")
+        }
     }
 
     suspend fun handlePendingSupplementBatchIfAny(
@@ -3388,12 +3390,7 @@ object KaoChangOperate {
             while (true) {
                 delay(PanMove203Policy.pollDelayMs)
                 val result = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move_result)
-                val commandValue = if (result == AtomicActionCodes.COMPLETED && !hasObservedRunning) {
-                    VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move)
-                } else {
-                    null
-                }
-                when (PanMove203Policy.evaluate(result, hasObservedRunning, commandValue)) {
+                when (PanMove203Policy.evaluate(result, hasObservedRunning)) {
                     PanMove203Decision.Running -> {
                         hasObservedRunning = true
                         logD(LOG_PAN_MOVE, "搬移执行中：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=1（执行中）")
@@ -3444,10 +3441,10 @@ object KaoChangOperate {
             newKaoPan.isHasGrilling = false
             newKaoPan.taste = KaoPanHelper.copyResolvedTaste(kaoPan.taste) ?: kaoPan.taste
             newKaoPan.holdingTime = targetHoldingTime
-            newKaoPan.status = 2
+            newKaoPan.status = KaoPan.STATUS_SELLABLE_KEEP_WARM
             kaoPan.isHasSausage = false
             kaoPan.startTime = 0
-            kaoPan.status = 0
+            kaoPan.status = KaoPan.STATUS_EMPTY
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())

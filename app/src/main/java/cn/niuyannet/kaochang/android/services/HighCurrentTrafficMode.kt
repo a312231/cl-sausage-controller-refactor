@@ -361,10 +361,12 @@ object HighCurrentTrafficMode {
                     return
                 }
                 lowTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
 
             2 -> {
                 highTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
         }
     }
@@ -712,7 +714,7 @@ object HighCurrentTrafficMode {
             return
         }
 
-        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        var beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
         val normalizedLegacySellableSources = normalizeOldLowHeatWaitingSourcesForReturn(sourcePans)
         if (normalizedLegacySellableSources.isNotEmpty()) {
             LogUtils.w(
@@ -720,9 +722,24 @@ object HighCurrentTrafficMode {
                 "【并发切换】低转高过渡：发现 $groupName 旧补热区历史原地保温可售状态，已恢复为等待回搬不可售，" +
                     "positions=$normalizedLegacySellableSources"
             )
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "低转高过渡${groupName}旧补热区历史原地可售状态纠偏为等待回搬"
+            )
+            beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
         }
         KaoChangOperate.keepWarm(2)
         LogUtils.i(TAG, "【并发切换】低转高过渡：$groupName 旧补热区已烤熟，2区硬件保温等待搬回 1~9；本地不标可售")
+        sourcePans.forEach { sourcePan ->
+            if (sourcePan.status != KaoPan.STATUS_WAITING_RETURN_KEEP_WARM || sourcePan.startTime > 0L) {
+                sourcePan.startTime = 0L
+                if (sourcePan.holdingTime <= 0L) {
+                    sourcePan.holdingTime = now
+                }
+                sourcePan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+            }
+        }
         val frontPans = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         var movedAny = false
         sourcePans.forEach { kaoPan ->
@@ -758,7 +775,7 @@ object HighCurrentTrafficMode {
             val moved = KaoChangOperate.moveKaoPanToKaoPan(
                 kaoPan,
                 targetPan,
-                targetHoldingTime = now
+                targetHoldingTime = kaoPan.holdingTime
             )
             if (!moved) {
                 LogUtils.w(
@@ -1131,6 +1148,21 @@ object HighCurrentTrafficMode {
      */
     private suspend fun checkHighHeatSausage(list: List<KaoPan>): Boolean {
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
+        var beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val normalizedLegacySellableSources =
+            HighHeatSupplementResumePlanner.normalizeLegacySellableKeepWarmSources(list25_33)
+        if (normalizedLegacySellableSources.isNotEmpty()) {
+            LogUtils.w(
+                TAG,
+                "【高并发补肠】25~33 补热区发现历史原地保温可售状态，已恢复为等待回搬不可售：positions=$normalizedLegacySellableSources"
+            )
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "高并发25~33补热区历史原地可售状态纠偏为等待回搬"
+            )
+            beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        }
         if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
             val movedPartialBatch = moveFinishedPartialHighHeatBatchToFront(list, list25_33)
             if (!movedPartialBatch) {
@@ -1148,7 +1180,6 @@ object HighCurrentTrafficMode {
                 )
                 return true
             }
-            val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             LogUtils.i(TAG, "【高并发补肠】25~33 补热区已烤熟，开始回补 1~21")
             KaoChangOperate.keepWarm(3)
             KaoChangOperate.keepWarm(2)
@@ -1415,14 +1446,19 @@ object HighCurrentTrafficMode {
                 if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                     kaoPan.startTime = 0
                     kaoPan.holdingTime = nowMs
-                    kaoPan.status = 2
+                    kaoPan.status = if (area == 3) {
+                        KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+                    } else {
+                        KaoPan.STATUS_SELLABLE_KEEP_WARM
+                    }
                 }
             }
-            LogUtils.i(TAG, "【加热控制】${area} 区烤肠已全部烤熟，切换为保温状态")
+            val stateText = if (area == 3) "等待回搬保温不可售" else "保温可售"
+            LogUtils.i(TAG, "【加热控制】${area} 区烤肠已全部烤熟，切换为$stateText")
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
                 beforeSellable,
                 KaoPanHelper.getKaoPanList(),
-                "高并发${area}区切换保温可售"
+                "高并发${area}区切换$stateText"
             )
         }
     }
@@ -1431,7 +1467,7 @@ object HighCurrentTrafficMode {
      * 检查高并发前区可售烤肠是否保温到期。
      */
     private suspend fun checkHighHeatDiscard() {
-        OverKeepWarmDiscardScanner.scanAndDiscard(1..21, "高并发轮询")
+        OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "高并发轮询")
     }
 
     /**

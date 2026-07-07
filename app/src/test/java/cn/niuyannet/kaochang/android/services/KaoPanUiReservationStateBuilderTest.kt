@@ -103,6 +103,23 @@ class KaoPanUiReservationStateBuilderTest {
     }
 
     @Test
+    fun apply_shouldInferHighHeatWaitReturnFromWaitingReturnKeepWarmSource() {
+        val pans = mutableListOf(
+            blankPan(8),
+            pan(25, tasteCode = "B").apply {
+                status = 3
+                isHasSausage = true
+            }
+        )
+
+        KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
+
+        val target = pans.first { it.positionSn == 8 }
+        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
+        assertEquals("B", target.uiReservationTaste.tasteCode)
+    }
+
+    @Test
     fun apply_shouldUseDifferentFrontTargetsForMultipleHighHeatSources() {
         val pans = mutableListOf(
             pan(8, tasteCode = "B"),
@@ -164,6 +181,30 @@ class KaoPanUiReservationStateBuilderTest {
         assertEquals(null, target.taste)
         assertEquals(false, target.isHasGrilling)
         assertEquals(KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT, pans.first { it.positionSn == 13 }.uiReservationState)
+    }
+
+    @Test
+    fun apply_shouldIgnoreFaultTimeoutCancelledReturnTargets() {
+        val pans = mutableListOf(
+            blankPan(2),
+            blankPan(13)
+        )
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 2,
+                    cancelledByFaultTimeout = true
+                )
+            )
+        )
+
+        KaoPanUiReservationStateBuilder.apply(pans, intent)
+
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 2 }.uiReservationState)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 13 }.uiReservationState)
     }
 
     private fun pan(positionSn: Int, tasteCode: String): KaoPan =

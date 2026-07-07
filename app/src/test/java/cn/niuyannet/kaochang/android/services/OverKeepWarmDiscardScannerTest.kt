@@ -31,6 +31,23 @@ class OverKeepWarmDiscardScannerTest {
     }
 
     @Test
+    fun collectDiscardCandidates_shouldIncludeWaitingReturnKeepWarmSourceWhenExpired() {
+        val nowMs = 8 * 60 * 60 * 1000L
+        val pan = holdingPan(positionSn = 25, holdingStartedAtMs = nowMs - 7 * 60 * 60 * 1000L).apply {
+            status = 3
+        }
+
+        val result = OverKeepWarmDiscardScanner.collectDiscardCandidates(
+            pans = listOf(pan),
+            pendingDiscardPositions = emptyList(),
+            nowMs = nowMs
+        )
+
+        assertEquals(listOf(25), result.expiredPositions)
+        assertEquals(listOf(25), result.allPositions)
+    }
+
+    @Test
     fun collectDiscardCandidates_shouldNotExpireStaleBakingHoldingTimePan() {
         val nowMs = 8 * 60 * 60 * 1000L
         val staleBakingPan = holdingPan(positionSn = 14, holdingStartedAtMs = 1L).apply {

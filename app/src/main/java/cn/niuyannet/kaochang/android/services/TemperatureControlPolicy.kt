@@ -40,7 +40,10 @@ object TemperatureControlPolicy {
             }
             val mode = when {
                 zonePans.any { it.isHasSausage && it.status == 1 } -> ZoneMode.HEATING
-                zonePans.any { it.isHasSausage && (it.status == 2 || it.holdingTime > 0L) } -> ZoneMode.KEEP_WARM
+                zonePans.any {
+                    it.isHasSausage &&
+                        (it.status == KaoPan.STATUS_SELLABLE_KEEP_WARM || it.holdingTime > 0L)
+                } -> ZoneMode.KEEP_WARM
                 else -> ZoneMode.STOP
             }
             ZoneTemperatureDecision(

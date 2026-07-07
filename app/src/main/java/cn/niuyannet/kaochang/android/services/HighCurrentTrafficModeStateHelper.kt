@@ -246,8 +246,11 @@ internal fun hasRealOldLowHeatLegacyBatch(
     return oldLowHeatPans
         .filter { it.positionSn in 13..18 && it.isHasSausage }
         .any { pan ->
-            val isBaking = pan.startTime > 0L && pan.status != 2
-            isBaking || hasReservedFrontReturnTarget(pan, frontPans)
+            val waitingReturn = pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM &&
+                pan.holdingTime > 0L &&
+                pan.startTime <= 0L
+            val isBaking = pan.startTime > 0L && pan.status != KaoPan.STATUS_SELLABLE_KEEP_WARM
+            waitingReturn || isBaking || hasReservedFrontReturnTarget(pan, frontPans)
         }
 }
 
@@ -287,6 +290,8 @@ internal fun collectOldLowHeatReturnReservations(
         ?.targets
         ?.filter { target ->
             activeIntent.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) &&
+                !target.cancelledByFaultTimeout &&
+                !target.skippedBySupplyDegrade &&
                 target.returnPositionSn in 1..9
         }
         ?.forEach { target ->
@@ -345,6 +350,7 @@ internal fun collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
         ?.takeIf {
             activeIntent.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
         }
+        ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
         ?.forEach { target ->
             val sourcePan = sourceByPosition[target.positionSn] ?: return@forEach
             val returnPosition = target.returnPositionSn ?: return@forEach
@@ -391,22 +397,48 @@ internal fun normalizeOldLowHeatWaitingSourcesForReturn(oldLowHeatPans: List<Kao
         .filter { pan ->
             pan.positionSn in 13..18 &&
                 pan.isHasSausage &&
-                pan.status == 2 &&
+                pan.status == KaoPan.STATUS_SELLABLE_KEEP_WARM &&
                 pan.holdingTime > 0L &&
                 pan.startTime <= 0L
         }
         .forEach { pan ->
-            val reconstructedStartTime = if (pan.bakingTime > 0L) {
-                (pan.holdingTime - pan.bakingTime).coerceAtLeast(1L)
-            } else {
-                1L
-            }
-            pan.startTime = reconstructedStartTime
-            pan.holdingTime = 0L
-            pan.status = 1
+            pan.startTime = 0L
+            pan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
             normalizedPositions += pan.positionSn
         }
     return normalizedPositions.sorted()
+}
+
+internal fun collectStableHighSuspiciousOldLowHeatSources(
+    modeType: Int,
+    transitionMode: Int,
+    oldLowHeatPans: List<KaoPan>,
+    activeIntent: SupplementBatchIntent?
+): List<Int> {
+    if (modeType != 2 || transitionMode != 0) {
+        return emptyList()
+    }
+    val activeLowHeatTargetPositions = activeIntent
+        ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
+        ?.targets
+        ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
+        ?.map { it.positionSn }
+        ?.toSet()
+        ?: emptySet()
+    if (activeLowHeatTargetPositions.isEmpty()) {
+        return emptyList()
+    }
+    return oldLowHeatPans
+        .filter { pan ->
+            pan.positionSn in 13..18 &&
+                pan.positionSn in activeLowHeatTargetPositions &&
+                pan.isHasSausage &&
+                pan.status == KaoPan.STATUS_SELLABLE_KEEP_WARM &&
+                pan.holdingTime > 0L &&
+                pan.startTime <= 0L
+        }
+        .map { it.positionSn }
+        .sorted()
 }
 
 internal fun clearReturnedOldLowHeatSourceMetadata(sourcePan: KaoPan) {
@@ -425,7 +457,12 @@ internal fun selectOldLowHeatReturnTarget(
     val intentTarget = activeIntent
         ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
         ?.targets
-        ?.firstOrNull { it.positionSn == sourcePan.positionSn && it.returnPositionSn in 1..9 }
+        ?.firstOrNull {
+            it.positionSn == sourcePan.positionSn &&
+                it.returnPositionSn in 1..9 &&
+                !it.cancelledByFaultTimeout &&
+                !it.skippedBySupplyDegrade
+        }
     val tasteCode = sourcePan.taste?.tasteCode?.takeIf { it.isNotBlank() }
         ?: intentTarget?.tasteCode?.takeIf { it.isNotBlank() }
         ?: return null
@@ -459,7 +496,15 @@ internal fun shouldDiscardWaitingOldLowHeatSource(
     config: AppConfigBean,
     nowMs: Long
 ): Boolean {
-    if (!pan.isHasSausage || pan.positionSn !in 13..18 || pan.startTime <= 0L) {
+    if (!pan.isHasSausage || pan.positionSn !in 13..18) {
+        return false
+    }
+    if (pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM && pan.startTime <= 0L) {
+        return pan.holdingTime > 0L &&
+            pan.closeTime > 0L &&
+            nowMs - pan.holdingTime >= pan.closeTime
+    }
+    if (pan.startTime <= 0L) {
         return false
     }
     if (pan.bakingTime <= 0L || pan.closeTime <= 0L) {
@@ -503,7 +548,8 @@ internal fun hasOldLowHeatAreaSausageForLowToHighTransition(
             if (!highHeatReturnStarted) {
                 true
             } else {
-                pan.startTime > 0L && pan.status != 2
+                pan.status == KaoPan.STATUS_WAITING_RETURN_KEEP_WARM ||
+                    (pan.startTime > 0L && pan.status != KaoPan.STATUS_SELLABLE_KEEP_WARM)
             }
         }
 }

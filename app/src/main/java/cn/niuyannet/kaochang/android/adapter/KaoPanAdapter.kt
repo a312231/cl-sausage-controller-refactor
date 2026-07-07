@@ -55,20 +55,25 @@ class KaoPanAdapter(val callBack:((kaoPan: KaoPan)->Unit)) : ListAdapter<KaoPan,
                 }
                 // 设置烤盘状态
                 when(kaoPan.status) {
-                    0 -> {
+                    KaoPan.STATUS_EMPTY -> {
                         tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#000000".toColorInt())
                         tvStatus.setBackgroundColor("#CCCCCC".toColorInt()) // 灰色背景
                     }
-                    1 -> {
+                    KaoPan.STATUS_BAKING -> {
                         tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#FFFFFF".toColorInt())
                         tvStatus.setBackgroundColor("#FF0000".toColorInt()) // 红色背景
                     }
-                    2 -> {
+                    KaoPan.STATUS_SELLABLE_KEEP_WARM -> {
                         tvStatus.text = formatKaoPanStatusText(kaoPan)
                         tvStatus.setTextColor("#FFFFFF".toColorInt())
                         tvStatus.setBackgroundColor("#00FF00".toColorInt()) // 绿色背景
+                    }
+                    KaoPan.STATUS_WAITING_RETURN_KEEP_WARM -> {
+                        tvStatus.text = formatKaoPanStatusText(kaoPan)
+                        tvStatus.setTextColor("#000000".toColorInt())
+                        tvStatus.setBackgroundColor("#FFD699".toColorInt()) // 橙色背景
                     }
                     else -> {
                         tvStatus.text = "未知"
@@ -96,25 +101,29 @@ internal fun formatKaoPanStatusText(
     config: AppConfigBean = AppConfig.getAppConfig()
 ): String {
     return when (kaoPan.status) {
-        0 -> when (kaoPan.uiReservationState) {
+        KaoPan.STATUS_EMPTY -> when (kaoPan.uiReservationState) {
             KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT -> "待补肠"
             KaoPan.UI_RESERVATION_WAIT_RETURN -> "待回补"
             else -> "空缺"
         }
-        1 -> {
+        KaoPan.STATUS_BAKING -> {
             val seconds = FaultHeatPauseManager.effectiveBakingElapsedMs(kaoPan, config, nowMs) / 1000L
             "烤制中:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
         }
-        2 -> {
+        KaoPan.STATUS_SELLABLE_KEEP_WARM -> {
             val seconds = (nowMs - kaoPan.holdingTime).coerceAtLeast(0L) / 1000L
             "保温:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
+        }
+        KaoPan.STATUS_WAITING_RETURN_KEEP_WARM -> {
+            val seconds = (nowMs - kaoPan.holdingTime).coerceAtLeast(0L) / 1000L
+            "待回搬保温:${String.format("%02d:%02d", seconds / 60, seconds % 60)}"
         }
         else -> "未知"
     }
 }
 
 internal fun formatKaoPanTasteText(kaoPan: KaoPan): String {
-    if (kaoPan.status == 0) {
+    if (kaoPan.status == KaoPan.STATUS_EMPTY) {
         return "口味: ${formatTasteName(kaoPan.uiReservationTaste) ?: "无"}"
     }
 

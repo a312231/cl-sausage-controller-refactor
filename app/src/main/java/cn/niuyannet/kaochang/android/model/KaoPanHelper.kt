@@ -110,7 +110,7 @@ object KaoPanHelper {
      */
     fun isSellable(kaoPan: KaoPan, pendingDiscardPositions: Collection<Int> = emptyList()): Boolean {
         return kaoPan.isHasSausage &&
-            kaoPan.status == 2 &&
+            kaoPan.status == KaoPan.STATUS_SELLABLE_KEEP_WARM &&
             kaoPan.holdingTime > 0L &&
             kaoPan.positionSn !in pendingDiscardPositions
     }

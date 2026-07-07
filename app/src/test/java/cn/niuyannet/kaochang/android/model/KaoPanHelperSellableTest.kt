@@ -21,6 +21,15 @@ class KaoPanHelperSellableTest {
         assertTrue(KaoPanHelper.isSellable(pan, emptyList()))
     }
 
+    @Test
+    fun isSellable_shouldRejectWaitingReturnKeepWarmPan() {
+        val pan = sellablePan(positionSn = 13).apply {
+            status = 3
+        }
+
+        assertFalse(KaoPanHelper.isSellable(pan, emptyList()))
+    }
+
     private fun sellablePan(positionSn: Int): KaoPan =
         KaoPan().apply {
             this.positionSn = positionSn

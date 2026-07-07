@@ -274,14 +274,14 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun markFinishedPansKeepWarm_shouldReturnRetainedKeepWarmPanWithNewlyMaturedPans() {
+    fun markFinishedPansKeepWarm_shouldReturnRetainedWaitingReturnPanWithNewlyMaturedPans() {
         val nowMs = 70L * 60L * 1000L
         val retainedHoldingTime = 10_000L
         val group = listOf(
             supplementPan(13, "A", hasSausage = true).apply {
                 startTime = 0L
                 holdingTime = retainedHoldingTime
-                status = 2
+                status = 3
             },
             supplementPan(14, "A", hasSausage = true).apply {
                 startTime = 30L * 60L * 1000L
@@ -301,7 +301,7 @@ class LowHeatSupplementResumePlannerTest {
         assertEquals(retainedHoldingTime, group[0].holdingTime)
         assertEquals(nowMs, group[1].holdingTime)
         assertEquals(nowMs, group[2].holdingTime)
-        assertEquals(listOf(2, 2, 2), group.map { it.status })
+        assertEquals(listOf(3, 3, 3), group.map { it.status })
     }
 
     @Test
@@ -310,7 +310,7 @@ class LowHeatSupplementResumePlannerTest {
             supplementPan(13, "A", hasSausage = true).apply {
                 startTime = 0L
                 holdingTime = 10_000L
-                status = 2
+                status = 3
             },
             supplementPan(14, "A", hasSausage = true).apply {
                 startTime = 5_000L
@@ -330,7 +330,32 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun findKeepWarmPansReadyToMove_shouldReturnAllOccupiedPansWhenAllAreKeepWarm() {
+    fun findKeepWarmPansReadyToMove_shouldReturnAllOccupiedPansWhenAllAreWaitingReturn() {
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 10_000L
+                status = 3
+            },
+            supplementPan(14, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 12_000L
+                status = 3
+            },
+            supplementPan(15, "A", hasSausage = false)
+        )
+
+        val result = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(
+            supplementGroup = group,
+            config = inactiveFaultConfig(),
+            pendingDiscardPositions = emptyList()
+        )
+
+        assertEquals(listOf(13, 14), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findKeepWarmPansReadyToMove_shouldNormalizeLegacySellableSourceToWaitingReturn() {
         val group = listOf(
             supplementPan(13, "A", hasSausage = true).apply {
                 startTime = 0L
@@ -352,6 +377,7 @@ class LowHeatSupplementResumePlannerTest {
         )
 
         assertEquals(listOf(13, 14), result.map { it.positionSn })
+        assertEquals(listOf(3, 3), result.map { it.status })
     }
 
     private fun frontPan(positionSn: Int, tasteCode: String, reserved: Boolean): KaoPan =

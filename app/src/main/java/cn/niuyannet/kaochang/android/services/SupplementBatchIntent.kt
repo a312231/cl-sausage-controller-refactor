@@ -279,7 +279,10 @@ class SupplementBatchIntentRepository(
         return intent
     }
 
-    fun shouldDelayHeatReturnForBatchCompleteness(types: Set<SupplementBatchType>): Boolean {
+    fun shouldDelayHeatReturnForBatchCompleteness(
+        types: Set<SupplementBatchType>,
+        onFaultTimeoutCancelled: (SupplementBatchIntent) -> Unit = {}
+    ): Boolean {
         val intent = loadActive() ?: return false
         if (intent.type !in types ||
             !isHeatSupplementBatch(intent.type) ||
@@ -288,15 +291,28 @@ class SupplementBatchIntentRepository(
         ) {
             return false
         }
-        if (!intent.requiresManualConfirm) {
-            return true
-        }
         val faultElapsedMs = if (intent.failureAtMs > 0L) {
             clock() - intent.failureAtMs
         } else {
             0L
         }
-        return faultElapsedMs <= HEAT_FAULT_RESUME_WINDOW_MS
+        if (faultElapsedMs <= HEAT_FAULT_RESUME_WINDOW_MS) {
+            return true
+        }
+        val cancelledTargets = cancelRemainingTargetsByFaultTimeout(intent)
+        intent.updatedAtMs = clock()
+        onFaultTimeoutCancelled(intent)
+        if (intent.isComplete()) {
+            store.clear()
+        } else {
+            store.save(intent)
+        }
+        warnLogger(
+            "【补肠批次恢复】补热批次故障已超过10分钟，停止继续阻塞成熟回搬：" +
+                "batchId=${intent.batchId}，type=${typeText(intent.type)}，cancelled=$cancelledTargets，" +
+                "remaining=${intent.remainingTargets().map { it.positionSn }}，faultElapsedMs=$faultElapsedMs"
+        )
+        return false
     }
 
     fun clear(reason: String) {

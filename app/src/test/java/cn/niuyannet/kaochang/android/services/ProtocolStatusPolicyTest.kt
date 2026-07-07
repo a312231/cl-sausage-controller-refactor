@@ -11,14 +11,6 @@ class ProtocolStatusPolicyTest {
         assertEquals(PanMove203Decision.Running, PanMove203Policy.evaluate(1, hasObservedRunning = false))
         assertEquals(PanMove203Decision.WaitingForStart, PanMove203Policy.evaluate(2, hasObservedRunning = false))
         assertEquals(PanMove203Decision.Success, PanMove203Policy.evaluate(2, hasObservedRunning = true))
-        assertEquals(
-            PanMove203Decision.Success,
-            PanMove203Policy.evaluate(2, hasObservedRunning = false, commandRegisterValue = 0)
-        )
-        assertEquals(
-            PanMove203Decision.WaitingForStart,
-            PanMove203Policy.evaluate(2, hasObservedRunning = false, commandRegisterValue = 0x0102)
-        )
     }
 
     @Test

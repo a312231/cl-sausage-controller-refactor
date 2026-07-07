@@ -530,6 +530,21 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
+    fun hasOldLowHeatAreaSausageForLowToHighTransition_shouldKeepWaitingReturnOldLowHeatAfterHighHeatReturnStarts() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 10_000L, status = 3)
+        )
+
+        assertTrue(
+            hasOldLowHeatAreaSausageForLowToHighTransition(
+                oldLowHeatPans = oldLowHeatPans,
+                highHeatPans = highHeatPans(occupiedPositions = setOf(33)),
+                recordedHighHeatBatchSize = 9
+            )
+        )
+    }
+
+    @Test
     fun collectProtectedOldLowHeatReturnPositions_shouldUseActiveIntentReturnPositionsAndRestoreFrontReservation() {
         val frontPans = (1..9).map { position ->
             KaoPan().apply {
@@ -656,9 +671,9 @@ class HighCurrentTrafficModeStateHelperTest {
         val normalized = normalizeOldLowHeatWaitingSourcesForReturn(listOf(legacyPan))
 
         assertEquals(listOf(13), normalized)
-        assertEquals(1, legacyPan.status)
-        assertEquals(1_000L, legacyPan.startTime)
-        assertEquals(0L, legacyPan.holdingTime)
+        assertEquals(3, legacyPan.status)
+        assertEquals(0L, legacyPan.startTime)
+        assertEquals(9_000L, legacyPan.holdingTime)
     }
 
     @Test
@@ -690,6 +705,34 @@ class HighCurrentTrafficModeStateHelperTest {
             status = 1
         ).apply {
             bakingTime = 8_000L
+            closeTime = 2_000L
+        }
+
+        assertFalse(
+            shouldDiscardWaitingOldLowHeatSource(
+                pan = pan,
+                config = AppConfigBean(),
+                nowMs = 10_999L
+            )
+        )
+        assertTrue(
+            shouldDiscardWaitingOldLowHeatSource(
+                pan = pan,
+                config = AppConfigBean(),
+                nowMs = 11_000L
+            )
+        )
+    }
+
+    @Test
+    fun shouldDiscardWaitingOldLowHeatSource_shouldUseHoldingTimeForWaitingReturnKeepWarm() {
+        val pan = oldLowHeatPan(
+            position = 13,
+            tasteCode = "A",
+            startTime = 0L,
+            holdingTime = 9_000L,
+            status = 3
+        ).apply {
             closeTime = 2_000L
         }
 
@@ -843,6 +886,75 @@ class HighCurrentTrafficModeStateHelperTest {
         assertEquals(listOf(25), clearedPositions)
         assertTrue(pans.first { it.positionSn == 10 }.isHasSausage)
         assertEquals(1, HighConcurrencyResidualDrainEvaluator.evaluate(1, pans))
+    }
+
+    @Test
+    fun collectStableHighSuspiciousOldLowHeatSources_shouldUseActiveLowHeatIntentAsStrongSignal() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 2),
+            oldLowHeatPan(position = 19, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 2)
+        )
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 13, tasteCode = "A", returnPositionSn = 1)
+            )
+        )
+
+        assertEquals(
+            listOf(13),
+            collectStableHighSuspiciousOldLowHeatSources(
+                modeType = 2,
+                transitionMode = 0,
+                oldLowHeatPans = oldLowHeatPans,
+                activeIntent = intent
+            )
+        )
+    }
+
+    @Test
+    fun collectStableHighSuspiciousOldLowHeatSources_shouldNotFlagNormalStableHighSellableFront() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 2)
+        )
+
+        assertEquals(
+            emptyList<Int>(),
+            collectStableHighSuspiciousOldLowHeatSources(
+                modeType = 2,
+                transitionMode = 0,
+                oldLowHeatPans = oldLowHeatPans,
+                activeIntent = null
+            )
+        )
+    }
+
+    @Test
+    fun collectStableHighSuspiciousOldLowHeatSources_shouldIgnoreCancelledIntentTargets() {
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 13, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 2)
+        )
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    cancelledByFaultTimeout = true
+                )
+            )
+        )
+
+        assertEquals(
+            emptyList<Int>(),
+            collectStableHighSuspiciousOldLowHeatSources(
+                modeType = 2,
+                transitionMode = 0,
+                oldLowHeatPans = oldLowHeatPans,
+                activeIntent = intent
+            )
+        )
     }
 
     private fun occupiedPans(vararg positions: Int): List<KaoPan> =

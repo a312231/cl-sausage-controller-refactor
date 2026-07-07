@@ -77,6 +77,25 @@ class HighCurrentTrafficModeSourceTest {
         assertTrue("保护条件不能只看 requiresManualConfirm，还必须保留已确认但带 failureAtMs 的故障恢复批次", functionBlock.contains("(intent.requiresManualConfirm || intent.failureAtMs > 0L)"))
     }
 
+    @Test
+    fun transitionBranches_shouldPersistPanStateAfterStateOnlyCorrections() {
+        val source = sourceText()
+        val functionStart = source.indexOf("suspend fun highTrafficMode(")
+        assertTrue("必须存在高并发主处理器", functionStart >= 0)
+        val functionEnd = source.indexOf("/**\n     * 低并发内部高并发残留收口专用收尾。", functionStart)
+            .let { if (it >= 0) it else source.length }
+        val functionBlock = source.substring(functionStart, functionEnd)
+
+        assertTrue(
+            "低转高分支可能只做 13~18 状态纠偏而不搬盘，返回前必须保存烤盘",
+            functionBlock.contains("lowTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)\n                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())")
+        )
+        assertTrue(
+            "高转低分支可能只做等待回搬/过保状态处理，返回前必须保存烤盘",
+            functionBlock.contains("highTrafficModeTransition(config, list, listBox, boxSupplyAvailable, schedulingEnabled)\n                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())")
+        )
+    }
+
     private fun sourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt"),

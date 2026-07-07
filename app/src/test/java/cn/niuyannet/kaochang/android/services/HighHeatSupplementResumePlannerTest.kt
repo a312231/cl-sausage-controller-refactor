@@ -1,16 +1,29 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class HighHeatSupplementResumePlannerTest {
+
+    @Before
+    fun setUpAppConfig() {
+        setAppConfigInMemory(AppConfigBean())
+    }
+
+    @After
+    fun resetAppConfig() {
+        setAppConfigInMemory(AppConfigBean())
+    }
 
     @Test
     fun planResumeTargets_shouldResume26To33WhenOnly25AlreadyFilled() {
@@ -250,11 +263,27 @@ class HighHeatSupplementResumePlannerTest {
     fun isCompleteFinishedBatch_shouldAcceptNineFilledAndNoBakingStatus() {
         val group = (25..33).map { position ->
             supplementPan(position, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 10_000L
+                status = 3
+            }
+        }
+
+        assertTrue(HighHeatSupplementResumePlanner.isCompleteFinishedBatch(group))
+    }
+
+    @Test
+    fun isCompleteFinishedBatch_shouldNormalizeLegacySellableSourceToWaitingReturn() {
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = true).apply {
+                startTime = 0L
+                holdingTime = 10_000L
                 status = 2
             }
         }
 
         assertTrue(HighHeatSupplementResumePlanner.isCompleteFinishedBatch(group))
+        assertEquals(List(9) { 3 }, group.map { it.status })
     }
 
     @Test
@@ -411,7 +440,7 @@ class HighHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun markFinishedPartialBatchKeepWarm_shouldSwitchMaturedPartialPansToKeepWarm() {
+    fun markFinishedPartialBatchKeepWarm_shouldSwitchMaturedPartialPansToWaitingReturnKeepWarm() {
         val nowMs = 10_000L
         val group = (25..33).map { position ->
             supplementPan(position, "A", hasSausage = position in 25..27).apply {
@@ -429,13 +458,13 @@ class HighHeatSupplementResumePlannerTest {
         result.forEach { pan ->
             assertEquals(0L, pan.startTime)
             assertEquals(nowMs, pan.holdingTime)
-            assertEquals(2, pan.status)
+            assertEquals(3, pan.status)
         }
         assertEquals(0, group.first { it.positionSn == 28 }.status)
     }
 
     @Test
-    fun markFinishedPartialBatchKeepWarm_shouldReturnRetainedKeepWarmPanWithNewlyMaturedPans() {
+    fun markFinishedPartialBatchKeepWarm_shouldReturnRetainedWaitingReturnPanWithNewlyMaturedPans() {
         val nowMs = 70L * 60L * 1000L
         val retainedHoldingTime = 10_000L
         val group = (25..33).map { position ->
@@ -444,7 +473,7 @@ class HighHeatSupplementResumePlannerTest {
                     25 -> {
                         startTime = 0L
                         holdingTime = retainedHoldingTime
-                        status = 2
+                        status = 3
                     }
 
                     26, 27 -> {
@@ -462,11 +491,32 @@ class HighHeatSupplementResumePlannerTest {
         assertEquals(retainedHoldingTime, group.first { it.positionSn == 25 }.holdingTime)
         assertEquals(nowMs, group.first { it.positionSn == 26 }.holdingTime)
         assertEquals(nowMs, group.first { it.positionSn == 27 }.holdingTime)
-        assertEquals(listOf(2, 2, 2), result.map { it.status })
+        assertEquals(listOf(3, 3, 3), result.map { it.status })
     }
 
     @Test
-    fun findKeepWarmPartialBatchReadyToMove_shouldReturnRetainedPartialPans() {
+    fun findKeepWarmPartialBatchReadyToMove_shouldReturnWaitingReturnPartialPans() {
+        val group = (25..33).map { position ->
+            supplementPan(position, "A", hasSausage = position in 25..27).apply {
+                if (isHasSausage) {
+                    startTime = 0L
+                    holdingTime = 10_000L
+                    status = 3
+                }
+            }
+        }
+
+        val result = HighHeatSupplementResumePlanner.findKeepWarmPartialBatchReadyToMove(
+            supplementGroup = group,
+            config = inactiveFaultConfig(),
+            pendingDiscardPositions = emptyList()
+        )
+
+        assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
+    }
+
+    @Test
+    fun findKeepWarmPartialBatchReadyToMove_shouldNormalizeLegacySellablePartialSourceToWaitingReturn() {
         val group = (25..33).map { position ->
             supplementPan(position, "A", hasSausage = position in 25..27).apply {
                 if (isHasSausage) {
@@ -484,6 +534,7 @@ class HighHeatSupplementResumePlannerTest {
         )
 
         assertEquals(listOf(25, 26, 27), result.map { it.positionSn })
+        assertEquals(listOf(3, 3, 3), result.map { it.status })
     }
 
     @Test
@@ -494,7 +545,7 @@ class HighHeatSupplementResumePlannerTest {
                     25 -> {
                         startTime = 0L
                         holdingTime = 10_000L
-                        status = 2
+                        status = 3
                     }
 
                     26, 27 -> {
@@ -538,4 +589,10 @@ class HighHeatSupplementResumePlannerTest {
             this.isHasSausage = hasSausage
             this.taste = tasteCode?.let { Taste(it) }
         }
+
+    private fun setAppConfigInMemory(config: AppConfigBean) {
+        val field = AppConfig::class.java.getDeclaredField("appConfigBean")
+        field.isAccessible = true
+        field.set(AppConfig, config)
+    }
 }

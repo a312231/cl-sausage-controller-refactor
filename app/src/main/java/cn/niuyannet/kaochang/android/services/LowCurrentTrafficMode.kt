@@ -445,6 +445,21 @@ object LowCurrentTrafficMode {
             return false
         }
         val nowMs = System.currentTimeMillis()
+        var beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        val normalizedLegacySellableSources =
+            LowHeatSupplementResumePlanner.normalizeLegacySellableKeepWarmSources(supplementGroup)
+        if (normalizedLegacySellableSources.isNotEmpty()) {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】$groupName 补热区发现历史原地保温可售状态，已恢复为等待回搬不可售：positions=$normalizedLegacySellableSources"
+            )
+            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                beforeSellable,
+                KaoPanHelper.getKaoPanList(),
+                "低并发${groupName}补热区历史原地可售状态纠偏为等待回搬"
+            )
+            beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+        }
         val keepWarmPans = LowHeatSupplementResumePlanner.findKeepWarmPansReadyToMove(supplementGroup)
         val finishedPans = if (keepWarmPans.isEmpty()) {
             LowHeatSupplementResumePlanner.findFinishedPans(supplementGroup, nowMs)
@@ -472,7 +487,6 @@ object LowCurrentTrafficMode {
             return true
         }
 
-        val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
         val readyPans = keepWarmPans.ifEmpty {
             LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(supplementGroup, nowMs)
         }
@@ -484,6 +498,7 @@ object LowCurrentTrafficMode {
             TAG,
             "【低并发补肠】$groupName 补热区已熟批次开始回补 1~9：sourcePositions=${readyPans.map { it.positionSn }}，targetRange=1~9"
         )
+        KaoChangOperate.keepWarm(2)
         KaoChangOperate.keepWarm(1)
         var movedAny = false
         readyPans.forEach { sourcePan ->
@@ -932,7 +947,7 @@ object LowCurrentTrafficMode {
                 if (kaoPan.isHasSausage && kaoPan.startTime > 0) {
                     kaoPan.startTime = 0
                     kaoPan.holdingTime = nowMs
-                    kaoPan.status = 2
+                    kaoPan.status = KaoPan.STATUS_SELLABLE_KEEP_WARM
                 }
             }
             LogUtils.i(TAG, "【加热控制】前区 1~9 已全部烤熟，切换为保温状态")
@@ -949,7 +964,7 @@ object LowCurrentTrafficMode {
      * 仅当 holdingTime 超过 closeTime 时才触发自动丢弃。
      */
     private suspend fun checkLowHeatDiscard() {
-        OverKeepWarmDiscardScanner.scanAndDiscard(1..9, "低并发轮询")
+        OverKeepWarmDiscardScanner.scanAndDiscard(1..18, "低并发轮询")
     }
 
     /**

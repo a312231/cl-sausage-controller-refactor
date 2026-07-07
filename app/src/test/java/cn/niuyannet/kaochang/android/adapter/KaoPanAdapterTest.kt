@@ -143,4 +143,21 @@ class KaoPanAdapterTest {
 
         assertEquals("保温:10:30", text)
     }
+
+    @Test
+    fun formatKaoPanStatusText_shouldShowWaitingReturnKeepWarmTimer() {
+        val pan = KaoPan().apply {
+            status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+            isHasSausage = true
+            holdingTime = 2 * 60 * 1000L
+        }
+
+        val text = formatKaoPanStatusText(
+            kaoPan = pan,
+            nowMs = 12 * 60 * 1000L + 30_000L,
+            config = AppConfigBean()
+        )
+
+        assertEquals("待回搬保温:10:30", text)
+    }
 }

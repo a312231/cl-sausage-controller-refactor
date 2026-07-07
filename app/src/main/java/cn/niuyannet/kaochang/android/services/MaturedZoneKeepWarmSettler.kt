@@ -29,17 +29,17 @@ internal object MaturedZoneKeepWarmSettler {
         }
 
         val zones = if (config.modeType == 2 && config.transitionMode == 1) {
-            physicalZones.map { (area, positions) ->
-                if (area == 2) {
-                    area to (19..21)
-                } else {
-                    area to positions
-                }
-            }
+            listOf(
+                1 to (1..9),
+                2 to (13..18),
+                2 to (19..21),
+                3 to (25..33)
+            )
         } else {
             physicalZones
         }
 
+        val appliedPhysicalAreas = mutableSetOf<Int>()
         return zones.mapNotNull { (area, positions) ->
             settleZone(
                 area = area,
@@ -47,7 +47,14 @@ internal object MaturedZoneKeepWarmSettler {
                 pans = pans,
                 config = config,
                 nowMs = nowMs,
-                applyKeepWarm = applyKeepWarm
+                applyKeepWarm = { settledArea ->
+                    if (
+                        appliedPhysicalAreas.add(settledArea) &&
+                        canApplyKeepWarmToPhysicalArea(settledArea, pans, config, nowMs)
+                    ) {
+                        applyKeepWarm(settledArea)
+                    }
+                }
             )
         }
     }
@@ -73,7 +80,7 @@ internal object MaturedZoneKeepWarmSettler {
         bakingPans.forEach { pan ->
             pan.startTime = 0L
             pan.holdingTime = nowMs
-            pan.status = 2
+            pan.status = maturedKeepWarmStatus(pan.positionSn, config)
         }
         return Settlement(
             area = area,
@@ -88,5 +95,39 @@ internal object MaturedZoneKeepWarmSettler {
     ): Boolean {
         return pan.bakingTime > 0L &&
             FaultHeatPauseManager.effectiveBakingElapsedMs(pan, config, nowMs) >= pan.bakingTime
+    }
+
+    private fun canApplyKeepWarmToPhysicalArea(
+        area: Int,
+        pans: List<KaoPan>,
+        config: AppConfigBean,
+        nowMs: Long
+    ): Boolean {
+        if (!(area == 2 && config.modeType == 2 && config.transitionMode == 1)) {
+            return true
+        }
+        val physicalZoneBakingPans = pans.filter {
+            it.positionSn in 13..21 &&
+                it.isHasSausage &&
+                it.startTime > 0L
+        }
+        return physicalZoneBakingPans.all { isMatured(it, config, nowMs) }
+    }
+
+    private fun maturedKeepWarmStatus(positionSn: Int, config: AppConfigBean): Int {
+        val isLowModeSupplementSource =
+            positionSn in 13..18 &&
+                (
+                    config.modeType != 2 &&
+                        config.transitionMode == 0 &&
+                        config.highConcurrencyResidualDrain != 1 ||
+                        config.modeType == 2 &&
+                        config.transitionMode == 1
+                    )
+        return if (isLowModeSupplementSource || positionSn in 25..33) {
+            KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+        } else {
+            KaoPan.STATUS_SELLABLE_KEEP_WARM
+        }
     }
 }

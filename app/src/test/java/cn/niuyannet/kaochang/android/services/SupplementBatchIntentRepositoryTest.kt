@@ -205,7 +205,7 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
-    fun shouldDelayHeatReturnForBatchCompleteness_shouldKeepDelayingAfterSafetyConfirmedWithinWindow() {
+    fun shouldDelayHeatReturnForBatchCompleteness_shouldStopDelayingAfterSafetyConfirmedWindowExpires() {
         val store = MemorySupplementBatchIntentStore()
         var now = 1000L
         val repository = repository(store) { now }
@@ -225,7 +225,36 @@ class SupplementBatchIntentRepositoryTest {
         repository.confirmManualSafety("5分钟内确认")
         now = 1000L + 20 * 60 * 1000L
 
-        assertTrue(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.HIGH_HEAT_25_33)))
+        assertFalse(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.HIGH_HEAT_25_33)))
+        assertNull(store.intent)
+    }
+
+    @Test
+    fun shouldDelayHeatReturnForBatchCompleteness_shouldReportCancelledTargetsWhenWindowExpires() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(
+                target(25, "A", returnPositionSn = 1),
+                target(26, "A", returnPositionSn = 2)
+            ),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markCompleted(intent.batchId, 25)
+        repository.markFailure(intent.batchId, 26, "in3", "in3 的 Y 复位失败", true)
+        now = 1000L + 10 * 60 * 1000L + 1L
+        var cancelledIntent: SupplementBatchIntent? = null
+
+        assertFalse(
+            repository.shouldDelayHeatReturnForBatchCompleteness(
+                setOf(SupplementBatchType.HIGH_HEAT_25_33)
+            ) {
+                cancelledIntent = it
+            }
+        )
+
+        assertEquals(listOf(26), cancelledIntent!!.targets.filter { it.cancelledByFaultTimeout }.map { it.positionSn })
     }
 
     @Test
