@@ -89,20 +89,38 @@ object TrafficModeHelper {
         if (tasteCode.isNullOrBlank()) {
             return null
         }
-        val sameTasteTarget = selectFrontTargetPan(list, tasteCode)
+        val emptyPans = list
+            .filter {
+                !it.isHasSausage &&
+                    it.status == KaoPan.STATUS_EMPTY
+            }
+        val sameTasteTarget = emptyPans
+            .filter { it.taste?.tasteCode == tasteCode }
+            .minByOrNull { it.positionSn }
         if (sameTasteTarget != null) {
             return sameTasteTarget
         }
-        val blankTasteTarget = list
+        val blankTasteTarget = emptyPans
             .filter {
-                !it.isHasSausage &&
-                    it.taste?.tasteCode.isNullOrBlank()
+                it.taste?.tasteCode.isNullOrBlank()
             }
             .minByOrNull { it.positionSn }
         if (blankTasteTarget != null) {
             blankTasteTarget.taste = Taste(tasteCode)
+            return blankTasteTarget
         }
-        return blankTasteTarget
+        val staleReservedTarget = emptyPans
+            .filter { !it.taste?.tasteCode.isNullOrBlank() }
+            .minByOrNull { it.positionSn }
+        if (staleReservedTarget != null) {
+            val oldTasteCode = staleReservedTarget.taste?.tasteCode
+            safeLogWarn(
+                "【高并发补肠】25~33 熟肠回搬覆盖前区空盘旧口味预留：" +
+                    "targetPan=${staleReservedTarget.positionSn}，oldTasteCode=$oldTasteCode，newTasteCode=$tasteCode"
+            )
+            staleReservedTarget.taste = Taste(tasteCode)
+        }
+        return staleReservedTarget
     }
 
     fun sortByHoldingAgeThenPosition(list: List<KaoPan>): List<KaoPan> {

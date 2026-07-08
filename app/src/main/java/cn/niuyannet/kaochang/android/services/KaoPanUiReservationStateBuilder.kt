@@ -135,6 +135,10 @@ object KaoPanUiReservationStateBuilder {
                 it.status == 0 &&
                 !it.isHasSausage &&
                 it.taste?.tasteCode.isNullOrBlank()
+        } ?: frontPans.firstOrNull {
+            it.positionSn !in usedTargetPositions &&
+                it.status == 0 &&
+                !it.isHasSausage
         }
     }
 

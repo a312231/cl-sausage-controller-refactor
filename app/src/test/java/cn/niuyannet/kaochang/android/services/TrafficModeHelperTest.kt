@@ -4,7 +4,6 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TrafficModeHelperTest {
@@ -123,7 +122,7 @@ class TrafficModeHelperTest {
     }
 
     @Test
-    fun selectFrontTargetPanForHighHeatReturn_shouldNotOverwriteDifferentTasteReservation() {
+    fun selectFrontTargetPanForHighHeatReturn_shouldOverwriteStaleEmptyPanTasteWhenNoPreferredTarget() {
         val pans = listOf(
             emptyPan(positionSn = 10, tasteCode = "C"),
             emptyPan(positionSn = 11, tasteCode = "D")
@@ -131,9 +130,37 @@ class TrafficModeHelperTest {
 
         val result = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(pans, "A")
 
-        assertNull(result)
-        assertEquals("C", pans.first { it.positionSn == 10 }.taste.tasteCode)
+        assertEquals(10, result?.positionSn)
+        assertEquals("A", pans.first { it.positionSn == 10 }.taste.tasteCode)
         assertEquals("D", pans.first { it.positionSn == 11 }.taste.tasteCode)
+    }
+
+    @Test
+    fun selectFrontTargetPanForHighHeatReturn_shouldNeverSelectOccupiedPanWhenOverridingStaleTaste() {
+        val pans = listOf(
+            emptyPan(positionSn = 10, tasteCode = "C").apply { isHasSausage = true },
+            emptyPan(positionSn = 11, tasteCode = "D")
+        )
+
+        val result = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(pans, "A")
+
+        assertEquals(11, result?.positionSn)
+        assertEquals("C", pans.first { it.positionSn == 10 }.taste.tasteCode)
+        assertEquals("A", pans.first { it.positionSn == 11 }.taste.tasteCode)
+    }
+
+    @Test
+    fun selectFrontTargetPanForHighHeatReturn_shouldNeverSelectNonEmptyStatusPanWhenOverridingStaleTaste() {
+        val pans = listOf(
+            emptyPan(positionSn = 10, tasteCode = "C").apply { status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM },
+            emptyPan(positionSn = 11, tasteCode = "D")
+        )
+
+        val result = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(pans, "A")
+
+        assertEquals(11, result?.positionSn)
+        assertEquals("C", pans.first { it.positionSn == 10 }.taste.tasteCode)
+        assertEquals("A", pans.first { it.positionSn == 11 }.taste.tasteCode)
     }
 
     private fun box(positionSn: Int, tasteCode: String, num: Int, cmdStatusTake: Int = 0): KaoPanBox {

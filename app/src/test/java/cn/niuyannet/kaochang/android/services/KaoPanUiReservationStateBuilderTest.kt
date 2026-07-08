@@ -103,6 +103,24 @@ class KaoPanUiReservationStateBuilderTest {
     }
 
     @Test
+    fun apply_shouldInferHighHeatWaitReturnToDifferentTasteEmptyFrontTargetWithoutMutatingRealTaste() {
+        val pans = mutableListOf(
+            pan(8, tasteCode = "A"),
+            pan(25, tasteCode = "B").apply {
+                status = 3
+                isHasSausage = true
+            }
+        )
+
+        KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
+
+        val target = pans.first { it.positionSn == 8 }
+        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
+        assertEquals("B", target.uiReservationTaste.tasteCode)
+        assertEquals("A", target.taste.tasteCode)
+    }
+
+    @Test
     fun apply_shouldInferHighHeatWaitReturnFromWaitingReturnKeepWarmSource() {
         val pans = mutableListOf(
             blankPan(8),

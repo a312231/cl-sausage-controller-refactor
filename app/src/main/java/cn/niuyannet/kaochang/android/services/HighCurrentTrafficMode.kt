@@ -1206,7 +1206,8 @@ object HighCurrentTrafficMode {
                     if (targetPan == null) {
                         LogUtils.w(
                             TAG,
-                            "【高并发补肠】25~33 补热区回补失败，未找到 1~21 同口味或空白口味空位：sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                            "【高并发补肠】25~33 补热区回补失败，未找到 1~21 可用空盘：sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                                + highHeatReturnTargetDiagnostic(list)
                         )
                         continue
                     }
@@ -1360,7 +1361,8 @@ object HighCurrentTrafficMode {
             if (targetPan == null) {
                 LogUtils.w(
                     TAG,
-                    "【高并发补肠】25~33 残缺补热批次搬回失败，未找到 1~21 同口味或空白口味空位：sourcePan=${sourcePan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                    "【高并发补肠】25~33 残缺补热批次搬回失败，未找到 1~21 可用空盘：sourcePan=${sourcePan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                        + highHeatReturnTargetDiagnostic(list)
                 )
                 continue
             }
@@ -1398,6 +1400,20 @@ object HighCurrentTrafficMode {
             )
         }
         return true
+    }
+
+    private fun highHeatReturnTargetDiagnostic(list: List<KaoPan>): String {
+        val frontEmptyPans = TrafficModeHelper.getTrafficModePositions(1, 21, list)
+            .filter { !it.isHasSausage }
+        if (frontEmptyPans.isEmpty()) {
+            return "，frontEmptyPans=空"
+        }
+        val detail = frontEmptyPans.joinToString(";") { pan ->
+            val tasteCode = pan.taste?.tasteCode ?: "null"
+            val uiTasteCode = pan.uiReservationTaste?.tasteCode ?: "null"
+            "${pan.positionSn}(status=${pan.status},taste=$tasteCode,isHasGrilling=${pan.isHasGrilling},uiTaste=$uiTasteCode)"
+        }
+        return "，frontEmptyPans=$detail"
     }
 
     private fun logUnfinishedPartialHighHeatBatch(list25_33: List<KaoPan>) {
