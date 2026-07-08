@@ -26,7 +26,12 @@ object AppConfig {
     private const val KEY_APP_CONFIG_OBJECT = "sp_app_config"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
     private const val KEY_INSPECTION_SNAPSHOT_JSON = "sp_inspection_snapshot_json"
-    private val BENIGN_PRESERVED_FIELDS = setOf("available", "availableCountdownLatched")
+    private val BENIGN_PRESERVED_FIELDS = setOf(
+        "available",
+        "available(runtime_local)",
+        "availableCountdownLatched",
+        "availableCountdownLatched(runtime_local)"
+    )
     private val LOCAL_RUNTIME_ONLY_FIELDS = setOf(
         "faultHeatPauseActive",
         "faultHeatPauseStartedAtMs",
@@ -196,6 +201,74 @@ object AppConfig {
             config.orderBlockReason = jsonData.getString("orderBlockReason") ?: ""
         } else {
             preservedFields.add("orderBlockReason")
+        }
+        return preservedFields
+    }
+
+    internal fun applyRemoteAvailableState(
+        config: AppConfigBean,
+        jsonData: JSONObject,
+        preserveRuntimeAvailableState: Boolean,
+        emitLogs: Boolean = true,
+        logPrefix: String = "AppConfig"
+    ): List<String> {
+        val preservedFields = mutableListOf<String>()
+
+        fun applyAvailableLong(
+            key: String,
+            fieldLabel: String,
+            currentValue: Long,
+            setter: (Long) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            val remoteValue = jsonData.getLongValue(key)
+            if (preserveRuntimeAvailableState) {
+                preservedFields.add("$fieldLabel(runtime_local)")
+                if (emitLogs && remoteValue != currentValue) {
+                    LogUtils.w(
+                        "[$logPrefix] 远端首页预计时间未覆盖本地实时值：" +
+                            "$fieldLabel remote=$remoteValue，local=$currentValue"
+                    )
+                }
+                return
+            }
+            setter(remoteValue)
+        }
+
+        fun applyAvailableInt(
+            key: String,
+            fieldLabel: String,
+            currentValue: Int,
+            setter: (Int) -> Unit
+        ) {
+            if (!jsonData.containsKey(key) || jsonData.get(key) == null) {
+                preservedFields.add(fieldLabel)
+                return
+            }
+            val remoteValue = jsonData.getIntValue(key)
+            if (preserveRuntimeAvailableState) {
+                preservedFields.add("$fieldLabel(runtime_local)")
+                if (emitLogs && remoteValue != currentValue) {
+                    LogUtils.w(
+                        "[$logPrefix] 远端首页预计时间锁存标记未覆盖本地实时值：" +
+                            "$fieldLabel remote=$remoteValue，local=$currentValue"
+                    )
+                }
+                return
+            }
+            setter(remoteValue)
+        }
+
+        applyAvailableLong("available", "available", config.available) { config.available = it }
+        applyAvailableInt(
+            "availableCountdownLatched",
+            "availableCountdownLatched",
+            config.availableCountdownLatched
+        ) {
+            config.availableCountdownLatched = it
         }
         return preservedFields
     }
@@ -536,9 +609,11 @@ object AppConfig {
         jsonData: JSONObject?,
         rawContent: String?,
         logPrefix: String,
-        preserveRuntimeConcurrencyState: Boolean = true
+        preserveRuntimeConcurrencyState: Boolean = true,
+        preserveRuntimeAvailableState: Boolean = true
     ): RemoteConfigMergeResult {
         val config = getAppConfig()
+        val hadValidDeviceConfigBeforeMerge = hasValidDeviceConfig()
         val oldModeTypeForTransitionDiagnostics = config.modeType
         val oldTransitionModeForTransitionDiagnostics = config.transitionMode
         val faultRuntimeSnapshot = FaultRuntimeSnapshot.from(config)
@@ -747,8 +822,14 @@ object AppConfig {
         }
         mergeGuardedRuntimeInt("errorStatus", "errorStatus") { config.errorStatus = it }
         preservedFields.addAll(applyLowerPlatformRuntimeFieldsFromRemote(config, jsonData))
-        mergeInt("available", "available") { config.available = it.toLong() }
-        mergeInt("availableCountdownLatched", "availableCountdownLatched") { config.availableCountdownLatched = it }
+        preservedFields.addAll(
+            applyRemoteAvailableState(
+                config = config,
+                jsonData = jsonData,
+                preserveRuntimeAvailableState = preserveRuntimeAvailableState && hadValidDeviceConfigBeforeMerge,
+                logPrefix = logPrefix
+            )
+        )
         mergeInt("keepWarmTemperature", "keepWarmTemperature") {
             config.keepWarmTemperature = FourFTemperaturePolicy.clampTargetTemperature(it)
         }

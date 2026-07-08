@@ -430,19 +430,9 @@ object KaoChangAlgorithm {
      * 4. 实际可售数量仍由服务端按烤盘、口味、商品和订单占用计算。
      */
     private fun checkAvailable(config: AppConfigBean, kaoPanList: List<KaoPan>) {
-        val list_1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
-        val list_1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
-        val list_13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
-        val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
-
-        val expandedSellRange = TrafficModeHelper.shouldUseExpandedSellRange(
-            config.modeType,
-            config.transitionMode,
-            config.highConcurrencyResidualDrain
-        )
-        val sellArea = if (expandedSellRange) list_1_21 else list_1_9
-        val heatArea = if (expandedSellRange) list_25_33 else list_13_18
-        val trackedArea = sellArea + heatArea
+        val sellArea = findAvailableProjectionSellArea(config, kaoPanList)
+        val heatArea = findAvailableProjectionHeatArea(config, kaoPanList)
+        val trackedArea = findAvailableProjectionTrackedArea(config, kaoPanList)
         val trackedPans = trackedArea.filter { it.isHasSausage }
         val sellableHoldingPans = sellArea.filter { isHoldingPan(it) }
         val now = System.currentTimeMillis()
@@ -459,42 +449,23 @@ object KaoChangAlgorithm {
             return
         }
 
-        val nextOpeningBatch = findNextOpeningSellBatch(
-            isLowOrTransition = !expandedSellRange,
-            sellArea = sellArea,
-            now = now,
-            config = config
+        val nextAvailableBatch = findNextAvailableHeatBatch(
+            config = config,
+            kaoPanList = kaoPanList,
+            now = now
         )
-        if (nextOpeningBatch != null) {
+        if (nextAvailableBatch != null) {
             logAvailableDecision(
-                "前区暂无可售烤肠，显示${nextOpeningBatch.name}恢复可售前的预计时间：remainingMs=${nextOpeningBatch.remainHeatTimeMs}",
+                "前区暂无可售烤肠，显示${nextAvailableBatch.name}恢复可售前的预计时间：remainingMs=${nextAvailableBatch.remainHeatTimeMs}",
                 config,
                 sellArea,
                 heatArea
             )
             updateAvailableState(
                 config,
-                nextOpeningBatch.remainHeatTimeMs,
+                nextAvailableBatch.remainHeatTimeMs,
                 0,
-                "前区暂无可售烤肠，显示${nextOpeningBatch.name}恢复可售前的预计时间"
-            )
-            return
-        }
-
-        val nextSupplementBatch = findNextSupplementHeatBatch(!expandedSellRange, heatArea, now, config)
-
-        if (nextSupplementBatch != null) {
-            logAvailableDecision(
-                "前区已售空，显示${nextSupplementBatch.name}恢复可售前的预计时间：remainingMs=${nextSupplementBatch.remainHeatTimeMs}",
-                config,
-                sellArea,
-                heatArea
-            )
-            updateAvailableState(
-                config,
-                nextSupplementBatch.remainHeatTimeMs,
-                0,
-                "前区已售空，显示${nextSupplementBatch.name}恢复可售前的预计时间"
+                "前区暂无可售烤肠，显示${nextAvailableBatch.name}恢复可售前的预计时间"
             )
             return
         }
@@ -504,29 +475,11 @@ object KaoChangAlgorithm {
     }
 
     private fun getSellArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
-        return if (TrafficModeHelper.shouldUseExpandedSellRange(
-                config.modeType,
-                config.transitionMode,
-                config.highConcurrencyResidualDrain
-            )
-        ) {
-            TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
-        } else {
-            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
-        }
+        return findAvailableProjectionSellArea(config, kaoPanList)
     }
 
     private fun getTrackedArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
-        return if (TrafficModeHelper.shouldUseExpandedSellRange(
-                config.modeType,
-                config.transitionMode,
-                config.highConcurrencyResidualDrain
-            )
-        ) {
-            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
-        } else {
-            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
-        }
+        return findAvailableProjectionTrackedArea(config, kaoPanList)
     }
 
     private fun evaluateSupplyRuntimeContext(

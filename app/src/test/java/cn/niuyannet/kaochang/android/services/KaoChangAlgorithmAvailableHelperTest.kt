@@ -134,6 +134,113 @@ class KaoChangAlgorithmAvailableHelperTest {
         assertEquals(60_000L, batch.remainHeatTimeMs)
     }
 
+    @Test
+    fun findNextAvailableHeatBatch_shouldUseOldLowHeatBatchDuringLowToHighTransition() {
+        val now = 30L * 60L * 1000L
+        val pans = buildList {
+            addAll((1..9).map { emptyPan(positionSn = it) })
+            add(
+                heatingPan(
+                    positionSn = 13,
+                    startTime = now - 19L * 60L * 1000L,
+                    bakingTime = 30L * 60L * 1000L
+                )
+            )
+            add(
+                heatingPan(
+                    positionSn = 14,
+                    startTime = now - 17L * 60L * 1000L,
+                    bakingTime = 30L * 60L * 1000L
+                )
+            )
+            add(
+                heatingPan(
+                    positionSn = 15,
+                    startTime = now - 13L * 60L * 1000L,
+                    bakingTime = 30L * 60L * 1000L
+                )
+            )
+            addAll((25..33).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now,
+                    bakingTime = 30L * 60L * 1000L
+                )
+            })
+        }
+        val config = inactiveFaultConfig().apply {
+            modeType = 2
+            transitionMode = 1
+            highConcurrencyResidualDrain = 0
+        }
+
+        val batch = findNextAvailableHeatBatch(
+            config = config,
+            kaoPanList = pans,
+            now = now
+        )
+
+        assertNotNull(batch)
+        assertEquals("13~15补肠批次", batch!!.name)
+        assertEquals(17L * 60L * 1000L, batch.remainHeatTimeMs)
+    }
+
+    @Test
+    fun findNextAvailableHeatBatch_shouldNotUseHighHeatBatchBeforeOldLowHeatClearedDuringLowToHighTransition() {
+        val now = 30L * 60L * 1000L
+        val pans = buildList {
+            addAll((1..9).map { emptyPan(positionSn = it) })
+            addAll((13..15).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 5L * 60L * 1000L,
+                    bakingTime = 30L * 60L * 1000L
+                )
+            })
+            addAll((25..33).map { position ->
+                heatingPan(
+                    positionSn = position,
+                    startTime = now - 20L * 60L * 1000L,
+                    bakingTime = 30L * 60L * 1000L
+                )
+            })
+        }
+        val config = inactiveFaultConfig().apply {
+            modeType = 2
+            transitionMode = 1
+            highConcurrencyResidualDrain = 0
+        }
+
+        val batch = findNextAvailableHeatBatch(
+            config = config,
+            kaoPanList = pans,
+            now = now
+        )
+
+        assertNotNull(batch)
+        assertEquals("13~15补肠批次", batch!!.name)
+        assertEquals(25L * 60L * 1000L, batch.remainHeatTimeMs)
+    }
+
+    @Test
+    fun availableProjectionAreas_shouldKeepLowToHighPurchaseAreaInOneToNineAndTrackOldLowHeat() {
+        val pans = (1..33).map { position -> emptyPan(positionSn = position) }
+        val config = inactiveFaultConfig().apply {
+            modeType = 2
+            transitionMode = 1
+            highConcurrencyResidualDrain = 0
+        }
+
+        assertEquals(
+            (1..9).toList(),
+            findAvailableProjectionSellArea(config, pans).map { it.positionSn }
+        )
+        assertEquals(
+            ((1..9) + (13..18) + (25..33)).toList(),
+            findAvailableProjectionTrackedArea(config, pans).map { it.positionSn }
+        )
+    }
+
     private fun heatingPan(
         positionSn: Int,
         startTime: Long,
@@ -143,6 +250,14 @@ class KaoChangAlgorithmAvailableHelperTest {
         setHasSausage(true)
         setStartTime(startTime)
         setBakingTime(bakingTime)
+        setHoldingTime(0L)
+    }
+
+    private fun emptyPan(positionSn: Int): KaoPan = KaoPan().apply {
+        setPositionSn(positionSn)
+        setHasSausage(false)
+        setStartTime(0L)
+        setBakingTime(30L * 60L * 1000L)
         setHoldingTime(0L)
     }
 
