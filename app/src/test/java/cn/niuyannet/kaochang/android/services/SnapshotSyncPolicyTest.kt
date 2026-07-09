@@ -131,6 +131,37 @@ class SnapshotSyncPolicyTest {
         assertNull(uploadedHash)
     }
 
+    @Test
+    fun forceUploadSnapshot_shouldUploadFullSnapshotEvenWhenHashUnchangedAndFallbackNotDue() {
+        val pan = pan("A")
+        val hash = SnapshotProjectionHash.hash(listOf(pan), emptyList())
+        val state = SnapshotSyncPolicy.InMemoryState().apply {
+            lastSuccessfulSnapshotHash = hash
+            lastSuccessfulForceFullSnapshotAtMillis = 1_000L
+        }
+        var capturedReason: String? = null
+        var capturedForceFullSnapshot: Boolean? = null
+
+        SnapshotSyncPolicy.withDependenciesForTest(
+            snapshotSource = source(pans = listOf(pan), boxes = emptyList()),
+            uploader = { snapshotHash, snapshotReason, forceFullSnapshot, callback ->
+                assertEquals(hash, snapshotHash)
+                capturedReason = snapshotReason
+                capturedForceFullSnapshot = forceFullSnapshot
+                callback(true)
+            },
+            clock = { 2_000L },
+            state = state
+        ) {
+            SnapshotSyncPolicy.forceUploadSnapshot("fault_heat_pause_recovered")
+        }
+
+        assertEquals("fault_heat_pause_recovered:force_full", capturedReason)
+        assertEquals(true, capturedForceFullSnapshot)
+        assertEquals(hash, state.lastSuccessfulSnapshotHash)
+        assertEquals(2_000L, state.lastSuccessfulForceFullSnapshotAtMillis)
+    }
+
     private fun pan(tasteCode: String): KaoPan =
         KaoPan().apply {
             positionSn = 1

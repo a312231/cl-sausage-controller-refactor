@@ -289,6 +289,19 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
         assertTrue("维护重置烤盘必须使用专用 source", source.contains("source = \"maintenance_pan_reset_all\""))
     }
 
+    @Test
+    fun faultHeatRecovery_shouldUseSyncWrapperBeforeRestoringHeating() {
+        val algorithm = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val enableBody = extractFunctionBody(algorithm, "fun enableRoastAlgorithm(")
+        val applyTemperatureBody = extractFunctionBody(operate, "fun applyConfiguredTemperatureByPanState(")
+        val setAreaBody = extractFunctionBody(operate, "private fun setAreaTargetTemperature(")
+
+        assertTrue("算法开启恢复必须走故障恢复同步包装", enableBody.contains("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(\"enableRoastAlgorithm\")"))
+        assertTrue("按盘态恢复温度必须走故障恢复同步包装", applyTemperatureBody.contains("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)"))
+        assertTrue("单区恢复非0温度必须走故障恢复同步包装", setAreaBody.contains("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)"))
+    }
+
     private fun assertOrder(source: String, before: String, after: String, message: String) {
         val beforeIndex = source.indexOf(before)
         val afterIndex = source.indexOf(after)

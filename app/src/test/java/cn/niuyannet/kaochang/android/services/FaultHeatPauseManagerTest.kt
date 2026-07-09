@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -160,6 +161,48 @@ class FaultHeatPauseManagerTest {
         }
 
         assertTrue(FaultHeatPauseManager.shouldSkipBakingCompletion(config))
+    }
+
+    @Test
+    fun syncRecoveredPhysicalState_shouldReportChangedPans() {
+        val result = FaultHeatPauseManager.EndPauseResult(
+            active = true,
+            pauseDurationMs = 60_000L,
+            shiftedPositions = listOf(17, 18),
+            holdingPositions = emptyList(),
+            pendingDiscardPositions = listOf(25),
+            alertCode = null
+        )
+        var capturedChangedPositions: List<Int>? = null
+        var capturedDeltaReason: String? = null
+        var capturedDeltaSource: String? = null
+
+        FaultHeatPauseManager.withSyncDependenciesForTest(
+            reportPhysicalPansChanged = { changedPositions, reason, source ->
+                capturedChangedPositions = changedPositions
+                capturedDeltaReason = reason
+                capturedDeltaSource = source
+            }
+        ) {
+            FaultHeatPauseManager.syncRecoveredPhysicalState(result, "恢复温度")
+        }
+
+        assertEquals(listOf(17, 18, 25), capturedChangedPositions)
+        assertEquals("fault_heat_pause_recovered:恢复温度", capturedDeltaReason)
+        assertEquals("fault_heat_pause_recovered", capturedDeltaSource)
+    }
+
+    @Test
+    fun syncRecoveredPhysicalState_shouldSkipInactiveOrUnchangedResult() {
+        var reported = false
+
+        FaultHeatPauseManager.withSyncDependenciesForTest(
+            reportPhysicalPansChanged = { _, _, _ -> reported = true }
+        ) {
+            FaultHeatPauseManager.syncRecoveredPhysicalState(FaultHeatPauseManager.EndPauseResult.NotActive, "无暂停")
+        }
+
+        assertFalse(reported)
     }
 
     private fun config(): AppConfigBean =

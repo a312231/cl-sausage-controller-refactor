@@ -46,7 +46,17 @@ class PanPhysicalStateDeltaPublishSourceTest {
         assertTrue("SendServerHelper 必须提供 physical pending 查询，供空 eventId ACK 防误清", sender.contains("fun hasPendingPanPhysicalStateDelta(panDeltaSeq: Long): Boolean"))
         assertTrue("needFullSnapshot=true 时必须调用 HTTP 快照兜底", sender.contains("pan_physical_delta_rejected"))
         assertTrue("physical ACK 缺少服务端物理哈希时必须调用 HTTP 快照兜底", sender.contains("pan_physical_delta_ack_unverified"))
-        assertTrue("完整物理状态 HTTP 兜底必须复用 SnapshotSyncPolicy.maybeUploadSnapshot", sender.contains("SnapshotSyncPolicy.maybeUploadSnapshot(reason)"))
+        assertTrue("完整物理状态 HTTP 兜底必须使用强制全量，避免 startTime 顺延被 hash 跳过", sender.contains("SnapshotSyncPolicy.forceUploadSnapshot(reason)"))
+    }
+
+    @Test
+    fun physicalDeltaSnapshotFallback_shouldNotShareProjectionFallbackThrottle() {
+        val sender = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
+        val body = extractFunctionBody(sender, "private fun triggerPanPhysicalStateDeltaSnapshotFallback")
+
+        assertTrue("物理状态 HTTP 兜底必须强制全量上传", body.contains("SnapshotSyncPolicy.forceUploadSnapshot(reason)"))
+        assertFalse("物理状态 HTTP 兜底不能复用可售投影兜底限频，否则 startTime 修正可能被跳过", body.contains("lastPanStateDeltaHttpFallbackAtMs"))
+        assertFalse("物理状态 HTTP 兜底不能被 httpFallbackMinIntervalMs 直接跳过", body.contains("httpFallbackMinIntervalMs"))
     }
 
     @Test

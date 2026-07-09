@@ -22,6 +22,14 @@ object FaultHeatPauseManager {
 
     private const val LOG_TAG = "故障停热"
     private val mutex = Any()
+    @Volatile
+    private var reportPhysicalPansChanged: (List<Int>, String, String) -> Unit = { changedPositions, reason, source ->
+        PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+            changedPanPositions = changedPositions,
+            reason = reason,
+            source = source
+        )
+    }
 
     data class EndPauseResult(
         val active: Boolean,
@@ -106,6 +114,30 @@ object FaultHeatPauseManager {
             )
             return result
         }
+    }
+
+    fun endFaultHeatPauseAndSyncIfNeeded(reason: String): EndPauseResult {
+        val result = endFaultHeatPauseAndAdjustIfNeeded(reason)
+        syncRecoveredPhysicalState(result, reason)
+        return result
+    }
+
+    internal fun syncRecoveredPhysicalState(result: EndPauseResult, reason: String) {
+        if (!result.active) {
+            return
+        }
+        val changedPositions = (result.shiftedPositions + result.pendingDiscardPositions)
+            .distinct()
+            .sorted()
+        if (changedPositions.isEmpty()) {
+            return
+        }
+        val syncReason = "fault_heat_pause_recovered:$reason"
+        reportPhysicalPansChanged.invoke(
+            changedPositions,
+            syncReason,
+            "fault_heat_pause_recovered"
+        )
     }
 
     fun shouldSkipBakingCompletion(): Boolean {
@@ -225,6 +257,19 @@ object FaultHeatPauseManager {
                     "pendingDiscardPositions=${config.pendingDiscardPositions}，reason=$alertReason"
             )
             return true
+        }
+    }
+
+    internal fun withSyncDependenciesForTest(
+        reportPhysicalPansChanged: (List<Int>, String, String) -> Unit,
+        block: () -> Unit
+    ) {
+        val previousReporter = this.reportPhysicalPansChanged
+        this.reportPhysicalPansChanged = reportPhysicalPansChanged
+        try {
+            block()
+        } finally {
+            this.reportPhysicalPansChanged = previousReporter
         }
     }
 

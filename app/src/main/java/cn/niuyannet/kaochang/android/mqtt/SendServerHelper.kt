@@ -927,17 +927,7 @@ object SendServerHelper {
     }
 
     private fun triggerPanPhysicalStateDeltaSnapshotFallback(reason: String) {
-        val now = System.currentTimeMillis()
-        val minIntervalMs = AppConfig.getAppConfig().httpFallbackMinIntervalMs.takeIf { it > 0L } ?: 30_000L
-        if (lastPanStateDeltaHttpFallbackAtMs > 0L && now - lastPanStateDeltaHttpFallbackAtMs < minIntervalMs) {
-            LogUtils.w(
-                "【烤盘物理增量】HTTP 快照兜底被限频跳过：" +
-                    "reason=$reason，minIntervalMs=$minIntervalMs"
-            )
-            return
-        }
-        lastPanStateDeltaHttpFallbackAtMs = now
-        SnapshotSyncPolicy.maybeUploadSnapshot(reason)
+        SnapshotSyncPolicy.forceUploadSnapshot(reason)
     }
 
     fun markConsumableEventAcked(sourceEventKey: String?): ConsumableEventAckResult {

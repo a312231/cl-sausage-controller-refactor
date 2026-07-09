@@ -77,6 +77,14 @@ object SnapshotSyncPolicy {
     private var skippedSnapshotCount: Long = 0L
 
     fun maybeUploadSnapshot(reason: String = "poll_loop") {
+        uploadSnapshot(reason = reason, forceFullSnapshotNow = false)
+    }
+
+    fun forceUploadSnapshot(reason: String) {
+        uploadSnapshot(reason = reason, forceFullSnapshotNow = true)
+    }
+
+    private fun uploadSnapshot(reason: String, forceFullSnapshotNow: Boolean) {
         if (snapshotSource === KaoPanSnapshotSource) {
             KaoPanHelper.normalizeKaoPanTasteMetadata()
             KaoPanHelper.normalizeKaoPanBoxTasteMetadata()
@@ -90,7 +98,8 @@ object SnapshotSyncPolicy {
             lastSuccessfulSnapshotHash = state.lastSuccessfulSnapshotHash,
             lastSuccessfulForceFullSnapshotAtMillis = state.lastSuccessfulForceFullSnapshotAtMillis,
             nowMillis = now,
-            reason = reason
+            reason = reason,
+            forceFullSnapshotNow = forceFullSnapshotNow
         )
         if (!decision.shouldUpload) {
             skippedSnapshotCount += 1
@@ -117,8 +126,16 @@ object SnapshotSyncPolicy {
         lastSuccessfulSnapshotHash: String?,
         lastSuccessfulForceFullSnapshotAtMillis: Long,
         nowMillis: Long,
-        reason: String
+        reason: String,
+        forceFullSnapshotNow: Boolean = false
     ): UploadDecision {
+        if (forceFullSnapshotNow) {
+            return UploadDecision(
+                shouldUpload = true,
+                forceFullSnapshot = true,
+                snapshotReason = "$reason:force_full"
+            )
+        }
         val forceDue = nowMillis - lastSuccessfulForceFullSnapshotAtMillis >= FORCE_FULL_INTERVAL_MS
         if (forceDue) {
             return UploadDecision(

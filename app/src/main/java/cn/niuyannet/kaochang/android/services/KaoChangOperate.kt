@@ -4156,7 +4156,7 @@ object KaoChangOperate {
      * - 否则：写 0，关闭该区加热和保温
      */
     fun applyConfiguredTemperatureByPanState(reason: String) {
-        FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded(reason)
+        FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)
         val config = AppConfig.getAppConfig()
         val decisions = TemperatureControlPolicy.decideZoneTemperatures(
             pans = KaoPanHelper.getKaoPanList(),
@@ -4225,7 +4225,7 @@ object KaoChangOperate {
 
     private fun setAreaTargetTemperature(area: Int, temperature: Int, reason: String) {
         if (temperature > 0) {
-            FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded(reason)
+            FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)
         }
         writeAreaTargetTemperatureRaw(area, temperature, "setAreaTargetTemperature:$reason")
     }

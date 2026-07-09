@@ -1380,7 +1380,7 @@ object KaoChangAlgorithm {
         isEnabled = true
         config.isEnable = 1
         AppConfig.saveAppConfig(config)
-        FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded("enableRoastAlgorithm")
+        FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded("enableRoastAlgorithm")
         KaoChangOperate.applyConfiguredTemperatureByPanState("算法开启后恢复温度")
         // scanAndDiscard 会先做可售阻断；若机械暂忙，下一轮 pollKaoPanStatus 顶层 pending 优先扫描继续兜底。
         algorithmScope.launch {
