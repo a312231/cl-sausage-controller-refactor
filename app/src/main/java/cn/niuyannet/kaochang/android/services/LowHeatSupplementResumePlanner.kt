@@ -9,13 +9,18 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 internal object LowHeatSupplementResumePlanner {
     data class ResumeTarget(
         val kaoPan: KaoPan,
-        val tasteCode: String
+        val tasteCode: String,
+        val returnPositionSn: Int? = null
     ) {
         val positionSn: Int
             get() = kaoPan.positionSn
     }
 
-    fun planResumeTargets(frontPans: List<KaoPan>, supplementGroup: List<KaoPan>): List<ResumeTarget> {
+    fun planResumeTargets(
+        frontPans: List<KaoPan>,
+        supplementGroup: List<KaoPan>,
+        activeIntent: SupplementBatchIntent? = null
+    ): List<ResumeTarget> {
         val sortedGroup = supplementGroup.sortedBy { it.positionSn }
         val occupiedCount = sortedGroup.count { it.isHasSausage }
         val emptyPans = sortedGroup.filter { !it.isHasSausage }
@@ -27,17 +32,36 @@ internal object LowHeatSupplementResumePlanner {
             .filter { !it.isHasSausage && it.isHasGrilling && !it.taste?.tasteCode.isNullOrBlank() }
             .sortedBy { it.positionSn }
         val groupStart = sortedGroup.firstOrNull()?.positionSn ?: return emptyList()
+        val groupPositions = sortedGroup.map { it.positionSn }.toSet()
+        val intentTargetsByPosition = activeIntent
+            ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
+            ?.targets
+            ?.filter {
+                !it.cancelledByFaultTimeout &&
+                    !it.skippedBySupplyDegrade &&
+                    it.positionSn in groupPositions
+            }
+            ?.associateBy { it.positionSn }
+            .orEmpty()
 
         return emptyPans.mapNotNull { targetPan ->
+            val intentTarget = intentTargetsByPosition[targetPan.positionSn]
+            val reservedFrontPan = reservedFrontPanForGroupPosition(targetPan, groupStart, reservedFrontPans)
             val tasteCode = targetPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
-                ?: reservedTasteForGroupPosition(targetPan, groupStart, reservedFrontPans)
+                ?: intentTarget?.tasteCode?.takeIf { it.isNotBlank() }
+                ?: reservedFrontPan?.taste?.tasteCode?.takeIf { it.isNotBlank() }
             if (tasteCode.isNullOrBlank()) {
                 return@mapNotNull null
             }
             if (targetPan.taste?.tasteCode.isNullOrBlank()) {
                 targetPan.taste = Taste(tasteCode)
             }
-            ResumeTarget(targetPan, tasteCode)
+            ResumeTarget(
+                kaoPan = targetPan,
+                tasteCode = tasteCode,
+                returnPositionSn = intentTarget?.returnPositionSn?.takeIf { it in 1..9 }
+                    ?: reservedFrontPan?.positionSn
+            )
         }
     }
 
@@ -125,16 +149,16 @@ internal object LowHeatSupplementResumePlanner {
         return normalizedPositions.sorted()
     }
 
-    private fun reservedTasteForGroupPosition(
+    private fun reservedFrontPanForGroupPosition(
         targetPan: KaoPan,
         groupStart: Int,
         reservedFrontPans: List<KaoPan>
-    ): String? {
+    ): KaoPan? {
         val offset = targetPan.positionSn - groupStart
         if (offset < 0) {
             return null
         }
-        return reservedFrontPans.getOrNull(offset)?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+        return reservedFrontPans.getOrNull(offset)
     }
 
     private fun occupiedPans(supplementGroup: List<KaoPan>): List<KaoPan> {

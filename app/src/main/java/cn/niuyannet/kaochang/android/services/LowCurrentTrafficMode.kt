@@ -116,6 +116,19 @@ object LowCurrentTrafficMode {
         }
         val canStartSupplement = schedulingEnabled && !pendingLowHeatManualConfirmation
 
+        KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+            types = setOf(
+                SupplementBatchType.LOW_HEAT_13_15,
+                SupplementBatchType.LOW_HEAT_16_18,
+                SupplementBatchType.HIGH_HEAT_25_33
+            ),
+            sourcePositionsWithSausage = kaoPanList
+                .filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
+                .filter { it.isHasSausage }
+                .map { it.positionSn }
+                .toSet(),
+            reason = "低并发调度入口检测补热源盘已清空"
+        )
         val activeLowHeatIntentTargetPositions = KaoChangOperate.activeSupplementBatchTargetPositions(
             setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
         )
@@ -314,7 +327,8 @@ object LowCurrentTrafficMode {
         groupName: String
     ): Boolean {
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-        val resumeTargets = LowHeatSupplementResumePlanner.planResumeTargets(list1_9, supplementGroup)
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val resumeTargets = LowHeatSupplementResumePlanner.planResumeTargets(list1_9, supplementGroup, activeIntent)
         if (resumeTargets.isEmpty()) {
             return false
         }
@@ -324,15 +338,60 @@ object LowCurrentTrafficMode {
         LogUtils.i(
             TAG,
             "【低并发补肠】续补 $groupName 未完成批次：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}，" +
-                "口味=${resumeTargets.joinToString(",") { it.tasteCode }}"
+                "口味=${resumeTargets.joinToString(",") { it.tasteCode }}，" +
+                "回搬目标=${resumeTargets.joinToString(",") { "${it.positionSn}->${it.returnPositionSn ?: "未知"}" }}"
         )
         val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
-            resumeTargets.map { KaoChangOperate.SupplementTarget(it.kaoPan, it.tasteCode) }
+            resumeTargets.map {
+                KaoChangOperate.SupplementTarget(
+                    it.kaoPan,
+                    it.tasteCode,
+                    returnPositionSn = it.returnPositionSn
+                )
+            }
         )
+        restoreFrontReservationsAfterLowHeatResume(list1_9, resumeTargets)
         LogUtils.i(
             TAG,
             "【低并发补肠】续补 $groupName 未完成批次结束：目标数=${resumeTargets.size}，完成数=$movedCount"
         )
+        return true
+    }
+
+    internal fun restoreFrontReservationsAfterLowHeatResume(
+        frontPans: List<KaoPan>,
+        targets: List<LowHeatSupplementResumePlanner.ResumeTarget>
+    ): List<Int> {
+        return targets
+            .filter { it.kaoPan.isHasSausage }
+            .mapNotNull { target ->
+                if (restoreFrontReservationAfterLowHeatResume(frontPans, target)) {
+                    target.returnPositionSn
+                } else {
+                    null
+                }
+            }
+    }
+
+    private fun restoreFrontReservationAfterLowHeatResume(
+        frontPans: List<KaoPan>,
+        target: LowHeatSupplementResumePlanner.ResumeTarget
+    ): Boolean {
+        val returnPositionSn = target.returnPositionSn ?: return false
+        val frontPan = frontPans.firstOrNull { it.positionSn == returnPositionSn && it.positionSn in 1..9 }
+            ?: return false
+        if (frontPan.isHasSausage) {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】续补后无法恢复前区回搬预占：sourcePan=${target.positionSn}，returnPositionSn=$returnPositionSn，原因=目标前区已有烤肠"
+            )
+            return false
+        }
+        frontPan.status = KaoPan.STATUS_EMPTY
+        frontPan.isHasGrilling = true
+        if (frontPan.taste?.tasteCode != target.tasteCode) {
+            frontPan.taste = Taste(target.tasteCode)
+        }
         return true
     }
 
@@ -501,17 +560,24 @@ object LowCurrentTrafficMode {
         KaoChangOperate.keepWarm(2)
         KaoChangOperate.keepWarm(1)
         var movedAny = false
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         readyPans.forEach { sourcePan ->
-            val tasteCode = sourcePan.taste?.tasteCode
-            val targetPan = TrafficModeHelper.selectFrontTargetPan(
-                TrafficModeHelper.getTrafficModePositions(1, 9, list),
-                tasteCode,
-                requireReserved = true
+            val bindingResult = SupplementReturnBindingResolver.resolveReturnTarget(
+                sourcePan = sourcePan,
+                frontPans = list1_9,
+                activeIntent = activeIntent,
+                allowedTypes = setOfNotNull(batchType),
+                returnPositionRange = 1..9,
+                allowLegacyFallback = true
             )
+            val targetPan = bindingResult.targetPan
             if (targetPan == null) {
                 LogUtils.w(
                     TAG,
-                    "【低并发补肠】$groupName 补热区已熟回补失败：未找到 1~9 同口味待补位，sourcePan=${sourcePan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                    "【低并发补肠】$groupName 补热区已熟回补失败：未找到安全的绑定回搬目标，" +
+                        "sourcePan=${sourcePan.positionSn}，returnPositionSn=${bindingResult.returnPositionSn}，" +
+                        "tasteCode=${bindingResult.tasteCode}，reason=${bindingResult.failureReason}，保留源盘等待下轮"
                 )
                 return@forEach
             }
@@ -523,7 +589,7 @@ object LowCurrentTrafficMode {
             if (!moved) {
                 LogUtils.w(
                     TAG,
-                    "【低并发补肠】$groupName 补热区已熟回补失败：机械调度未启动或搬移失败，sourcePan=${sourcePan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                    "【低并发补肠】$groupName 补热区已熟回补失败：机械调度未启动或搬移失败，sourcePan=${sourcePan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=${bindingResult.tasteCode}，保留源盘等待下轮"
                 )
             } else {
                 movedAny = true
@@ -534,6 +600,13 @@ object LowCurrentTrafficMode {
         if (list13_18.none { it.isHasSausage }) {
             LogUtils.i(TAG, "【加热控制】13~18 补热区已无烤肠，关闭 2 区加热")
             KaoChangOperate.stopHeating(2)
+            if (batchType != null) {
+                KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+                    types = setOf(batchType),
+                    sourcePositionsWithSausage = list13_18.filter { it.isHasSausage }.map { it.positionSn }.toSet(),
+                    reason = "低并发${groupName}补热区回搬完成"
+                )
+            }
         }
         if (!movedAny) {
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(

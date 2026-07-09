@@ -90,7 +90,7 @@ class SupplementBatchIntentRepository(
 ) {
     fun loadActive(): SupplementBatchIntent? {
         val intent = store.load() ?: return null
-        if (intent.targets.isEmpty() || intent.isComplete()) {
+        if (intent.targets.isEmpty() || shouldClearCompletedIntentOnLoad(intent)) {
             store.clear()
             return null
         }
@@ -102,7 +102,8 @@ class SupplementBatchIntentRepository(
         typeOverride: SupplementBatchType? = null
     ): SupplementBatchIntent? {
         val active = loadActive()
-        if (active != null) {
+        val retainedReturnBindings = active?.retainedCompletedHeatReturnTargets().orEmpty()
+        if (active != null && active.remainingTargets().isNotEmpty()) {
             warnLogger(
                 "【补肠批次恢复】已有未完成补肠批次，拒绝覆盖新批次：batchId=${active.batchId}，" +
                     "type=${typeText(active.type)}，remaining=${active.remainingTargets().map { it.positionSn }}"
@@ -127,15 +128,33 @@ class SupplementBatchIntentRepository(
         if (normalizedTargets.isEmpty()) {
             return null
         }
+        val duplicateRetainedSources = retainedReturnBindings
+            .map { it.positionSn }
+            .intersect(normalizedTargets.map { it.positionSn }.toSet())
+        if (duplicateRetainedSources.isNotEmpty()) {
+            warnLogger(
+                "【补肠批次恢复】已有同源盘待回搬绑定，拒绝启动会覆盖绑定的新批次：" +
+                    "sources=$duplicateRetainedSources，newTargets=${normalizedTargets.map { it.positionSn }}"
+            )
+            return null
+        }
 
         val now = clock()
         val intent = SupplementBatchIntent(
             batchId = "supplement:$now:${normalizedTargets.joinToString("-") { it.positionSn.toString() }}",
             type = typeOverride ?: inferType(normalizedTargets.map { it.positionSn }),
-            targets = normalizedTargets,
+            targets = (retainedReturnBindings + normalizedTargets).toMutableList(),
             createdAtMs = now,
             updatedAtMs = now
         )
+        if (retainedReturnBindings.isNotEmpty()) {
+            infoLogger(
+                "【补肠批次恢复】启动新批次时保留已完成补热回搬绑定：" +
+                    "retainedSources=${retainedReturnBindings.map { it.positionSn }}，" +
+                    "retainedReturns=${retainedReturnBindings.map { it.returnPositionSn }}，" +
+                    "newType=${typeText(intent.type)}，newTargets=${normalizedTargets.map { it.positionSn }}"
+            )
+        }
         store.save(intent)
         infoLogger(
             "【补肠批次恢复】已记录补肠批次意图：batchId=${intent.batchId}，" +
@@ -164,8 +183,16 @@ class SupplementBatchIntentRepository(
         intent.failureMessage = null
         intent.requiresManualConfirm = false
         if (intent.isComplete()) {
-            store.clear()
-            infoLogger("【补肠批次恢复】补肠批次已全部完成，清除批次意图：batchId=$batchId")
+            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                store.save(intent)
+                infoLogger(
+                    "【补肠批次恢复】补热批次已全部上盘，保留回搬绑定直到源盘回搬完成：batchId=$batchId，" +
+                        "returnPositions=${intent.targets.map { it.returnPositionSn }}"
+                )
+            } else {
+                store.clear()
+                infoLogger("【补肠批次恢复】补肠批次已全部完成，清除批次意图：batchId=$batchId")
+            }
         } else {
             store.save(intent)
             infoLogger(
@@ -195,8 +222,16 @@ class SupplementBatchIntentRepository(
         intent.failureMessage = null
         intent.requiresManualConfirm = false
         if (intent.isComplete()) {
-            store.clear()
-            infoLogger("【补肠批次恢复】补肠批次已完成或供给降级跳过，清除批次意图：batchId=$batchId")
+            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                store.save(intent)
+                infoLogger(
+                    "【补肠批次恢复】补热批次已无待补目标，保留已上盘烤肠回搬绑定：batchId=$batchId，" +
+                        "returnPositions=${intent.targets.map { it.returnPositionSn }}"
+                )
+            } else {
+                store.clear()
+                infoLogger("【补肠批次恢复】补肠批次已完成或供给降级跳过，清除批次意图：batchId=$batchId")
+            }
         } else {
             store.save(intent)
             warnLogger(
@@ -257,7 +292,11 @@ class SupplementBatchIntentRepository(
         intent.requiresManualConfirm = false
         intent.updatedAtMs = clock()
         if (intent.isComplete()) {
-            store.clear()
+            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                store.save(intent)
+            } else {
+                store.clear()
+            }
         } else {
             store.save(intent)
         }
@@ -303,7 +342,11 @@ class SupplementBatchIntentRepository(
         intent.updatedAtMs = clock()
         onFaultTimeoutCancelled(intent)
         if (intent.isComplete()) {
-            store.clear()
+            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                store.save(intent)
+            } else {
+                store.clear()
+            }
         } else {
             store.save(intent)
         }
@@ -315,6 +358,45 @@ class SupplementBatchIntentRepository(
         return false
     }
 
+    fun clearCompletedHeatReturnIfSourceCleared(
+        types: Set<SupplementBatchType>,
+        sourcePositionsWithSausage: Set<Int>,
+        reason: String
+    ): Boolean {
+        val intent = store.load() ?: return false
+        val retainedTargetsForTypes = intent.retainedCompletedHeatReturnTargets()
+            .filter { target -> heatTypeForSourcePosition(target.positionSn) in types }
+        if (retainedTargetsForTypes.isEmpty()) {
+            return false
+        }
+        val retainedTargetsToClear = retainedTargetsForTypes
+            .filterNot { it.positionSn in sourcePositionsWithSausage }
+        if (retainedTargetsToClear.isEmpty()) {
+            return false
+        }
+        val retainedSourcePositions = retainedTargetsToClear
+            .map { it.positionSn }
+            .toSet()
+        val remainingTargets = intent.targets
+            .filterNot { target -> target.positionSn in retainedSourcePositions }
+            .toMutableList()
+        if (remainingTargets.isEmpty()) {
+            store.clear()
+        } else {
+            store.save(
+                intent.copy(
+                    targets = remainingTargets,
+                    updatedAtMs = clock()
+                )
+            )
+        }
+        infoLogger(
+            "【补肠批次恢复】补热批次源盘已全部回搬，清除回搬绑定：reason=$reason，" +
+                "batchId=${intent.batchId}，type=${typeText(intent.type)}，sources=$retainedSourcePositions"
+        )
+        return true
+    }
+
     fun clear(reason: String) {
         val active = store.load()
         store.clear()
@@ -324,6 +406,35 @@ class SupplementBatchIntentRepository(
                     "type=${typeText(active.type)}"
             )
         }
+    }
+
+    fun clearPendingTargetsRetainingCompletedHeatReturnBindings(reason: String): Boolean {
+        val active = store.load() ?: return false
+        val retainedReturnBindings = active.retainedCompletedHeatReturnTargets()
+        if (retainedReturnBindings.isEmpty()) {
+            clear(reason)
+            return true
+        }
+        val removedTargets = active.targets
+            .filterNot { target -> target in retainedReturnBindings }
+            .map { it.positionSn }
+        store.save(
+            active.copy(
+                targets = retainedReturnBindings.toMutableList(),
+                requiresManualConfirm = false,
+                failedTargetPanNo = null,
+                failedActionName = null,
+                failureMessage = null,
+                failureAtMs = 0L,
+                updatedAtMs = clock()
+            )
+        )
+        infoLogger(
+            "【补肠批次恢复】清除未完成补肠目标但保留已完成补热回搬绑定：reason=$reason，" +
+                "batchId=${active.batchId}，type=${typeText(active.type)}，" +
+                "removedTargets=$removedTargets，retainedSources=${retainedReturnBindings.map { it.positionSn }}"
+        )
+        return removedTargets.isNotEmpty()
     }
 
     companion object {
@@ -358,6 +469,22 @@ class SupplementBatchIntentRepository(
         fun isInitializationBatch(type: SupplementBatchType): Boolean =
             type == SupplementBatchType.LOW_INITIALIZATION_1_9 ||
                 type == SupplementBatchType.HIGH_INITIALIZATION_1_21
+
+        fun heatTypeForSourcePosition(positionSn: Int): SupplementBatchType? = when (positionSn) {
+            in 13..15 -> SupplementBatchType.LOW_HEAT_13_15
+            in 16..18 -> SupplementBatchType.LOW_HEAT_16_18
+            in 25..33 -> SupplementBatchType.HIGH_HEAT_25_33
+            else -> null
+        }
+
+        fun positionMatchesType(positionSn: Int, type: SupplementBatchType): Boolean = when (type) {
+            SupplementBatchType.LOW_HEAT_13_15 -> positionSn in 13..15
+            SupplementBatchType.LOW_HEAT_16_18 -> positionSn in 16..18
+            SupplementBatchType.HIGH_HEAT_25_33 -> positionSn in 25..33
+            SupplementBatchType.LOW_INITIALIZATION_1_9 -> positionSn in 1..9
+            SupplementBatchType.HIGH_INITIALIZATION_1_21 -> positionSn in 1..21
+            SupplementBatchType.UNKNOWN -> false
+        }
     }
 
     private fun cancelRemainingTargetsByFaultTimeout(intent: SupplementBatchIntent): List<Int> {
@@ -367,6 +494,24 @@ class SupplementBatchIntentRepository(
             target.cancelReason = "故障超过10分钟，取消未完成补热目标"
         }
         return remaining.map { it.positionSn }
+    }
+
+    private fun shouldClearCompletedIntentOnLoad(intent: SupplementBatchIntent): Boolean {
+        return intent.isComplete() && !shouldRetainCompletedHeatIntentForReturn(intent)
+    }
+
+    private fun shouldRetainCompletedHeatIntentForReturn(intent: SupplementBatchIntent): Boolean {
+        return intent.retainedCompletedHeatReturnTargets().isNotEmpty()
+    }
+}
+
+internal fun SupplementBatchIntent.retainedCompletedHeatReturnTargets(): List<SupplementBatchIntentTarget> {
+    return targets.filter {
+        it.completed &&
+            !it.cancelledByFaultTimeout &&
+            !it.skippedBySupplyDegrade &&
+            it.returnPositionSn != null &&
+            SupplementBatchIntentRepository.heatTypeForSourcePosition(it.positionSn) != null
     }
 }
 

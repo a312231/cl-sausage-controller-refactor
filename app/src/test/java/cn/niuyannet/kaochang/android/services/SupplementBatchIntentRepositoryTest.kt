@@ -226,7 +226,9 @@ class SupplementBatchIntentRepositoryTest {
         now = 1000L + 20 * 60 * 1000L
 
         assertFalse(repository.shouldDelayHeatReturnForBatchCompleteness(setOf(SupplementBatchType.HIGH_HEAT_25_33)))
-        assertNull(store.intent)
+        assertTrue(store.intent!!.isComplete())
+        assertEquals(listOf(25, 26), store.intent!!.targets.filter { it.completed }.map { it.positionSn })
+        assertTrue(store.intent!!.targets.first { it.positionSn == 27 }.cancelledByFaultTimeout)
     }
 
     @Test
@@ -308,10 +310,17 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
-    fun markCompleted_shouldNotRepeatFinishedPanAndClearWhenBatchDone() {
+    fun markCompleted_shouldKeepHeatBatchIntentAfterAllTargetsFilledUntilReturnClearsIt() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)
-        val intent = repository.begin(listOf(target(13, "B"), target(14, "B"), target(15, "B")))!!
+        val intent = repository.begin(
+            listOf(
+                target(13, "B", returnPositionSn = 1),
+                target(14, "B", returnPositionSn = 2),
+                target(15, "B", returnPositionSn = 3)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )!!
 
         repository.markCompleted(intent.batchId, 13)
 
@@ -320,7 +329,178 @@ class SupplementBatchIntentRepositoryTest {
         repository.markCompleted(intent.batchId, 14)
         repository.markCompleted(intent.batchId, 15)
 
+        assertEquals(listOf(13, 14, 15), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(1, 2, 3), store.intent?.targets?.map { it.returnPositionSn })
+        assertTrue(store.intent!!.isComplete())
+    }
+
+    @Test
+    fun clearCompletedHeatReturnIfSourceCleared_shouldClearOnlyReturnedSourcesThatAreEmpty() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            listOf(
+                target(18, "A", returnPositionSn = 3),
+                target(17, "A", returnPositionSn = 2)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(intent.batchId, 17)
+        repository.markCompleted(intent.batchId, 18)
+
+        assertTrue(
+            repository.clearCompletedHeatReturnIfSourceCleared(
+                types = setOf(SupplementBatchType.LOW_HEAT_16_18),
+                sourcePositionsWithSausage = setOf(18),
+                reason = "18仍有肠"
+            )
+        )
+        assertEquals(listOf(18), store.intent?.targets?.map { it.positionSn })
+
+        assertTrue(
+            repository.clearCompletedHeatReturnIfSourceCleared(
+                types = setOf(SupplementBatchType.LOW_HEAT_16_18),
+                sourcePositionsWithSausage = emptySet(),
+                reason = "源盘已空"
+            )
+        )
         assertNull(store.intent)
+    }
+
+    @Test
+    fun markCompleted_shouldClearInitializationBatchWhenBatchDone() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            listOf(target(1, "B"), target(2, "B")),
+            typeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
+        )!!
+
+        repository.markCompleted(intent.batchId, 1)
+        repository.markCompleted(intent.batchId, 2)
+
+        assertNull(store.intent)
+    }
+
+    @Test
+    fun begin_shouldAllowNewBatchWhenOnlyRetainedHeatReturnBindingExists() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val lowIntent = repository.begin(
+            listOf(target(18, "A", returnPositionSn = 3)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(lowIntent.batchId, 18)
+
+        val highIntent = repository.begin(
+            listOf(target(25, "A", returnPositionSn = 10), target(26, "A", returnPositionSn = 11)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )
+
+        assertEquals(SupplementBatchType.HIGH_HEAT_25_33, highIntent?.type)
+        assertEquals(listOf(18, 25, 26), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(true, false, false), store.intent?.targets?.map { it.completed })
+        assertEquals(listOf(3, 10, 11), store.intent?.targets?.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun clearPendingTargetsRetainingCompletedHeatReturnBindings_shouldKeepRetainedBinding() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val lowIntent = repository.begin(
+            listOf(target(18, "A", returnPositionSn = 3)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(lowIntent.batchId, 18)
+        repository.begin(
+            listOf(target(25, "A", returnPositionSn = 10), target(26, "A", returnPositionSn = 11)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )
+
+        repository.clearPendingTargetsRetainingCompletedHeatReturnBindings("高转低过渡")
+
+        assertEquals(listOf(18), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(3), store.intent?.targets?.map { it.returnPositionSn })
+        assertTrue(store.intent!!.targets.single().completed)
+    }
+
+    @Test
+    fun clearPendingTargetsRetainingCompletedHeatReturnBindings_shouldKeepRetainedBindingsAfterRemainingTargetCompleted() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val lowIntent = repository.begin(
+            listOf(target(18, "A", returnPositionSn = 3)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(lowIntent.batchId, 18)
+        val highIntent = repository.begin(
+            listOf(target(25, "A", returnPositionSn = 10)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markCompleted(highIntent.batchId, 25)
+
+        repository.clearPendingTargetsRetainingCompletedHeatReturnBindings("未完成批次已无剩余目标")
+
+        assertEquals(listOf(18, 25), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(3, 10), store.intent?.targets?.map { it.returnPositionSn })
+        assertTrue(store.intent!!.targets.all { it.completed })
+    }
+
+    @Test
+    fun clearCompletedHeatReturnIfSourceCleared_shouldClearOnlyRequestedSourceType() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val lowIntent = repository.begin(
+            listOf(target(18, "A", returnPositionSn = 3)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(lowIntent.batchId, 18)
+        val highIntent = repository.begin(
+            listOf(target(25, "A", returnPositionSn = 10)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markCompleted(highIntent.batchId, 25)
+
+        assertTrue(
+            repository.clearCompletedHeatReturnIfSourceCleared(
+                types = setOf(SupplementBatchType.LOW_HEAT_16_18),
+                sourcePositionsWithSausage = emptySet(),
+                reason = "低并发旧补热已回搬"
+            )
+        )
+
+        assertEquals(listOf(25), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(10), store.intent?.targets?.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun clearCompletedHeatReturnIfSourceCleared_shouldClearOnlySourcesThatAreAlreadyEmpty() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val lowIntent = repository.begin(
+            listOf(target(18, "A", returnPositionSn = 3)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(lowIntent.batchId, 18)
+        val highIntent = repository.begin(
+            listOf(target(25, "A", returnPositionSn = 10)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markCompleted(highIntent.batchId, 25)
+
+        assertTrue(
+            repository.clearCompletedHeatReturnIfSourceCleared(
+                types = setOf(
+                    SupplementBatchType.LOW_HEAT_16_18,
+                    SupplementBatchType.HIGH_HEAT_25_33
+                ),
+                sourcePositionsWithSausage = setOf(25),
+                reason = "18已空25仍有肠"
+            )
+        )
+
+        assertEquals(listOf(25), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(10), store.intent?.targets?.map { it.returnPositionSn })
     }
 
     @Test

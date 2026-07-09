@@ -289,7 +289,7 @@ internal fun collectOldLowHeatReturnReservations(
     activeIntent
         ?.targets
         ?.filter { target ->
-            activeIntent.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) &&
+            isOldLowHeatIntentTarget(activeIntent.type, target.positionSn) &&
                 !target.cancelledByFaultTimeout &&
                 !target.skippedBySupplyDegrade &&
                 target.returnPositionSn in 1..9
@@ -347,10 +347,11 @@ internal fun collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
     val committedSources = linkedSetOf<Int>()
     activeIntent
         ?.targets
-        ?.takeIf {
-            activeIntent.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
+        ?.filter {
+            isOldLowHeatIntentTarget(activeIntent.type, it.positionSn) &&
+                !it.cancelledByFaultTimeout &&
+                !it.skippedBySupplyDegrade
         }
-        ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
         ?.forEach { target ->
             val sourcePan = sourceByPosition[target.positionSn] ?: return@forEach
             val returnPosition = target.returnPositionSn ?: return@forEach
@@ -454,15 +455,15 @@ internal fun selectOldLowHeatReturnTarget(
     frontPans: List<KaoPan>,
     activeIntent: SupplementBatchIntent?
 ): KaoPan? {
-    val intentTarget = activeIntent
-        ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
-        ?.targets
-        ?.firstOrNull {
+    val intentTarget = activeIntent?.let { intent ->
+        intent.targets.firstOrNull {
             it.positionSn == sourcePan.positionSn &&
+                isOldLowHeatIntentTarget(intent.type, it.positionSn) &&
                 it.returnPositionSn in 1..9 &&
                 !it.cancelledByFaultTimeout &&
                 !it.skippedBySupplyDegrade
         }
+    }
     val tasteCode = sourcePan.taste?.tasteCode?.takeIf { it.isNotBlank() }
         ?: intentTarget?.tasteCode?.takeIf { it.isNotBlank() }
         ?: return null
@@ -480,6 +481,9 @@ internal fun selectOldLowHeatReturnTarget(
         )
         return specifiedTarget
     }
+    if (activeIntent != null) {
+        return null
+    }
 
     return frontPans
         .filter {
@@ -489,6 +493,12 @@ internal fun selectOldLowHeatReturnTarget(
                 it.taste?.tasteCode == tasteCode
         }
         .minByOrNull { it.positionSn }
+}
+
+private fun isOldLowHeatIntentTarget(intentType: SupplementBatchType, positionSn: Int): Boolean {
+    return intentType in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) ||
+        SupplementBatchIntentRepository.positionMatchesType(positionSn, SupplementBatchType.LOW_HEAT_13_15) ||
+        SupplementBatchIntentRepository.positionMatchesType(positionSn, SupplementBatchType.LOW_HEAT_16_18)
 }
 
 internal fun shouldDiscardWaitingOldLowHeatSource(

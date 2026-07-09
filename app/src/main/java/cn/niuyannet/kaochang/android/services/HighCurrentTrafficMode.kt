@@ -239,6 +239,19 @@ object HighCurrentTrafficMode {
                 checkHighHeatEnd(list1_9, 1)
                 checkHighHeatEnd(list10_21, 2)
                 checkHighHeatEnd(list25_33, 3)
+                KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+                    types = setOf(
+                        SupplementBatchType.LOW_HEAT_13_15,
+                        SupplementBatchType.LOW_HEAT_16_18,
+                        SupplementBatchType.HIGH_HEAT_25_33
+                    ),
+                    sourcePositionsWithSausage = list
+                        .filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
+                        .filter { it.isHasSausage }
+                        .map { it.positionSn }
+                        .toSet(),
+                    reason = "高并发调度入口检测补热源盘已清空"
+                )
                 if (schedulingEnabled) {
                     checkHighHeatSausage(list)
                 }
@@ -1101,7 +1114,8 @@ object HighCurrentTrafficMode {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
         TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
-        val resumeTargets = HighHeatSupplementResumePlanner.planResumeTargets(list1_21, list25_33)
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val resumeTargets = HighHeatSupplementResumePlanner.planResumeTargets(list1_21, list25_33, activeIntent)
         if (resumeTargets.isEmpty()) {
             LogUtils.w(
                 TAG,
@@ -1115,11 +1129,16 @@ object HighCurrentTrafficMode {
         KaoChangOperate.heating(3)
         LogUtils.i(
             TAG,
-            "【高并发补肠】续补 25~33 未完成批次：reason=$reason，目标烤盘=${resumeTargets.map { it.positionSn }}"
+            "【高并发补肠】续补 25~33 未完成批次：reason=$reason，目标烤盘=${resumeTargets.map { it.positionSn }}，" +
+                "回搬目标=${resumeTargets.map { "${it.positionSn}->${it.returnPositionSn ?: "未知"}" }}"
         )
         val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
             resumeTargets.map { target ->
-                KaoChangOperate.SupplementTarget(target.kaoPan, target.tasteCode)
+                KaoChangOperate.SupplementTarget(
+                    target.kaoPan,
+                    target.tasteCode,
+                    returnPositionSn = target.returnPositionSn
+                )
             },
             batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33
         )
@@ -1187,6 +1206,7 @@ object HighCurrentTrafficMode {
 
             val movedTargetPositions = mutableListOf<Int>()
             var pausedReason: String? = null
+            val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
             for (kaoPan in sourcePans) {
                 if (kaoPan.isHasSausage && kaoPan.taste != null) {
                     val pauseReason = highHeatReturnPauseReason()
@@ -1201,12 +1221,21 @@ object HighCurrentTrafficMode {
                         break
                     }
                     val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
-                    val tasteCode = kaoPan.taste.tasteCode
-                    val targetPan = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(list1_21, tasteCode)
+                    val bindingResult = SupplementReturnBindingResolver.resolveReturnTarget(
+                        sourcePan = kaoPan,
+                        frontPans = list1_21,
+                        activeIntent = activeIntent,
+                        allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                        returnPositionRange = 1..21,
+                        allowLegacyFallback = true
+                    )
+                    val targetPan = bindingResult.targetPan
                     if (targetPan == null) {
                         LogUtils.w(
                             TAG,
-                            "【高并发补肠】25~33 补热区回补失败，未找到 1~21 可用空盘：sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                            "【高并发补肠】25~33 补热区回补失败，未找到安全的绑定回搬目标：sourcePan=${kaoPan.positionSn}，" +
+                                "returnPositionSn=${bindingResult.returnPositionSn}，tasteCode=${bindingResult.tasteCode}，" +
+                                "reason=${bindingResult.failureReason}，保留源盘等待下轮"
                                 + highHeatReturnTargetDiagnostic(list)
                         )
                         continue
@@ -1215,7 +1244,7 @@ object HighCurrentTrafficMode {
                     if (!moved) {
                         LogUtils.w(
                             TAG,
-                            "【高并发补肠】25~33 补热区回补失败，机械调度未启动或搬移失败：sourcePan=${kaoPan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                            "【高并发补肠】25~33 补热区回补失败，机械调度未启动或搬移失败：sourcePan=${kaoPan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=${bindingResult.tasteCode}，保留源盘等待下轮"
                         )
                     } else {
                         movedTargetPositions += targetPan.positionSn
@@ -1227,6 +1256,11 @@ object HighCurrentTrafficMode {
                 KaoChangOperate.stopHeating(3)
                 clearPitCountAfterBatch("25~33 补热区回补完成")
                 SelfCleanManager.markZone3CleanPendingIfNeeded(list)
+                KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+                    types = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                    sourcePositionsWithSausage = list25_33.filter { it.isHasSausage }.map { it.positionSn }.toSet(),
+                    reason = "高并发25~33补热区回搬完成"
+                )
             } else if (pausedReason != null) {
                 LogUtils.i(
                     TAG,
@@ -1341,6 +1375,7 @@ object HighCurrentTrafficMode {
 
         val movedTargetPositions = mutableListOf<Int>()
         var pausedReason: String? = null
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
         for (sourcePan in readyPans) {
             val pauseReason = highHeatReturnPauseReason()
             if (pauseReason != null) {
@@ -1353,15 +1388,21 @@ object HighCurrentTrafficMode {
                 )
                 break
             }
-            val tasteCode = sourcePan.taste?.tasteCode
-            val targetPan = TrafficModeHelper.selectFrontTargetPanForHighHeatReturn(
-                TrafficModeHelper.getTrafficModePositions(1, 21, list),
-                tasteCode
+            val bindingResult = SupplementReturnBindingResolver.resolveReturnTarget(
+                sourcePan = sourcePan,
+                frontPans = TrafficModeHelper.getTrafficModePositions(1, 21, list),
+                activeIntent = activeIntent,
+                allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                returnPositionRange = 1..21,
+                allowLegacyFallback = true
             )
+            val targetPan = bindingResult.targetPan
             if (targetPan == null) {
                 LogUtils.w(
                     TAG,
-                    "【高并发补肠】25~33 残缺补热批次搬回失败，未找到 1~21 可用空盘：sourcePan=${sourcePan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                    "【高并发补肠】25~33 残缺补热批次搬回失败，未找到安全的绑定回搬目标：sourcePan=${sourcePan.positionSn}，" +
+                        "returnPositionSn=${bindingResult.returnPositionSn}，tasteCode=${bindingResult.tasteCode}，" +
+                        "reason=${bindingResult.failureReason}，保留源盘等待下轮"
                         + highHeatReturnTargetDiagnostic(list)
                 )
                 continue
@@ -1374,7 +1415,7 @@ object HighCurrentTrafficMode {
             if (!moved) {
                 LogUtils.w(
                     TAG,
-                    "【高并发补肠】25~33 残缺补热批次搬回失败，机械调度未启动或搬移失败：sourcePan=${sourcePan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=$tasteCode，保留源盘等待下轮"
+                    "【高并发补肠】25~33 残缺补热批次搬回失败，机械调度未启动或搬移失败：sourcePan=${sourcePan.positionSn}，targetPan=${targetPan.positionSn}，tasteCode=${bindingResult.tasteCode}，保留源盘等待下轮"
                 )
             } else {
                 movedTargetPositions += targetPan.positionSn
@@ -1392,6 +1433,11 @@ object HighCurrentTrafficMode {
             KaoChangOperate.stopHeating(3)
             clearPitCountAfterBatch("25~33 残缺补热批次回补完成")
             SelfCleanManager.markZone3CleanPendingIfNeeded(list)
+            KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+                types = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                sourcePositionsWithSausage = list25_33.filter { it.isHasSausage }.map { it.positionSn }.toSet(),
+                reason = "高并发25~33残缺补热批次回搬完成"
+            )
         } else if (pausedReason != null) {
             LogUtils.i(
                 TAG,

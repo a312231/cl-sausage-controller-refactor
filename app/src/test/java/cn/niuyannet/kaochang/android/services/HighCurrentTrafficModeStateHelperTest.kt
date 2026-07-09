@@ -957,6 +957,86 @@ class HighCurrentTrafficModeStateHelperTest {
         )
     }
 
+    @Test
+    fun selectOldLowHeatReturnTarget_shouldUseRetainedLowBindingInsideHighHeatIntent() {
+        val frontPans = (1..9).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = position !in setOf(1, 3)
+                isHasGrilling = position in setOf(1, 3)
+                taste = Taste("A")
+            }
+        }
+        val sourcePan = oldLowHeatPan(position = 18, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 3)
+        val intent = SupplementBatchIntent(
+            batchId = "mixed",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 18, tasteCode = "A", returnPositionSn = 3, completed = true),
+                SupplementBatchIntentTarget(positionSn = 25, tasteCode = "A", returnPositionSn = 10)
+            )
+        )
+
+        val target = selectOldLowHeatReturnTarget(sourcePan, frontPans, intent)
+
+        assertEquals(3, target?.positionSn)
+    }
+
+    @Test
+    fun collectOldLowHeatReturnReservations_shouldUseRetainedLowBindingInsideHighHeatIntent() {
+        val frontPans = (1..9).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = position != 3
+                taste = Taste("A")
+            }
+        }
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 18, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 3)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "mixed",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 18, tasteCode = "A", returnPositionSn = 3, completed = true),
+                SupplementBatchIntentTarget(positionSn = 25, tasteCode = "A", returnPositionSn = 10)
+            )
+        )
+
+        val reservations = collectOldLowHeatReturnReservations(frontPans, oldLowHeatPans, intent)
+
+        assertEquals(listOf(3), reservations.map { it.positionSn })
+    }
+
+    @Test
+    fun collectCommittedOldLowHeatSourcePositions_shouldUseRetainedLowBindingInsideHighHeatIntent() {
+        val frontPans = (1..9).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = position != 3
+            }
+        }
+        val oldLowHeatPans = listOf(
+            oldLowHeatPan(position = 18, tasteCode = "A", startTime = 0L, holdingTime = 9_000L, status = 3)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "mixed",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 18, tasteCode = "A", returnPositionSn = 3, completed = true),
+                SupplementBatchIntentTarget(positionSn = 25, tasteCode = "A", returnPositionSn = 10)
+            )
+        )
+
+        val committedSources = collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
+            frontPans = frontPans,
+            oldLowHeatPans = oldLowHeatPans,
+            activeIntent = intent
+        )
+
+        assertEquals(setOf(18), committedSources)
+    }
+
     private fun occupiedPans(vararg positions: Int): List<KaoPan> =
         positions.map { position ->
             KaoPan().apply {

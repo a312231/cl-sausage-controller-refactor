@@ -1664,6 +1664,14 @@ object KaoChangOperate {
 
     fun clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(reason: String): Boolean {
         val intent = supplementBatchIntentRepository.loadActive()
+        if (intent != null && intent.remainingTargets().isEmpty() && intent.retainedCompletedHeatReturnTargets().isNotEmpty()) {
+            logD(
+                LOG_SUPPLEMENT,
+                "【补肠批次恢复】当前仅剩已完成补热回搬绑定，不清除：reason=$reason，" +
+                    "batchId=${intent.batchId}，retainedSources=${intent.retainedCompletedHeatReturnTargets().map { it.positionSn }}"
+            )
+            return false
+        }
         if (intent?.type == SupplementBatchType.HIGH_HEAT_25_33 &&
             intent.remainingTargets().isNotEmpty() &&
             (intent.requiresManualConfirm || intent.failureAtMs > 0L)
@@ -1677,16 +1685,18 @@ object KaoChangOperate {
             )
             return false
         }
-        clearPendingSupplementBatchIntent(reason)
-        return true
+        return supplementBatchIntentRepository.clearPendingTargetsRetainingCompletedHeatReturnBindings(reason)
     }
 
     fun activeSupplementBatchTargetPositions(types: Set<SupplementBatchType>): Set<Int> {
         val intent = supplementBatchIntentRepository.loadActive() ?: return emptySet()
-        if (intent.type !in types) {
-            return emptySet()
-        }
         return intent.remainingTargets()
+            .filter { target ->
+                types.any { type ->
+                    intent.type == type ||
+                        SupplementBatchIntentRepository.positionMatchesType(target.positionSn, type)
+                }
+            }
             .map { it.positionSn }
             .filter { it in 1..33 }
             .toSet()
@@ -1694,6 +1704,18 @@ object KaoChangOperate {
 
     fun activeSupplementBatchIntentForUi(): SupplementBatchIntent? {
         return supplementBatchIntentRepository.loadActive()
+    }
+
+    fun clearCompletedHeatReturnBindingIfSourcesCleared(
+        types: Set<SupplementBatchType>,
+        sourcePositionsWithSausage: Set<Int>,
+        reason: String
+    ): Boolean {
+        return supplementBatchIntentRepository.clearCompletedHeatReturnIfSourceCleared(
+            types = types,
+            sourcePositionsWithSausage = sourcePositionsWithSausage,
+            reason = reason
+        )
     }
 
     fun shouldDelayHeatReturnForBatchCompleteness(types: Set<SupplementBatchType>): Boolean {
@@ -1710,6 +1732,14 @@ object KaoChangOperate {
         isBeforeCloseWindow: Boolean
     ): PendingSupplementBatchHandling {
         val intent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
+        if (intent.remainingTargets().isEmpty()) {
+            logD(
+                LOG_SUPPLEMENT,
+                "补热批次已全部上盘，保留回搬绑定等待源盘搬回前区：reason=$reason，" +
+                    "batchId=${intent.batchId}，type=${SupplementBatchIntentRepository.typeText(intent.type)}"
+            )
+            return PendingSupplementBatchHandling.NONE
+        }
         if (intent.type !in allowedTypes) {
             logW(
                 LOG_SUPPLEMENT,
@@ -1765,7 +1795,9 @@ object KaoChangOperate {
             }
         }
         if (targets.isEmpty()) {
-            supplementBatchIntentRepository.clear("未完成批次已无剩余目标:$reason")
+            supplementBatchIntentRepository.clearPendingTargetsRetainingCompletedHeatReturnBindings(
+                "未完成批次已无剩余目标:$reason"
+            )
             return PendingSupplementBatchHandling.NONE
         }
         val availability = planExecutableSupplementTargets(
@@ -1774,7 +1806,9 @@ object KaoChangOperate {
         )
         val executableTargets = availability.executableTargets
         if (executableTargets.isEmpty() && isInitializationBatch(intent.type)) {
-            supplementBatchIntentRepository.clear("${SupplementBatchIntentRepository.typeText(intent.type)}部分开盘收口：剩余目标无同口味可用库存:$reason")
+            supplementBatchIntentRepository.clearPendingTargetsRetainingCompletedHeatReturnBindings(
+                "${SupplementBatchIntentRepository.typeText(intent.type)}部分开盘收口：剩余目标无同口味可用库存:$reason"
+            )
             logW(
                 LOG_SUPPLEMENT,
                 "${SupplementBatchIntentRepository.typeText(intent.type)}未完成批次剩余目标无同口味可用库存，按部分开盘收口：" +
@@ -1963,7 +1997,7 @@ object KaoChangOperate {
             return 0
         }
         val activeIntent = supplementBatchIntentRepository.loadActive()
-        if (createIntent && activeIntent != null) {
+        if (createIntent && activeIntent != null && activeIntent.remainingTargets().isNotEmpty()) {
             logW(
                 LOG_SUPPLEMENT,
                 "存在未完成补肠批次，拒绝启动新补肠批次：activeBatchId=${activeIntent.batchId}，" +

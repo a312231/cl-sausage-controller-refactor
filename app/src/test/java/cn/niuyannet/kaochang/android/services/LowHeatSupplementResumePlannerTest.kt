@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,6 +38,72 @@ class LowHeatSupplementResumePlannerTest {
 
         assertEquals(listOf(17, 18), result.map { it.positionSn })
         assertEquals(listOf("B", "B"), result.map { it.tasteCode })
+    }
+
+    @Test
+    fun planResumeTargets_shouldKeepReturnPositionBindingForLowHeatResume() {
+        val front = (1..9).map { position ->
+            frontPan(position, "A", reserved = position in 1..3)
+        }
+        val group = listOf(
+            supplementPan(16, "A", hasSausage = true),
+            supplementPan(17, null, hasSausage = false),
+            supplementPan(18, null, hasSausage = false)
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group)
+
+        assertEquals(listOf(17, 18), result.map { it.positionSn })
+        assertEquals(listOf(2, 3), result.map { it.returnPositionSn })
+        assertEquals(listOf("A", "A"), result.map { it.tasteCode })
+    }
+
+    @Test
+    fun planResumeTargets_shouldRestoreReturnPositionFromIntentWhenFrontReservationWasCleared() {
+        val front = (1..9).map { position ->
+            frontPan(position, "A", reserved = false)
+        }
+        val group = listOf(
+            supplementPan(16, "A", hasSausage = true),
+            supplementPan(17, null, hasSausage = false),
+            supplementPan(18, null, hasSausage = false)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "test",
+            type = SupplementBatchType.LOW_HEAT_16_18,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 16, tasteCode = "A", returnPositionSn = 1, completed = true),
+                SupplementBatchIntentTarget(positionSn = 17, tasteCode = "A", returnPositionSn = 2),
+                SupplementBatchIntentTarget(positionSn = 18, tasteCode = "A", returnPositionSn = 3)
+            )
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
+
+        assertEquals(listOf(17, 18), result.map { it.positionSn })
+        assertEquals(listOf(2, 3), result.map { it.returnPositionSn })
+        assertEquals(listOf("A", "A"), result.map { it.tasteCode })
+    }
+
+    @Test
+    fun restoreFrontReservationsAfterLowHeatResume_shouldRestoreOnlyActuallyFilledTargets() {
+        val front = (1..9).map { position ->
+            frontPan(position, "A", reserved = false)
+        }
+        val target17 = supplementPan(17, "A", hasSausage = true)
+        val target18 = supplementPan(18, "A", hasSausage = false)
+
+        val restored = LowCurrentTrafficMode.restoreFrontReservationsAfterLowHeatResume(
+            frontPans = front,
+            targets = listOf(
+                LowHeatSupplementResumePlanner.ResumeTarget(target17, "A", returnPositionSn = 2),
+                LowHeatSupplementResumePlanner.ResumeTarget(target18, "A", returnPositionSn = 3)
+            )
+        )
+
+        assertEquals(listOf(2), restored)
+        assertTrue(front.first { it.positionSn == 2 }.isHasGrilling)
+        assertFalse(front.first { it.positionSn == 3 }.isHasGrilling)
     }
 
     @Test

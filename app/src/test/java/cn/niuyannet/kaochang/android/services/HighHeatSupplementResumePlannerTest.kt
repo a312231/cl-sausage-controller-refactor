@@ -39,6 +39,46 @@ class HighHeatSupplementResumePlannerTest {
     }
 
     @Test
+    fun planResumeTargets_shouldKeepReturnPositionBindingForHighHeatResume() {
+        val front = (1..21).map { position -> frontPan(position, "A", reserved = position in 1..9) }
+        val group = (25..33).map { position ->
+            supplementPan(position, if (position == 25) "A" else null, hasSausage = position == 25)
+        }
+
+        val result = HighHeatSupplementResumePlanner.planResumeTargets(front, group)
+
+        assertEquals((26..33).toList(), result.map { it.positionSn })
+        assertEquals((2..9).toList(), result.map { it.returnPositionSn })
+        assertEquals(List(8) { "A" }, result.map { it.tasteCode })
+    }
+
+    @Test
+    fun planResumeTargets_shouldRestoreReturnPositionFromIntentWhenFrontReservationWasCleared() {
+        val front = (1..21).map { position -> frontPan(position, "A", reserved = false) }
+        val group = (25..33).map { position ->
+            supplementPan(position, if (position == 25) "A" else null, hasSausage = position == 25)
+        }
+        val intent = SupplementBatchIntent(
+            batchId = "test",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = (25..33).map { position ->
+                SupplementBatchIntentTarget(
+                    positionSn = position,
+                    tasteCode = "A",
+                    returnPositionSn = position - 24,
+                    completed = position == 25
+                )
+            }.toMutableList()
+        )
+
+        val result = HighHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
+
+        assertEquals((26..33).toList(), result.map { it.positionSn })
+        assertEquals((2..9).toList(), result.map { it.returnPositionSn })
+        assertEquals(List(8) { "A" }, result.map { it.tasteCode })
+    }
+
+    @Test
     fun planResumeTargets_shouldNotResumeWhenGroupIsEmpty() {
         val front = (1..21).map { position -> frontPan(position, "A", reserved = position in 1..9) }
         val group = (25..33).map { position -> supplementPan(position, "A", hasSausage = false) }
