@@ -4,6 +4,8 @@ import java.io.Serializable;
 import java.util.ArrayList;
 
 public class AppConfigBean implements Serializable {
+    private static final long serialVersionUID = -4057341811446770064L;
+
     public static final int SUPPLY_STATUS_NORMAL = 0;
     public static final int SUPPLY_STATUS_SOLD_OUT = 1;
     public static final int HOME_QR_HIDDEN_SHOW = 0;
@@ -27,8 +29,10 @@ public class AppConfigBean implements Serializable {
     public static final int SUPPLEMENT_ENABLED_YES = 1;
     public static final String ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING = "DISPATCH_SAFETY_CHECKING";
     public static final String ORDER_BLOCK_REASON_LOWER_PLATFORM_RECOVERY_REQUIRED = "LOWER_PLATFORM_RECOVERY_REQUIRED";
+    public static final String DEFAULT_API_BASE_URL = "https://iotadmin.cheerluck.com/prod-api/api/app/device";
 
     // MQTT 与云端通信配置
+    public String apiBaseUrl = DEFAULT_API_BASE_URL;
     public String mqttHost = "tcp://mqtt.cheerluck.com";
     public String mqttUsername = "";
     public String mqttPassword = "";
@@ -71,6 +75,11 @@ public class AppConfigBean implements Serializable {
 
     // 最近一次下平台隔离对应的补肠动作名，用于区分只停补肠和需暂停自动搬盘的隔离态
     public String lowerPlatformIsolationActionName = "";
+
+    // 下平台半故障聚合版本及事件墓碑；由本机单调递增并同时通过 MQTT/HTTP 上报。
+    public long lowerPlatformAggregateVersion = 0L;
+    public String lowerPlatformGeneration = "";
+    public ArrayList<LowerPlatformEpisodeBean> lowerPlatformEpisodes = new ArrayList<>();
 
     // 自动补肠开关：0=禁止，1=允许；不等同于烤制算法开关 isEnable
     public int supplementEnabled = SUPPLEMENT_ENABLED_YES;
@@ -129,6 +138,8 @@ public class AppConfigBean implements Serializable {
 
     // 故障停热暂停状态：0=未暂停，1=故障停热暂停中。该状态仅由本机维护，不参与远端配置合并。
     public int faultHeatPauseActive = 0;
+    // 三区目标温度是否都已确认写0：0=未确认/无需确认，1=已确认。与计时暂停分开持久化。
+    public int faultHeatStopConfirmed = 0;
     public long faultHeatPauseStartedAtMs = 0L;
     public String faultHeatPauseReason;
     public String faultHeatPauseSource;
@@ -192,4 +203,28 @@ public class AppConfigBean implements Serializable {
     public int zone3Dirty = 0;
     public int zone3CleanPending = 0;
     public int zone3CleanSuppressedFor4F = 0;
+
+    public static class LowerPlatformEpisodeBean implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        public String eventId = "";
+        public long revision = 1L;
+        public String faultType = "";
+        public String lifecycle = "OPEN";
+        public String actionName = "";
+        public String actionLabel = "";
+        public String errorCode = "";
+        public String rawResult = "";
+        public String reason = "";
+        public Integer sourceBoxNo;
+        public String tasteCode = "";
+        public Integer targetPanNo;
+        public String batchId = "";
+        public String batchType = "";
+        public long firstOccurredAt = 0L;
+        public long lastOccurredAt = 0L;
+        public int occurrenceCount = 1;
+        public Long recoveredAt;
+        public boolean requiresManualConfirm = false;
+    }
 }

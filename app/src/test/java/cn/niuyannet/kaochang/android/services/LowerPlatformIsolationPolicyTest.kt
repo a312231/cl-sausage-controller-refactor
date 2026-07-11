@@ -3,10 +3,29 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LowerPlatformIsolationPolicyTest {
+
+    @Test
+    fun rawTimeout_shouldNeverBypassExplicitTerminalStateResolution() {
+        val timeout = AtomicActionResult.Timeout("in4 timeout")
+
+        assertEquals(
+            LowerPlatformIsolationPolicy.Decision.NotIsolatable,
+            LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+                SupplementBatchType.HIGH_HEAT_25_33, "in4", timeout, false
+            )
+        )
+        assertEquals(
+            LowerPlatformIsolationPolicy.Decision.NotIsolatable,
+            LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+                SupplementBatchType.HIGH_HEAT_25_33, "in4", AtomicActionResult.ModbusError("drop"), false
+            )
+        )
+    }
 
     @Test
     fun supplementActionFailure_shouldClassifyLowerPlatformFailuresWithoutHidingIn5ResidueRisk() {
@@ -31,12 +50,12 @@ class LowerPlatformIsolationPolicyTest {
         ))
         assertTrue(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in4",
-            failed(AtomicActionCodes.LIFT_NOT_BOTTOM),
+            failed(AtomicActionCodes.PARAM_ERROR),
             hasPrefetchedNext = false
         ))
         assertTrue(LowerPlatformIsolationPolicy.requiresManualConfirmAfterIsolation(
             "in4",
-            failed(AtomicActionCodes.LIFT_NOT_BOTTOM)
+            failed(AtomicActionCodes.PARAM_ERROR)
         ))
         assertTrue(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in5",
@@ -57,6 +76,24 @@ class LowerPlatformIsolationPolicyTest {
 
     @Test
     fun supplementActionFailure_shouldKeepHardFailureForUpperPlatformRiskAndUntrustedResults() {
+        listOf(
+            AtomicActionCodes.LIFT_FAILED,
+            AtomicActionCodes.LIFT_DOWN_LOCKED_ROTOR,
+            AtomicActionCodes.LIFT_UP_LOCKED_ROTOR,
+            AtomicActionCodes.LIFT_NOT_BOTTOM
+        ).forEach { errorCode ->
+            assertFalse(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
+                "in4",
+                failed(errorCode),
+                hasPrefetchedNext = false
+            ))
+            assertFalse(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+                SupplementBatchType.HIGH_HEAT_25_33,
+                "in4",
+                failed(errorCode),
+                hasPrefetchedNext = false
+            ))
+        }
         assertFalse(LowerPlatformIsolationPolicy.isSupplementActionIsolatable(
             "in6",
             failed(AtomicActionCodes.LIFT_UP_LOCKED_ROTOR),
@@ -99,12 +136,21 @@ class LowerPlatformIsolationPolicyTest {
 
     @Test
     fun supplementBatchFailure_shouldIsolateAllLowerPlatformActionsForHeatBatchButNotInitialization() {
-        assertTrue(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
+        assertFalse(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
             batchType = SupplementBatchType.LOW_HEAT_13_15,
             actionName = "in2",
             result = failed(AtomicActionCodes.IR_PICK_FAILED),
             hasPrefetchedNext = true
         ))
+        assertEquals(
+            LowerPlatformIsolationPolicy.Decision.NotIsolatable,
+            LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+                batchType = SupplementBatchType.LOW_HEAT_13_15,
+                actionName = "in2",
+                result = failed(AtomicActionCodes.IR_PICK_FAILED),
+                hasPrefetchedNext = false
+            )
+        )
         assertTrue(LowerPlatformIsolationPolicy.shouldTreatAsLowerPlatformSemiFault(
             batchType = SupplementBatchType.HIGH_HEAT_25_33,
             actionName = "in5",

@@ -4,6 +4,7 @@ import android.os.Bundle
 import cn.niuyannet.kaochang.android.base.BaseActivity
 import cn.niuyannet.kaochang.android.databinding.ActivityStartInitBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionLauncher
@@ -68,12 +69,13 @@ class StartInitActivity : BaseActivity() {
         dismissLoadingExt()
         if (code == 0) {
             val json = JSON.parseObject(content)
-            if (json.getIntValue("code") == 200) {
+            if (ApiResponseCompat.isSuccessful(json)) {
                 val data = json.getJSONObject("data")
                 val deviceData = data?.getJSONObject("device")
-                if (deviceData != null) {
+                val remoteConfig = deviceData ?: data
+                if (remoteConfig != null) {
                     val mergeResult = AppConfig.mergeRemoteConfig(
-                        deviceData,
+                        remoteConfig,
                         content,
                         "设备初始化",
                         preserveRuntimeConcurrencyState = false
@@ -95,7 +97,7 @@ class StartInitActivity : BaseActivity() {
                 MainActivity.start(this)
                 finish()
             } else {
-                ToastUtils.showShort(json.getString("msg"))
+                ToastUtils.showShort(ApiResponseCompat.messageText(json, "设备初始化失败"))
             }
         } else {
             ToastUtils.showShort("网络服务错误")

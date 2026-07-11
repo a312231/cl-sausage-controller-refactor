@@ -121,6 +121,17 @@ class ActionGroupRecoveryBootstrap(
             ?: return ActionGroupRecoveryResult.MaintenanceRequired(
                 "动作组恢复失败：${runningStates.first().spec.name} 正在执行，但没有本地会话，需人工确认物理位置"
             )
+        val runningActionName = runningStates.single().spec.name
+        if (session.checkpointVersion > 0L &&
+            !session.currentAction.isNullOrBlank() &&
+            session.currentAction != runningActionName
+        ) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组恢复失败：会话检查点不匹配，拒绝猜测物理位置，" +
+                    "sessionId=${session.sessionId}，persistedAction=${session.currentAction}，" +
+                    "runningAction=$runningActionName，checkpointVersion=${session.checkpointVersion}"
+            )
+        }
 
         resourceLocks.clear()
         resourceLocks.forceAcquire(session.resourceMask, session.sessionId)

@@ -21,6 +21,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.BoxRefillEligibilityPolicy
@@ -326,14 +327,17 @@ class MaintenanceBoxFragment : Fragment() {
             dismissLoadingExt()
             if (code == 0) {
                 val json = JSON.parseObject(content)
-                if (json.getIntValue("code") == 200) {
+                if (ApiResponseCompat.isSuccessful(json)) {
                     KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
                     PanPhysicalStateDeltaReporter.reportStocksChanged(
                         changedStocks = targetBoxes,
                         reason = "maintenance_box_clear:boxes=$targetText",
                         source = "maintenance_box_clear"
                     )
-                    LowerPlatformRuntimeStateReporter.markNormalAfterManualBoxMaintenance("$actionName 成功")
+                    LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
+                        targetBoxes.map { it.positionSn },
+                        "$actionName 成功"
+                    )
                     kaoPanBoxAdapter.notifyDataSetChanged()
                     AdminOperationLogger.i(
                         action = actionName,
@@ -347,10 +351,10 @@ class MaintenanceBoxFragment : Fragment() {
                         action = actionName,
                         page = AdminOperationLogger.PAGE_BOX,
                         result = AdminOperationLogger.RESULT_FAIL,
-                        detail = "烤肠箱位=$targetText，失败原因=${json.getString("msg")}"
+                        detail = "烤肠箱位=$targetText，失败原因=${ApiResponseCompat.messageText(json, ApiResponseCompat.codeText(json))}"
                     )
                     restoreClearSnapshots(snapshots)
-                    ToastUtils.showShort(json.getString("msg"))
+                    ToastUtils.showShort(ApiResponseCompat.messageText(json, "设置失败"))
                 }
             } else {
                 AdminOperationLogger.w(
@@ -643,14 +647,17 @@ class MaintenanceBoxFragment : Fragment() {
                 dismissLoadingExt()
                 if (code == 0) {
                     val json = JSON.parseObject(content)
-                    if (json.getIntValue("code") == 200) {
+                    if (ApiResponseCompat.isSuccessful(json)) {
                         KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
                         PanPhysicalStateDeltaReporter.reportStocksChanged(
                             changedStocks = selectedBoxes,
                             reason = "maintenance_box_refill:boxes=${boxPositionListText(selectedBoxes)}",
                             source = "maintenance_box_refill"
                         )
-                        LowerPlatformRuntimeStateReporter.markNormalAfterManualBoxMaintenance("加满烤肠箱成功")
+                        LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
+                            selectedBoxes.map { it.positionSn },
+                            "加满烤肠箱成功"
+                        )
                         kaoPanBoxAdapter.notifyDataSetChanged()
                         AdminOperationLogger.i(
                             action = "加满烤肠箱",
@@ -667,10 +674,10 @@ class MaintenanceBoxFragment : Fragment() {
                             page = AdminOperationLogger.PAGE_BOX,
                             result = AdminOperationLogger.RESULT_FAIL,
                             detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
-                                "失败原因=${json.getString("msg")}"
+                                "失败原因=${ApiResponseCompat.messageText(json, ApiResponseCompat.codeText(json))}"
                         )
                         restoreClearSnapshots(snapshots)
-                        ToastUtils.showShort(json.getString("msg"))
+                        ToastUtils.showShort(ApiResponseCompat.messageText(json, "设置失败"))
                     }
                 } else {
                     AdminOperationLogger.w(

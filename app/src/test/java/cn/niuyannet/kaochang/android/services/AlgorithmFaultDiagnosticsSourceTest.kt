@@ -25,14 +25,14 @@ class AlgorithmFaultDiagnosticsSourceTest {
             source.contains("【故障停热诊断】") &&
                 source.contains("isWithinBusinessHours") &&
                 source.contains("businessTime") &&
-                source.contains("faultHeatingStopped") &&
+                source.contains("faultHeatPauseActive") &&
                 source.contains("isRunning") &&
                 source.contains("errorCode")
         )
     }
 
     @Test
-    fun algorithmFaultStop_shouldLogFaultHeatingGuardState() {
+    fun algorithmFaultStop_shouldLogPersistedFaultPauseState() {
         val source = algorithmSourceText()
         val faultStart = source.indexOf("private fun stopHeatingAndDispatchForFault(")
         assertTrue("必须存在故障停热收口入口", faultStart >= 0)
@@ -41,9 +41,9 @@ class AlgorithmFaultDiagnosticsSourceTest {
         val faultBlock = source.substring(faultStart, faultEnd)
 
         assertTrue(
-            "故障停热收口日志必须输出 faultHeatingStopped，便于判断是否被幂等守卫跳过",
+            "故障停热收口日志必须输出持久化暂停状态，便于判断是否被幂等守卫跳过",
             faultBlock.contains("faultHeatDiagnosticText(") &&
-                source.contains("faultHeatingStopped") &&
+                source.contains("faultHeatPauseActive") &&
                 source.contains("isRunning") &&
                 source.contains("errorCode")
         )

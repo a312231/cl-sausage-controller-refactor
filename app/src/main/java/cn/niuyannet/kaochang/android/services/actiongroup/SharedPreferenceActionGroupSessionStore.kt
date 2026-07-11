@@ -24,11 +24,15 @@ class SharedPreferenceActionGroupSessionStore(
     }
 
     override fun save(session: ActionGroupSession) {
-        PreferenceUtils.saveStringPreference(file, key, JSON.toJSONString(session))
+        check(PreferenceUtils.saveStringPreferenceDurable(file, key, JSON.toJSONString(session))) {
+            "动作组会话检查点同步落盘失败：sessionId=${session.sessionId}，action=${session.currentAction}"
+        }
     }
 
     override fun clear() {
-        PreferenceUtils.saveStringPreference(file, key, "")
+        check(PreferenceUtils.saveStringPreferenceDurable(file, key, "")) {
+            "动作组会话清理同步落盘失败"
+        }
     }
 
     companion object {

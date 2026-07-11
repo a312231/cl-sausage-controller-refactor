@@ -14,6 +14,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
+import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
@@ -21,6 +22,7 @@ import com.blankj.utilcode.util.LogUtils
 import com.blankj.utilcode.util.ToastUtils
 import com.kongqw.serialportlibrary.Device
 import com.kongqw.serialportlibrary.SerialPortFinder
+import java.net.URI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,6 +47,10 @@ class ConfigFragment : Fragment() {
         registerAdminTextInputs(view)
         initViews()
         statusInit()
+
+        binding.btnSaveApiBaseUrl.setOnClickListener {
+            saveApiBaseUrl()
+        }
 
         binding.btnSaveMqttConfig.setOnClickListener {
             val uiScope = viewLifecycleOwner.lifecycleScope
@@ -215,6 +221,54 @@ class ConfigFragment : Fragment() {
         LogUtils.i("【配置页】已保存 boxRefillTargetNum（烤肠箱加满目标库存）=$boxRefillTargetNum")
     }
 
+    private fun saveApiBaseUrl() {
+        val input = binding.etApiBaseUrl.text?.toString()?.trim()
+        val normalizedApiBaseUrl = normalizeValidApiBaseUrl(input)
+        if (normalizedApiBaseUrl == null) {
+            ToastUtils.showShort("云端HTTP地址必须是包含主机的 http/https 地址")
+            AdminOperationLogger.w(
+                action = "保存云端HTTP地址",
+                page = AdminOperationLogger.PAGE_CONFIG,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = "输入值=${input ?: ""}"
+            )
+            LogUtils.w("【配置页】保存云端HTTP地址失败：input=${input ?: ""}")
+            return
+        }
+
+        val oldApiBaseUrl = configBean.apiBaseUrl
+        configBean.apiBaseUrl = normalizedApiBaseUrl
+        AppConfig.saveAppConfig(configBean)
+        NetApi.refreshEndpointUrls()
+        binding.etApiBaseUrl.setText(normalizedApiBaseUrl)
+        ToastUtils.showShort("云端HTTP地址已保存")
+        AdminOperationLogger.i(
+            action = "保存云端HTTP地址",
+            page = AdminOperationLogger.PAGE_CONFIG,
+            result = AdminOperationLogger.RESULT_DONE,
+            detail = "云端HTTP地址=$oldApiBaseUrl->$normalizedApiBaseUrl"
+        )
+        LogUtils.i("【配置页】已保存云端HTTP地址：$oldApiBaseUrl -> $normalizedApiBaseUrl")
+    }
+
+    private fun normalizeValidApiBaseUrl(value: String?): String? {
+        if (value.isNullOrBlank()) {
+            return null
+        }
+        val normalized = AppConfig.normalizeApiBaseUrl(value)
+        val uri = try {
+            URI(normalized)
+        } catch (_: Exception) {
+            return null
+        }
+        val scheme = uri.scheme?.lowercase()
+        return if ((scheme == "http" || scheme == "https") && !uri.host.isNullOrBlank()) {
+            normalized
+        } else {
+            null
+        }
+    }
+
     private fun updateModbusStatus(connected: Boolean) {
         binding.tvModbusStatus.text = if (connected) "已连接" else "未连接"
     }
@@ -228,6 +282,7 @@ class ConfigFragment : Fragment() {
      */
     private fun initViews() {
         configBean = AppConfig.getAppConfig()
+        binding.etApiBaseUrl.setText(configBean.apiBaseUrl)
         binding.etMqttIp.setText(configBean.mqttHost)
         binding.etMqttPort.setText(configBean.mqttPort.toString())
         binding.etMqttUsername.setText(configBean.mqttUsername)

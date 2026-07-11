@@ -72,7 +72,17 @@ data class ActionGroupSession(
     val orderContext: ActionGroupOrderContext? = null,
     val currentAction: String? = null,
     val resourceMask: Int = ResourceMask.none,
-    val startedAtMs: Long = System.currentTimeMillis()
+    val startedAtMs: Long = System.currentTimeMillis(),
+    val batchId: String? = null,
+    val taste: String? = null,
+    val returnPosition: Int? = null,
+    val prefetch: Boolean = false,
+    val checkpointVersion: Long = 0L,
+    val lastConfirmedStage: String? = null,
+    val stockBefore: Int? = null,
+    val expectedStockAfter: Int? = null,
+    val boxDeductionApplied: Boolean = false,
+    val panPlacementApplied: Boolean = false
 )
 
 enum class ActionGroupSessionType {

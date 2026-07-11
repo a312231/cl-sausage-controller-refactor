@@ -9,6 +9,7 @@ import androidx.viewpager2.widget.ViewPager2
 import cn.niuyannet.kaochang.android.adapter.PlayAdapter
 import cn.niuyannet.kaochang.android.adapter.PlayResourcesBean
 import cn.niuyannet.kaochang.android.databinding.MainActivityBinding
+import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.NetApi
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
@@ -47,7 +48,7 @@ abstract class BannerActivity : LoadNetActivity() {
         NetApi.getAds { code, content ->
             if (code == 0) {
                 val json = JSON.parseObject(content)
-                if (json.getIntValue("code") == 200) {
+                if (ApiResponseCompat.isSuccessful(json)) {
                     resourcesList.clear()
                     val jsonArray = json.getJSONArray("data")
                     for (i in 0 until jsonArray.size) {

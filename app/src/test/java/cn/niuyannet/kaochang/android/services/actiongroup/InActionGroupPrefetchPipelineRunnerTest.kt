@@ -15,7 +15,23 @@ import kotlin.coroutines.cancellation.CancellationException
 class InActionGroupPrefetchPipelineRunnerTest {
 
     @Test
-    fun pipeline_shouldStartNextPrefetchAfterCurrentIn6DispatchedBeforeCurrentIn7() = runBlocking {
+    fun pipeline_shouldReportTheActualSourceBoxAfterIn2Succeeds() = runBlocking {
+        val successfulPickBoxes = mutableListOf<Int>()
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = FakeClient(),
+            onPickSucceeded = { successfulPickBoxes += it }
+        )
+
+        val result = runner.run(
+            listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13))
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Success)
+        assertEquals(listOf(17), successfulPickBoxes)
+    }
+
+    @Test
+    fun pipeline_shouldNotStartNextPrefetchUntilCurrentIn7Completes() = runBlocking {
         val client = FakeClient()
         val runner = InActionGroupPrefetchPipelineRunner(client)
 
@@ -29,30 +45,29 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(result is InActionGroupPipelineResult.Success)
         assertEquals(
             listOf(
-                "in1:17", "in2:17", "in3:0", "in4:0", "in5:0", "in6:0", "dispatch:in6",
-                "in1:18", "in2:18", "in3:0",
-                "in7:13", "in4:0", "in5:0", "in6:0", "dispatch:in6", "in7:14"
+                "in1:17", "in2:17", "in3:0", "in4:0", "in5:0", "in6:0", "dispatch:in6", "in7:13",
+                "in1:18", "in2:18", "in3:0", "in4:0", "in5:0", "in6:0", "dispatch:in6", "in7:14"
             ),
             client.calls
         )
     }
 
     @Test
-    fun pipeline_shouldRunCurrentIn7WithoutWaitingForNextPrefetchToFinish() = runBlocking {
-        val client = WaitForCurrentIn7BeforeSecondIn3Client()
-        val runner = InActionGroupPrefetchPipelineRunner(client)
-
-        val result = withTimeout(1_000L) {
-            runner.run(
+    fun pipeline_currentActionCallbacks_shouldFinishCurrentTargetBeforeNextTargetStarts() = runBlocking {
+        val client = FakeClient()
+        val actions = mutableListOf<String>()
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            onCurrentActionChanged = { context -> actions += "${context.targetPanNo}:${context.actionName}" }
+        ).run(
                 listOf(
                     InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
                     InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
                 )
             )
-        }
 
         assertTrue(result is InActionGroupPipelineResult.Success)
-        assertTrue(client.calls.indexOf("in7:13") < client.calls.indexOf("in3:0#2-done"))
+        assertTrue(actions.indexOf("13:in7") < actions.indexOf("14:in1"))
     }
 
     @Test
@@ -103,8 +118,8 @@ class InActionGroupPrefetchPipelineRunnerTest {
             listOf(
                 "in1:17->13", "in2:17->13", "in3:17->13",
                 "in4:17->13", "in5:17->13", "in6:17->13", "dispatch:in6:17->13",
-                "in1:18->14", "in2:18->14", "in3:18->14",
-                "in7:17->13", "in4:18->14", "in5:18->14", "in6:18->14",
+                "in7:17->13", "in1:18->14", "in2:18->14", "in3:18->14",
+                "in4:18->14", "in5:18->14", "in6:18->14",
                 "dispatch:in6:18->14", "in7:18->14"
             ),
             calls
@@ -430,12 +445,9 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
-    fun pipeline_shouldReportPrefetchedNextWhenCurrentDeliveryFailsAfterStartingNextPrefetch() = runBlocking {
+    fun pipeline_shouldNotPrefetchNextWhenCurrentDeliveryFails() = runBlocking {
         val client = FakeClient(
             results = queueOf(
-                AtomicActionResult.Success,
-                AtomicActionResult.Success,
-                AtomicActionResult.Success,
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
                 AtomicActionResult.Success,
@@ -457,7 +469,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(result is InActionGroupPipelineResult.Failed)
         val failed = result as InActionGroupPipelineResult.Failed
         assertEquals("in7", failed.actionName)
-        assertTrue(failed.hasPrefetchedNext)
+        assertFalse(failed.hasPrefetchedNext)
         assertTrue(failed.completed.isEmpty())
     }
 

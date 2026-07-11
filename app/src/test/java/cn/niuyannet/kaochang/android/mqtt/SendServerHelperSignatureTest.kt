@@ -1,8 +1,10 @@
 package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SendServerHelperSignatureTest {
@@ -90,6 +92,14 @@ class SendServerHelperSignatureTest {
     }
 
     @Test
+    fun buildRuntimeStateSignature_shouldChangeWhenLowerPlatformGenerationChanges() {
+        val oldInstall = baseConfig().apply { lowerPlatformGeneration = "generation-old" }
+        val newInstall = baseConfig().apply { lowerPlatformGeneration = "generation-new" }
+
+        assertNotEquals(RuntimeStateSignatureBuilder.build(oldInstall), RuntimeStateSignatureBuilder.build(newInstall))
+    }
+
+    @Test
     fun buildRuntimeStatePayload_shouldIncludeLowerPlatformRuntimeFields() {
         val payload = RuntimeStatePayloadBuilder.build(
             deviceCode = "device-001",
@@ -99,15 +109,65 @@ class SendServerHelperSignatureTest {
                 lowerPlatformIsolationActionName = "in4"
                 supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
                 orderBlockReason = ""
+                lowerPlatformAggregateVersion = 6L
+                lowerPlatformGeneration = "generation-device-001"
+                lowerPlatformEpisodes.add(AppConfigBean.LowerPlatformEpisodeBean().apply {
+                    eventId = "evt-isolated"
+                    revision = 1L
+                    faultType = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+                    lifecycle = "OPEN"
+                    actionName = "in4"
+                    occurrenceCount = 1
+                })
             },
             source = "runtime_state:supply_degraded",
             reportedAt = 123L
         )
 
-        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, payload.getString("lowerPlatformStatus"))
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED, payload.getString("lowerPlatformStatus"))
         assertEquals("in4", payload.getString("lowerPlatformIsolationActionName"))
-        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, payload.getIntValue("supplementEnabled"))
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, payload.getIntValue("supplementEnabled"))
         assertEquals("", payload.getString("orderBlockReason"))
+        assertEquals(6L, payload.getLongValue("lowerPlatformAggregateVersion"))
+        assertEquals("generation-device-001", payload.getString("lowerPlatformGeneration"))
+        assertEquals("evt-isolated", payload.getJSONArray("lowerPlatformEpisodes").getJSONObject(0).getString("eventId"))
+    }
+
+    @Test
+    fun frozenLowerSnapshot_shouldKeepSignatureAndPayloadConsistentAfterConfigMutation() {
+        val config = baseConfig().apply {
+            lowerPlatformGeneration = "generation-frozen"
+            lowerPlatformAggregateVersion = 9L
+            lowerPlatformIsolationActionName = "in4"
+            orderBlockReason = "frozen-block"
+        }
+        LowerPlatformEpisodeReducer.openIsolated(config, "in4", "frozen", 1L)
+        val snapshot = LowerPlatformEpisodeReducer.snapshot(config)
+
+        config.lowerPlatformGeneration = "generation-mutated"
+        config.lowerPlatformAggregateVersion = 10L
+        config.lowerPlatformIsolationActionName = "in5"
+        config.orderBlockReason = "mutated-block"
+        config.lowerPlatformEpisodes.clear()
+
+        val signature = RuntimeStateSignatureBuilder.build(config, snapshot)
+        val payload = RuntimeStatePayloadBuilder.build(
+            deviceCode = "device-001",
+            runtimeSeq = 1L,
+            config = config,
+            source = "test",
+            reportedAt = 2L,
+            lowerPlatformSnapshot = snapshot
+        )
+
+        assertTrue(signature.contains("generation-frozen|${snapshot.aggregateVersion}|"))
+        assertTrue(signature.contains("|in4|generation-frozen|"))
+        assertTrue(signature.contains("|frozen-block|"))
+        assertEquals("generation-frozen", payload.getString("lowerPlatformGeneration"))
+        assertEquals(snapshot.aggregateVersion, payload.getLongValue("lowerPlatformAggregateVersion"))
+        assertEquals("in4", payload.getString("lowerPlatformIsolationActionName"))
+        assertEquals("frozen-block", payload.getString("orderBlockReason"))
+        assertEquals(1, payload.getJSONArray("lowerPlatformEpisodes").size)
     }
 
     private fun baseConfig(): AppConfigBean =

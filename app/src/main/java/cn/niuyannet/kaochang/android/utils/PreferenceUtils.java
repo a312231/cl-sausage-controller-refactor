@@ -150,6 +150,12 @@ public class PreferenceUtils {
         mEditor.apply();
     }
 
+    /** 同步落盘关键动作检查点；返回 false 时调用方不得继续下发硬件命令。 */
+    public static boolean saveStringPreferenceDurable(String file, String key, String value) {
+        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        return sp.edit().putString(key, value).commit();
+    }
+
     /**
      * 从SharedPreferences获取String
      *
@@ -423,4 +429,3 @@ public class PreferenceUtils {
 
 
 }
-

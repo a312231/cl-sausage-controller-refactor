@@ -6,6 +6,12 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 
 object LowerPlatformIsolationPolicy {
     private val ISOLATABLE_SUPPLEMENT_ACTIONS = setOf("in1", "in2", "in3", "in4", "in5")
+    private val UNSAFE_LIFT_TERMINAL_ERRORS = setOf(
+        AtomicActionCodes.LIFT_FAILED,
+        AtomicActionCodes.LIFT_DOWN_LOCKED_ROTOR,
+        AtomicActionCodes.LIFT_UP_LOCKED_ROTOR,
+        AtomicActionCodes.LIFT_NOT_BOTTOM
+    )
 
     enum class Decision {
         NotIsolatable,
@@ -22,6 +28,9 @@ object LowerPlatformIsolationPolicy {
             return Decision.NotIsolatable
         }
         val failed = result as? AtomicActionResult.Failed ?: return Decision.NotIsolatable
+        if (isUnsafeLiftTerminalError(failed.errorCode)) {
+            return Decision.NotIsolatable
+        }
         if (actionName == "in5" && failed.errorCode == AtomicActionCodes.IR_THROW_FAILED) {
             return Decision.IsolatedRequiresManualConfirm
         }
@@ -46,6 +55,12 @@ object LowerPlatformIsolationPolicy {
         if (batchType != null && SupplementBatchIntentRepository.isInitializationBatch(batchType)) {
             return Decision.NotIsolatable
         }
+        if (result is AtomicActionResult.ModbusError) {
+            return Decision.NotIsolatable
+        }
+        if (result is AtomicActionResult.Timeout) {
+            return Decision.NotIsolatable
+        }
         if (shouldTreatAsLowerPlatformSemiFault(batchType, actionName, result, hasPrefetchedNext)) {
             return Decision.IsolatedRequiresManualConfirm
         }
@@ -62,14 +77,20 @@ object LowerPlatformIsolationPolicy {
         result: AtomicActionResult,
         hasPrefetchedNext: Boolean
     ): Boolean {
+        if (SupplementPickFailurePolicy.isSerialIn2IrPickFailure(actionName, result)) {
+            return false
+        }
         if (batchType == null || !SupplementBatchIntentRepository.isHeatSupplementBatch(batchType)) {
             return false
         }
         if (actionName !in ISOLATABLE_SUPPLEMENT_ACTIONS) {
             return false
         }
-        return result is AtomicActionResult.Failed
+        val failed = result as? AtomicActionResult.Failed ?: return false
+        return !isUnsafeLiftTerminalError(failed.errorCode)
     }
+
+    fun isUnsafeLiftTerminalError(errorCode: Int): Boolean = errorCode in UNSAFE_LIFT_TERMINAL_ERRORS
 
     fun isSupplementActionIsolatable(
         actionName: String,

@@ -20,6 +20,7 @@ import cn.niuyannet.kaochang.android.services.SnapshotProjectionHash
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
@@ -295,6 +296,7 @@ object DataManagementAPI {
 
     private fun canApplyRemoteTemperatureConfig(config: AppConfigBean): Boolean {
         return config.onlineStatus in listOf(1, 4) &&
+            config.isEnable == 1 &&
             config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
     }
 
@@ -344,6 +346,10 @@ object DataManagementAPI {
                         "source=$source，previousOnlineStatus=${formatDiffValue("onlineStatus", previousOnlineStatus)}"
                 )
             }
+        }
+
+        if (previousOnlineStatus != 3 && mergedConfig.onlineStatus == 3) {
+            KaoChangOperate.stopHeatingForFault("远端配置进入维护中(source=$source)")
         }
 
         if (previousOnlineStatus in listOf(1, 4) && mergedConfig.onlineStatus in listOf(0, 2, 3)) {
@@ -529,6 +535,7 @@ object DataManagementAPI {
         val previousTransitionMode = config.transitionMode
         val previousHighConcurrencyResidualDrain = config.highConcurrencyResidualDrain
         val previousAdminPasswordHash = config.adminPasswordHash
+        val previousBakingTime = config.bakingTime
         val previousRestStatusSource = config.restStatusSource
         val operator = json.getString("operator").orEmpty()
 
@@ -558,6 +565,10 @@ object DataManagementAPI {
 
         AppConfig.alignRestStatusSource(config)
         AppConfig.saveAppConfig(config)
+
+        if (patchResult.appliedFields.contains("bakingTime")) {
+            reconcileActiveBakingTime(source, previousBakingTime, config)
+        }
 
         if (patchResult.appliedFields.contains("onlineStatus")) {
             handleRemoteOnlineStatusTransition(
@@ -618,6 +629,7 @@ object DataManagementAPI {
                 previousTransitionMode != currentConfig.transitionMode ||
                 previousHighConcurrencyResidualDrain != currentConfig.highConcurrencyResidualDrain ||
                 previousAdminPasswordHash != currentConfig.adminPasswordHash ||
+                previousBakingTime != currentConfig.bakingTime ||
                 patchResult.temperatureChanged
 
         val rejectedFields = patchResult.rejectedFields + patchResult.unknownFields
@@ -839,7 +851,7 @@ object DataManagementAPI {
             val kaoPanBoxList = mutableListOf<KaoPanBox>()
             if (code == 0) {
                 val json = JSON.parseObject(content)
-                if (json?.getIntValue("code") == 200) {
+                if (ApiResponseCompat.isSuccessful(json)) {
                     val localBoxByPosition = KaoPanHelper.getKaoPanBoxList().associateBy { it.positionSn }
                     val jsonData = json.getJSONArray("data")
                     for (i in 0 until jsonData.size) {
@@ -932,7 +944,7 @@ object DataManagementAPI {
         } catch (e: Exception) {
             return null
         }
-        if (json?.getIntValue("code") != 200) {
+        if (!ApiResponseCompat.isSuccessful(json)) {
             return null
         }
         val jsonData = json.getJSONArray("data") ?: return null
@@ -1246,8 +1258,8 @@ object DataManagementAPI {
                 return@deviceInfoCallback
             }
 
-            if (json.getIntValue("code") != 200) {
-                logE("设备配置业务返回失败：code=${json.getIntValue("code")}, content=$content")
+            if (!ApiResponseCompat.isSuccessful(json)) {
+                logE("设备配置业务返回失败：code=${ApiResponseCompat.codeText(json)}, content=$content")
                 return@deviceInfoCallback
             }
 
@@ -1457,7 +1469,7 @@ object DataManagementAPI {
                 return@refreshStateCallback
             }
 
-            if (json == null || json.getIntValue("code") != 200) {
+            if (!ApiResponseCompat.isSuccessful(json)) {
                 logE("$logPrefix 失败：业务返回异常，raw=$content")
                 onResult?.invoke(
                     RemoteDeviceStateRefreshResult(
@@ -1574,8 +1586,12 @@ object DataManagementAPI {
         }
     }
 
-    fun uploadDeviceInfo(source: String? = null, callback: ((code: Int, content: String?) -> Unit)? = null) {
-        NetApi.updateDeviceInfo(callback, source)
+    fun uploadDeviceInfo(
+        source: String? = null,
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot? = null,
+        callback: ((code: Int, content: String?) -> Unit)? = null
+    ) {
+        NetApi.updateDeviceInfo(callback, source, lowerPlatformSnapshot)
     }
 
     fun uploadConsumableEvent(event: ConsumableEvent, callback: ((code: Int, content: String?) -> Unit)? = null) {

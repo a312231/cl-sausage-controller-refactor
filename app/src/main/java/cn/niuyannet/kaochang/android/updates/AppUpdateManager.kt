@@ -16,6 +16,7 @@ import cn.niuyannet.kaochang.android.BuildConfig
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
+import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -1167,7 +1168,7 @@ object AppUpdateManager {
         } catch (_: Exception) {
             return null
         }
-        if (json.getIntValue("code") != 200) {
+        if (!ApiResponseCompat.isSuccessful(json)) {
             return null
         }
         val data = json.getJSONObject("data") ?: return null

@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -7,6 +8,58 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ActionGroupRecoveryBootstrapTest {
+
+    @Test
+    fun actionGroupSession_newRecoveryFieldsShouldRemainBackwardCompatible() {
+        val legacy = ActionGroupSession(
+            sessionId = "legacy",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 3,
+            targetNo = 13
+        )
+
+        assertNull(legacy.batchId)
+        assertNull(legacy.taste)
+        assertNull(legacy.returnPosition)
+        assertEquals(false, legacy.prefetch)
+        assertEquals(0L, legacy.checkpointVersion)
+        assertNull(legacy.lastConfirmedStage)
+        assertNull(legacy.stockBefore)
+        assertNull(legacy.expectedStockAfter)
+        assertEquals(false, legacy.boxDeductionApplied)
+        assertEquals(false, legacy.panPlacementApplied)
+
+        val current = legacy.copy(
+            batchId = "batch-13",
+            taste = "original",
+            returnPosition = 1,
+            prefetch = true,
+            checkpointVersion = 4L,
+            lastConfirmedStage = "in3"
+        )
+        assertEquals("batch-13", current.batchId)
+        assertEquals("original", current.taste)
+        assertEquals(1, current.returnPosition)
+        assertTrue(current.prefetch)
+        assertEquals(4L, current.checkpointVersion)
+        assertEquals("in3", current.lastConfirmedStage)
+    }
+
+    @Test
+    fun actionGroupSession_shouldDeserializeLegacyJsonWithSafeDefaults() {
+        val session = JSON.parseObject(
+            """{"sessionId":"legacy-json","type":"IN_SUPPLEMENT","sourceNo":3,"targetNo":13}""",
+            ActionGroupSession::class.java
+        )
+
+        assertEquals("legacy-json", session.sessionId)
+        assertNull(session.batchId)
+        assertNull(session.taste)
+        assertNull(session.returnPosition)
+        assertEquals(false, session.prefetch)
+        assertEquals(0L, session.checkpointVersion)
+        assertNull(session.lastConfirmedStage)
+    }
 
     @Test
     fun recover_shouldEnterMaintenanceWhenSessionExistsButAllRegistersIdle() = runBlocking {
@@ -121,6 +174,30 @@ class ActionGroupRecoveryBootstrapTest {
         assertEquals(ActionGroupResult.Success, (result as ActionGroupRecoveryResult.TakeoverFinished).actionResult)
         assertEquals(listOf("in5:0", "in6:0", "in7:2"), client.calls)
         assertEquals(session, store.session)
+    }
+
+    @Test
+    fun recover_shouldNotGuessWhenPersistedCheckpointDoesNotMatchRunningAction() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "mismatched-session",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 17,
+            targetNo = 13,
+            currentAction = "in7",
+            checkpointVersion = 3L,
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+        )
+        val client = FakeClient(states = mutableMapOf("in2" to AtomicActionCodes.RUNNING))
+
+        val result = ActionGroupRecoveryBootstrap(
+            client,
+            MemorySessionStore(session),
+            ResourceLocks()
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("会话检查点不匹配"))
+        assertTrue(client.calls.isEmpty())
     }
 
     @Test

@@ -2,6 +2,8 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
+import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 
 internal object RuntimeStatePayloadBuilder {
@@ -10,9 +12,12 @@ internal object RuntimeStatePayloadBuilder {
         runtimeSeq: Long,
         config: AppConfigBean,
         source: String,
-        reportedAt: Long
+        reportedAt: Long,
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot =
+            LowerPlatformEpisodeReducer.snapshot(config)
     ): JSONObject {
         val payload = JSONObject()
+        val lowerPlatform = lowerPlatformSnapshot
         payload["messageType"] = MqttProtocol.TYPE_RUNTIME_STATE
         payload["deviceCode"] = deviceCode
         payload["runtimeSeq"] = runtimeSeq
@@ -25,10 +30,13 @@ internal object RuntimeStatePayloadBuilder {
         payload["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain
         payload["moveStatus"] = config.moveStatus
         payload["errorStatus"] = config.errorStatus
-        payload["lowerPlatformStatus"] = config.lowerPlatformStatus ?: AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
-        payload["lowerPlatformIsolationActionName"] = config.lowerPlatformIsolationActionName ?: ""
-        payload["supplementEnabled"] = config.supplementEnabled
-        payload["orderBlockReason"] = config.orderBlockReason ?: ""
+        payload["lowerPlatformStatus"] = lowerPlatform.status
+        payload["lowerPlatformIsolationActionName"] = lowerPlatform.isolationActionName
+        payload["lowerPlatformGeneration"] = lowerPlatform.generation
+        payload["lowerPlatformAggregateVersion"] = lowerPlatform.aggregateVersion
+        payload["lowerPlatformEpisodes"] = JSON.toJSON(lowerPlatform.episodes)
+        payload["supplementEnabled"] = lowerPlatform.supplementEnabled
+        payload["orderBlockReason"] = lowerPlatform.orderBlockReason
         payload["sourceBoxPolicyVersion"] = SourceBoxPositionPolicy.POLICY_VERSION
         payload["validSourceBoxRanges"] = SourceBoxPositionPolicy.validRangePayloadText()
         payload["disabledSourceBoxes"] = SourceBoxPositionPolicy.disabledBoxes()

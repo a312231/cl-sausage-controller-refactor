@@ -9,6 +9,30 @@ import org.junit.Test
 class ActionGroupRunnerTest {
 
     @Test
+    fun inRunner_shouldPersistActionCheckpointBeforeCommandExecution() = runBlocking {
+        val checkpoints = mutableListOf<String>()
+        val client = object : AtomicActionClient {
+            override suspend fun execute(
+                spec: AtomicActionSpec,
+                infoValue: Int,
+                onCommandDispatched: (suspend () -> Unit)?
+            ): AtomicActionResult {
+                assertEquals(spec.name, checkpoints.last())
+                return AtomicActionResult.Success
+            }
+        }
+        val runner = InActionGroupRunner(
+            client = client,
+            onCurrentActionChanged = { checkpoints += it }
+        )
+
+        val result = runner.run(sourceBoxNo = 17, targetPanNo = 13)
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("in1", "in2", "in3", "in4", "in5", "in6", "in7"), checkpoints)
+    }
+
+    @Test
     fun inRunner_shouldRejectInvalidBoxBeforeWritingAnyAction() = runBlocking {
         val client = FakeClient()
         val runner = InActionGroupRunner(client)

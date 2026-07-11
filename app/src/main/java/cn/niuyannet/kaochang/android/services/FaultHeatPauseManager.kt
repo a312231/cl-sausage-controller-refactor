@@ -102,6 +102,7 @@ object FaultHeatPauseManager {
             )
             KaoPanHelper.saveKaoPanList(pans)
             config.faultHeatPauseActive = 0
+            config.faultHeatStopConfirmed = 0
             config.faultHeatPauseStartedAtMs = 0L
             config.faultHeatPauseReason = null
             config.faultHeatPauseSource = null
@@ -113,6 +114,31 @@ object FaultHeatPauseManager {
                     "待丢弃烤盘=${result.pendingDiscardPositions}，alertCode=${result.alertCode ?: "无"}"
             )
             return result
+        }
+    }
+
+    fun previewFaultHeatPauseEnd(reason: String): EndPauseResult {
+        synchronized(mutex) {
+            val config = AppConfig.getAppConfig()
+            if (config.faultHeatPauseActive != 1 || config.faultHeatPauseStartedAtMs <= 0L) {
+                return EndPauseResult.NotActive
+            }
+            val pans = KaoPanHelper.getKaoPanList()
+            val normalizedPositions = normalizeStaleBakingHoldingTimes(pans, config)
+            if (normalizedPositions.isNotEmpty()) {
+                KaoPanHelper.saveKaoPanList(pans)
+                AppConfig.saveAppConfig(config)
+                LogUtils.w(
+                    "【$LOG_TAG】故障停热恢复预判前自愈烤制盘旧保温时间：" +
+                        "positions=$normalizedPositions，reason=$reason"
+                )
+            }
+            return calculatePauseAdjustment(
+                pans = pans,
+                config = config,
+                nowMs = System.currentTimeMillis(),
+                pauseStartedAtMs = config.faultHeatPauseStartedAtMs
+            )
         }
     }
 
@@ -207,6 +233,7 @@ object FaultHeatPauseManager {
         synchronized(mutex) {
             val config = AppConfig.getAppConfig()
             config.faultHeatPauseActive = 0
+            config.faultHeatStopConfirmed = 0
             config.faultHeatPauseStartedAtMs = 0L
             config.faultHeatPauseReason = null
             config.faultHeatPauseSource = null
@@ -281,6 +308,38 @@ object FaultHeatPauseManager {
         reason: String,
         emitLogs: Boolean = true
     ): EndPauseResult {
+        val result = calculatePauseAdjustment(pans, config, nowMs, pauseStartedAtMs)
+        val shiftedPositions = result.shiftedPositions.toSet()
+        pans.filter { it.positionSn in shiftedPositions }.forEach { pan ->
+            pan.startTime += result.pauseDurationMs
+        }
+
+        if (result.pendingDiscardPositions.isNotEmpty()) {
+            if (emitLogs) {
+                pans.filter { it.positionSn in result.pendingDiscardPositions }.forEach { pan ->
+                    val alertCode = when {
+                        result.alertCode != null -> result.alertCode
+                        isHoldingPan(pan) -> ALERT_KEEP_WARM_EXPIRED
+                        else -> ALERT_BAKING_PAUSE_ABORT
+                    }
+                    logPendingDiscardPan(pan, alertCode, result.pauseDurationMs, reason)
+                }
+            }
+            addPendingDiscardPositions(config, result.pendingDiscardPositions)
+            val effectiveAlertCode = result.alertCode ?: ALERT_BAKING_PAUSE_ABORT
+            config.foodSafetyAlertCode = effectiveAlertCode
+            config.foodSafetyAlertReason = "故障停热恢复触发食品安全待丢弃：reason=$reason，pauseDurationMs=${result.pauseDurationMs}，positions=${result.pendingDiscardPositions}"
+        }
+
+        return result
+    }
+
+    private fun calculatePauseAdjustment(
+        pans: List<KaoPan>,
+        config: AppConfigBean,
+        nowMs: Long,
+        pauseStartedAtMs: Long
+    ): EndPauseResult {
         val pauseDurationMs = nowMs - pauseStartedAtMs
         val shiftedPositions = mutableListOf<Int>()
         val holdingPositions = mutableListOf<Int>()
@@ -290,22 +349,12 @@ object FaultHeatPauseManager {
             pauseDurationMs > normalizedFaultPauseAnomalyMs(config) -> ALERT_ANOMALY_TOO_LONG
             else -> null
         }
-
         pans.forEach { pan ->
             when {
                 isBakingPan(pan) -> {
                     if (alertCode != null || pauseDurationMs > normalizedFaultBakingPauseAbortMs(config)) {
                         pendingPositions.add(pan.positionSn)
-                        if (emitLogs) {
-                            logPendingDiscardPan(
-                                pan = pan,
-                                alertCode = alertCode ?: ALERT_BAKING_PAUSE_ABORT,
-                                pauseDurationMs = pauseDurationMs,
-                                reason = reason
-                            )
-                        }
                     } else {
-                        pan.startTime += pauseDurationMs
                         shiftedPositions.add(pan.positionSn)
                     }
                 }
@@ -313,26 +362,10 @@ object FaultHeatPauseManager {
                     holdingPositions.add(pan.positionSn)
                     if (pan.closeTime > 0L && nowMs - pan.holdingTime > pan.closeTime) {
                         pendingPositions.add(pan.positionSn)
-                        if (emitLogs) {
-                            logPendingDiscardPan(
-                                pan = pan,
-                                alertCode = alertCode ?: ALERT_KEEP_WARM_EXPIRED,
-                                pauseDurationMs = pauseDurationMs,
-                                reason = reason
-                            )
-                        }
                     }
                 }
             }
         }
-
-        if (pendingPositions.isNotEmpty()) {
-            addPendingDiscardPositions(config, pendingPositions)
-            val effectiveAlertCode = alertCode ?: ALERT_BAKING_PAUSE_ABORT
-            config.foodSafetyAlertCode = effectiveAlertCode
-            config.foodSafetyAlertReason = "故障停热恢复触发食品安全待丢弃：reason=$reason，pauseDurationMs=$pauseDurationMs，positions=${pendingPositions.sorted()}"
-        }
-
         return EndPauseResult(
             active = true,
             pauseDurationMs = pauseDurationMs,

@@ -2,9 +2,11 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.services.KaoPanCloudSyncReporter
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import cn.niuyannet.kaochang.android.services.SnapshotSyncPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
@@ -219,17 +221,22 @@ object SendServerHelper {
      *
      * 仍保留必要运行态字段，便于服务端继续复用现有消费逻辑。
      */
-    fun publishServiceUpdateStatus(source: String = "runtime_state:auto"): Boolean {
+    fun publishServiceUpdateStatus(
+        source: String = "runtime_state:auto",
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot? = null
+    ): Boolean {
         val config = AppConfig.getAppConfig()
+        val frozenLowerPlatform = lowerPlatformSnapshot ?: LowerPlatformEpisodeReducer.snapshot(config)
         val now = System.currentTimeMillis()
-        val stateSignature = buildRuntimeStateSignature(config)
+        val stateSignature = buildRuntimeStateSignature(config, frozenLowerPlatform)
         val (seq, reusedSeq) = resolveRuntimeStateSeq(stateSignature)
         val payload = RuntimeStatePayloadBuilder.build(
             deviceCode = AppConfig.getDeviceId(),
             runtimeSeq = seq,
             config = config,
             source = source,
-            reportedAt = now
+            reportedAt = now,
+            lowerPlatformSnapshot = frozenLowerPlatform
         )
         val ok = VMMqttHelper.publishService(
             TopicMessage().apply {
@@ -808,9 +815,8 @@ object SendServerHelper {
         }
         return try {
             val root = JSON.parseObject(content)
-            val code = root.getIntValue("code")
             val data = root.getJSONObject("data")
-            code == 200 && (
+            ApiResponseCompat.isSuccessful(root) && (
                 data == null ||
                     data.getBooleanValue("accepted") ||
                     data.getBooleanValue("duplicate") ||
@@ -990,8 +996,11 @@ object SendServerHelper {
         )
     }
 
-    private fun buildRuntimeStateSignature(config: AppConfigBean): String {
-        return RuntimeStateSignatureBuilder.build(config)
+    private fun buildRuntimeStateSignature(
+        config: AppConfigBean,
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot
+    ): String {
+        return RuntimeStateSignatureBuilder.build(config, lowerPlatformSnapshot)
     }
 
     private fun resolveRuntimeStateSeq(stateSignature: String): Pair<Long, Boolean> {

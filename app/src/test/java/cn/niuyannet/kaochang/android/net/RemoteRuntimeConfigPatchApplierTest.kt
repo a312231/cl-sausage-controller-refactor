@@ -9,6 +9,30 @@ import org.junit.Test
 
 class RemoteRuntimeConfigPatchApplierTest {
     @Test
+    fun apply_shouldApplyPositiveBakingTime() {
+        val config = AppConfigBean().apply { bakingTime = 20 }
+        val patch = JSONObject().apply { put("bakingTime", 40) }
+
+        val result = RemoteRuntimeConfigPatchApplier.apply(config, patch)
+
+        assertTrue(result.hasApplied)
+        assertEquals(40, config.bakingTime)
+        assertEquals(listOf("bakingTime"), result.appliedFields)
+    }
+
+    @Test
+    fun apply_shouldRejectNonPositiveBakingTime() {
+        val config = AppConfigBean().apply { bakingTime = 40 }
+        val patch = JSONObject().apply { put("bakingTime", 0) }
+
+        val result = RemoteRuntimeConfigPatchApplier.apply(config, patch)
+
+        assertFalse(result.hasApplied)
+        assertEquals(40, config.bakingTime)
+        assertEquals(listOf("bakingTime"), result.rejectedFields)
+    }
+
+    @Test
     fun apply_shouldMarkTemperatureChangedForHeatingPatch() {
         val config = AppConfigBean().apply {
             heatingTemperature = 110

@@ -19,7 +19,12 @@ class AppConfigLocalRuntimeFieldsTest {
             "foodSafetyAlertCode",
             "foodSafetyAlertReason",
             "lastRuntimeAliveAtMs",
+            "lowerPlatformStatus",
             "lowerPlatformIsolationActionName",
+            "lowerPlatformGeneration",
+            "lowerPlatformAggregateVersion",
+            "lowerPlatformEpisodes",
+            "supplementEnabled",
             "zone3Dirty",
             "zone3CleanPending",
             "zone3CleanSuppressedFor4F"
@@ -38,35 +43,32 @@ class AppConfigLocalRuntimeFieldsTest {
     }
 
     @Test
-    fun applyLowerPlatformRuntimeFieldsFromRemote_shouldMergePresentFieldsAndPreserveMissingFields() {
+    fun applyLowerPlatformRuntimeFieldsFromRemote_shouldPreserveLocalOpenEpisodesAndReduceProjection() {
         val config = AppConfigBean().apply {
-            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
             lowerPlatformIsolationActionName = "in4"
-            supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
             orderBlockReason = AppConfigBean.ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING
         }
+        cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer.openIsolated(
+            config, "in4", "本地下平台隔离", 1_000L
+        )
         val remoteDegraded = JSONObject().apply {
-            put("lowerPlatformStatus", AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED)
+            put("lowerPlatformStatus", AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL)
             put("lowerPlatformIsolationActionName", "")
-            put("supplementEnabled", AppConfigBean.SUPPLEMENT_ENABLED_NO)
+            put("supplementEnabled", AppConfigBean.SUPPLEMENT_ENABLED_YES)
             put("orderBlockReason", "")
+            put("lowerPlatformGeneration", "remote-generation")
+            put("lowerPlatformAggregateVersion", 0L)
+            put("lowerPlatformEpisodes", emptyList<Any>())
         }
 
         AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, remoteDegraded)
 
-        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, config.lowerPlatformStatus)
-        assertEquals("", config.lowerPlatformIsolationActionName)
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED, config.lowerPlatformStatus)
+        assertEquals("in4", config.lowerPlatformIsolationActionName)
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
-        assertEquals("", config.orderBlockReason)
-
-        config.lowerPlatformIsolationActionName = "in5"
-
-        AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, JSONObject())
-
-        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED, config.lowerPlatformStatus)
-        assertEquals("in5", config.lowerPlatformIsolationActionName)
-        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
-        assertEquals("", config.orderBlockReason)
+        assertEquals(1, config.lowerPlatformEpisodes.size)
+        assertTrue(config.lowerPlatformGeneration != "remote-generation")
+        assertTrue(config.lowerPlatformAggregateVersion > 0L)
     }
 
     @Test

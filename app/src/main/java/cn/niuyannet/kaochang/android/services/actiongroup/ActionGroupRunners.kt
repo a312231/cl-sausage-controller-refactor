@@ -20,7 +20,8 @@ class InActionGroupRunner(
     private val logger: (String) -> Unit = {},
     private val operationLogContext: ActionGroupOperationLogContext? = null,
     private val operationLogger: (String) -> Unit = {},
-    private val failureLogger: (String) -> Unit = operationLogger
+    private val failureLogger: (String) -> Unit = operationLogger,
+    private val onCurrentActionChanged: (String) -> Unit = {}
 ) {
     suspend fun run(
         sourceBoxNo: Int,
@@ -57,7 +58,8 @@ class InActionGroupRunner(
             logger = logger,
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,
-            failureLogger = failureLogger
+            failureLogger = failureLogger,
+            onCurrentActionChanged = onCurrentActionChanged
         )
     }
 }
@@ -147,6 +149,7 @@ private suspend fun executeSteps(
     operationLogContext: ActionGroupOperationLogContext?,
     operationLogger: (String) -> Unit,
     failureLogger: (String) -> Unit,
+    onCurrentActionChanged: (String) -> Unit = {},
     enableVoiceReminder: Boolean = false,
     onWindowOpened: suspend () -> Unit = {},
     windowOpenBufferMs: Long = 0L
@@ -172,9 +175,10 @@ private suspend fun executeSteps(
             null
         }
         val result = if (step.retryableErrorCode == null) {
+            onCurrentActionChanged(step.spec.name)
             mapActionResult(step, client.execute(step.spec, step.infoValue, dispatchHook))
         } else {
-            executeRetriableStep(client, step, logger)
+            executeRetriableStep(client, step, logger, onCurrentActionChanged)
         }
         val elapsedMs = (System.currentTimeMillis() - stepStartedAtMs).coerceAtLeast(0L)
         logger(
@@ -240,10 +244,12 @@ private fun publishStickConsumeEventSafely(actionName: String, elapsedMs: Long, 
 private suspend fun executeRetriableStep(
     client: AtomicActionClient,
     step: ActionStep,
-    logger: (String) -> Unit
+    logger: (String) -> Unit,
+    onCurrentActionChanged: (String) -> Unit
 ): ActionGroupResult {
     var lastResult: AtomicActionResult = AtomicActionResult.Success
     for (attempt in 1..step.maxAttempts) {
+        onCurrentActionChanged(step.spec.name)
         val result = client.execute(step.spec, step.infoValue)
         lastResult = result
         if (result == AtomicActionResult.Success) {

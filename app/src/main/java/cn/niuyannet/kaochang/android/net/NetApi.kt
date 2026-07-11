@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.net
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.mqtt.RuntimeStateSignatureBuilder
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
@@ -16,13 +17,15 @@ import com.lzy.okgo.request.base.Request
  */
 object NetApi {
     // 正式环境接口地址
-    var API_URL_START: String = "https://iotadmin.cheerluck.com/prod-api/api/app/device"
+    val DEFAULT_API_URL_START: String = AppConfigBean.DEFAULT_API_BASE_URL
+    var API_URL_START: String = DEFAULT_API_URL_START
 
     // 测试环境示例
     // var API_URL_START: String = "https://iotadmintest.cheerluck.com/stage-api/api/app/device"
 
     // 设备初始化
     var init_url = "$API_URL_START/init"
+    var identityApply_url = "$API_URL_START/identity/apply"
 
     // 获取烤肠箱库存
     var stock_url = "$API_URL_START/stock"
@@ -51,9 +54,47 @@ object NetApi {
     var getDeviceInfo_url = "$API_URL_START/getDeviceInfo"
 
     /**
+     * 从本机配置刷新云端 HTTP 接口地址。
+     *
+     * apiBaseUrl 是“这台上位机连接哪个云端”的本地配置，不从 getDeviceInfo 远端配置合并，
+     * 避免测试机被旧线上配置覆盖回生产地址。
+     */
+    @Synchronized
+    fun refreshEndpointUrls() {
+        val oldBaseUrl = API_URL_START
+        API_URL_START = AppConfig.normalizeApiBaseUrl(AppConfig.getAppConfig().apiBaseUrl)
+        init_url = "$API_URL_START/init"
+        identityApply_url = "$API_URL_START/identity/apply"
+        stock_url = "$API_URL_START/stock"
+        getKcProductList = "$API_URL_START/getKcProductList"
+        updateStock_url = "$API_URL_START/updateStock"
+        clearStock_url = "$API_URL_START/clearStock"
+        updateKaoPanList_url = "$API_URL_START/updateKaoPanList"
+        reportSnapshot_url = "$API_URL_START/reportSnapshot"
+        updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
+        actionTelemetry_url = "$API_URL_START/actionTelemetry"
+        consumableEvent_url = "$API_URL_START/consumable/event"
+        consumableRefillStickFull_url = "$API_URL_START/consumable/refillStickFull"
+        consumableClearWaste_url = "$API_URL_START/consumable/clearWaste"
+        consumableState_url = "$API_URL_START/consumable/state"
+        checkUpdate_url = "$API_URL_START/checkUpdate"
+        reportVersion_url = "$API_URL_START/reportVersion"
+        ads_url = "$API_URL_START/ads"
+        getDeviceInfo_url = "$API_URL_START/getDeviceInfo"
+        if (oldBaseUrl != API_URL_START) {
+            LogUtils.i("【网络请求】云端HTTP地址已刷新：$oldBaseUrl -> $API_URL_START")
+        }
+    }
+
+    private fun ensureEndpointUrlsFresh() {
+        refreshEndpointUrls()
+    }
+
+    /**
      * 设备初始化。
      */
     fun initDevice(deviceId: String, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         val json = JSONObject()
         json["deviceCode"] = deviceId
         LogUtils.d("【网络请求】开始初始化设备：deviceCode=$deviceId")
@@ -78,10 +119,11 @@ object NetApi {
     }
 
     fun initDeviceByActivationCode(activationCode: String, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         val json = JSONObject()
         json["activationCode"] = activationCode
         LogUtils.d("【网络请求】开始使用一次性激活码初始化设备：activationCode=$activationCode")
-        OkGo.post<String>(init_url)
+        OkGo.post<String>(identityApply_url)
             .upJson(json.toJSONString())
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
@@ -101,8 +143,12 @@ object NetApi {
      * 获取广告列表。
      */
     fun getAds(callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         LogUtils.d("【网络请求】开始获取广告列表")
-        OkGo.get<String>(ads_url)
+        val request = OkGo.get<String>(ads_url)
+            .params("deviceCode", AppConfig.getDeviceId())
+        putDeviceCredential(request)
+        request
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
                     LogUtils.d("【网络请求】获取广告列表成功")
@@ -121,11 +167,13 @@ object NetApi {
      * 获取设备详情。
      */
     fun getDeviceInfo(deviceId: String, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         LogUtils.d("【网络请求】开始获取设备详情：deviceCode=$deviceId")
         val request = OkGo.get<String>(getDeviceInfo_url)
             .params("deviceCode", deviceId)
         val credential = AppConfig.getAppConfig().mqttPassword
         if (!credential.isNullOrBlank()) {
+            request.params("credentialNo", credential)
             request.headers("X-Device-Credential", credential)
         }
         request
@@ -144,6 +192,7 @@ object NetApi {
     }
 
     fun getConsumableState(deviceId: String, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         LogUtils.d("【耗材状态】开始获取耗材状态：deviceCode=$deviceId")
         OkGo.get<String>(consumableState_url)
             .params("deviceCode", deviceId)
@@ -165,12 +214,14 @@ object NetApi {
      * 获取产品列表。
      */
     fun getKcProductList(callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         LogUtils.d("【网络请求】开始获取产品列表")
         val request = OkGo.get<String>(getKcProductList)
         val deviceCode = AppConfig.getDeviceId()
         if (!deviceCode.isNullOrBlank()) {
             request.params("deviceCode", deviceCode)
         }
+        putDeviceCredential(request)
         request
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
@@ -190,10 +241,13 @@ object NetApi {
      * 获取设备库存列表。
      */
     fun getStockData(callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         LogUtils.d("【网络请求】开始获取库存：deviceCode=$deviceCode")
-        OkGo.get<String>(stock_url)
+        val request = OkGo.get<String>(stock_url)
             .params("deviceCode", deviceCode)
+        putDeviceCredential(request)
+        request
             .execute(object : StringCallback() {
                 override fun onSuccess(response: Response<String>?) {
                     LogUtils.d("【网络请求】获取库存成功：deviceCode=$deviceCode")
@@ -212,9 +266,11 @@ object NetApi {
      * 更新烤肠箱库存。
      */
     fun updateStock(content: String, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putDeviceCredential(json)
         json["content"] = content
         LogUtils.d("【网络请求】开始更新烤肠箱库存：deviceCode=$deviceCode")
         OkGo.post<String>(updateStock_url)
@@ -237,9 +293,11 @@ object NetApi {
      * 清空烤盘库存。
      */
     fun clearStock(content: String, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putDeviceCredential(json)
         json["content"] = content
         LogUtils.d("【网络请求】开始清空烤盘：deviceCode=$deviceCode")
         OkGo.post<String>(clearStock_url)
@@ -262,9 +320,11 @@ object NetApi {
      * 上传烤盘状态。
      */
     fun updateKaoPanList(content: String?, callback: ((code: Int, content: String?) -> Unit)? = null) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putDeviceCredential(json)
         json["content"] = content
         LogUtils.d("【网络请求】开始上传烤盘状态：deviceCode=$deviceCode")
         OkGo.post<String>(updateKaoPanList_url)
@@ -299,9 +359,11 @@ object NetApi {
         forceFullSnapshot: Boolean = false,
         callback: ((code: Int, content: String?) -> Unit)? = null
     ) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putDeviceCredential(json)
         json["sequence"] = sequence
         json["reportTime"] = reportTime
         json["kaoPanList"] = kaoPanList
@@ -374,10 +436,20 @@ object NetApi {
      * 更新设备营业状态和基础控制参数。
      * 这是 HTTP 同步通道，和 MQTT 的 action=2 状态上报互为补充。
      */
-    fun updateDeviceInfo(callback: ((code: Int, content: String?) -> Unit)? = null, source: String? = null) {
+    fun updateDeviceInfo(
+        callback: ((code: Int, content: String?) -> Unit)? = null,
+        source: String? = null,
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot? = null
+    ) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val config = AppConfig.getAppConfig()
-        val json = buildUpdateDeviceInfoPayload(deviceCode, config, source)
+        val json = buildUpdateDeviceInfoPayload(
+            deviceCode,
+            config,
+            source,
+            lowerPlatformSnapshot ?: LowerPlatformEpisodeReducer.snapshot(config)
+        )
         LogUtils.d("【网络请求】开始更新设备信息：deviceCode=$deviceCode")
         OkGo.post<String>(updateDeviceInfo_url)
             .upJson(json.toJSONString())
@@ -399,7 +471,9 @@ object NetApi {
         event: cn.niuyannet.kaochang.android.mqtt.ConsumableEvent,
         callback: ((code: Int, content: String?) -> Unit)? = null
     ) {
+        ensureEndpointUrlsFresh()
         val json = cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder.buildPayload(event)
+        putDeviceCredential(json)
         LogUtils.d(
             "【耗材事件】开始 HTTP 兜底上报耗材事件：" +
                 "sourceEventKey=${event.sourceEventKey}，eventType=${event.eventType}，delta=${event.deltaValue}"
@@ -431,6 +505,8 @@ object NetApi {
         payload: JSONObject,
         callback: ((code: Int, content: String?) -> Unit)? = null
     ) {
+        ensureEndpointUrlsFresh()
+        putDeviceCredential(payload)
         val eventId = payload.getString("eventId").orEmpty()
         val actionName = payload.getString("actionName").orEmpty()
         val eventPhase = payload.getString("eventPhase").orEmpty()
@@ -462,6 +538,7 @@ object NetApi {
     }
 
     fun refillStickFull(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        ensureEndpointUrlsFresh()
         postConsumableManualAction(
             url = consumableRefillStickFull_url,
             actionName = "补满竹签",
@@ -470,6 +547,7 @@ object NetApi {
     }
 
     fun clearWasteBucket(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        ensureEndpointUrlsFresh()
         postConsumableManualAction(
             url = consumableClearWaste_url,
             actionName = "清空垃圾桶",
@@ -485,6 +563,7 @@ object NetApi {
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putDeviceCredential(json)
         LogUtils.i("【耗材现场操作】开始上报$actionName：deviceCode=$deviceCode")
         OkGo.post<String>(url)
             .upJson(json.toJSONString())
@@ -508,10 +587,13 @@ object NetApi {
     internal fun buildUpdateDeviceInfoPayload(
         deviceCode: String,
         config: AppConfigBean,
-        source: String? = null
+        source: String? = null,
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot =
+            LowerPlatformEpisodeReducer.snapshot(config)
     ): JSONObject {
         val json = JSONObject()
         json["deviceCode"] = deviceCode
+        putDeviceCredential(json, config.mqttPassword)
         putIfNotBlank(json, "source", source)
         json["errorStatus"] = config.errorStatus
         if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
@@ -530,10 +612,14 @@ object NetApi {
         json["available"] = config.available
         json["availableCountdownLatched"] = config.availableCountdownLatched
         json["isEnable"] = if (config.isEnable == 1) 1 else 0
-        json["lowerPlatformStatus"] = config.lowerPlatformStatus ?: AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
-        json["lowerPlatformIsolationActionName"] = config.lowerPlatformIsolationActionName ?: ""
-        json["supplementEnabled"] = config.supplementEnabled
-        json["orderBlockReason"] = config.orderBlockReason ?: ""
+        val lowerPlatform = lowerPlatformSnapshot
+        json["lowerPlatformStatus"] = lowerPlatform.status
+        json["lowerPlatformIsolationActionName"] = lowerPlatform.isolationActionName
+        json["lowerPlatformGeneration"] = lowerPlatform.generation
+        json["lowerPlatformAggregateVersion"] = lowerPlatform.aggregateVersion
+        json["lowerPlatformEpisodes"] = JSON.toJSON(lowerPlatform.episodes)
+        json["supplementEnabled"] = lowerPlatform.supplementEnabled
+        json["orderBlockReason"] = lowerPlatform.orderBlockReason
         json["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
         json["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
         json["pendingDiscardPositions"] = config.pendingDiscardPositions
@@ -546,6 +632,25 @@ object NetApi {
         }
     }
 
+    private fun putDeviceCredential(json: JSONObject) {
+        val credential = AppConfig.getAppConfig().mqttPassword
+        putDeviceCredential(json, credential)
+    }
+
+    private fun putDeviceCredential(json: JSONObject, credential: String?) {
+        if (!credential.isNullOrBlank()) {
+            json["credentialNo"] = credential
+        }
+    }
+
+    private fun putDeviceCredential(request: com.lzy.okgo.request.GetRequest<String>) {
+        val credential = AppConfig.getAppConfig().mqttPassword
+        if (!credential.isNullOrBlank()) {
+            request.params("credentialNo", credential)
+            request.headers("X-Device-Credential", credential)
+        }
+    }
+
     fun checkAppUpdate(
         credential: String,
         versionCode: Int,
@@ -554,6 +659,7 @@ object NetApi {
         channel: String,
         callback: (code: Int, content: String?) -> Unit
     ) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode
@@ -595,6 +701,7 @@ object NetApi {
         channel: String,
         callback: (code: Int, content: String?) -> Unit
     ) {
+        ensureEndpointUrlsFresh()
         val deviceCode = AppConfig.getDeviceId()
         val json = JSONObject()
         json["deviceCode"] = deviceCode

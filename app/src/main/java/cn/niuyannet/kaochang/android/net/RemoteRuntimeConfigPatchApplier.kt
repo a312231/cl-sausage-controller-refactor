@@ -61,6 +61,7 @@ object RemoteRuntimeConfigPatchApplier {
                     applyHeatingOffset(config, field, entry.value, normalizedFields) { config.zone2HeatingOffset = it }
                 "zone3HeatingOffset" ->
                     applyHeatingOffset(config, field, entry.value, normalizedFields) { config.zone3HeatingOffset = it }
+                "bakingTime" -> applyPositiveInt(config, field, entry.value) { config.bakingTime = it }
                 "adminPasswordHash" ->
                     applySha256Hash(config, field, entry.value) { config.adminPasswordHash = it }
                 else -> {
@@ -131,6 +132,20 @@ object RemoteRuntimeConfigPatchApplier {
         return readIntField(config, field) == normalized
     }
 
+    private fun applyPositiveInt(
+        config: AppConfigBean,
+        field: String,
+        value: Any?,
+        setter: (Int) -> Unit
+    ): Boolean {
+        val intValue = toInt(value) ?: return false
+        if (intValue <= 0) {
+            return false
+        }
+        setter(intValue)
+        return readIntField(config, field) == intValue
+    }
+
     private fun applyTemperatureTarget(
         config: AppConfigBean,
         field: String,
@@ -182,6 +197,7 @@ object RemoteRuntimeConfigPatchApplier {
             "zone1HeatingOffset" -> config.zone1HeatingOffset
             "zone2HeatingOffset" -> config.zone2HeatingOffset
             "zone3HeatingOffset" -> config.zone3HeatingOffset
+            "bakingTime" -> config.bakingTime
             else -> null
         }
     }

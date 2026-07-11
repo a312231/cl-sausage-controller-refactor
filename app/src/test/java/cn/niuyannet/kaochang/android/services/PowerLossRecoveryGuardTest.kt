@@ -53,6 +53,30 @@ class PowerLossRecoveryGuardTest {
     }
 
     @Test
+    fun recoverPansAfterColdStart_shouldNotDoubleAdjustActiveFaultPause() {
+        val config = config().apply {
+            lastRuntimeAliveAtMs = 120_000L
+            faultHeatPauseActive = 1
+            faultHeatPauseStartedAtMs = 100_000L
+        }
+        val bakingPan = bakingPan(positionSn = 2, startTime = 60_000L)
+
+        val result = PowerLossRecoveryGuard.recoverPansAfterColdStart(
+            pans = listOf(bakingPan),
+            config = config,
+            nowMs = 720_000L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertFalse(result.adjusted)
+        assertEquals(60_000L, bakingPan.startTime)
+        assertEquals(720_000L, config.lastRuntimeAliveAtMs)
+        assertFalse(result.pauseResult.active)
+        assertTrue(FaultHeatPauseManager.shouldSkipBakingCompletion(config))
+    }
+
+    @Test
     fun recoverPansAfterColdStart_shouldMarkLongPausedBakingPanPendingDiscard() {
         val config = config().apply {
             lastRuntimeAliveAtMs = 1_000L

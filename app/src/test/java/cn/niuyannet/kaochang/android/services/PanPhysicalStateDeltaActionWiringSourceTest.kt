@@ -270,7 +270,7 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
             "for (box in selectedBoxes) {",
             "加满烤肠箱必须在改内存前记录原始快照"
         )
-        assertTrue("加满烤肠箱业务失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                        ToastUtils.showShort(json.getString(\"msg\"))"))
+        assertTrue("加满烤肠箱业务失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                        ToastUtils.showShort(ApiResponseCompat.messageText(json, \"设置失败\"))"))
         assertTrue("加满烤肠箱接口失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                    ToastUtils.showShort(\"添加失败\")"))
     }
 
@@ -290,16 +290,19 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
     }
 
     @Test
-    fun faultHeatRecovery_shouldUseSyncWrapperBeforeRestoringHeating() {
+    fun faultHeatRecovery_shouldSyncOnlyAfterTemperatureWritesSucceed() {
         val algorithm = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
         val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val enableBody = extractFunctionBody(algorithm, "fun enableRoastAlgorithm(")
-        val applyTemperatureBody = extractFunctionBody(operate, "fun applyConfiguredTemperatureByPanState(")
+        val applyTemperatureBody = extractFunctionBody(operate, "private fun applyConfiguredTemperatureByPanStateInternal(")
         val setAreaBody = extractFunctionBody(operate, "private fun setAreaTargetTemperature(")
 
-        assertTrue("算法开启恢复必须走故障恢复同步包装", enableBody.contains("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(\"enableRoastAlgorithm\")"))
-        assertTrue("按盘态恢复温度必须走故障恢复同步包装", applyTemperatureBody.contains("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)"))
-        assertTrue("单区恢复非0温度必须走故障恢复同步包装", setAreaBody.contains("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)"))
+        assertTrue("算法开启必须通过统一温控恢复入口", enableBody.contains("restoreHeatingStateFromCurrentPans("))
+        val successCheck = applyTemperatureBody.indexOf("allWritesSucceeded")
+        val syncPause = applyTemperatureBody.indexOf("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)")
+        assertTrue("按盘态恢复温度必须走故障恢复同步包装", syncPause >= 0)
+        assertTrue("必须先确认温区写入成功再结束暂停", successCheck >= 0 && successCheck < syncPause)
+        assertTrue("单区写入不能提前结束整机暂停", !setAreaBody.contains("endFaultHeatPauseAndSyncIfNeeded"))
     }
 
     private fun assertOrder(source: String, before: String, after: String, message: String) {

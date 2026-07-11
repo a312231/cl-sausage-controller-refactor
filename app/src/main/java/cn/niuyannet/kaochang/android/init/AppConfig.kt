@@ -6,11 +6,13 @@ import cn.niuyannet.kaochang.android.fault.FaultCode
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.services.FourFTemperaturePolicy
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 import java.security.MessageDigest
+import java.util.UUID
 
 object AppConfig {
     const val Sp_File_URL = "KAOCHANG_APP_CONFIG"
@@ -34,6 +36,7 @@ object AppConfig {
     )
     private val LOCAL_RUNTIME_ONLY_FIELDS = setOf(
         "faultHeatPauseActive",
+        "faultHeatStopConfirmed",
         "faultHeatPauseStartedAtMs",
         "faultHeatPauseReason",
         "faultHeatPauseSource",
@@ -41,7 +44,12 @@ object AppConfig {
         "foodSafetyAlertCode",
         "foodSafetyAlertReason",
         "lastRuntimeAliveAtMs",
+        "lowerPlatformStatus",
         "lowerPlatformIsolationActionName",
+        "lowerPlatformGeneration",
+        "lowerPlatformAggregateVersion",
+        "lowerPlatformEpisodes",
+        "supplementEnabled",
         "zone3Dirty",
         "zone3CleanPending",
         "zone3CleanSuppressedFor4F"
@@ -180,28 +188,32 @@ object AppConfig {
             AppConfigBean.SUPPLEMENT_ENABLED_YES
         }
 
+    fun ensureLowerPlatformGeneration(
+        config: AppConfigBean,
+        generationSupplier: () -> String = { UUID.randomUUID().toString() }
+    ): Boolean {
+        if (!config.lowerPlatformGeneration.isNullOrBlank()) {
+            return false
+        }
+        config.lowerPlatformGeneration = generationSupplier()
+        return true
+    }
+
     fun applyLowerPlatformRuntimeFieldsFromRemote(config: AppConfigBean, jsonData: JSONObject): List<String> {
-        val preservedFields = mutableListOf<String>()
-        if (jsonData.containsKey("lowerPlatformStatus") && jsonData.get("lowerPlatformStatus") != null) {
-            config.lowerPlatformStatus = normalizeLowerPlatformStatus(jsonData.getString("lowerPlatformStatus"))
-        } else {
-            preservedFields.add("lowerPlatformStatus")
-        }
-        if (jsonData.containsKey("lowerPlatformIsolationActionName")) {
-            config.lowerPlatformIsolationActionName = jsonData.getString("lowerPlatformIsolationActionName") ?: ""
-        } else {
-            preservedFields.add("lowerPlatformIsolationActionName")
-        }
-        if (jsonData.containsKey("supplementEnabled") && jsonData.get("supplementEnabled") != null) {
-            config.supplementEnabled = normalizeSupplementEnabled(jsonData.getIntValue("supplementEnabled"))
-        } else {
-            preservedFields.add("supplementEnabled")
-        }
+        val preservedFields = mutableListOf(
+            "lowerPlatformStatus(runtime_local)",
+            "lowerPlatformIsolationActionName(runtime_local)",
+            "lowerPlatformGeneration(runtime_local)",
+            "lowerPlatformAggregateVersion(runtime_local)",
+            "lowerPlatformEpisodes(runtime_local)",
+            "supplementEnabled(runtime_local)"
+        )
         if (jsonData.containsKey("orderBlockReason")) {
             config.orderBlockReason = jsonData.getString("orderBlockReason") ?: ""
         } else {
             preservedFields.add("orderBlockReason")
         }
+        LowerPlatformEpisodeReducer.normalize(config)
         return preservedFields
     }
 
@@ -288,6 +300,11 @@ object AppConfig {
         return normalized
     }
 
+    fun normalizeApiBaseUrl(value: String?): String {
+        val trimmed = value?.trim().orEmpty().trimEnd('/')
+        return trimmed.ifBlank { AppConfigBean.DEFAULT_API_BASE_URL }
+    }
+
     fun getAppConfig(): AppConfigBean {
         if (appConfigBean != null) {
             return appConfigBean!!
@@ -316,6 +333,7 @@ object AppConfig {
 
         val config = appConfigBean!!
         syncHomeQrHiddenFields(config)
+        val apiBaseUrlMigrated = normalizeApiBaseUrlConfig(config)
         val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
@@ -325,7 +343,8 @@ object AppConfig {
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         normalizeConcurrencyState(config, "配置加载")
-        if (actionGroupPrefetchMigrated ||
+        if (apiBaseUrlMigrated ||
+            actionGroupPrefetchMigrated ||
             forceVisionSuccessMigrated ||
             boxRefillTargetNumMigrated ||
             faultSafetyMigrated ||
@@ -337,6 +356,19 @@ object AppConfig {
             saveAppConfig(config)
         }
         return appConfigBean!!
+    }
+
+    private fun normalizeApiBaseUrlConfig(config: AppConfigBean): Boolean {
+        val normalized = normalizeApiBaseUrl(config.apiBaseUrl)
+        if (normalized == config.apiBaseUrl) {
+            return false
+        }
+        LogUtils.w(
+            "【配置迁移】apiBaseUrl（云端HTTP地址）为空或带多余结尾斜杠，" +
+                "原值=${config.apiBaseUrl ?: "null"}，已规范化为$normalized"
+        )
+        config.apiBaseUrl = normalized
+        return true
     }
 
     private fun migrateBoxRefillTargetNumDefault(config: AppConfigBean): Boolean {
@@ -384,6 +416,10 @@ object AppConfig {
 
     private fun normalizeLowerPlatformRuntimeConfig(config: AppConfigBean, logPrefix: String): Boolean {
         var changed = false
+        if (ensureLowerPlatformGeneration(config)) {
+            LogUtils.i("[$logPrefix] 初始化 lowerPlatformGeneration（下平台事件代际）=${config.lowerPlatformGeneration}")
+            changed = true
+        }
         val normalizedStatus = normalizeLowerPlatformStatus(config.lowerPlatformStatus)
         if (config.lowerPlatformStatus != normalizedStatus) {
             LogUtils.w(
@@ -408,6 +444,9 @@ object AppConfig {
         }
         if (config.orderBlockReason == null) {
             config.orderBlockReason = ""
+            changed = true
+        }
+        if (LowerPlatformEpisodeReducer.normalize(config)) {
             changed = true
         }
         return changed
@@ -469,10 +508,25 @@ object AppConfig {
     }
 
     fun saveAppConfig(appConfigBean: AppConfigBean) {
+        appConfigBean.apiBaseUrl = normalizeApiBaseUrl(appConfigBean.apiBaseUrl)
         syncHomeQrHiddenFields(appConfigBean)
         alignRestStatusSource(appConfigBean)
         this.appConfigBean = appConfigBean
         PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(appConfigBean))
+    }
+
+    fun saveAppConfigDurable(appConfigBean: AppConfigBean) {
+        appConfigBean.apiBaseUrl = normalizeApiBaseUrl(appConfigBean.apiBaseUrl)
+        syncHomeQrHiddenFields(appConfigBean)
+        alignRestStatusSource(appConfigBean)
+        this.appConfigBean = appConfigBean
+        check(
+            PreferenceUtils.saveStringPreferenceDurable(
+                Sp_File_URL,
+                KEY_APP_CONFIG_JSON,
+                JSON.toJSONString(appConfigBean)
+            )
+        ) { "关键运行态同步落盘失败" }
     }
 
     fun hasValidDeviceConfig(): Boolean {
@@ -739,6 +793,16 @@ object AppConfig {
                         "实际使用=$clampedValue℃"
                 )
             }
+        }
+
+        if (!jsonData.containsKey("mqttPassword") && jsonData.containsKey("credentialNo")) {
+            jsonData["mqttPassword"] = jsonData.getString("credentialNo")
+        }
+        if (!jsonData.containsKey("mqttUsername") && jsonData.containsKey("deviceCode")) {
+            jsonData["mqttUsername"] = jsonData.getString("deviceCode")
+        }
+        if (!jsonData.containsKey("name") && jsonData.containsKey("deviceName")) {
+            jsonData["name"] = jsonData.getString("deviceName")
         }
 
         mergeString("mqttUrl", "mqttUrl") { config.mqttHost = it }

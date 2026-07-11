@@ -11,19 +11,22 @@ object LowerPlatformRuntimeStateReporter {
         config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
         config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_NO
         config.orderBlockReason = ""
-        config.moveStatus = 0
     }
 
-    fun markSupplyDegraded(reason: String) {
+    fun markSupplyDegraded(
+        reason: String,
+        failedBoxNos: List<Int> = emptyList(),
+        details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails()
+    ) {
         val config = AppConfig.getAppConfig()
         val previousLowerPlatformStatus = config.lowerPlatformStatus
         val previousIsolationActionName = config.lowerPlatformIsolationActionName
         val previousSupplementEnabled = config.supplementEnabled
         val previousOrderBlockReason = config.orderBlockReason
-        config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
-        config.lowerPlatformIsolationActionName = ""
-        config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
-        config.orderBlockReason = ""
+        val tx = LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
+            applySupplyDegraded(config, reason, failedBoxNos, details = details)
+            config.orderBlockReason = ""
+        }
         LogUtils.w(
             "【补肠供给降级】已标记供给侧异常，不切整机维护：" +
                 "lowerPlatformStatus=$previousLowerPlatformStatus->${config.lowerPlatformStatus}，" +
@@ -33,19 +36,44 @@ object LowerPlatformRuntimeStateReporter {
                 "onlineStatus=${config.onlineStatus}，errorStatus=${config.errorStatus}，isEnable=${config.isEnable}，" +
                 "reason=$reason"
         )
-        AppConfig.saveAppConfig(config)
-        publishOrFallback("runtime_state:supply_degraded")
+        publishOrFallback("runtime_state:supply_degraded", tx.snapshot)
     }
 
-    fun markIsolated(reason: String, actionName: String) {
+    fun applySupplyDegraded(
+        config: AppConfigBean,
+        reason: String,
+        failedBoxNos: List<Int>,
+        occurredAt: Long = System.currentTimeMillis(),
+        details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails()
+    ) {
+        if (failedBoxNos.isNotEmpty()) {
+            LowerPlatformEpisodeReducer.openSupplyDegraded(config, failedBoxNos, reason, occurredAt, details)
+        } else if (config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
+            config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+        }
+        if (config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
+            config.lowerPlatformIsolationActionName = ""
+            config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+        }
+        config.orderBlockReason = ""
+    }
+
+    fun markIsolated(
+        reason: String,
+        actionName: String,
+        details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails(requiresManualConfirm = true)
+    ) {
         val config = AppConfig.getAppConfig()
         val previousLowerPlatformStatus = config.lowerPlatformStatus
         val previousIsolationActionName = config.lowerPlatformIsolationActionName
         val previousSupplementEnabled = config.supplementEnabled
         val previousOrderBlockReason = config.orderBlockReason
         val previousMoveStatus = config.moveStatus
-        applyLowerPlatformIsolated(config)
-        config.lowerPlatformIsolationActionName = actionName
+        val tx = LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
+            LowerPlatformEpisodeReducer.openIsolated(config, actionName, reason, details = details)
+            applyLowerPlatformIsolated(config)
+            config.lowerPlatformIsolationActionName = actionName
+        }
         LogUtils.e(
             "【下平台隔离】补肠链路已隔离，不切整机维护，已停止自动补肠：" +
                 "lowerPlatformStatus=$previousLowerPlatformStatus->${config.lowerPlatformStatus}，" +
@@ -56,35 +84,51 @@ object LowerPlatformRuntimeStateReporter {
                 "onlineStatus=${config.onlineStatus}，errorStatus=${config.errorStatus}，isEnable=${config.isEnable}，" +
                 "reason=$reason"
         )
-        AppConfig.saveAppConfig(config)
-        publishOrFallback("runtime_state:lower_platform_isolated")
+        publishOrFallback("runtime_state:lower_platform_isolated", tx.snapshot)
     }
 
-    fun markNormalAfterManualBoxMaintenance(reason: String) {
+    fun applySuccessfulSupplyBoxTake(
+        config: AppConfigBean,
+        sourceBoxNo: Int,
+        recoveredAt: Long = System.currentTimeMillis()
+    ): Boolean = LowerPlatformEpisodeReducer.recoverSupplyBox(config, sourceBoxNo, recoveredAt)
+
+    fun markSupplyBoxRecoveredAfterSuccessfulTake(sourceBoxNo: Int, reason: String) {
         val config = AppConfig.getAppConfig()
-        if (!shouldRecoverAfterManualBoxMaintenance(config)) {
+        val previousStatus = config.lowerPlatformStatus
+        val tx = LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
+            applySuccessfulSupplyBoxTake(config, sourceBoxNo)
+        }
+        if (!tx.value) {
             return
         }
-        val previousLowerPlatformStatus = config.lowerPlatformStatus
-        val previousIsolationActionName = config.lowerPlatformIsolationActionName
-        val previousSupplementEnabled = config.supplementEnabled
-        val previousOrderBlockReason = config.orderBlockReason
-        config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
-        config.lowerPlatformIsolationActionName = ""
-        config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
-        if (shouldClearOrderBlockReasonAfterManualBoxMaintenance(config)) {
-            config.orderBlockReason = ""
-        }
-        AppConfig.saveAppConfig(config)
         LogUtils.i(
-            "【补肠供给恢复】人工维护烤肠箱后恢复下平台供给状态：" +
-                "lowerPlatformStatus=$previousLowerPlatformStatus->${config.lowerPlatformStatus}，" +
-                "lowerPlatformIsolationActionName=$previousIsolationActionName->空，" +
-                "supplementEnabled=$previousSupplementEnabled->${config.supplementEnabled}，" +
-                "orderBlockReason=${previousOrderBlockReason ?: "null"}->${config.orderBlockReason ?: "null"}，" +
-                "reason=$reason"
+            "【补肠供给恢复】真实取肠成功，关闭同一来源箱供给降级事件：" +
+                "sourceBox=$sourceBoxNo，lowerPlatformStatus=$previousStatus->${config.lowerPlatformStatus}，reason=$reason"
         )
-        publishOrFallback("runtime_state:supply_recovered")
+        publishOrFallback("runtime_state:supply_box_recovered:$sourceBoxNo", tx.snapshot)
+    }
+
+    fun applyManualBoxMaintenanceRecovery(
+        config: AppConfigBean,
+        sourceBoxNos: Collection<Int>,
+        recoveredAt: Long = System.currentTimeMillis()
+    ): Boolean = LowerPlatformEpisodeReducer.recoverSupplyBoxes(config, sourceBoxNos, recoveredAt)
+
+    fun markBoxesRecoveredAfterManualMaintenance(sourceBoxNos: Collection<Int>, reason: String) {
+        val config = AppConfig.getAppConfig()
+        val distinctBoxNos = sourceBoxNos.distinct()
+        val tx = LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
+            applyManualBoxMaintenanceRecovery(config, distinctBoxNos)
+        }
+        if (!tx.value) {
+            return
+        }
+        LogUtils.i(
+            "【补肠供给恢复】人工维护后仅恢复实际箱位：sourceBoxes=$distinctBoxNos，" +
+                "lowerPlatformStatus=${config.lowerPlatformStatus}，reason=$reason"
+        )
+        publishOrFallback("runtime_state:supply_boxes_recovered", tx.snapshot)
     }
 
     fun confirmLowerPlatformIsolationAfterManualAction(reason: String): Boolean {
@@ -92,8 +136,10 @@ object LowerPlatformRuntimeStateReporter {
         if (!shouldRecoverAfterManualLowerPlatformAction(config)) {
             return false
         }
-        val before = recoverLowerPlatformIsolation(config)
-        AppConfig.saveAppConfig(config)
+        val tx = LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
+            recoverLowerPlatformIsolation(config)
+        }
+        val before = tx.value
         LogUtils.i(
             "【下平台隔离恢复】人工确认后恢复自动机械调度：" +
                 "lowerPlatformStatus=${before.lowerPlatformStatus}->${config.lowerPlatformStatus}，" +
@@ -101,7 +147,7 @@ object LowerPlatformRuntimeStateReporter {
                 "supplementEnabled=${before.supplementEnabled}->${config.supplementEnabled}，" +
                 "reason=$reason"
         )
-        publishOrFallback("runtime_state:lower_platform_isolation_recovered")
+        publishOrFallback("runtime_state:lower_platform_isolation_recovered", tx.snapshot)
         return true
     }
 
@@ -111,9 +157,18 @@ object LowerPlatformRuntimeStateReporter {
             lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName,
             supplementEnabled = config.supplementEnabled
         )
-        config.lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        val recoveredEpisode = LowerPlatformEpisodeReducer.recoverIsolation(config)
+        config.lowerPlatformStatus = if (recoveredEpisode) {
+            LowerPlatformEpisodeReducer.reduceStatus(config)
+        } else {
+            AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        }
         config.lowerPlatformIsolationActionName = ""
-        config.supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
+        config.supplementEnabled = if (config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
+            AppConfigBean.SUPPLEMENT_ENABLED_NO
+        } else {
+            AppConfigBean.SUPPLEMENT_ENABLED_YES
+        }
         return snapshot
     }
 
@@ -136,11 +191,14 @@ object LowerPlatformRuntimeStateReporter {
         val supplementEnabled: Int
     )
 
-    private fun publishOrFallback(source: String) {
-        val mqttOk = SendServerHelper.publishServiceUpdateStatus(source)
+    private fun publishOrFallback(
+        source: String,
+        snapshot: LowerPlatformEpisodeReducer.StateSnapshot
+    ) {
+        val mqttOk = SendServerHelper.publishServiceUpdateStatus(source, snapshot)
         if (!mqttOk) {
             LogUtils.w("【补肠供给状态】MQTT 发送队列拒绝，回退 HTTP 补偿：source=$source")
-            DataManagementAPI.uploadDeviceInfo(source = source)
+            DataManagementAPI.uploadDeviceInfo(source = source, lowerPlatformSnapshot = snapshot)
         }
     }
 }

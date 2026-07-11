@@ -7,6 +7,7 @@ import android.view.WindowManager
 import cn.niuyannet.kaochang.android.base.BaseActivity
 import cn.niuyannet.kaochang.android.databinding.MainActivityBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -46,9 +47,9 @@ abstract class LoadNetActivity : BaseActivity() {
                 return@getDeviceInfo
             }
 
-            if (json.getIntValue("code") != 200) {
-                val message = json.getString("msg") ?: "获取配置失败"
-                LogUtils.w("[启动配置] getDeviceInfo 业务失败：code=${json.getIntValue("code")}, raw=$content")
+            if (!ApiResponseCompat.isSuccessful(json)) {
+                val message = ApiResponseCompat.messageText(json, "获取配置失败")
+                LogUtils.w("[启动配置] getDeviceInfo 业务失败：code=${ApiResponseCompat.codeText(json)}, raw=$content")
                 showLoadFailure(message, onLoaded)
                 return@getDeviceInfo
             }

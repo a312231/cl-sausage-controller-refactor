@@ -66,7 +66,7 @@ class SupplementSupplyDegradeSourceTest {
     @Test
     fun pipelineFailure_shouldCheckHeatSemiFaultBeforeSupplyDegradeAndMaintenance() {
         val source = sourceText()
-        val functionStart = source.indexOf("private fun handlePipelineSupplementFailure(")
+        val functionStart = source.indexOf("private suspend fun handlePipelineSupplementFailure(")
         assertTrue("必须存在预取流水线失败处理函数", functionStart >= 0)
         val functionEnd = source.indexOf("private fun describeAtomicActionResult", functionStart)
             .let { if (it >= 0) it else source.length }

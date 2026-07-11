@@ -9,6 +9,25 @@ import org.junit.Test
 class LowerPlatformRuntimeStateReporterTest {
 
     @Test
+    fun applySupplyDegraded_shouldNotDowngradeActiveMechanicalIsolation() {
+        val config = AppConfigBean().apply {
+            lowerPlatformIsolationActionName = "in4"
+        }
+        LowerPlatformEpisodeReducer.openIsolated(config, "in4", "升降台异常", 1_000L)
+
+        LowerPlatformRuntimeStateReporter.applySupplyDegraded(
+            config = config,
+            reason = "3号箱取肠失败",
+            failedBoxNos = listOf(3),
+            occurredAt = 2_000L
+        )
+
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED, config.lowerPlatformStatus)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
+        assertEquals("in4", config.lowerPlatformIsolationActionName)
+    }
+
+    @Test
     fun applyLowerPlatformIsolated_shouldDisableSupplementWithoutBlockingOrdersOrMaintenance() {
         val config = AppConfigBean().apply {
             lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
@@ -28,7 +47,7 @@ class LowerPlatformRuntimeStateReporterTest {
         assertEquals(1, config.onlineStatus)
         assertEquals(0, config.errorStatus)
         assertEquals(1, config.isEnable)
-        assertEquals(0, config.moveStatus)
+        assertEquals(1, config.moveStatus)
     }
 
     @Test
@@ -133,5 +152,24 @@ class LowerPlatformRuntimeStateReporterTest {
                 dispatchSafetyChecking
             )
         )
+    }
+
+    @Test
+    fun manualBoxMaintenance_shouldRecoverOnlySelectedBoxesAndNeverReenableDuringIsolation() {
+        val config = AppConfigBean()
+        LowerPlatformEpisodeReducer.openSupplyDegraded(config, listOf(3, 5), "取肠失败", 1_000L)
+        LowerPlatformEpisodeReducer.openIsolated(config, "in4", "升降台异常", 2_000L)
+
+        val recovered = LowerPlatformRuntimeStateReporter.applyManualBoxMaintenanceRecovery(
+            config = config,
+            sourceBoxNos = listOf(3),
+            recoveredAt = 3_000L
+        )
+
+        assertTrue(recovered)
+        assertEquals("RECOVERED", config.lowerPlatformEpisodes.first { it.sourceBoxNo == 3 }.lifecycle)
+        assertEquals("OPEN", config.lowerPlatformEpisodes.first { it.sourceBoxNo == 5 }.lifecycle)
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED, config.lowerPlatformStatus)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
     }
 }

@@ -54,6 +54,7 @@ class InActionGroupPrefetchPipelineRunner(
     private val failureLogger: (String) -> Unit = operationLogger,
     private val onTaskCompleted: (CompletedInActionGroupPipelineTask) -> Unit = {},
     private val onPickFailureSkipped: (Int) -> Unit = {},
+    private val onPickSucceeded: (Int) -> Unit = {},
     private val onCurrentActionChanged: (InActionGroupPipelineActionContext) -> Unit = {},
     private val actionClientProvider: (InActionGroupPipelineActionContext) -> AtomicActionClient = { client },
     private val pauseReasonAfterFallbackSource: (InActionGroupPipelineTask, Int) -> String? = { _, _ -> null },
@@ -96,10 +97,10 @@ class InActionGroupPrefetchPipelineRunner(
                         )
                     } else {
                         logger(
-                            "in6 命令已下发，启动下一根预取：currentTargetPan=${task.targetPanNo}，" +
+                            "in6 命令已下发，已登记下一根任务；为保证崩溃恢复坐标唯一，" +
+                                "等待当前 in7 完成后再开始预取：currentTargetPan=${task.targetPanNo}，" +
                                 "nextTargetPan=${tasks[index + 1].targetPanNo}"
                         )
-                        nextPrefetch = startPrefetch(tasks[index + 1])
                     }
                 }
             }
@@ -167,7 +168,11 @@ class InActionGroupPrefetchPipelineRunner(
                 return@coroutineScope InActionGroupPipelineResult.Paused(completed)
             }
 
-            val next = nextPrefetch ?: break
+            val next = nextPrefetch ?: if (index + 1 < tasks.size) {
+                startPrefetch(tasks[index + 1])
+            } else {
+                break
+            }
             index += 1
             currentPrefetch = next
         }
@@ -240,7 +245,7 @@ class InActionGroupPrefetchPipelineRunner(
                 sourceBoxNo,
                 maxAttempts = 2
             )) {
-                AtomicActionResult.Success -> Unit
+                AtomicActionResult.Success -> onPickSucceeded(sourceBoxNo)
                 is AtomicActionResult.Failed -> {
                     val failedSourceBoxNos = if (in2.errorCode == AtomicActionCodes.IR_PICK_FAILED) {
                         (failedPickSourceBoxNos + sourceBoxNo).distinct()

@@ -64,6 +64,15 @@ object PowerLossRecoveryGuard {
             )
         }
 
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+            config.lastRuntimeAliveAtMs = nowMs
+            return RecoveryResult(
+                adjusted = false,
+                normalizedPositions = emptyList(),
+                pauseResult = FaultHeatPauseManager.EndPauseResult.NotActive
+            )
+        }
+
         val normalizedPositions = FaultHeatPauseManager.normalizeStaleBakingHoldingTimes(pans, config)
         val pauseResult = FaultHeatPauseManager.adjustPansForPause(
             pans = pans,
@@ -100,6 +109,14 @@ object PowerLossRecoveryGuard {
     private fun logRecoveryResult(source: String, result: RecoveryResult, config: AppConfigBean) {
         val pauseResult = result.pauseResult
         if (!result.adjusted) {
+            if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
+                LogUtils.i(
+                    "【$LOG_TAG】检测到持久化故障停热暂停，冷启动不重复顺延烤制计时：" +
+                        "source=$source，faultHeatPauseStartedAtMs=${config.faultHeatPauseStartedAtMs}，" +
+                        "lastRuntimeAliveAtMs=${config.lastRuntimeAliveAtMs}"
+                )
+                return
+            }
             LogUtils.i(
                 "【$LOG_TAG】未发现历史运行心跳，初始化本机心跳：" +
                     "source=$source，lastRuntimeAliveAtMs=${config.lastRuntimeAliveAtMs}"

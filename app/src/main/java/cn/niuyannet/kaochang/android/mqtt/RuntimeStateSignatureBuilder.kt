@@ -2,13 +2,20 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
+import com.alibaba.fastjson.JSON
 
 internal object RuntimeStateSignatureBuilder {
     private const val KEEP_WARM_EXPIRED_ALERT_CODE = "KEEP_WARM_EXPIRED"
 
-    fun build(config: AppConfigBean): String {
+    fun build(
+        config: AppConfigBean,
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot =
+            LowerPlatformEpisodeReducer.snapshot(config)
+    ): String {
         val alertCode = reportableFoodSafetyAlertCode(config)
         val alertReason = reportableFoodSafetyAlertReason(config)
+        val lowerPlatform = lowerPlatformSnapshot
         return buildString {
             append(config.onlineStatus).append('|')
             append(config.supplyStatus).append('|')
@@ -21,10 +28,13 @@ internal object RuntimeStateSignatureBuilder {
             append(config.errorStatus).append('|')
             append(config.errorCode ?: "").append('|')
             append(config.restStatusSource ?: "").append('|')
-            append(config.lowerPlatformStatus ?: AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL).append('|')
-            append(config.lowerPlatformIsolationActionName ?: "").append('|')
-            append(config.supplementEnabled).append('|')
-            append(config.orderBlockReason ?: "").append('|')
+            append(lowerPlatform.status).append('|')
+            append(lowerPlatform.isolationActionName).append('|')
+            append(lowerPlatform.generation).append('|')
+            append(lowerPlatform.aggregateVersion).append('|')
+            append(JSON.toJSONString(lowerPlatform.episodes)).append('|')
+            append(lowerPlatform.supplementEnabled).append('|')
+            append(lowerPlatform.orderBlockReason).append('|')
             append(alertCode).append('|')
             append(alertReason).append('|')
             append(config.pendingDiscardPositions.toSortedSet().joinToString(",")).append('|')

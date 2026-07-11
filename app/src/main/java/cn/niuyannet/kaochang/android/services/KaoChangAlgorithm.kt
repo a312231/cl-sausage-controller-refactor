@@ -64,7 +64,6 @@ object KaoChangAlgorithm {
     private var inspectionDisconnectSuppressedLogged = false
     private var actionGroupRecoveredAfterModbusConnect = false
     private var startupHeatingStateRestored = false
-    private var faultHeatingStopped = false
     private var lastPollStateSnapshot: String? = null
     private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
@@ -153,7 +152,7 @@ object KaoChangAlgorithm {
             "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}，" +
             "moveStatus（机械动作状态）=${moveStatusText(config.moveStatus)}，" +
             "isRunning（算法轮询是否运行）=$isRunning，" +
-            "faultHeatingStopped（故障停热守卫）=$faultHeatingStopped"
+            "faultHeatPauseActive（故障停热暂停）=${config.faultHeatPauseActive}"
 
     private fun logFaultHeatDiagnosticOnce(
         stage: String,
@@ -171,7 +170,7 @@ object KaoChangAlgorithm {
             config.isEnable,
             config.moveStatus,
             isRunning,
-            faultHeatingStopped
+            config.faultHeatPauseActive
         ).joinToString("|")
         if (lastFaultHeatDiagnosticLogKey == logKey) {
             return
@@ -702,33 +701,42 @@ object KaoChangAlgorithm {
     }
 
     private fun stopHeatingAndDispatchForFault(
-        config: AppConfigBean,
         reason: String,
         forceStopHeating: Boolean = false
     ) {
-        val currentTime = getCurrentTime()
-        val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
-        val previousOnlineStatus = config.onlineStatus
-        val previousIsEnable = config.isEnable
-        if (config.onlineStatus != 3) {
-            config.onlineStatus = 3
+        KaoChangOperate.withFaultHeatTransitionLock {
+            val currentConfig = AppConfig.getAppConfig()
+            if (!forceStopHeating && currentConfig.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL) {
+                logD(LOG_DEVICE, "跳过已过期的故障停热收口：reason=$reason，当前故障已恢复")
+                return@withFaultHeatTransitionLock
+            }
+            val currentTime = getCurrentTime()
+            val isWithinBusinessHours = isWithinBusinessHours(currentTime, currentConfig.businessTime)
+            val previousOnlineStatus = currentConfig.onlineStatus
+            val previousIsEnable = currentConfig.isEnable
+            if (currentConfig.onlineStatus != 3) {
+                currentConfig.onlineStatus = 3
+            }
+            currentConfig.isEnable = 0
+            isEnabled = false
+            AppConfig.saveAppConfig(currentConfig)
+            if (
+                forceStopHeating ||
+                !FaultHeatPauseManager.shouldSkipBakingCompletion(currentConfig) ||
+                currentConfig.faultHeatStopConfirmed != 1
+            ) {
+                KaoChangOperate.stopHeatingForFault(reason)
+            }
+            logW(
+                LOG_DEVICE,
+                "设备故障态收口：reason=$reason，" +
+                    "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
+                    "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(currentConfig.isEnable)}，" +
+                    "errorStatus（设备故障状态）=${errorStatusText(currentConfig.errorStatus)}，" +
+                    faultHeatDiagnosticText(currentConfig, currentTime, isWithinBusinessHours)
+            )
+            HomeUiRefreshBridge.requestRefresh("algorithm_fault:$reason")
         }
-        config.isEnable = 0
-        isEnabled = false
-        AppConfig.saveAppConfig(config)
-        if (forceStopHeating || !faultHeatingStopped) {
-            faultHeatingStopped = true
-            KaoChangOperate.stopHeatingForFault(reason)
-        }
-        logW(
-            LOG_DEVICE,
-            "设备故障态收口：reason=$reason，" +
-                "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(config.onlineStatus)}，" +
-                "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
-                "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}，" +
-                faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
-        )
-        HomeUiRefreshBridge.requestRefresh("algorithm_fault:$reason")
     }
 
     /**
@@ -745,6 +753,24 @@ object KaoChangAlgorithm {
         normalizeSupplementSourceKeepWarmBeforeEarlyReturns(config, kaoPanList)
         val currentTime = getCurrentTime()
         val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
+
+        if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
+            logFaultHeatDiagnosticOnce("error_status_before_fault_stop", config, currentTime, isWithinBusinessHours)
+            stopHeatingAndDispatchForFault("算法轮询检测到设备故障")
+            SendServerHelper.publishServiceUpdateStatus()
+            return
+        }
+        if (
+            onlineStatus == 3 &&
+            (
+                !FaultHeatPauseManager.shouldSkipBakingCompletion(config) ||
+                    config.faultHeatStopConfirmed != 1
+            )
+        ) {
+            KaoChangOperate.stopHeatingForFault("维护态检测到故障停热暂停或三区停热确认缺失，写0")
+            return
+        }
+
         if (!isWithinBusinessHours) {
             logFaultHeatDiagnosticOnce("not_within_business_hours_before_return", config, currentTime, isWithinBusinessHours)
             // 只有运营中（1）才需要执行停业收尾切换到休息中（2）；
@@ -764,12 +790,6 @@ object KaoChangAlgorithm {
             onlineStatus = AppConfig.getAppConfig().onlineStatus
         }
 
-        if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
-            logFaultHeatDiagnosticOnce("error_status_before_fault_stop", config, currentTime, isWithinBusinessHours)
-            stopHeatingAndDispatchForFault(config, "算法轮询检测到设备故障")
-            SendServerHelper.publishServiceUpdateStatus()
-            return
-        }
         if (!(onlineStatus == 1 || onlineStatus == 4)) {
             logD(LOG_DEVICE, "设备当前处于${onlineStatusText(onlineStatus)}，跳过算法调度")
             return
@@ -792,9 +812,14 @@ object KaoChangAlgorithm {
             DataManagementAPI.refreshStockData(logPrefix = "算法轮询-stock-missing")
             return
         }
-        if (TemperatureControlPolicy.shouldRestoreHeatingAfterStartup(startupHeatingStateRestored, modbusConnected = true)) {
-            KaoChangOperate.restoreHeatingStateFromCurrentPans("App启动后首次检测到Modbus已连接，按当前烤盘状态恢复温度")
-            startupHeatingStateRestored = true
+        if (
+            config.isEnable == 1 &&
+            isEnabled &&
+            TemperatureControlPolicy.shouldRestoreHeatingAfterStartup(startupHeatingStateRestored, modbusConnected = true)
+        ) {
+            val restoreSucceeded =
+                KaoChangOperate.applyConfiguredTemperatureByPanState("App启动后首次检测到Modbus已连接，按当前烤盘状态恢复温度")
+            startupHeatingStateRestored = restoreSucceeded
         }
         KaoChangOperate.stopAllHeatingIfNoSausage("全盘无肠兜底检测")
 
@@ -1183,11 +1208,16 @@ object KaoChangAlgorithm {
             return
         }
         modbusMonitorStarted = true
+        KaoChangOperate.invalidateFaultHeatStopConfirmation("Modbus监控启动")
         algorithmScope.launch {
             while (isRunning) {
                 val now = System.currentTimeMillis()
                 val connected = VMModbusHelper.connectStatus()
                 val config = AppConfig.getAppConfig()
+
+                if (!connected) {
+                    KaoChangOperate.invalidateFaultHeatStopConfirmation("Modbus断开")
+                }
 
                 if (shouldFreezeByInspection(config)) {
                     modbusDisconnectSinceMs = null
@@ -1236,23 +1266,45 @@ object KaoChangAlgorithm {
                             modbusReconnectSinceMs = now
                             logI(LOG_COMM, "【Modbus】检测到下位机重新连接，开始稳定性观察 | port=${AppConfig.getAppConfig().modbusAddress}")
                         } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
-                            val restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
-                            config.errorStatus = 0
-                            config.errorCode = null
-                            config.errorCategory = null
-                            config.errorReason = null
-                            config.onlineStatus = restoredOnlineStatus
-                            AppConfig.saveAppConfig(config)
-                            HomeUiRefreshBridge.requestRefresh("modbus_auto_recovery:restored")
-                            KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
-                            rememberRecoverableOnlineStatus(restoredOnlineStatus)
-                            modbusReportedUnavailable = false
-                            modbusReconnectSinceMs = null
-                            loggedManualRecoveryRequiredAfterReconnect = false
-                            logI(LOG_COMM, "【Modbus】下位机稳定连接确认，自动恢复正常状态 | port=${AppConfig.getAppConfig().modbusAddress}, onlineStatus=$restoredOnlineStatus, errorStatus=0")
-                            uploadDeviceStatus(
-                                "modbus串口恢复稳定，自动恢复原因=断连类错误，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
-                            )
+                            var restoredOnlineStatus = config.onlineStatus
+                            val temperatureRestoreSucceeded = KaoChangOperate.withFaultHeatTransitionLock {
+                                if (
+                                    config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL ||
+                                    !isModbusAutoRecoverableFault(config.errorCode) ||
+                                    !VMModbusHelper.connectStatus()
+                                ) {
+                                    false
+                                } else {
+                                    val restored = KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
+                                    if (restored) {
+                                        restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
+                                        config.errorStatus = 0
+                                        config.errorCode = null
+                                        config.errorCategory = null
+                                        config.errorReason = null
+                                        config.onlineStatus = restoredOnlineStatus
+                                        AppConfig.saveAppConfig(config)
+                                    }
+                                    restored
+                                }
+                            }
+                            if (!temperatureRestoreSucceeded) {
+                                logW(
+                                    LOG_COMM,
+                                    "【Modbus】连接已稳定但温控恢复未全部成功，保持维护和计时暂停，等待下轮重试 | " +
+                                        "port=${AppConfig.getAppConfig().modbusAddress}"
+                                )
+                            } else {
+                                HomeUiRefreshBridge.requestRefresh("modbus_auto_recovery:restored")
+                                rememberRecoverableOnlineStatus(restoredOnlineStatus)
+                                modbusReportedUnavailable = false
+                                modbusReconnectSinceMs = null
+                                loggedManualRecoveryRequiredAfterReconnect = false
+                                logI(LOG_COMM, "【Modbus】下位机稳定连接且温控恢复确认，自动恢复正常状态 | port=${AppConfig.getAppConfig().modbusAddress}, onlineStatus=$restoredOnlineStatus, errorStatus=0")
+                                uploadDeviceStatus(
+                                    "modbus串口恢复稳定且温控恢复确认，自动恢复原因=断连类错误，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
+                                )
+                            }
                         }
                     } else {
                         modbusReconnectSinceMs = null
@@ -1291,7 +1343,7 @@ object KaoChangAlgorithm {
                             config.errorCode = FaultCode.MODBUS_DISCONNECT.name
                             config.errorCategory = FaultCode.MODBUS_DISCONNECT.category.display
                             config.errorReason = "modbus 串口断开超过 ${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms"
-                            stopHeatingAndDispatchForFault(config, "modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms")
+                            stopHeatingAndDispatchForFault("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms")
                             modbusReportedUnavailable = true
                             loggedManualRecoveryRequiredOnDisconnect = false
                             uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，自动恢复原因=断连类错误，已上报维护中")
@@ -1360,28 +1412,61 @@ object KaoChangAlgorithm {
         reason: String = "维护页手动开启算法",
         syncToServer: Boolean = true
     ) {
-        val config = AppConfig.getAppConfig()
-        if (!canEnableAlgorithm(config)) {
-            logW(
-                LOG_ALGORITHM,
-                "拒绝开启烤肠算法：reason=$reason，" +
-                    "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
-                    "inspectionMode（检修模式）=${config.inspectionMode}，" +
-                    "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}，" +
-                    "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
-            )
+        var enabledConfig: AppConfigBean? = null
+        var wasRunning = false
+        val enabled = KaoChangOperate.withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            if (!canEnableAlgorithm(config)) {
+                logW(
+                    LOG_ALGORITHM,
+                    "拒绝开启烤肠算法：reason=$reason，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
+                        "inspectionMode（检修模式）=${config.inspectionMode}，" +
+                        "errorStatus（设备故障状态）=${errorStatusText(config.errorStatus)}，" +
+                        "isEnable（烤肠算法开关）=${isEnableText(config.isEnable)}"
+                )
+                false
+            } else if (!VMModbusHelper.connectStatus()) {
+                logW(
+                    LOG_ALGORITHM,
+                    "拒绝开启烤肠算法：下位机未连接，暂不恢复温度：" +
+                        "reason=$reason，onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}"
+                )
+                false
+            } else {
+                KaoChangOperate.actionDebug()
+                val restored = KaoChangOperate.restoreHeatingStateFromCurrentPans("算法开启后恢复温度：$reason")
+                val latestConfig = AppConfig.getAppConfig()
+                if (!restored) {
+                    logW(
+                        LOG_ALGORITHM,
+                        "拒绝开启烤肠算法：温控恢复未全部成功，保持计时暂停：reason=$reason"
+                    )
+                    false
+                } else if (!canEnableAlgorithm(latestConfig) || !VMModbusHelper.connectStatus()) {
+                    KaoChangOperate.stopHeatingForFault("算法开启期间设备状态变化，撤销温控恢复：$reason")
+                    logW(
+                        LOG_ALGORITHM,
+                        "拒绝开启烤肠算法：温控恢复后设备条件已变化，重新停热并保持暂停：reason=$reason"
+                    )
+                    false
+                } else {
+                    wasRunning = isRunning
+                    isEnabled = true
+                    latestConfig.isEnable = 1
+                    AppConfig.saveAppConfig(latestConfig)
+                    enabledConfig = latestConfig
+                    true
+                }
+            }
+        }
+        if (!enabled) {
             if (syncToServer) {
                 SendServerHelper.publishServiceUpdateStatus()
             }
             return
         }
-        KaoChangOperate.actionDebug()
-        val wasRunning = isRunning
-        isEnabled = true
-        config.isEnable = 1
-        AppConfig.saveAppConfig(config)
-        FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded("enableRoastAlgorithm")
-        KaoChangOperate.applyConfiguredTemperatureByPanState("算法开启后恢复温度")
+        val config = requireNotNull(enabledConfig)
         // scanAndDiscard 会先做可售阻断；若机械暂忙，下一轮 pollKaoPanStatus 顶层 pending 优先扫描继续兜底。
         algorithmScope.launch {
             OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "fault_recovery")
@@ -1404,16 +1489,6 @@ object KaoChangAlgorithm {
                 "transitionMode（并发切换过渡态）=${transitionText(config.transitionMode)}，" +
                 "bakingTime（烤制时长，分钟）=${config.bakingTime}"
         )
-        if (VMModbusHelper.connectStatus()) {
-            faultHeatingStopped = false
-            KaoChangOperate.restoreHeatingStateFromCurrentPans("算法开启后恢复温度：$reason")
-        } else {
-            logW(
-                LOG_ALGORITHM,
-                "算法开关已开启但下位机未连接，暂不恢复温度：" +
-                    "reason=$reason，onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}"
-            )
-        }
         if (syncToServer) {
             SendServerHelper.publishServiceUpdateStatus()
         }

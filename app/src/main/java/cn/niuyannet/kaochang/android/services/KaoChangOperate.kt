@@ -151,6 +151,7 @@ object KaoChangOperate {
      */
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val actionGroupLocks = ResourceLocks()
+    private val faultHeatTransitionLock = Any()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
     private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
     private val supplementBatchIntentRepository =
@@ -364,8 +365,8 @@ object KaoChangOperate {
                 "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，reason=$logMessage"
         )
         HomeUiRefreshBridge.requestRefresh("device_fault:${code.name}")
+        AppConfig.saveAppConfigDurable(config)
         operateScope.launch {
-            AppConfig.saveAppConfig(config)
             publishRuntimeStateWithHttpFallback("设备故障状态上报")
         }
         LogUtils.e(
@@ -377,16 +378,52 @@ object KaoChangOperate {
         logE(LOG_DEVICE, logMessage)
     }
 
-    private fun markSupplyDegradedRuntimeState(reason: String) {
-        operateScope.launch {
-            LowerPlatformRuntimeStateReporter.markSupplyDegraded(reason)
-        }
+    private fun markSupplyDegradedRuntimeState(
+        reason: String,
+        failedBoxNos: List<Int>,
+        details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails()
+    ) {
+        LowerPlatformRuntimeStateReporter.markSupplyDegraded(reason, failedBoxNos, details)
     }
 
-    private fun markLowerPlatformIsolatedRuntimeState(reason: String, actionName: String) {
-        operateScope.launch {
-            LowerPlatformRuntimeStateReporter.markIsolated(reason, actionName)
+    private fun markLowerPlatformIsolatedRuntimeState(
+        reason: String,
+        actionName: String,
+        details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails(requiresManualConfirm = true)
+    ) {
+        LowerPlatformRuntimeStateReporter.markIsolated(reason, actionName, details)
+    }
+
+    private fun recordConfirmedSupplementSessionStage(
+        sessionId: String,
+        actionName: String,
+        sourceBoxNo: Int,
+        targetPanNo: Int,
+        resultCode: Int?
+    ) {
+        if (resultCode != AtomicActionCodes.COMPLETED) {
+            return
         }
+        val session = actionGroupSessionStore.load() ?: return
+        if (session.sessionId != sessionId ||
+            session.currentAction != actionName ||
+            session.sourceNo != sourceBoxNo ||
+            session.targetNo != targetPanNo
+        ) {
+            return
+        }
+        actionGroupSessionStore.save(
+            session.copy(
+                checkpointVersion = session.checkpointVersion + 1L,
+                lastConfirmedStage = actionName,
+                boxDeductionApplied = session.expectedStockAfter?.let { expected ->
+                    KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == sourceBoxNo }?.num == expected
+                } ?: session.boxDeductionApplied,
+                panPlacementApplied = KaoPanHelper.getKaoPanList()
+                    .firstOrNull { it.positionSn == targetPanNo }
+                    ?.isHasSausage == true
+            )
+        )
     }
 
     private fun armPostSellSupplementGuard(
@@ -1144,26 +1181,84 @@ object KaoChangOperate {
                     )
                     return false
                 }
-                if (!applySuccessfulSupplementPanStateIfStockAvailable(
-                        pan,
-                        box,
-                        "补肠动作组恢复成功",
-                        config = AppConfig.getAppConfig()
-                    )
-                ) {
-                    enterActionGroupMaintenance(
-                        "补肠恢复成功但来源箱本地库存已为0，盘箱状态不可确认，需人工确认：" +
-                            "reason=$reason，sourceBox=${box.positionSn}，targetPan=${pan.positionSn}"
-                    )
-                    return false
+                val reconcileDecision = RecoveredSupplementStatePolicy.decide(session, pan, box)
+                val reportStock: Boolean
+                val reportPan: Boolean
+                when (reconcileDecision) {
+                    RecoveredSupplementStatePolicy.Decision.ALREADY_APPLIED -> {
+                        pan.cmdStatusMove = 0
+                        box.cmdStatusTake = 0
+                        reportStock = false
+                        reportPan = false
+                    }
+                    RecoveredSupplementStatePolicy.Decision.CORRECT_BOX_ONLY -> {
+                        box.num = session.expectedStockAfter!!
+                        pan.cmdStatusMove = 0
+                        box.cmdStatusTake = 0
+                        reportStock = true
+                        reportPan = false
+                    }
+                    RecoveredSupplementStatePolicy.Decision.APPLY_PAN_ONLY -> {
+                        applySuccessfulSupplementPanStateWithoutBoxDeduction(
+                            pan,
+                            box,
+                            "补肠动作组恢复成功，复用已确认扣箱检查点",
+                            config = AppConfig.getAppConfig()
+                        )
+                        reportStock = false
+                        reportPan = true
+                    }
+                    RecoveredSupplementStatePolicy.Decision.APPLY_PAN_AND_CORRECT_BOX -> {
+                        box.num = session.expectedStockAfter!!
+                        applySuccessfulSupplementPanStateWithoutBoxDeduction(
+                            pan,
+                            box,
+                            "补肠动作组恢复成功，按持久化检查点校正箱库存",
+                            config = AppConfig.getAppConfig()
+                        )
+                        reportStock = true
+                        reportPan = true
+                    }
+                    RecoveredSupplementStatePolicy.Decision.APPLY_PAN_AND_DEDUCT_BOX -> {
+                        if (!applySuccessfulSupplementPanStateIfStockAvailable(
+                                pan,
+                                box,
+                                "补肠动作组恢复成功",
+                                config = AppConfig.getAppConfig()
+                            )
+                        ) {
+                            enterActionGroupMaintenance(
+                                "补肠恢复成功但来源箱本地库存已为0，盘箱状态不可确认，需人工确认：" +
+                                    "reason=$reason，sourceBox=${box.positionSn}，targetPan=${pan.positionSn}"
+                            )
+                            return false
+                        }
+                        reportStock = true
+                        reportPan = true
+                    }
+                    RecoveredSupplementStatePolicy.Decision.INCONSISTENT -> {
+                        enterActionGroupMaintenance(
+                            "补肠恢复结果与本地盘箱状态矛盾，拒绝猜测扣箱或重置计时：" +
+                                "reason=$reason，session=$session，boxStock=${box.num}，" +
+                                "panHas=${pan.isHasSausage}，panStatus=${pan.status}，startTime=${pan.startTime}"
+                        )
+                        return false
+                    }
                 }
                 KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
                 KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+                session.batchId?.takeIf { it.isNotBlank() }?.let { recoveredBatchId ->
+                    supplementBatchIntentRepository.markCompleted(recoveredBatchId, pan.positionSn)
+                }
+                LowerPlatformRuntimeStateReporter.markSupplyBoxRecoveredAfterSuccessfulTake(
+                    sourceBoxNo = box.positionSn,
+                    reason = "补肠动作组恢复确认完整成功"
+                )
                 reportSupplementCompletionPhysicalDeltaIfNeeded(
                     sourceBox = box,
                     targetPan = pan,
-                    reportStock = true,
-                    reportPan = true,
+                    reportStock = reportStock,
+                    reportPan = reportPan,
                     reason = "action_recovery:in:completed:box=${box.positionSn}:pan=${pan.positionSn}",
                     source = "action_recovery_in"
                 )
@@ -1458,7 +1553,8 @@ object KaoChangOperate {
     private suspend fun moveSausageToKaoPanByTasteDetailed(
         kaoPan: KaoPan,
         tasteCode: String?,
-        batchType: SupplementBatchType? = null
+        batchType: SupplementBatchType? = null,
+        batchId: String? = null
     ): SupplementMoveResult {
         val candidates = TrafficModeHelper.findSupplyBoxesByTaste(KaoPanHelper.getKaoPanBoxList(), tasteCode)
         if (candidates.isEmpty()) {
@@ -1477,7 +1573,8 @@ object KaoChangOperate {
                 kaoPan,
                 box,
                 allowPickFailureFallback = !isInitializationBatch,
-                batchType = batchType
+                batchType = batchType,
+                batchId = batchId
             )
             if (moveResult.success) {
                 return SupplementMoveResult.Success
@@ -1544,7 +1641,19 @@ object KaoChangOperate {
             actionName = "in2"
         )
         logW(LOG_SUPPLEMENT, "同口味候选箱全部取肠失败，按供给降级跳过：$degradeReason，boxCount=${candidates.size}")
-        markSupplyDegradedRuntimeState(degradeReason)
+        markSupplyDegradedRuntimeState(
+            degradeReason,
+            irPickFailedBoxNos,
+            LowerPlatformEpisodeDetails(
+                targetPanNo = kaoPan.positionSn,
+                tasteCode = tasteCode,
+                batchId = batchId,
+                batchType = batchType?.name,
+                errorCode = AtomicActionExecutor.formatCode(AtomicActionCodes.IR_PICK_FAILED),
+                rawResult = degradeReason,
+                requiresManualConfirm = false
+            )
+        )
         return SupplementMoveResult.SupplyDegraded(degradeReason, kaoPan.positionSn, irPickFailedBoxNos)
     }
 
@@ -1882,7 +1991,8 @@ object KaoChangOperate {
             when (val result = moveSausageToKaoPanByTasteDetailed(
                 kaoPan = target.kaoPan,
                 tasteCode = target.tasteCode,
-                batchType = batchType
+                batchType = batchType,
+                batchId = batchId
             )) {
                 SupplementMoveResult.Success -> {
                     movedCount += 1
@@ -2183,6 +2293,10 @@ object KaoChangOperate {
             supplementBatchIntentRepository.markCompleted(batchId, completedTask.targetPanNo)
             KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            LowerPlatformRuntimeStateReporter.markSupplyBoxRecoveredAfterSuccessfulTake(
+                sourceBoxNo = completedTask.sourceBoxNo,
+                reason = "补肠预取流水线完整落盘成功"
+            )
             reportSupplementCompletionPhysicalDeltaIfNeeded(
                 sourceBox = appliedMove.sourceBox,
                 targetPan = appliedMove.targetPan,
@@ -2198,10 +2312,13 @@ object KaoChangOperate {
             )
         }
         var actionGroupCompleted = false
+        var pipelineResultForCleanup: InActionGroupPipelineResult? = null
         var latestCurrentAction: InActionGroupPipelineActionContext? = null
         var latestRiskAction: InActionGroupPipelineActionContext? = null
         val result = try {
             val firstMove = plannedMoves.first()
+            val firstBox = KaoPanHelper.getKaoPanBoxList()
+                .firstOrNull { it.positionSn == firstMove.task.sourceBoxCandidates.first() }
             actionGroupSessionStore.save(
                 ActionGroupSession(
                     sessionId = owner,
@@ -2209,7 +2326,14 @@ object KaoChangOperate {
                     sourceNo = firstMove.task.sourceBoxCandidates.first(),
                     targetNo = firstMove.task.targetPanNo,
                     currentAction = "in_pipeline",
-                    resourceMask = lockMask
+                    resourceMask = lockMask,
+                    batchId = batchId,
+                    taste = firstMove.tasteCode,
+                    returnPosition = firstMove.returnPosition,
+                    prefetch = true,
+                    checkpointVersion = 1L,
+                    stockBefore = firstBox?.num,
+                    expectedStockAfter = firstBox?.num?.let { (it - 1).coerceAtLeast(0) }
                 )
             )
             logD(
@@ -2267,6 +2391,14 @@ object KaoChangOperate {
                         }
                         if (applied.stockInconsistent) {
                             stockInconsistentTargetPanNos += context.targetPanNo
+                        } else {
+                            recordConfirmedSupplementSessionStage(
+                                sessionId = owner,
+                                actionName = telemetry.actionName,
+                                sourceBoxNo = context.sourceBoxNo,
+                                targetPanNo = context.targetPanNo,
+                                resultCode = telemetry.resultCode
+                            )
                         }
                     }
                 },
@@ -2285,6 +2417,12 @@ object KaoChangOperate {
                         reason = "补肠预取流水线连续取肠失败后跳过候选箱"
                     )
                 },
+                onPickSucceeded = { sourceBoxNo ->
+                    LowerPlatformRuntimeStateReporter.markSupplyBoxRecoveredAfterSuccessfulTake(
+                        sourceBoxNo = sourceBoxNo,
+                        reason = "补肠预取流水线 in2 真实成功"
+                    )
+                },
                 pauseReasonAfterFallbackSource = { task, actualSourceBoxNo ->
                     "预取实际来源箱偏离原批量库存预留，停止本轮旧计划并重新规划剩余补肠：" +
                         "targetPan=${task.targetPanNo}，plannedPrimaryBox=${task.sourceBoxCandidates.first()}，" +
@@ -2295,6 +2433,38 @@ object KaoChangOperate {
                     if (isSupplementPipelineDropRiskAction(context.actionName)) {
                         latestRiskAction = context
                     }
+                    val checkpointMove = taskByPanNo[context.targetPanNo]
+                    val previousSession = actionGroupSessionStore.load()
+                    val sameMove = previousSession?.sourceNo == context.sourceBoxNo &&
+                        previousSession.targetNo == context.targetPanNo
+                    val currentBoxStock = KaoPanHelper.getKaoPanBoxList()
+                        .firstOrNull { it.positionSn == context.sourceBoxNo }
+                        ?.num
+                    actionGroupSessionStore.save(
+                        ActionGroupSession(
+                            sessionId = owner,
+                            type = ActionGroupSessionType.IN_SUPPLEMENT,
+                            sourceNo = context.sourceBoxNo,
+                            targetNo = context.targetPanNo,
+                            currentAction = context.actionName,
+                            resourceMask = lockMask,
+                            startedAtMs = previousSession?.startedAtMs ?: System.currentTimeMillis(),
+                            batchId = batchId,
+                            taste = checkpointMove?.tasteCode,
+                            returnPosition = checkpointMove?.returnPosition,
+                            prefetch = true,
+                            checkpointVersion = (previousSession?.checkpointVersion ?: 0L) + 1L,
+                            lastConfirmedStage = previousSession?.lastConfirmedStage.takeIf { sameMove },
+                            stockBefore = if (sameMove) previousSession?.stockBefore else currentBoxStock,
+                            expectedStockAfter = if (sameMove) {
+                                previousSession?.expectedStockAfter
+                            } else {
+                                currentBoxStock?.let { (it - 1).coerceAtLeast(0) }
+                            },
+                            boxDeductionApplied = sameMove && previousSession?.boxDeductionApplied == true,
+                            panPlacementApplied = sameMove && previousSession?.panPlacementApplied == true
+                        )
+                    )
                     logD(
                         LOG_ACTION_GROUP,
                         "补肠预取流水线当前动作：targetPan=${context.targetPanNo}，" +
@@ -2311,7 +2481,10 @@ object KaoChangOperate {
                 }
             )
                 .run(plannedMoves.map { it.task })
-                .also { actionGroupCompleted = true }
+                .also {
+                    pipelineResultForCleanup = it
+                    actionGroupCompleted = true
+                }
         } catch (e: CancellationException) {
             markSupplementPipelineCancellationRisk(
                 batchId = batchId,
@@ -2321,16 +2494,18 @@ object KaoChangOperate {
             )
             throw e
         } finally {
-            if (actionGroupCompleted) {
+            val retainFailureEvidence = !actionGroupCompleted ||
+                pipelineResultForCleanup is InActionGroupPipelineResult.Failed
+            if (!retainFailureEvidence) {
                 actionGroupSessionStore.clear()
+                actionGroupLocks.release(owner)
+                AppConfig.getAppConfig().moveStatus = 0
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
+                applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
             }
-            actionGroupLocks.release(owner)
-            AppConfig.getAppConfig().moveStatus = 0
-            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
             KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
-            applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
             logD(LOG_SUPPLEMENT, "补肠预取流水线收口状态保存完成")
         }
 
@@ -2355,7 +2530,39 @@ object KaoChangOperate {
                 )
             }
             is InActionGroupPipelineResult.Failed -> {
-                handlePipelineSupplementFailure(result, taskByPanNo, batchId)
+                val timeoutResolution = if (result.result is AtomicActionResult.Timeout) {
+                    val timeoutBatchType = batchId?.let {
+                        supplementBatchIntentRepository.loadActive()
+                            ?.takeIf { intent -> intent.batchId == batchId }
+                            ?.type
+                    }
+                    verifyTimeoutResolution(
+                        actionName = result.actionName,
+                        isHeatSupplementBatch = timeoutBatchType?.let {
+                            SupplementBatchIntentRepository.isHeatSupplementBatch(it)
+                        } == true
+                    )
+                } else {
+                    null
+                }
+                when (timeoutResolution?.resolution) {
+                    SupplementTimeoutResolutionPolicy.Resolution.KEEP_RUNNING -> {
+                        logW(LOG_ACTION_GROUP, "补肠Timeout仍为RUNNING，保留session、资源锁和moveStatus：action=${result.actionName}")
+                        return completedCount
+                    }
+                    SupplementTimeoutResolutionPolicy.Resolution.RECONCILE_COMPLETED -> {
+                        recoverActionGroupStateAfterModbusReady("补肠Timeout复核为COMPLETED")
+                        return completedCount
+                    }
+                    else -> Unit
+                }
+                handlePipelineSupplementFailure(result, taskByPanNo, batchId, timeoutResolution)
+                actionGroupSessionStore.clear()
+                actionGroupLocks.release(owner)
+                AppConfig.getAppConfig().moveStatus = 0
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                publishRuntimeStateWithHttpFallback("补肠预取流水线失败收口")
+                applyPendingActionGroupDisableIfIdle("补肠预取流水线失败收口")
             }
         }
         verifySupplementConsistencyOrEnterMaintenance(
@@ -2627,6 +2834,7 @@ object KaoChangOperate {
     private data class PlannedPipelineSupplementMove(
         val kaoPan: KaoPan,
         val tasteCode: String?,
+        val returnPosition: Int?,
         val task: InActionGroupPipelineTask
     )
 
@@ -2701,6 +2909,7 @@ object KaoChangOperate {
                 PlannedPipelineSupplementMove(
                     kaoPan = target.kaoPan,
                     tasteCode = target.tasteCode,
+                    returnPosition = target.returnPositionSn,
                     task = InActionGroupPipelineTask(
                         sourceBoxCandidates = candidateBoxNos,
                         targetPanNo = target.kaoPan.positionSn
@@ -2783,17 +2992,29 @@ object KaoChangOperate {
         return true
     }
 
-    private fun handlePipelineSupplementFailure(
+    private suspend fun handlePipelineSupplementFailure(
         result: InActionGroupPipelineResult.Failed,
         taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
-        batchId: String?
+        batchId: String?,
+        timeoutProbe: TimeoutProbe? = null
     ) {
         val batchType = batchId?.let {
             supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
         }
+        val resolvedAtomicResult = if (
+            timeoutProbe?.resolution == SupplementTimeoutResolutionPolicy.Resolution.ISOLATE_TERMINAL_ERROR &&
+            timeoutProbe.resultCode != null
+        ) {
+            AtomicActionResult.Failed(
+                timeoutProbe.resultCode,
+                AtomicActionExecutor.messageOf(timeoutProbe.resultCode)
+            )
+        } else {
+            result.result
+        }
         val targetPanNo = result.task?.targetPanNo
         val plannedMove = targetPanNo?.let { taskByPanNo[it] }
-        val failureCode = when (val atomicResult = result.result) {
+        val failureCode = when (val atomicResult = resolvedAtomicResult) {
             is AtomicActionResult.Failed -> atomicResult.errorCode
             is AtomicActionResult.ModbusError,
             is AtomicActionResult.Timeout -> 2
@@ -2805,26 +3026,37 @@ object KaoChangOperate {
         logE(
             LOG_SUPPLEMENT,
             "补肠预取流水线失败：targetPan=$targetPanNo，sourceBox=$sourceBoxNo，" +
-                "action=${result.actionName}，result=${describeAtomicActionResult(result.result)}，" +
+                "action=${result.actionName}，result=${describeAtomicActionResult(resolvedAtomicResult)}，" +
                 "failedSourceBoxes=${result.failedSourceBoxNos}，hasPrefetchedNext=${result.hasPrefetchedNext}，" +
-                "batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}"
+                "batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}，" +
+                "timeoutResolution=${timeoutProbe?.resolution ?: "N/A"}"
         )
         val lowerPlatformIsolationDecision = LowerPlatformIsolationPolicy.classifyForSupplementBatch(
             batchType = batchType,
             actionName = result.actionName,
-            result = result.result,
+            result = resolvedAtomicResult,
             hasPrefetchedNext = result.hasPrefetchedNext
         )
         if (lowerPlatformIsolationDecision != LowerPlatformIsolationPolicy.Decision.NotIsolatable) {
             val isolationReason = LowerPlatformIsolationPolicy.buildIsolationReason(
                 actionName = result.actionName,
-                result = result.result,
+                result = resolvedAtomicResult,
                 targetPanNo = targetPanNo,
                 sourceBoxNo = sourceBoxNo,
                 hasPrefetchedNext = result.hasPrefetchedNext
             )
             val requiresManualConfirm =
                 lowerPlatformIsolationDecision == LowerPlatformIsolationPolicy.Decision.IsolatedRequiresManualConfirm
+            val episodeDetails = LowerPlatformEpisodeDetails(
+                sourceBoxNo = sourceBoxNo,
+                targetPanNo = targetPanNo,
+                tasteCode = plannedMove?.tasteCode,
+                batchId = batchId,
+                batchType = batchType?.name,
+                errorCode = AtomicActionExecutor.formatCode(failureCode),
+                rawResult = describeAtomicActionResult(resolvedAtomicResult),
+                requiresManualConfirm = requiresManualConfirm
+            )
             targetPanNo?.let { panNo ->
                 if (requiresManualConfirm) {
                     supplementBatchIntentRepository.markFailure(
@@ -2842,12 +3074,12 @@ object KaoChangOperate {
                     )
                 }
             }
-            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName)
+            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
             logW(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线下平台失败已隔离，不进入维护：" +
                     "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
-                    "result=${describeAtomicActionResult(result.result)}，batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}，" +
+                    "result=${describeAtomicActionResult(resolvedAtomicResult)}，batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}，" +
                     "requiresManualConfirm=$requiresManualConfirm，reason=$isolationReason"
             )
             return
@@ -2860,19 +3092,19 @@ object KaoChangOperate {
                 batchId = batchId,
                 targetPanNo = targetPanNo,
                 actionName = result.actionName,
-                failureMessage = describeAtomicActionResult(result.result),
+                failureMessage = describeAtomicActionResult(resolvedAtomicResult),
                 requiresManualConfirm = true
             )
             enterActionGroupMaintenance(
                 "${SupplementBatchIntentRepository.typeText(batchType)}补肠失败，初始化阶段不降级，设备进入维护停售：" +
                     "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
-                    "result=${describeAtomicActionResult(result.result)}"
+                    "result=${describeAtomicActionResult(resolvedAtomicResult)}"
             )
             return
         }
         if (SupplementPickFailurePolicy.isPipelineSupplyDegradableFailure(
                 actionName = result.actionName,
-                result = result.result,
+                result = resolvedAtomicResult,
                 hasPrefetchedNext = result.hasPrefetchedNext
             )
         ) {
@@ -2905,7 +3137,20 @@ object KaoChangOperate {
                     reason = degradeReason
                 )
             }
-            markSupplyDegradedRuntimeState(degradeReason)
+            markSupplyDegradedRuntimeState(
+                degradeReason,
+                failedBoxNos,
+                LowerPlatformEpisodeDetails(
+                    sourceBoxNo = sourceBoxNo,
+                    targetPanNo = targetPanNo,
+                    tasteCode = plannedMove?.tasteCode,
+                    batchId = batchId,
+                    batchType = batchType?.name,
+                    errorCode = AtomicActionExecutor.formatCode(failureCode),
+                    rawResult = describeAtomicActionResult(resolvedAtomicResult),
+                    requiresManualConfirm = false
+                )
+            )
             logW(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线供给降级跳过当前目标，不进入维护、不要求人工确认：" +
@@ -2917,7 +3162,7 @@ object KaoChangOperate {
             batchId = batchId,
             targetPanNo = targetPanNo,
             actionName = result.actionName,
-            failureMessage = describeAtomicActionResult(result.result),
+            failureMessage = describeAtomicActionResult(resolvedAtomicResult),
             requiresManualConfirm = true
         )
         if (result.hasPrefetchedNext) {
@@ -2968,6 +3213,56 @@ object KaoChangOperate {
         }
     }
 
+    private data class TimeoutProbe(
+        val resolution: SupplementTimeoutResolutionPolicy.Resolution,
+        val resultCode: Int? = null
+    )
+
+    private suspend fun verifyTimeoutResolution(
+        actionName: String,
+        isHeatSupplementBatch: Boolean
+    ): TimeoutProbe {
+        if (!VMModbusHelper.connectStatus()) {
+            return TimeoutProbe(SupplementTimeoutResolutionPolicy.Resolution.HARD_FAILURE)
+        }
+        val spec = ActionGroupRecoveryBootstrap.allSpecs.firstOrNull { it.name == actionName }
+            ?: return TimeoutProbe(SupplementTimeoutResolutionPolicy.Resolution.HARD_FAILURE)
+        repeat(2) { cycle ->
+            val legacyStatus = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+            val reader = createAtomicActionClient() as? AtomicActionStateReader
+                ?: return TimeoutProbe(SupplementTimeoutResolutionPolicy.Resolution.HARD_FAILURE)
+            val actionState = reader.readResult(spec)
+            if (legacyStatus < 0 || actionState !is AtomicReadResult.Success) {
+                logE(
+                    LOG_ACTION_GROUP,
+                    "动作超时后状态读取失败，按整机故障处理：action=$actionName，cycle=${cycle + 1}/2，" +
+                        "legacy201=$legacyStatus，actionState=$actionState"
+                )
+                return TimeoutProbe(SupplementTimeoutResolutionPolicy.Resolution.HARD_FAILURE)
+            }
+            val resolution = SupplementTimeoutResolutionPolicy.resolve(
+                resultCode = actionState.value,
+                readsSucceeded = true,
+                actionName = actionName,
+                isHeatSupplementBatch = isHeatSupplementBatch,
+                isFinalCycle = cycle == 1
+            )
+            logW(
+                LOG_ACTION_GROUP,
+                "动作超时后通信健康复核：action=$actionName，cycle=${cycle + 1}/2，" +
+                    "legacy201=$legacyStatus，result=${actionState.value}，resolution=$resolution"
+            )
+            if (resolution != SupplementTimeoutResolutionPolicy.Resolution.KEEP_RUNNING) {
+                return TimeoutProbe(resolution, actionState.value)
+            }
+            if (cycle == 0) {
+                delay(spec.pollDelayMs)
+            }
+        }
+        logE(LOG_ACTION_GROUP, "动作超时后两周期仍未收敛，按整机故障处理：action=$actionName")
+        return TimeoutProbe(SupplementTimeoutResolutionPolicy.Resolution.HARD_FAILURE)
+    }
+
     private fun describeThrowableBrief(throwable: Throwable): String {
         val message = throwable.message?.takeIf { it.isNotBlank() }
         return if (message == null) {
@@ -2985,7 +3280,8 @@ object KaoChangOperate {
         kaoPan: KaoPan,
         kaoPanBox: KaoPanBox,
         allowPickFailureFallback: Boolean,
-        batchType: SupplementBatchType? = null
+        batchType: SupplementBatchType? = null,
+        batchId: String? = null
     ): SingleSupplementMoveResult {
         if (AppConfig.getAppConfig().errorStatus>0){
             logD(LOG_SUPPLEMENT, "程序处于报错状态，不进行补肠操作")
@@ -3055,10 +3351,15 @@ object KaoChangOperate {
         }
 
         var actionGroupCompleted = false
+        var singleResultForCleanup: ActionGroupResult? = null
         var physicalBoxDeducted = false
         var physicalPanPlaced = false
         var physicalStockInconsistent = false
-        val actionGroupResult = try {
+        val sessionIntentTarget = supplementBatchIntentRepository.loadActive()
+            ?.takeIf { it.batchId == batchId }
+            ?.targets
+            ?.firstOrNull { it.positionSn == kaoPan.positionSn }
+        var actionGroupResult = try {
             actionGroupSessionStore.save(
                 ActionGroupSession(
                     sessionId = owner,
@@ -3066,7 +3367,14 @@ object KaoChangOperate {
                     sourceNo = kaoPanBox.positionSn,
                     targetNo = kaoPan.positionSn,
                     currentAction = "in1",
-                    resourceMask = lockMask
+                    resourceMask = lockMask,
+                    batchId = batchId,
+                    taste = kaoPanBox.tasteCode,
+                    returnPosition = sessionIntentTarget?.returnPositionSn,
+                    prefetch = false,
+                    checkpointVersion = 1L,
+                    stockBefore = kaoPanBox.num,
+                    expectedStockAfter = (kaoPanBox.num - 1).coerceAtLeast(0)
                 )
             )
             logD(
@@ -3102,6 +3410,14 @@ object KaoChangOperate {
                     }
                     if (applied.stockInconsistent) {
                         physicalStockInconsistent = true
+                    } else {
+                        recordConfirmedSupplementSessionStage(
+                            sessionId = owner,
+                            actionName = telemetry.actionName,
+                            sourceBoxNo = kaoPanBox.positionSn,
+                            targetPanNo = kaoPan.positionSn,
+                            resultCode = telemetry.resultCode
+                        )
                     }
                 },
                 logger = { message -> logD(LOG_ACTION_GROUP, message) },
@@ -3110,18 +3426,81 @@ object KaoChangOperate {
                     subject = "烤盘${kaoPan.positionSn}"
                 ),
                 operationLogger = { message -> LogUtils.i("$message：来源烤肠箱=${kaoPanBox.positionSn}") },
-                failureLogger = { message -> LogUtils.e("$message：来源烤肠箱=${kaoPanBox.positionSn}") }
+                failureLogger = { message -> LogUtils.e("$message：来源烤肠箱=${kaoPanBox.positionSn}") },
+                onCurrentActionChanged = { actionName ->
+                    val previousSession = actionGroupSessionStore.load()
+                    actionGroupSessionStore.save(
+                        ActionGroupSession(
+                            sessionId = owner,
+                            type = ActionGroupSessionType.IN_SUPPLEMENT,
+                            sourceNo = kaoPanBox.positionSn,
+                            targetNo = kaoPan.positionSn,
+                            currentAction = actionName,
+                            resourceMask = lockMask,
+                            startedAtMs = previousSession?.startedAtMs ?: System.currentTimeMillis(),
+                            batchId = batchId,
+                            taste = kaoPanBox.tasteCode,
+                            returnPosition = sessionIntentTarget?.returnPositionSn,
+                            prefetch = false,
+                            checkpointVersion = (previousSession?.checkpointVersion ?: 0L) + 1L,
+                            lastConfirmedStage = previousSession?.lastConfirmedStage,
+                            stockBefore = previousSession?.stockBefore ?: boxStockBefore,
+                            expectedStockAfter = previousSession?.expectedStockAfter
+                                ?: (boxStockBefore - 1).coerceAtLeast(0),
+                            boxDeductionApplied = previousSession?.boxDeductionApplied == true,
+                            panPlacementApplied = previousSession?.panPlacementApplied == true
+                        )
+                    )
+                }
             )
                 .run(kaoPanBox.positionSn, kaoPan.positionSn)
             actionGroupCompleted = true
+            singleResultForCleanup = result
             result
         } finally {
-            if (actionGroupCompleted) {
+            val retainFailureEvidence = !actionGroupCompleted || singleResultForCleanup is ActionGroupResult.Failed
+            if (!retainFailureEvidence) {
                 actionGroupSessionStore.clear()
+                actionGroupLocks.release(owner)
             }
-            actionGroupLocks.release(owner)
         }
 
+        val timeoutProbe = if (
+            actionGroupResult is ActionGroupResult.Failed &&
+            actionGroupResult.result is AtomicActionResult.Timeout
+        ) {
+            verifyTimeoutResolution(
+                actionName = actionGroupResult.actionName,
+                isHeatSupplementBatch = batchType?.let {
+                    SupplementBatchIntentRepository.isHeatSupplementBatch(it)
+                } == true
+            )
+        } else {
+            null
+        }
+        when (timeoutProbe?.resolution) {
+            SupplementTimeoutResolutionPolicy.Resolution.KEEP_RUNNING -> {
+                logW(LOG_ACTION_GROUP, "单根补肠Timeout仍为RUNNING，保留session、资源锁和moveStatus")
+                return SingleSupplementMoveResult(false, actionGroupResult = actionGroupResult)
+            }
+            SupplementTimeoutResolutionPolicy.Resolution.RECONCILE_COMPLETED -> {
+                val recovered = recoverActionGroupStateAfterModbusReady("单根补肠Timeout复核为COMPLETED")
+                return SingleSupplementMoveResult(recovered, actionGroupResult = actionGroupResult)
+            }
+            SupplementTimeoutResolutionPolicy.Resolution.ISOLATE_TERMINAL_ERROR -> {
+                val resultCode = timeoutProbe.resultCode
+                    ?: return SingleSupplementMoveResult(false, actionGroupResult = actionGroupResult)
+                actionGroupResult = ActionGroupResult.Failed(
+                    actionName = (actionGroupResult as ActionGroupResult.Failed).actionName,
+                    result = AtomicActionResult.Failed(
+                        resultCode,
+                        AtomicActionExecutor.messageOf(resultCode)
+                    ),
+                    message = "Timeout复核读到下位机错误终态：${AtomicActionExecutor.formatCode(resultCode)}（${AtomicActionExecutor.messageOf(resultCode)}）"
+                )
+            }
+            else -> Unit
+        }
         val moveSuccess = actionGroupResult == ActionGroupResult.Success
         val failureCode = atomicFailureCode(actionGroupResult)
         val failureActionName = (actionGroupResult as? ActionGroupResult.Failed)?.actionName.orEmpty()
@@ -3246,7 +3625,21 @@ object KaoChangOperate {
                     "result=${actionGroupResultDesc(actionGroupResult)}"
             )
             if (lowerPlatformIsolationReason != null) {
-                markLowerPlatformIsolatedRuntimeState(lowerPlatformIsolationReason, failureActionName)
+                markLowerPlatformIsolatedRuntimeState(
+                    lowerPlatformIsolationReason,
+                    failureActionName,
+                    LowerPlatformEpisodeDetails(
+                        sourceBoxNo = kaoPanBox.positionSn,
+                        targetPanNo = kaoPan.positionSn,
+                        tasteCode = kaoPanBox.tasteCode,
+                        batchId = batchId,
+                        batchType = batchType?.name,
+                        errorCode = AtomicActionExecutor.formatCode(failureCode),
+                        rawResult = actionGroupResultDesc(actionGroupResult),
+                        requiresManualConfirm =
+                            lowerPlatformIsolationDecision == LowerPlatformIsolationPolicy.Decision.IsolatedRequiresManualConfirm
+                    )
+                )
                 logW(
                     LOG_SUPPLEMENT,
                     "补肠下平台动作失败，已隔离下平台并停止自动补肠，不切整机维护：" +
@@ -3262,6 +3655,10 @@ object KaoChangOperate {
             }
         }
 
+        if (actionGroupResult is ActionGroupResult.Failed) {
+            actionGroupSessionStore.clear()
+            actionGroupLocks.release(owner)
+        }
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
         applyPendingActionGroupDisableIfIdle("补肠动作组会话收口")
@@ -3277,6 +3674,10 @@ object KaoChangOperate {
         KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
         KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
         if (moveSuccess && supplementStateApplied && completionTargetPan != null && completionSourceBox != null) {
+            LowerPlatformRuntimeStateReporter.markSupplyBoxRecoveredAfterSuccessfulTake(
+                sourceBoxNo = completionSourceBox.positionSn,
+                reason = "单根补肠完整落盘成功"
+            )
             reportSupplementCompletionPhysicalDeltaIfNeeded(
                 sourceBox = completionSourceBox,
                 targetPan = completionTargetPan,
@@ -4189,9 +4590,36 @@ object KaoChangOperate {
      * - 否则区域内存在 status=2（保温可售）或 holdingTime>0 的烤肠：写 keepWarmTemperature（保温温度）
      * - 否则：写 0，关闭该区加热和保温
      */
-    fun applyConfiguredTemperatureByPanState(reason: String) {
-        FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)
+    fun <T> withFaultHeatTransitionLock(block: () -> T): T =
+        synchronized(faultHeatTransitionLock) { block() }
+
+    fun applyConfiguredTemperatureByPanState(reason: String): Boolean =
+        withFaultHeatTransitionLock {
+            if (FaultHeatPauseManager.shouldSkipBakingCompletion()) {
+                logW(LOG_HEAT, "故障停热暂停中，拒绝普通温度刷新：reason=$reason")
+                false
+            } else {
+                applyConfiguredTemperatureByPanStateInternal(
+                    reason = reason,
+                    finishFaultPause = false,
+                    stopHeatingOnFailure = false
+                )
+            }
+        }
+
+    private fun applyConfiguredTemperatureByPanStateInternal(
+        reason: String,
+        finishFaultPause: Boolean,
+        stopHeatingOnFailure: Boolean
+    ): Boolean {
         val config = AppConfig.getAppConfig()
+        val pausePreview = if (finishFaultPause) {
+            FaultHeatPauseManager.previewFaultHeatPauseEnd(reason)
+        } else {
+            FaultHeatPauseManager.EndPauseResult.NotActive
+        }
+        val pendingDiscardForPolicy =
+            (config.pendingDiscardPositions + pausePreview.pendingDiscardPositions).distinct().sorted()
         val decisions = TemperatureControlPolicy.decideZoneTemperatures(
             pans = KaoPanHelper.getKaoPanList(),
             keepWarmTemperature = config.keepWarmTemperature,
@@ -4201,10 +4629,35 @@ object KaoChangOperate {
                 2 to config.zone2HeatingOffset,
                 3 to config.zone3HeatingOffset
             ),
-            pendingDiscardPositions = config.pendingDiscardPositions
+            pendingDiscardPositions = pendingDiscardForPolicy
         )
-        decisions.forEach { decision ->
+        val writeResults = decisions.map { decision ->
             setAreaTargetTemperature(decision.area, decision.targetTemperature, reason)
+        }
+        val allWritesSucceeded = writeResults.all { it.isSuccess }
+        if (!allWritesSucceeded) {
+            val failures = decisions.zip(writeResults)
+                .filterNot { (_, result) -> result.isSuccess }
+                .joinToString("，") { (decision, result) ->
+                    "${decision.area}区=${result.status}/${result.message ?: "无详情"}"
+                }
+            logW(
+                LOG_HEAT,
+                "按当前烤盘状态恢复目标温度未全部成功，保持故障停热暂停：reason=$reason，failures=$failures"
+            )
+            if (stopHeatingOnFailure) {
+                stopHeatingForFault("$reason：温控恢复未全部成功，重新停热")
+            }
+        } else if (finishFaultPause) {
+            val pauseResult = FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)
+            val unplannedPending = pauseResult.pendingDiscardPositions - pausePreview.pendingDiscardPositions.toSet()
+            if (unplannedPending.isNotEmpty()) {
+                return applyConfiguredTemperatureByPanStateInternal(
+                    reason = "$reason：故障恢复提交时新增待丢弃盘后重刷温控",
+                    finishFaultPause = false,
+                    stopHeatingOnFailure = true
+                )
+            }
         }
         val detail = decisions.joinToString("，") { decision ->
             val offset = when (decision.area) {
@@ -4221,21 +4674,46 @@ object KaoChangOperate {
             "${decision.area}区(${decision.positions.first}~${decision.positions.last})=$targetDetail/${temperatureModeText(decision.mode)}"
         }
         logTemperatureApplyOnce(
-            signature = "apply:$reason:$detail",
+            signature = "apply:$reason:$detail:success=$allWritesSucceeded",
             message = "按当前烤盘状态刷新目标温度：reason=$reason，$detail，" +
                 "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}℃，" +
                 "heatingTemperature（基础烤制温度）=${config.heatingTemperature}℃，" +
                 "zone1HeatingOffset（一区烤制补偿）=${config.zone1HeatingOffset}℃，" +
                 "zone2HeatingOffset（二区烤制补偿）=${config.zone2HeatingOffset}℃，" +
-                "zone3HeatingOffset（三区烤制补偿）=${config.zone3HeatingOffset}℃"
+                "zone3HeatingOffset（三区烤制补偿）=${config.zone3HeatingOffset}℃，" +
+                "allWritesSucceeded（全部温区写入成功）=$allWritesSucceeded"
         )
+        return allWritesSucceeded
     }
 
     /**
      * 按当前烤盘实际状态重建 1/2/3 区温度。
      */
-    fun restoreHeatingStateFromCurrentPans(reason: String) {
-        applyConfiguredTemperatureByPanState(reason)
+    fun restoreHeatingStateFromCurrentPans(reason: String): Boolean {
+        return withFaultHeatTransitionLock {
+            applyConfiguredTemperatureByPanStateInternal(
+                reason = reason,
+                finishFaultPause = true,
+                stopHeatingOnFailure = true
+            )
+        }
+    }
+
+    fun invalidateFaultHeatStopConfirmation(reason: String): Boolean {
+        return withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            if (
+                FaultHeatPauseManager.shouldSkipBakingCompletion(config) &&
+                config.faultHeatStopConfirmed == 1
+            ) {
+                config.faultHeatStopConfirmed = 0
+                AppConfig.saveAppConfig(config)
+                logW(LOG_HEAT, "故障停热确认已因连接周期变化失效，等待重新写0确认：reason=$reason")
+                true
+            } else {
+                false
+            }
+        }
     }
 
     /**
@@ -4244,28 +4722,50 @@ object KaoChangOperate {
      * 寄存器 503/504/505 分别是一/二/三区目标温度，写 0 表示停止烤制和保温加热。
      * 这里只停热和关闭自动调度；计时补偿由恢复非 0 温度前统一执行。
      */
-    fun stopHeatingForFault(reason: String) {
-        FaultHeatPauseManager.beginFaultHeatPauseIfNeeded(reason, source = "stopHeatingForFault")
-        writeAreaTargetTemperatureRaw(1, 0, "stopHeatingForFault")
-        writeAreaTargetTemperatureRaw(2, 0, "stopHeatingForFault")
-        writeAreaTargetTemperatureRaw(3, 0, "stopHeatingForFault")
-        lastTemperatureApplyLogSignature = null
-        logW(
-            LOG_HEAT,
-            "设备故障停热：reason=$reason，" +
-                "寄存器503/504/505目标温度已写0，已记录故障停热暂停；后续恢复非0温度前会先补偿烤制计时"
-        )
+    fun stopHeatingForFault(reason: String): Boolean {
+        return withFaultHeatTransitionLock {
+            FaultHeatPauseManager.beginFaultHeatPauseIfNeeded(reason, source = "stopHeatingForFault")
+            val writeResults = (1..3).map { area ->
+                area to writeAreaTargetTemperatureRaw(area, 0, "stopHeatingForFault")
+            }
+            val allWritesSucceeded = writeResults.all { (_, result) -> result.isSuccess }
+            val config = AppConfig.getAppConfig()
+            config.faultHeatStopConfirmed = if (allWritesSucceeded) 1 else 0
+            AppConfig.saveAppConfig(config)
+            lastTemperatureApplyLogSignature = null
+            if (allWritesSucceeded) {
+                logW(
+                    LOG_HEAT,
+                    "设备故障停热：reason=$reason，寄存器503/504/505目标温度写0成功，" +
+                        "已记录故障停热暂停；后续恢复非0温度前会先补偿烤制计时"
+                )
+            } else {
+                val failures = writeResults.filterNot { (_, result) -> result.isSuccess }
+                    .joinToString("，") { (area, result) ->
+                        "${area}区=${result.status}/${result.message ?: "无详情"}"
+                    }
+                logW(
+                    LOG_HEAT,
+                    "设备故障停热写0未全部确认，保持计时暂停并等待重试：reason=$reason，failures=$failures"
+                )
+            }
+            allWritesSucceeded
+        }
     }
 
-    private fun setAreaTargetTemperature(area: Int, temperature: Int, reason: String) {
-        if (temperature > 0) {
-            FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)
-        }
+    private fun setAreaTargetTemperature(
+        area: Int,
+        temperature: Int,
+        reason: String
+    ): VMModbusHelper.ModbusOperationResult =
         writeAreaTargetTemperatureRaw(area, temperature, "setAreaTargetTemperature:$reason")
-    }
 
     // 仅供写 0 停热/主动暂停/故障停热路径，以及 setAreaTargetTemperature 内部最终落寄存器使用。
-    private fun writeAreaTargetTemperatureRaw(area: Int, temperature: Int, source: String) {
+    private fun writeAreaTargetTemperatureRaw(
+        area: Int,
+        temperature: Int,
+        source: String
+    ): VMModbusHelper.ModbusOperationResult {
         val targetTemperature = FourFTemperaturePolicy.clampTargetTemperature(temperature)
         if (targetTemperature != temperature) {
             logW(
@@ -4275,10 +4775,14 @@ object KaoChangOperate {
             )
         }
         logD(LOG_HEAT, "写入温区目标温度：source=$source，area=$area，temperature=$targetTemperature")
-        when (area) {
+        return when (area) {
             1 -> writeSingleRegister(action_address_1_temperature_write, targetTemperature)
             2 -> writeSingleRegister(action_address_2_temperature_write, targetTemperature)
             3 -> writeSingleRegister(action_address_3_temperature_write, targetTemperature)
+            else -> VMModbusHelper.ModbusOperationResult(
+                status = VMModbusHelper.ModbusOperationStatus.PARAM_ERROR,
+                message = "非法温区：$area"
+            )
         }
     }
 

@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.net
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -95,6 +96,16 @@ class UpdateDeviceInfoPayloadBuilderTest {
                 lowerPlatformIsolationActionName = "in5"
                 supplementEnabled = AppConfigBean.SUPPLEMENT_ENABLED_YES
                 orderBlockReason = ""
+                lowerPlatformAggregateVersion = 4L
+                lowerPlatformGeneration = "generation-device-001"
+                lowerPlatformEpisodes.add(AppConfigBean.LowerPlatformEpisodeBean().apply {
+                    eventId = "evt-box-3"
+                    revision = 2L
+                    faultType = AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED
+                    lifecycle = "OPEN"
+                    sourceBoxNo = 3
+                    occurrenceCount = 2
+                })
             },
             source = "runtime_state:supply_degraded"
         )
@@ -104,6 +115,37 @@ class UpdateDeviceInfoPayloadBuilderTest {
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_YES, payload.getIntValue("supplementEnabled"))
         assertTrue(payload.containsKey("orderBlockReason"))
         assertEquals("", payload.getString("orderBlockReason"))
+        assertEquals(4L, payload.getLongValue("lowerPlatformAggregateVersion"))
+        assertEquals("generation-device-001", payload.getString("lowerPlatformGeneration"))
+        assertEquals("evt-box-3", payload.getJSONArray("lowerPlatformEpisodes").getJSONObject(0).getString("eventId"))
+    }
+
+    @Test
+    fun buildUpdateDeviceInfoPayload_shouldUseProvidedFrozenLowerSnapshot() {
+        val config = baseConfig().apply {
+            lowerPlatformGeneration = "generation-frozen"
+            lowerPlatformAggregateVersion = 11L
+            lowerPlatformIsolationActionName = "in3"
+            orderBlockReason = "frozen-block"
+        }
+        LowerPlatformEpisodeReducer.openIsolated(config, "in3", "frozen", 1L)
+        val snapshot = LowerPlatformEpisodeReducer.snapshot(config)
+        config.lowerPlatformIsolationActionName = "in5"
+        config.orderBlockReason = "mutated-block"
+        config.lowerPlatformEpisodes.clear()
+
+        val payload = NetApi.buildUpdateDeviceInfoPayload(
+            deviceCode = "device-001",
+            config = config,
+            source = "test",
+            lowerPlatformSnapshot = snapshot
+        )
+
+        assertEquals("generation-frozen", payload.getString("lowerPlatformGeneration"))
+        assertEquals(snapshot.aggregateVersion, payload.getLongValue("lowerPlatformAggregateVersion"))
+        assertEquals("in3", payload.getString("lowerPlatformIsolationActionName"))
+        assertEquals("frozen-block", payload.getString("orderBlockReason"))
+        assertEquals(1, payload.getJSONArray("lowerPlatformEpisodes").size)
     }
 
     private fun baseConfig(): AppConfigBean =

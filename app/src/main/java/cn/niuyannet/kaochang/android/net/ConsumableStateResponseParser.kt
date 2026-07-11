@@ -34,9 +34,9 @@ object ConsumableStateResponseParser {
             return Result(false, emptyList(), "云端响应不是有效JSON：${e.message ?: "unknown"}")
         } ?: return Result(false, emptyList(), "云端响应JSON为空")
 
-        val code = json.getIntValue("code")
-        if (code != 200) {
-            val message = json.getString("msg") ?: json.getString("message") ?: ""
+        if (!ApiResponseCompat.isSuccessful(json)) {
+            val code = ApiResponseCompat.codeText(json)
+            val message = ApiResponseCompat.messageText(json, "")
             return Result(false, emptyList(), "云端业务返回失败：code=$code，message=$message")
         }
 
