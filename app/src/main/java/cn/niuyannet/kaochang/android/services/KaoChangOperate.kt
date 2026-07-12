@@ -1361,6 +1361,7 @@ object KaoChangOperate {
             LowToHighDemandGate.clearPosition(pan.positionSn, "维护手动取肠动作组恢复完成")
         }
         KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+        refreshTemperatureAfterStablePanMutation("动作组恢复完成清空烤盘：pan=${pan.positionSn}")
         reportOutCompletionPhysicalDelta(
             kaoPan = pan,
             reason = "action_recovery:out:completed:pan=${pan.positionSn}:manual=$isManualTake",
@@ -4082,6 +4083,7 @@ object KaoChangOperate {
                     applySuccessfulTakePanState(kaoPan)
                     LowToHighDemandGate.clearPosition(kaoPan.positionSn, "维护手动取肠完成")
                     KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+                    refreshTemperatureAfterStablePanMutation("维护手动取肠完成：pan=${kaoPan.positionSn}")
                     if (!outPanClearedByTelemetry) {
                         reportOutCompletionPhysicalDelta(
                             kaoPan = kaoPan,
@@ -4312,6 +4314,7 @@ object KaoChangOperate {
             applySuccessfulTakePanState(kaoPan)
             armPostSellSupplementGuard("out5 已完成关门回零/出餐收尾")
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            refreshTemperatureAfterStablePanMutation("正式出餐完成清空烤盘：pan=${kaoPan.positionSn}")
             if (!outPanClearedByTelemetry) {
                 reportOutCompletionPhysicalDelta(
                     kaoPan = kaoPan,
@@ -4483,6 +4486,7 @@ object KaoChangOperate {
                     "panHasSausage=${kaoPan.isHasSausage}，panStatus=${kaoPan.status}"
             )
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
+            refreshTemperatureAfterStablePanMutation("过保丢弃完成清空烤盘：pan=${kaoPan.positionSn}")
             PanPhysicalStateDeltaReporter.reportPanChanged(
                 changedPan = kaoPan,
                 reason = "discardSausage_success:pan=${kaoPan.positionSn}:source=$source",
@@ -4670,6 +4674,12 @@ object KaoChangOperate {
      */
     fun <T> withFaultHeatTransitionLock(block: () -> T): T =
         synchronized(faultHeatTransitionLock) { block() }
+
+    private fun refreshTemperatureAfterStablePanMutation(reason: String) {
+        if (!applyConfiguredTemperatureByPanState(reason)) {
+            logW(LOG_HEAT, "盘位稳定变化后的温控重算未完成，保留盘位/订单终态：reason=$reason")
+        }
+    }
 
     fun applyConfiguredTemperatureByPanState(reason: String): Boolean =
         withFaultHeatTransitionLock {

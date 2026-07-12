@@ -219,6 +219,57 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
     }
 
     @Test
+    fun stablePanRemoval_shouldRefreshTemperatureOnlyAfterTerminalStateIsSaved() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+
+        val formalOut = extractFunctionBody(source, "suspend fun takeSausageResult(")
+        assertOrder(
+            formalOut,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "refreshTemperatureAfterStablePanMutation(",
+            "正式出餐必须在终态盘位保存后重算温控"
+        )
+
+        val manualOut = extractFunctionBody(source, "suspend fun takeSausage(")
+        assertOrder(
+            manualOut,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "refreshTemperatureAfterStablePanMutation(",
+            "手动取肠必须在终态盘位保存后重算温控"
+        )
+
+        val discard = extractFunctionBody(source, "suspend fun discardSausage(")
+        assertOrder(
+            discard,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "refreshTemperatureAfterStablePanMutation(",
+            "丢弃成功必须在终态盘位保存后重算温控"
+        )
+
+        val recoveredOut = extractBetween(
+            source,
+            "private fun clearRecoveredOutPan(",
+            "private fun markDeviceErrorAndUpload"
+        )
+        assertOrder(
+            recoveredOut,
+            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "refreshTemperatureAfterStablePanMutation(",
+            "出餐恢复成功必须在终态盘位保存后重算温控"
+        )
+
+        val physicalOut = extractBetween(
+            source,
+            "private fun applyOutPhysicalTelemetry(",
+            "private fun buildPipelineSupplementPlan("
+        )
+        assertTrue("out1 中间物理检查点不得触发温控重算", !physicalOut.contains("refreshTemperatureAfterStablePanMutation("))
+
+        val clearOnly = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/ManualPanPositionDataClearExecutor.kt")
+        assertTrue("仅清除本位数据不得触发普通温控重算", !clearOnly.contains("refreshTemperatureAfterStablePanMutation("))
+    }
+
+    @Test
     fun irPickFailureBoxMark_shouldPublishStockDeltaAfterFailureMarkIsSaved() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val serialBody = extractBetween(
