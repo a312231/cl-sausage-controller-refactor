@@ -42,6 +42,10 @@ internal object LowerBoardMaintenancePolicy {
         return Decision(true, "允许执行")
     }
 
+    fun canRunEmergencyReset(): Decision {
+        return Decision(true, "允许紧急复位")
+    }
+
     fun formatMaintenanceRegisterValue(address: Int, value: Int): String {
         val description = when (address) {
             CLEAR_REGISTER -> "清空 300/400 原子动作寄存器触发寄存器"

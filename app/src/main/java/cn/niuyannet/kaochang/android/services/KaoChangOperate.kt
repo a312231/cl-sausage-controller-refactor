@@ -4609,16 +4609,20 @@ object KaoChangOperate {
     /**
      * 全盘无肠时关闭 1/2/3 区目标温度。
      *
-     * 这里只看烤盘实际是否有肠，不依赖 isEnable（烤肠算法开关：0关闭，1开启），
-     * 避免把“是否自动调度”和“是否需要控温”混在一起。
+     * 除烤盘实际是否有肠外，还会保护活动补肠批次的有效待补温区；不依赖 isEnable
+     * （烤肠算法开关：0关闭，1开启），避免把“是否自动调度”和“是否需要控温”混在一起。
      *
      * @return true 表示已确认全盘无肠并写入 503/504/505=0；false 表示仍有烤肠，未清零。
      */
     fun stopAllHeatingIfNoSausage(reason: String, force: Boolean = false): Boolean {
         return withFaultHeatTransitionLock {
             val list = KaoPanHelper.getKaoPanList()
+            val batchDemand = TemperatureControlPolicy.projectBatchIntent(
+                supplementBatchIntentRepository.loadActive()
+            )
             val decision = TemperatureControlPolicy.decideEmptyPanStop(
                 hasAnySausage = TemperatureControlPolicy.hasAnySausageInPhysicalPans(list),
+                hasPendingSupplementTarget = batchDemand.pendingSupplementPositions.isNotEmpty(),
                 previousHasAnySausage = lastPhysicalPanHasAnySausage,
                 force = force
             )
@@ -4651,7 +4655,7 @@ object KaoChangOperate {
     }
 
     /**
-     * 按当前烤盘实际状态刷新 1/2/3 区目标温度。
+     * 按当前烤盘状态和活动补肠/回补批次刷新 1/2/3 区目标温度。
      *
      * 物理区域口径：
      * - 一区：1~9
@@ -4659,8 +4663,9 @@ object KaoChangOperate {
      * - 三区：25~33
      *
      * 规则：
+     * - 区域内存在有效待补目标：写 heatingTemperature（加热温度）
      * - 区域内存在 status=1（烤制中）的烤肠：写 heatingTemperature（加热温度）
-     * - 否则区域内存在 status=2（保温可售）或 holdingTime>0 的烤肠：写 keepWarmTemperature（保温温度）
+     * - 否则区域内存在待回补绑定、status=2（保温可售）或 holdingTime>0 的烤肠：写 keepWarmTemperature（保温温度）
      * - 否则：写 0，关闭该区加热和保温
      */
     fun <T> withFaultHeatTransitionLock(block: () -> T): T =
@@ -4696,6 +4701,9 @@ object KaoChangOperate {
         }
         val pendingDiscardForPolicy =
             (config.pendingDiscardPositions + pausePreview.pendingDiscardPositions).distinct().sorted()
+        val batchDemand = TemperatureControlPolicy.projectBatchIntent(
+            supplementBatchIntentRepository.loadActive()
+        )
         val decisions = TemperatureControlPolicy.decideZoneTemperatures(
             pans = KaoPanHelper.getKaoPanList(),
             keepWarmTemperature = config.keepWarmTemperature,
@@ -4705,7 +4713,9 @@ object KaoChangOperate {
                 2 to config.zone2HeatingOffset,
                 3 to config.zone3HeatingOffset
             ),
-            pendingDiscardPositions = pendingDiscardForPolicy
+            pendingDiscardPositions = pendingDiscardForPolicy,
+            pendingSupplementPositions = batchDemand.pendingSupplementPositions,
+            pendingReturnPositions = batchDemand.pendingReturnPositions
         )
         val writeResults = decisions.map { decision ->
             setAreaTargetTemperature(decision.area, decision.targetTemperature, reason)

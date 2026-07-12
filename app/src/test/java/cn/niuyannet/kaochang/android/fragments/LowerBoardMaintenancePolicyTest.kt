@@ -81,6 +81,14 @@ class LowerBoardMaintenancePolicyTest {
     }
 
     @Test
+    fun canRunEmergencyReset_shouldBypassIdleGate() {
+        val decision = LowerBoardMaintenancePolicy.canRunEmergencyReset()
+
+        assertTrue(decision.allowed)
+        assertEquals("允许紧急复位", decision.reason)
+    }
+
+    @Test
     fun formatMaintenanceRegisterValue_shouldDescribe998And999() {
         assertEquals(
             "0（0x0000，清空 300/400 原子动作寄存器触发寄存器）",

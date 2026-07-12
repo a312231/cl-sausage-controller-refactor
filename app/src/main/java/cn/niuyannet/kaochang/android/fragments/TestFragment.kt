@@ -189,6 +189,10 @@ class TestFragment : Fragment() {
             resetLowerBoardSystem()
         }
 
+        binding.btnEmergencyResetLowerBoardSystem.setOnClickListener {
+            emergencyResetLowerBoardSystem()
+        }
+
         binding.etRegisterStart.setText("201")
         binding.etRegisterQuantity.setText("1")
         binding.btnReadCustomRegisters.setOnClickListener {
@@ -618,9 +622,65 @@ class TestFragment : Fragment() {
         }
     }
 
+    private fun emergencyResetLowerBoardSystem() {
+        lifecycleScope.launch {
+            setLowerBoardMaintenanceButtonsEnabled(false)
+            binding.tvAtomicActionResult.text = "正在下发紧急复位 999=1..."
+            try {
+                val resultText = withContext(Dispatchers.IO) {
+                    val decision = LowerBoardMaintenancePolicy.canRunEmergencyReset()
+                    if (!decision.allowed) {
+                        return@withContext "紧急复位被拒绝：${decision.reason}"
+                    }
+                    AdminOperationLogger.w(
+                        action = "下位机紧急复位",
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = AdminOperationLogger.RESULT_START,
+                        detail = "绕过空闲检查，直接写入 999=1；moveStatus=${AppConfig.getAppConfig().moveStatus}"
+                    )
+                    val writeResult = KaoChangOperate.writeSingleRegister(
+                        LowerBoardMaintenancePolicy.SYSTEM_RESET_REGISTER,
+                        LowerBoardMaintenancePolicy.TRIGGER_VALUE
+                    )
+                    val detail = "写入状态=${writeResult.status}，写入消息=${writeResult.message ?: "无"}；" +
+                        "紧急复位不等待动作空闲，也不做立即回读"
+                    if (writeResult.isSuccess) {
+                        AdminOperationLogger.w(
+                            action = "下位机紧急复位",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_DONE,
+                            detail = detail
+                        )
+                        "紧急复位已下发，下位机当前动作将被中断\n请人工复核机械位置、烤肠箱和烤盘状态后再恢复运行"
+                    } else {
+                        AdminOperationLogger.e(
+                            action = "下位机紧急复位",
+                            page = AdminOperationLogger.PAGE_TEST,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = detail
+                        )
+                        "紧急复位下发失败：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}"
+                    }
+                }
+                binding.tvAtomicActionResult.text = resultText
+            } catch (e: Exception) {
+                binding.tvAtomicActionResult.text = "紧急复位异常：${e.message}"
+                AdminOperationLogger.e(
+                    action = "下位机紧急复位",
+                    page = AdminOperationLogger.PAGE_TEST,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "失败原因=${e.message}"
+                )
+            } finally {
+                setLowerBoardMaintenanceButtonsEnabled(true)
+            }
+        }
+    }
+
     private fun setLowerBoardMaintenanceButtonsEnabled(enabled: Boolean) {
         binding.btnClearLowerBoardRegisters.isEnabled = enabled
         binding.btnResetLowerBoardSystem.isEnabled = enabled
+        binding.btnEmergencyResetLowerBoardSystem.isEnabled = enabled
     }
 
     private fun readLowerBoardMaintenanceGuard(): LowerBoardMaintenanceGuard {

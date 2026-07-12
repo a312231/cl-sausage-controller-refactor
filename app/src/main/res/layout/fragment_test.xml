@@ -223,6 +223,15 @@
                         android:text="下位机复位" />
                 </LinearLayout>
 
+                <Button
+                    android:id="@+id/btnEmergencyResetLowerBoardSystem"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp"
+                    android:backgroundTint="#B3261E"
+                    android:text="紧急复位（立即中断下位机）"
+                    android:textColor="#FFFFFF" />
+
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"

@@ -7,6 +7,38 @@ import org.junit.Test
 class TemperatureControlPolicyTest {
 
     @Test
+    fun projectBatchIntent_shouldSeparateRemainingTargetsAndRetainedReturnBindings() {
+        val intent = SupplementBatchIntent(
+            batchId = "batch",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 25),
+                SupplementBatchIntentTarget(positionSn = 10),
+                SupplementBatchIntentTarget(positionSn = 26, skippedBySupplyDegrade = true),
+                SupplementBatchIntentTarget(positionSn = 27, cancelledByFaultTimeout = true),
+                SupplementBatchIntentTarget(positionSn = 28, returnPositionSn = 3, completed = true)
+            )
+        )
+
+        val result = TemperatureControlPolicy.projectBatchIntent(intent)
+
+        assertEquals(setOf(25), result.pendingSupplementPositions)
+        assertEquals(setOf(3, 28), result.pendingReturnPositions)
+    }
+
+    @Test
+    fun hasAnySausageInPhysicalPans_shouldIncludeTransitionPositions() {
+        val result = TemperatureControlPolicy.hasAnySausageInPhysicalPans(
+            pans = pans(
+                pan(positionSn = 10, hasSausage = true),
+                pan(positionSn = 22, hasSausage = true)
+            )
+        )
+
+        assertEquals(true, result)
+    }
+
+    @Test
     fun decideZoneTemperatures_shouldStopAllZonesWhenAllPansAreEmpty() {
         val result = TemperatureControlPolicy.decideZoneTemperatures(
             pans = pans(),
@@ -26,6 +58,58 @@ class TemperatureControlPolicyTest {
         )
 
         assertEquals(listOf(160, 0, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldKeepPendingZoneTwoHeatingAfterConfigChangesTo130() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(pan(positionSn = 3, hasSausage = true, status = 1)),
+            keepWarmTemperature = 50,
+            heatingTemperature = 130,
+            pendingSupplementPositions = setOf(13, 21)
+        )
+
+        assertEquals(listOf(130, 130, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldIgnoreTransitionPositionsFromBatchProjection() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(),
+            keepWarmTemperature = 50,
+            heatingTemperature = 160,
+            pendingSupplementPositions = setOf(10, 11, 12, 22, 23, 24),
+            pendingReturnPositions = setOf(10, 12, 22, 24)
+        )
+
+        assertEquals(listOf(0, 0, 0), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldKeepWarmSourceAndTargetZonesForPendingReturn() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(),
+            keepWarmTemperature = 55,
+            heatingTemperature = 165,
+            pendingReturnPositions = setOf(13, 25)
+        )
+
+        assertEquals(listOf(0, 55, 55), result.map { it.targetTemperature })
+    }
+
+    @Test
+    fun decideZoneTemperatures_shouldPreferPendingSupplementOverReturnAndHolding() {
+        val result = TemperatureControlPolicy.decideZoneTemperatures(
+            pans = pans(pan(positionSn = 13, hasSausage = true, status = 2, holdingTime = 100L)),
+            keepWarmTemperature = 55,
+            heatingTemperature = 170,
+            heatingOffsetsByArea = mapOf(2 to 4),
+            pendingSupplementPositions = setOf(21),
+            pendingReturnPositions = setOf(15)
+        )
+
+        assertEquals(TemperatureControlPolicy.ZoneMode.HEATING, result[1].mode)
+        assertEquals(174, result[1].targetTemperature)
     }
 
     @Test
@@ -190,6 +274,45 @@ class TemperatureControlPolicyTest {
         val result = TemperatureControlPolicy.decideEmptyPanStop(
             hasAnySausage = false,
             previousHasAnySausage = false,
+            force = true
+        )
+
+        assertEquals(true, result.shouldStopAllHeating)
+        assertEquals(false, result.nextHasAnySausage)
+    }
+
+    @Test
+    fun decideEmptyPanStop_shouldTreatPendingSupplementAsActiveDemand() {
+        val result = TemperatureControlPolicy.decideEmptyPanStop(
+            hasAnySausage = false,
+            hasPendingSupplementTarget = true,
+            previousHasAnySausage = true,
+            force = false
+        )
+
+        assertEquals(false, result.shouldStopAllHeating)
+        assertEquals(true, result.nextHasAnySausage)
+    }
+
+    @Test
+    fun decideEmptyPanStop_shouldStopAfterPendingSupplementDemandClears() {
+        val result = TemperatureControlPolicy.decideEmptyPanStop(
+            hasAnySausage = false,
+            hasPendingSupplementTarget = false,
+            previousHasAnySausage = true,
+            force = false
+        )
+
+        assertEquals(true, result.shouldStopAllHeating)
+        assertEquals(false, result.nextHasAnySausage)
+    }
+
+    @Test
+    fun decideEmptyPanStop_shouldHonorForceEvenWhenPendingSupplementExists() {
+        val result = TemperatureControlPolicy.decideEmptyPanStop(
+            hasAnySausage = false,
+            hasPendingSupplementTarget = true,
+            previousHasAnySausage = true,
             force = true
         )
 
