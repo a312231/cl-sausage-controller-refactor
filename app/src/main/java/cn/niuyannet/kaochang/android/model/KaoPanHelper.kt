@@ -304,6 +304,13 @@ object KaoPanHelper {
         PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
     }
 
+    fun saveKaoPanListDurable(list: List<KaoPan>) {
+        kaoPanList = list.toMutableList()
+        check(
+            PreferenceUtils.saveListPreferenceDurable(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
+        ) { "关键烤盘状态落盘失败" }
+    }
+
 
     /**
      * 保存烤箱列表

@@ -128,6 +128,10 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             LogUtils.w("【启动流程】设备配置仍无效，拒绝启动算法和状态同步：source=$source")
             return
         }
+        val shouldStartRuntime = !runtimeStarted
+        if (shouldStartRuntime) {
+            PowerLossRecoveryGuard.recoverBeforeRuntimeStart(source)
+        }
         val correctedByBusinessStart = KaoChangAlgorithm.recoverBusinessStartIfNeeded("startRuntimeAfterConfigLoaded:$source")
         val correctedConfig = AppConfig.getAppConfig()
         if (correctedByBusinessStart) {
@@ -139,11 +143,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             )
         }
 
-        val shouldStartRuntime = !runtimeStarted
         if (shouldStartRuntime) {
             runtimeStarted = true
             LogUtils.d("【启动流程】设备配置有效，开始启动算法与状态同步：source=$source")
-            PowerLossRecoveryGuard.recoverBeforeRuntimeStart(source)
             KaoChangAlgorithm.restoreRoastAlgorithmState()
             KaoChangAlgorithm.runServer()
         }

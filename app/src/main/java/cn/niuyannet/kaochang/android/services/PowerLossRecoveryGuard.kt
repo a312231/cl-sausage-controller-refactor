@@ -30,6 +30,7 @@ object PowerLossRecoveryGuard {
         }
         recoveredInProcess = true
 
+        FaultHeatPauseManager.replayPendingRecoveryJournalIfNeeded("冷启动:$source")
         val config = AppConfig.getAppConfig()
         val pans = KaoPanHelper.getKaoPanList()
         val result = recoverPansAfterColdStart(
@@ -38,8 +39,8 @@ object PowerLossRecoveryGuard {
             nowMs = System.currentTimeMillis(),
             reason = "App冷启动检测到运行心跳中断：source=$source"
         )
-        KaoPanHelper.saveKaoPanListSync(pans)
-        AppConfig.saveAppConfig(config)
+        KaoPanHelper.saveKaoPanListDurable(pans)
+        AppConfig.saveAppConfigDurable(config)
         logRecoveryResult(source, result, config)
         if (result.pauseResult.pendingDiscardPositions.isNotEmpty() || result.pauseResult.alertCode != null) {
             publishRecoveryState()

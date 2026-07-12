@@ -22,13 +22,20 @@ sealed class ActionGroupRecoveryResult {
         val reason: String,
         val recoverableResidueSession: ActionGroupSession? = null
     ) : ActionGroupRecoveryResult()
+
+    data class IsolatedSupplementFailurePreserved(
+        val session: ActionGroupSession,
+        val actionName: String,
+        val errorCode: Int
+    ) : ActionGroupRecoveryResult()
 }
 
 class ActionGroupRecoveryBootstrap(
     private val client: AtomicActionClient,
     private val sessionStore: ActionGroupSessionStore,
     private val resourceLocks: ResourceLocks,
-    private val logger: (String) -> Unit = {}
+    private val logger: (String) -> Unit = {},
+    private val allowKnownIsolatedTerminalFailure: (ActionGroupSession, String, Int) -> Boolean = { _, _, _ -> false }
 ) {
     suspend fun recover(): ActionGroupRecoveryResult {
         val reader = client as? AtomicActionStateReader
@@ -42,10 +49,30 @@ class ActionGroupRecoveryBootstrap(
             )
         }
 
-        states.firstOrNull { state ->
+        val terminalFailures = states.filter { state ->
             val value = (state.value as AtomicReadResult.Success).value
             value >= AtomicActionCodes.PARAM_ERROR
-        }?.let { failedState ->
+        }
+        if (terminalFailures.size == 1) {
+            val failedState = terminalFailures.single()
+            val code = (failedState.value as AtomicReadResult.Success).value
+            val session = sessionStore.load()
+            if (session != null && allowKnownIsolatedTerminalFailure(session, failedState.spec.name, code)) {
+                sessionStore.clear()
+                resourceLocks.clear()
+                logger(
+                    "动作组恢复识别到已持久化下平台隔离终态，保持半故障并清理本地补肠会话：" +
+                        "sessionId=${session.sessionId}，action=${failedState.spec.name}，" +
+                        "code=${AtomicActionExecutor.formatCode(code)}"
+                )
+                return ActionGroupRecoveryResult.IsolatedSupplementFailurePreserved(
+                    session = session,
+                    actionName = failedState.spec.name,
+                    errorCode = code
+                )
+            }
+        }
+        terminalFailures.firstOrNull()?.let { failedState ->
             val code = (failedState.value as AtomicReadResult.Success).value
             return ActionGroupRecoveryResult.MaintenanceRequired(
                 "动作组存在遗留错误：action=${failedState.spec.name}，resultRegister=${failedState.spec.resultRegister}，" +

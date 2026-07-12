@@ -40,6 +40,7 @@ object AppConfig {
         "faultHeatPauseStartedAtMs",
         "faultHeatPauseReason",
         "faultHeatPauseSource",
+        "faultHeatRecoveryJournalJson",
         "pendingDiscardPositions",
         "foodSafetyAlertCode",
         "foodSafetyAlertReason",
@@ -208,12 +209,52 @@ object AppConfig {
             "lowerPlatformEpisodes(runtime_local)",
             "supplementEnabled(runtime_local)"
         )
+        // 首次启动/本地数据已清空时，服务端投影是唯一可信的代际锚点。
+        // 一旦本地已有聚合版本或 episode，继续保持本地运行态优先，避免旧快照覆盖现场状态。
+        val freshLocalState = config.lowerPlatformAggregateVersion <= 0L &&
+            config.lowerPlatformEpisodes.isEmpty()
+        val remoteGeneration = jsonData.getString("lowerPlatformGeneration")
+        val hasCompleteRemoteProjection = jsonData.containsKey("lowerPlatformAggregateVersion") &&
+            jsonData.containsKey("lowerPlatformEpisodes")
+        if (freshLocalState && !remoteGeneration.isNullOrBlank() && hasCompleteRemoteProjection) {
+            config.lowerPlatformGeneration = remoteGeneration
+            if (jsonData.containsKey("lowerPlatformAggregateVersion")) {
+                config.lowerPlatformAggregateVersion = jsonData.getLongValue("lowerPlatformAggregateVersion")
+            }
+            if (jsonData.containsKey("lowerPlatformStatus")) {
+                config.lowerPlatformStatus = normalizeLowerPlatformStatus(
+                    jsonData.getString("lowerPlatformStatus")
+                )
+            }
+            if (jsonData.containsKey("lowerPlatformIsolationActionName")) {
+                config.lowerPlatformIsolationActionName =
+                    jsonData.getString("lowerPlatformIsolationActionName") ?: ""
+            }
+            if (jsonData.containsKey("supplementEnabled")) {
+                config.supplementEnabled = normalizeSupplementEnabled(
+                    jsonData.getIntValue("supplementEnabled")
+                )
+            }
+            jsonData.getJSONArray("lowerPlatformEpisodes")?.let { remoteEpisodes ->
+                try {
+                    config.lowerPlatformEpisodes.clear()
+                    config.lowerPlatformEpisodes.addAll(
+                        remoteEpisodes.toJavaList(AppConfigBean.LowerPlatformEpisodeBean::class.java)
+                    )
+                } catch (e: Exception) {
+                    LogUtils.w("[AppConfig] 冷启动接管下平台 episode 失败，保留空本地状态", e)
+                    config.lowerPlatformEpisodes.clear()
+                }
+            }
+        }
         if (jsonData.containsKey("orderBlockReason")) {
             config.orderBlockReason = jsonData.getString("orderBlockReason") ?: ""
         } else {
             preservedFields.add("orderBlockReason")
         }
-        LowerPlatformEpisodeReducer.normalize(config)
+        if (!freshLocalState || config.lowerPlatformEpisodes.isNotEmpty()) {
+            LowerPlatformEpisodeReducer.normalize(config)
+        }
         return preservedFields
     }
 

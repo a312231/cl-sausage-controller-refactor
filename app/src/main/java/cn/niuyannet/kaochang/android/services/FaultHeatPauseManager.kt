@@ -6,7 +6,9 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import com.alibaba.fastjson.JSON
 import java.util.LinkedHashSet
+import java.util.UUID
 
 /**
  * 故障停热计时管理器。
@@ -51,6 +53,17 @@ object FaultHeatPauseManager {
         }
     }
 
+    class RecoveryJournal {
+        var journalId: String = ""
+        var pauseStartedAtMs: Long = 0L
+        var preparedAtMs: Long = 0L
+        var pauseDurationMs: Long = 0L
+        var targetStartTimes: MutableMap<Int, Long> = linkedMapOf()
+        var pendingDiscardPositions: MutableList<Int> = mutableListOf()
+        var alertCode: String? = null
+        var alertReason: String? = null
+    }
+
     fun beginFaultHeatPauseIfNeeded(reason: String, source: String) {
         synchronized(mutex) {
             val config = AppConfig.getAppConfig()
@@ -65,7 +78,7 @@ object FaultHeatPauseManager {
             config.faultHeatPauseStartedAtMs = System.currentTimeMillis()
             config.faultHeatPauseReason = reason
             config.faultHeatPauseSource = source
-            AppConfig.saveAppConfig(config)
+            AppConfig.saveAppConfigDurable(config)
             LogUtils.w(
                 "【$LOG_TAG】开始故障停热暂停：" +
                     "source=$source，reason=$reason，startedAt=${config.faultHeatPauseStartedAtMs}，" +
@@ -79,7 +92,11 @@ object FaultHeatPauseManager {
 
     fun endFaultHeatPauseAndAdjustIfNeeded(reason: String): EndPauseResult {
         synchronized(mutex) {
-            val config = AppConfig.getAppConfig()
+            var config = AppConfig.getAppConfig()
+            if (!config.faultHeatRecoveryJournalJson.isNullOrBlank()) {
+                replayPendingRecoveryJournalLocked(config, reason)
+                config = AppConfig.getAppConfig()
+            }
             if (config.faultHeatPauseActive != 1 || config.faultHeatPauseStartedAtMs <= 0L) {
                 return EndPauseResult.NotActive
             }
@@ -93,20 +110,24 @@ object FaultHeatPauseManager {
                         "positions=$normalizedPositions，reason=$reason"
                 )
             }
-            val result = adjustPansForPause(
+            val result = calculatePauseAdjustment(
                 pans = pans,
                 config = config,
                 nowMs = nowMs,
-                pauseStartedAtMs = config.faultHeatPauseStartedAtMs,
-                reason = reason
+                pauseStartedAtMs = config.faultHeatPauseStartedAtMs
             )
-            KaoPanHelper.saveKaoPanList(pans)
+            val journal = buildRecoveryJournal(pans, config, result, nowMs, reason)
+            config.faultHeatRecoveryJournalJson = JSON.toJSONString(journal)
+            AppConfig.saveAppConfigDurable(config)
+            applyRecoveryJournal(pans, config, journal)
+            KaoPanHelper.saveKaoPanListDurable(pans)
             config.faultHeatPauseActive = 0
             config.faultHeatStopConfirmed = 0
             config.faultHeatPauseStartedAtMs = 0L
             config.faultHeatPauseReason = null
             config.faultHeatPauseSource = null
-            AppConfig.saveAppConfig(config)
+            config.faultHeatRecoveryJournalJson = null
+            AppConfig.saveAppConfigDurable(config)
             LogUtils.w(
                 "【$LOG_TAG】结束故障停热暂停：" +
                     "reason=$reason，pauseDurationMs=${result.pauseDurationMs}，" +
@@ -114,6 +135,95 @@ object FaultHeatPauseManager {
                     "待丢弃烤盘=${result.pendingDiscardPositions}，alertCode=${result.alertCode ?: "无"}"
             )
             return result
+        }
+    }
+
+    /** 在任何恢复正温写入前持久化恢复目标，避免进程崩溃留下物理已升温但计时未补偿的状态。 */
+    fun prepareRecoveryJournalIfNeeded(reason: String): Boolean {
+        synchronized(mutex) {
+            val config = AppConfig.getAppConfig()
+            if (config.faultHeatPauseActive != 1 || config.faultHeatPauseStartedAtMs <= 0L ||
+                !config.faultHeatRecoveryJournalJson.isNullOrBlank()) {
+                return false
+            }
+            val pans = KaoPanHelper.getKaoPanList()
+            val nowMs = System.currentTimeMillis()
+            val result = calculatePauseAdjustment(pans, config, nowMs, config.faultHeatPauseStartedAtMs)
+            config.faultHeatRecoveryJournalJson = JSON.toJSONString(
+                buildRecoveryJournal(pans, config, result, nowMs, reason)
+            )
+            AppConfig.saveAppConfigDurable(config)
+            return true
+        }
+    }
+
+    fun replayPendingRecoveryJournalIfNeeded(reason: String): Boolean {
+        synchronized(mutex) {
+            val config = AppConfig.getAppConfig()
+            if (config.faultHeatRecoveryJournalJson.isNullOrBlank()) {
+                return false
+            }
+            return replayPendingRecoveryJournalLocked(config, reason)
+        }
+    }
+
+    private fun replayPendingRecoveryJournalLocked(config: AppConfigBean, reason: String): Boolean {
+        val raw = config.faultHeatRecoveryJournalJson ?: return false
+        val journal = try {
+            JSON.parseObject(raw, RecoveryJournal::class.java)
+        } catch (throwable: Throwable) {
+            LogUtils.e("【$LOG_TAG】恢复 journal 损坏，保持停热暂停等待人工处理：reason=$reason，error=${throwable.message}")
+            return false
+        }
+        if (journal.journalId.isBlank() || journal.preparedAtMs <= 0L || journal.pauseStartedAtMs <= 0L) {
+            LogUtils.e("【$LOG_TAG】恢复 journal 字段非法，保持停热暂停等待人工处理：reason=$reason")
+            return false
+        }
+        val pans = KaoPanHelper.getKaoPanList()
+        applyRecoveryJournal(pans, config, journal)
+        KaoPanHelper.saveKaoPanListDurable(pans)
+        if (config.faultHeatPauseActive == 1) {
+            config.faultHeatPauseStartedAtMs = maxOf(config.faultHeatPauseStartedAtMs, journal.preparedAtMs)
+        }
+        config.faultHeatRecoveryJournalJson = null
+        AppConfig.saveAppConfigDurable(config)
+        LogUtils.w("【$LOG_TAG】已幂等重放未完成恢复 journal：journalId=${journal.journalId}，reason=$reason")
+        return true
+    }
+
+    internal fun buildRecoveryJournal(
+        pans: List<KaoPan>,
+        config: AppConfigBean,
+        result: EndPauseResult,
+        preparedAtMs: Long,
+        reason: String
+    ): RecoveryJournal = RecoveryJournal().apply {
+        journalId = UUID.randomUUID().toString()
+        pauseStartedAtMs = config.faultHeatPauseStartedAtMs
+        this.preparedAtMs = preparedAtMs
+        pauseDurationMs = result.pauseDurationMs
+        result.shiftedPositions.forEach { position ->
+            pans.firstOrNull { it.positionSn == position }?.let { pan ->
+                targetStartTimes[position] = pan.startTime + result.pauseDurationMs
+            }
+        }
+        pendingDiscardPositions.addAll((config.pendingDiscardPositions + result.pendingDiscardPositions).distinct().sorted())
+        alertCode = result.alertCode ?: if (result.pendingDiscardPositions.isNotEmpty()) ALERT_BAKING_PAUSE_ABORT else null
+        alertReason = if (result.pendingDiscardPositions.isNotEmpty()) {
+            "故障停热恢复触发食品安全待丢弃：reason=$reason，pauseDurationMs=${result.pauseDurationMs}，positions=${result.pendingDiscardPositions}"
+        } else {
+            null
+        }
+    }
+
+    internal fun applyRecoveryJournal(pans: List<KaoPan>, config: AppConfigBean, journal: RecoveryJournal) {
+        journal.targetStartTimes.forEach { (position, targetStartTime) ->
+            pans.firstOrNull { it.positionSn == position }?.startTime = targetStartTime
+        }
+        addPendingDiscardPositions(config, journal.pendingDiscardPositions)
+        if (!journal.alertCode.isNullOrBlank()) {
+            config.foodSafetyAlertCode = journal.alertCode
+            config.foodSafetyAlertReason = journal.alertReason
         }
     }
 
@@ -237,10 +347,11 @@ object FaultHeatPauseManager {
             config.faultHeatPauseStartedAtMs = 0L
             config.faultHeatPauseReason = null
             config.faultHeatPauseSource = null
+            config.faultHeatRecoveryJournalJson = null
             config.pendingDiscardPositions.clear()
             config.foodSafetyAlertCode = null
             config.foodSafetyAlertReason = null
-            AppConfig.saveAppConfig(config)
+            AppConfig.saveAppConfigDurable(config)
             LogUtils.i("【$LOG_TAG】已静默清除故障停热与待丢弃状态：reason=$reason")
         }
     }

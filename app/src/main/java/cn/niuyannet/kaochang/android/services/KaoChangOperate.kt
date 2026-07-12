@@ -1005,7 +1005,8 @@ object KaoChangOperate {
             client = client,
             sessionStore = actionGroupSessionStore,
             resourceLocks = actionGroupLocks,
-            logger = { message -> logD(LOG_ACTION_GROUP, message) }
+            logger = { message -> logD(LOG_ACTION_GROUP, message) },
+            allowKnownIsolatedTerminalFailure = ::isKnownIsolatedSupplementTerminalFailure
         ).recover()
         return when (result) {
             ActionGroupRecoveryResult.Idle -> {
@@ -1067,6 +1068,21 @@ object KaoChangOperate {
                 enterActionGroupMaintenance(detail)
                 false
             }
+            is ActionGroupRecoveryResult.IsolatedSupplementFailurePreserved -> {
+                val config = AppConfig.getAppConfig()
+                config.moveStatus = 0
+                AppConfig.saveAppConfigDurable(config)
+                lastActionGroupRecoveryFailureReason = null
+                markActionGroupRecoveryVerified("已保持下平台半故障：$reason")
+                publishRuntimeStateWithHttpFallback("动作组恢复保持下平台半故障")
+                logW(
+                    LOG_ACTION_GROUP,
+                    "动作组恢复保持下平台半故障，不升级整机维护：" +
+                        "action=${result.actionName}，code=${AtomicActionExecutor.formatCode(result.errorCode)}，" +
+                        "sessionId=${result.session.sessionId}，reason=$reason"
+                )
+                true
+            }
             is ActionGroupRecoveryResult.TakeoverFinished -> {
                 val handled = handleRecoveredActionGroupSession(result.session, result.actionResult, reason)
                 if (handled) {
@@ -1084,6 +1100,36 @@ object KaoChangOperate {
                 }
                 handled
             }
+        }
+    }
+
+    private fun isKnownIsolatedSupplementTerminalFailure(
+        session: ActionGroupSession,
+        actionName: String,
+        errorCode: Int
+    ): Boolean {
+        if (session.type != ActionGroupSessionType.IN_SUPPLEMENT || session.currentAction != actionName) {
+            return false
+        }
+        if (actionName !in setOf("in1", "in2", "in3", "in4", "in5") ||
+            LowerPlatformIsolationPolicy.isUnsafeLiftTerminalError(errorCode)
+        ) {
+            return false
+        }
+        val config = AppConfig.getAppConfig()
+        if (config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
+            return false
+        }
+        val formattedCode = AtomicActionExecutor.formatCode(errorCode)
+        return config.lowerPlatformEpisodes.any { episode ->
+            episode.lifecycle == "OPEN" &&
+                episode.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+                episode.actionName == actionName &&
+                episode.errorCode.equals(formattedCode, ignoreCase = true) &&
+                episode.sourceBoxNo == session.sourceNo &&
+                episode.targetPanNo == session.targetNo &&
+                (episode.batchId.isNullOrBlank() && session.batchId.isNullOrBlank()) ||
+                    (!episode.batchId.isNullOrBlank() && episode.batchId == session.batchId)
         }
     }
 
@@ -3624,6 +3670,13 @@ object KaoChangOperate {
                 "补肠失败，未更新烤盘状态和库存：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, " +
                     "result=${actionGroupResultDesc(actionGroupResult)}"
             )
+            if (actionGroupResult is ActionGroupResult.Failed) {
+                actionGroupSessionStore.clear()
+                actionGroupLocks.release(owner)
+                val settledConfig = AppConfig.getAppConfig()
+                settledConfig.moveStatus = 0
+                AppConfig.saveAppConfigDurable(settledConfig)
+            }
             if (lowerPlatformIsolationReason != null) {
                 markLowerPlatformIsolatedRuntimeState(
                     lowerPlatformIsolationReason,
@@ -3659,8 +3712,9 @@ object KaoChangOperate {
             actionGroupSessionStore.clear()
             actionGroupLocks.release(owner)
         }
-        AppConfig.getAppConfig().moveStatus = 0
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        val settledConfig = AppConfig.getAppConfig()
+        settledConfig.moveStatus = 0
+        AppConfig.saveAppConfigDurable(settledConfig)
         applyPendingActionGroupDisableIfIdle("补肠动作组会话收口")
         if (moveSuccess && supplementStateApplied) {
             verifySupplementConsistencyOrEnterMaintenance(
@@ -4480,27 +4534,32 @@ object KaoChangOperate {
      * 加热温度 160
      */
     fun heating(area: Int) {
-        val config = AppConfig.getAppConfig()
-        val heatingTemperature = targetHeatingTemperature(
-            area = area,
-            heatingTemperature = config.heatingTemperature,
-            zone1HeatingOffset = config.zone1HeatingOffset,
-            zone2HeatingOffset = config.zone2HeatingOffset,
-            zone3HeatingOffset = config.zone3HeatingOffset
-        )
-        val offset = when (area) {
-            1 -> config.zone1HeatingOffset
-            2 -> config.zone2HeatingOffset
-            3 -> config.zone3HeatingOffset
-            else -> 0
+        withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            if (isNormalPositiveTemperatureWriteBlocked(config)) {
+                logW(LOG_HEAT, "拒绝算法加热写入：area=$area，设备处于整机故障停热或维护状态")
+                return@withFaultHeatTransitionLock
+            }
+            val heatingTemperature = targetHeatingTemperature(
+                area = area,
+                heatingTemperature = config.heatingTemperature,
+                zone1HeatingOffset = config.zone1HeatingOffset,
+                zone2HeatingOffset = config.zone2HeatingOffset,
+                zone3HeatingOffset = config.zone3HeatingOffset
+            )
+            val offset = when (area) {
+                1 -> config.zone1HeatingOffset
+                2 -> config.zone2HeatingOffset
+                3 -> config.zone3HeatingOffset
+                else -> 0
+            }
+            logD(
+                LOG_HEAT,
+                "开始加热：area=$area，baseTemperature=${config.heatingTemperature}，" +
+                    "heatingOffset=$offset，targetTemperature=$heatingTemperature"
+            )
+            setAreaTargetTemperature(area, heatingTemperature, "heating")
         }
-        logD(
-            LOG_HEAT,
-            "开始加热：area=$area，baseTemperature=${config.heatingTemperature}，" +
-                "heatingOffset=$offset，targetTemperature=$heatingTemperature"
-        )
-        //加热管开始工作
-        setAreaTargetTemperature(area, heatingTemperature, "heating")
     }
 
     internal fun targetHeatingTemperature(
@@ -4524,11 +4583,16 @@ object KaoChangOperate {
      * 保温 60
      */
     fun keepWarm(area: Int) {
-        val config = AppConfig.getAppConfig()
-        logD(LOG_HEAT, "开始保温：temperature=${config.keepWarmTemperature}")
-        logD(LOG_HEAT, "当前加热温度配置：temperature=${config.heatingTemperature}")
-        //开始保温工作
-        setAreaTargetTemperature(area, config.keepWarmTemperature, "keepWarm")
+        withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            if (isNormalPositiveTemperatureWriteBlocked(config)) {
+                logW(LOG_HEAT, "拒绝算法保温写入：area=$area，设备处于整机故障停热或维护状态")
+                return@withFaultHeatTransitionLock
+            }
+            logD(LOG_HEAT, "开始保温：temperature=${config.keepWarmTemperature}")
+            logD(LOG_HEAT, "当前加热温度配置：temperature=${config.heatingTemperature}")
+            setAreaTargetTemperature(area, config.keepWarmTemperature, "keepWarm")
+        }
     }
 
     /**
@@ -4537,8 +4601,9 @@ object KaoChangOperate {
      * 停止加热 0
      */
     fun stopHeating(area: Int) {
-        //停止加热
-        writeAreaTargetTemperatureRaw(area, 0, "stopHeating")
+        withFaultHeatTransitionLock {
+            writeAreaTargetTemperatureRaw(area, 0, "stopHeating")
+        }
     }
 
     /**
@@ -4550,31 +4615,39 @@ object KaoChangOperate {
      * @return true 表示已确认全盘无肠并写入 503/504/505=0；false 表示仍有烤肠，未清零。
      */
     fun stopAllHeatingIfNoSausage(reason: String, force: Boolean = false): Boolean {
-        val list = KaoPanHelper.getKaoPanList()
-        val decision = TemperatureControlPolicy.decideEmptyPanStop(
-            hasAnySausage = TemperatureControlPolicy.hasAnySausageInPhysicalPans(list),
-            previousHasAnySausage = lastPhysicalPanHasAnySausage,
-            force = force
-        )
-        lastPhysicalPanHasAnySausage = decision.nextHasAnySausage
-        if (!decision.shouldStopAllHeating) {
-            if (!decision.nextHasAnySausage) {
-                logTemperatureApplyOnce(
-                    signature = "skipStopAll:$reason",
-                    message = "全盘持续无肠，本轮不重复写入 503/504/505=0，保留测试页或人工临时温度：reason=$reason"
-                )
+        return withFaultHeatTransitionLock {
+            val list = KaoPanHelper.getKaoPanList()
+            val decision = TemperatureControlPolicy.decideEmptyPanStop(
+                hasAnySausage = TemperatureControlPolicy.hasAnySausageInPhysicalPans(list),
+                previousHasAnySausage = lastPhysicalPanHasAnySausage,
+                force = force
+            )
+            lastPhysicalPanHasAnySausage = decision.nextHasAnySausage
+            if (!decision.shouldStopAllHeating) {
+                if (!decision.nextHasAnySausage) {
+                    logTemperatureApplyOnce(
+                        signature = "skipStopAll:$reason",
+                        message = "全盘持续无肠，本轮不重复写入 503/504/505=0，保留测试页或人工临时温度：reason=$reason"
+                    )
+                }
+                return@withFaultHeatTransitionLock false
             }
-            return false
-        }
 
-        writeAreaTargetTemperatureRaw(1, 0, "stopAllHeatingIfNoSausage")
-        writeAreaTargetTemperatureRaw(2, 0, "stopAllHeatingIfNoSausage")
-        writeAreaTargetTemperatureRaw(3, 0, "stopAllHeatingIfNoSausage")
-        logTemperatureApplyOnce(
-            signature = "stopAll:$reason:$force:0,0,0",
-            message = "全盘无肠，已关闭一/二/三区目标温度：reason=$reason，force（是否强制清零）=$force，寄存器503=0，寄存器504=0，寄存器505=0"
-        )
-        return true
+            writeAreaTargetTemperatureRaw(1, 0, "stopAllHeatingIfNoSausage")
+            writeAreaTargetTemperatureRaw(2, 0, "stopAllHeatingIfNoSausage")
+            writeAreaTargetTemperatureRaw(3, 0, "stopAllHeatingIfNoSausage")
+            logTemperatureApplyOnce(
+                signature = "stopAll:$reason:$force:0,0,0",
+                message = "全盘无肠，已关闭一/二/三区目标温度：reason=$reason，force（是否强制清零）=$force，寄存器503=0，寄存器504=0，寄存器505=0"
+            )
+            true
+        }
+    }
+
+    private fun isNormalPositiveTemperatureWriteBlocked(config: AppConfigBean): Boolean {
+        return FaultHeatPauseManager.shouldSkipBakingCompletion(config) ||
+            config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL ||
+            config.onlineStatus == 3
     }
 
     /**
@@ -4617,6 +4690,9 @@ object KaoChangOperate {
             FaultHeatPauseManager.previewFaultHeatPauseEnd(reason)
         } else {
             FaultHeatPauseManager.EndPauseResult.NotActive
+        }
+        if (finishFaultPause) {
+            FaultHeatPauseManager.prepareRecoveryJournalIfNeeded(reason)
         }
         val pendingDiscardForPolicy =
             (config.pendingDiscardPositions + pausePreview.pendingDiscardPositions).distinct().sorted()

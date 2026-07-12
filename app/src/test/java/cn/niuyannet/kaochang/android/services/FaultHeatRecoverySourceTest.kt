@@ -92,6 +92,38 @@ class FaultHeatRecoverySourceTest {
     }
 
     @Test
+    fun allTemperatureWriteEntrypoints_shouldShareTransitionLockAndPauseGate() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val heating = extractFunctionBody(source, "fun heating(")
+        val keepWarm = extractFunctionBody(source, "fun keepWarm(")
+        val stop = extractFunctionBody(source, "fun stopHeating(")
+        val emptyStop = extractFunctionBody(source, "fun stopAllHeatingIfNoSausage(")
+
+        assertTrue("heating必须进入统一温控锁", heating.contains("withFaultHeatTransitionLock"))
+        assertTrue("keepWarm必须进入统一温控锁", keepWarm.contains("withFaultHeatTransitionLock"))
+        assertTrue("stopHeating必须进入统一温控锁", stop.contains("withFaultHeatTransitionLock"))
+        assertTrue("全盘清零必须进入统一温控锁", emptyStop.contains("withFaultHeatTransitionLock"))
+        assertTrue("heating必须走统一正温门控", heating.contains("isNormalPositiveTemperatureWriteBlocked"))
+        assertTrue("keepWarm必须走统一正温门控", keepWarm.contains("isNormalPositiveTemperatureWriteBlocked"))
+        val gate = extractFunctionBody(source, "private fun isNormalPositiveTemperatureWriteBlocked(")
+        assertTrue("正温门控必须检查故障暂停", gate.contains("shouldSkipBakingCompletion"))
+        assertTrue("正温门控必须检查整机故障和维护，且不得检查半故障字段",
+            gate.contains("errorStatus") && gate.contains("onlineStatus == 3") && !gate.contains("lowerPlatformStatus"))
+    }
+
+    @Test
+    fun faultPauseRecovery_shouldUseDurablePanAndConfigPersistence() {
+        val pause = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/FaultHeatPauseManager.kt")
+        val pans = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/model/KaoPanHelper.kt")
+        val config = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/init/AppConfig.kt")
+
+        assertTrue("故障暂停恢复必须同步持久化烤盘", pause.contains("saveKaoPanListDurable"))
+        assertTrue("故障暂停恢复必须同步持久化配置", pause.contains("saveAppConfigDurable"))
+        assertTrue("烤盘必须提供durable保存入口", pans.contains("fun saveKaoPanListDurable"))
+        assertTrue("配置必须提供durable保存入口", config.contains("fun saveAppConfigDurable"))
+    }
+
+    @Test
     fun failedFaultStop_shouldPersistUnconfirmedStateAndRetryWhileMaintaining() {
         val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val algorithm = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")

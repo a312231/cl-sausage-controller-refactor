@@ -143,6 +143,8 @@ public class AppConfigBean implements Serializable {
     public long faultHeatPauseStartedAtMs = 0L;
     public String faultHeatPauseReason;
     public String faultHeatPauseSource;
+    // 故障恢复补偿 journal；保存绝对烤盘目标，重启时按 journal 幂等重放。
+    public String faultHeatRecoveryJournalJson;
 
     // 食品安全护栏阈值。远端未下发或下发非法值时使用默认值，不能关闭护栏。
     public long faultBakingPauseAbortMs = 2L * 60L * 60L * 1000L;

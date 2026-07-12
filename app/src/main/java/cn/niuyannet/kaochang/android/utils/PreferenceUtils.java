@@ -183,6 +183,12 @@ public class PreferenceUtils {
         saveStringPreference(file, key, jsonString);
     }
 
+    /** 同步落盘关键列表检查点；返回 false 时调用方不得清除对应的运行态闸门。 */
+    public static boolean saveListPreferenceDurable(String file, String key, List list) {
+        String jsonString = JSON.toJSONString(list);
+        return saveStringPreferenceDurable(file, key, jsonString);
+    }
+
 
     /**
      * 从SharedPreferences获取List

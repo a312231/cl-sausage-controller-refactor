@@ -72,6 +72,31 @@ class AppConfigLocalRuntimeFieldsTest {
     }
 
     @Test
+    fun applyLowerPlatformRuntimeFieldsFromRemote_shouldAdoptServerGenerationForFreshLocalState() {
+        val config = AppConfigBean().apply {
+            lowerPlatformGeneration = "local-generated-before-config"
+            lowerPlatformAggregateVersion = 0L
+            lowerPlatformEpisodes.clear()
+            lowerPlatformStatus = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        }
+        val remote = JSONObject().apply {
+            put("lowerPlatformGeneration", "server-authoritative-generation")
+            put("lowerPlatformStatus", AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED)
+            put("lowerPlatformIsolationActionName", "in4")
+            put("supplementEnabled", AppConfigBean.SUPPLEMENT_ENABLED_NO)
+            put("lowerPlatformAggregateVersion", 8L)
+            put("lowerPlatformEpisodes", emptyList<Any>())
+        }
+
+        AppConfig.applyLowerPlatformRuntimeFieldsFromRemote(config, remote)
+
+        assertEquals("server-authoritative-generation", config.lowerPlatformGeneration)
+        assertEquals(AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED, config.lowerPlatformStatus)
+        assertEquals("in4", config.lowerPlatformIsolationActionName)
+        assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
+    }
+
+    @Test
     fun mergeFaultSafetyRemoteConfigInto_shouldPreserveLocalRuntimeStateWhenRemotePushesEmptyValues() {
         val config = AppConfigBean().apply {
             deviceCode = "device-001"

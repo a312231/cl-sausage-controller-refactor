@@ -5,6 +5,17 @@ import org.junit.Test
 import java.io.File
 
 class SupplementRecoverySafetySourceTest {
+
+    @Test
+    fun coldStartPowerLossRecovery_shouldRunBeforeBusinessStartCorrection() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/ui/MainActivity.kt")
+        val start = source.indexOf("private fun startRuntimeAfterConfigLoaded(")
+        assertTrue("找不到启动入口", start >= 0)
+        val end = source.indexOf("\n    }", start).let { if (it >= 0) it else source.length }
+        val body = source.substring(start, end)
+        assertTrue("断电恢复必须早于营业开始纠偏", body.indexOf("PowerLossRecoveryGuard.recoverBeforeRuntimeStart") >= 0 &&
+            body.indexOf("PowerLossRecoveryGuard.recoverBeforeRuntimeStart") < body.indexOf("recoverBusinessStartIfNeeded"))
+    }
     @Test
     fun successfulSupplementPaths_shouldRecoverTheActualSourceBoxEpisode() {
         val source = operateSource()
@@ -48,6 +59,21 @@ class SupplementRecoverySafetySourceTest {
         assertTrue(singleBlock.contains("sourceBoxNo = kaoPanBox.positionSn"))
         assertTrue(singleBlock.contains("targetPanNo = kaoPan.positionSn"))
         assertTrue(singleBlock.contains("rawResult = actionGroupResultDesc(actionGroupResult)"))
+    }
+
+    @Test
+    fun singleSupplementIsolation_shouldClearBusyStateBeforePublishing() {
+        val source = operateSource()
+        val start = source.indexOf("private suspend fun moveSausageToKaoPanDetailed(")
+        val isolationPublish = source.indexOf("markLowerPlatformIsolatedRuntimeState(", start)
+        val prefix = source.substring(start, isolationPublish)
+        val clearMove = prefix.lastIndexOf("moveStatus = 0")
+        val clearSession = prefix.lastIndexOf("actionGroupSessionStore.clear()")
+        val releaseLock = prefix.lastIndexOf("actionGroupLocks.release(owner)")
+
+        assertTrue("半故障发布前必须清moveStatus", clearMove >= 0 && clearMove < isolationPublish)
+        assertTrue("半故障发布前必须清补肠session", clearSession >= 0 && clearSession < isolationPublish)
+        assertTrue("半故障发布前必须释放补肠资源锁", releaseLock >= 0 && releaseLock < isolationPublish)
     }
 
     @Test
@@ -95,5 +121,11 @@ class SupplementRecoverySafetySourceTest {
             File("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         ).first { it.exists() }
         return sourceFile.readText().replace("\r\n", "\n")
+    }
+
+    private fun sourceFile(path: String): String {
+        val file = listOf(File(path), File("..", path)).firstOrNull { it.exists() }
+            ?: throw AssertionError("找不到源码文件：$path")
+        return file.readText().replace("\r\n", "\n")
     }
 }

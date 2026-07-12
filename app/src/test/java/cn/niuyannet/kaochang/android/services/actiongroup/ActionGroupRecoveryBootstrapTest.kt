@@ -349,6 +349,58 @@ class ActionGroupRecoveryBootstrapTest {
         assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("遗留错误"))
     }
 
+    @Test
+    fun recover_shouldPreserveKnownIsolatedSupplementTerminalFailure() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "isolated-in4",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 7,
+            targetNo = 25,
+            currentAction = "in4",
+            resourceMask = ResourceMask.bottom or ResourceMask.lift
+        )
+        val store = MemorySessionStore(session)
+        val locks = ResourceLocks().apply { tryAcquire(session.resourceMask, session.sessionId) }
+        val client = FakeClient(states = mutableMapOf("in4" to AtomicActionCodes.PARAM_ERROR))
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = client,
+            sessionStore = store,
+            resourceLocks = locks,
+            allowKnownIsolatedTerminalFailure = { recoveredSession, actionName, errorCode ->
+                recoveredSession == session && actionName == "in4" && errorCode == AtomicActionCodes.PARAM_ERROR
+            }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.IsolatedSupplementFailurePreserved)
+        assertNull(store.session)
+        assertTrue(locks.isIdle())
+    }
+
+    @Test
+    fun recover_shouldNotIgnoreMoreThanOneTerminalFailure() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "isolated-multiple",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 7,
+            targetNo = 25,
+            currentAction = "in4"
+        )
+        val client = FakeClient(states = mutableMapOf(
+            "in4" to AtomicActionCodes.PARAM_ERROR,
+            "out4" to AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED
+        ))
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = client,
+            sessionStore = MemorySessionStore(session),
+            resourceLocks = ResourceLocks(),
+            allowKnownIsolatedTerminalFailure = { _, actionName, _ -> actionName == "in4" }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+    }
+
     private class MemorySessionStore(var session: ActionGroupSession?) : ActionGroupSessionStore {
         override fun load(): ActionGroupSession? = session
 
