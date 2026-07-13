@@ -22,6 +22,8 @@ import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
+import cn.niuyannet.kaochang.android.mqtt.nativeprotocol.NativeEnrollmentHttpClient
+import cn.niuyannet.kaochang.android.mqtt.nativeprotocol.NativeIdentityStore
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
@@ -127,6 +129,12 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         if (!AppConfig.hasValidDeviceConfig()) {
             LogUtils.w("【启动流程】设备配置仍无效，拒绝启动算法和状态同步：source=$source")
             return
+        }
+        if (NativeIdentityStore.hasPendingConfirmation()) {
+            // native 协议尚未启用运行态发布；此处只补偿已交付密钥的 confirm，不影响 legacy runtime。
+            NativeEnrollmentHttpClient.resumePendingConfirmation { result ->
+                LogUtils.i("native enrollment 启动期 confirm 重试：success=${result.success}")
+            }
         }
         val shouldStartRuntime = !runtimeStarted
         if (shouldStartRuntime) {
