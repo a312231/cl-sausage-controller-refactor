@@ -557,8 +557,9 @@ object LowCurrentTrafficMode {
             TAG,
             "【低并发补肠】$groupName 补热区已熟批次开始回补 1~9：sourcePositions=${readyPans.map { it.positionSn }}，targetRange=1~9"
         )
-        KaoChangOperate.keepWarm(2)
-        KaoChangOperate.keepWarm(1)
+        if (!KaoChangOperate.applyConfiguredTemperatureByPanState("低并发${groupName}补热区回搬前温控重算")) {
+            LogUtils.w(TAG, "【加热控制】$groupName 补热区回搬前温控重算失败，继续尝试回搬成熟烤肠")
+        }
         var movedAny = false
         val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)

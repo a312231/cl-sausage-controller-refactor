@@ -86,6 +86,143 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
+    fun planResumeTargets_shouldNotResumeTasteOnlyPanWithoutReturnBinding() {
+        val front = (1..9).map { position -> frontPan(position, "A", reserved = false) }
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = false),
+            supplementPan(14, "A", hasSausage = false),
+            supplementPan(15, "A", hasSausage = true)
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun planResumeTargets_shouldNotApplyIntentTasteWhenReturnBindingIsMissing() {
+        val front = (1..9).map { position -> frontPan(position, "A", reserved = false) }
+        val target14 = supplementPan(14, null, hasSausage = false)
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true),
+            target14,
+            supplementPan(15, "A", hasSausage = true)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "missing-return",
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(positionSn = 14, tasteCode = "B")
+            )
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
+
+        assertTrue(result.isEmpty())
+        assertEquals(null, target14.taste)
+    }
+
+    @Test
+    fun planResumeTargets_shouldIgnoreCompletedIntentTarget() {
+        val front = (1..9).map { position -> frontPan(position, "A", reserved = false) }
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true),
+            supplementPan(14, null, hasSausage = false),
+            supplementPan(15, "A", hasSausage = true)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "completed-target",
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 14,
+                    tasteCode = "A",
+                    returnPositionSn = 2,
+                    completed = true
+                )
+            )
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun planResumeTargets_shouldUseSafeFrontReservationWithUnrelatedActiveIntent() {
+        val front = (1..9).map { position ->
+            frontPan(position, "A", reserved = position in 2..3)
+        }
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true),
+            supplementPan(14, null, hasSausage = false),
+            supplementPan(15, "A", hasSausage = true)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "other-group",
+            type = SupplementBatchType.LOW_HEAT_16_18,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 16,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = true
+                )
+            )
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
+
+        assertEquals(listOf(14), result.map { it.positionSn })
+        assertEquals(listOf(3), result.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun planResumeTargets_shouldPreferIntentTasteOverStaleTargetPanTaste() {
+        val front = (1..9).map { position -> frontPan(position, "A", reserved = false) }
+        val target14 = supplementPan(14, "B", hasSausage = false)
+        val group = listOf(
+            supplementPan(13, "A", hasSausage = true),
+            target14,
+            supplementPan(15, "A", hasSausage = true)
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "intent-taste",
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 14,
+                    tasteCode = "A",
+                    returnPositionSn = 2
+                )
+            )
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
+
+        assertEquals(listOf("A"), result.map { it.tasteCode })
+        assertEquals("A", target14.taste.tasteCode)
+    }
+
+    @Test
+    fun planResumeTargets_shouldPreferReservedFrontTasteOverStaleTargetPanTaste() {
+        val front = (1..9).map { position ->
+            frontPan(position, "A", reserved = position == 2)
+        }
+        val target13 = supplementPan(13, "B", hasSausage = false)
+        val group = listOf(
+            target13,
+            supplementPan(14, "A", hasSausage = true),
+            supplementPan(15, "A", hasSausage = true)
+        )
+
+        val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group)
+
+        assertEquals(listOf("A"), result.map { it.tasteCode })
+        assertEquals("A", target13.taste.tasteCode)
+    }
+
+    @Test
     fun restoreFrontReservationsAfterLowHeatResume_shouldRestoreOnlyActuallyFilledTargets() {
         val front = (1..9).map { position ->
             frontPan(position, "A", reserved = false)

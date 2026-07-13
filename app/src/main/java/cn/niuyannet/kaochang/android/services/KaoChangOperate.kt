@@ -2287,7 +2287,7 @@ object KaoChangOperate {
         return moveSausagesToKaoPansByTasteInternal(
             targets = targets,
             existingBatchId = null,
-            createIntent = targets.size > 1,
+            createIntent = targets.size > 1 || targets.any { it.returnPositionSn != null },
             stageForSerial = "补肠串行动作",
             batchTypeOverride = batchTypeOverride
         )

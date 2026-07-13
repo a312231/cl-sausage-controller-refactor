@@ -35,11 +35,9 @@ internal object LowHeatSupplementResumePlanner {
         val groupPositions = sortedGroup.map { it.positionSn }.toSet()
         val intentTargetsByPosition = activeIntent
             ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
-            ?.targets
+            ?.remainingTargets()
             ?.filter {
-                !it.cancelledByFaultTimeout &&
-                    !it.skippedBySupplyDegrade &&
-                    it.positionSn in groupPositions
+                it.positionSn in groupPositions
             }
             ?.associateBy { it.positionSn }
             .orEmpty()
@@ -47,20 +45,26 @@ internal object LowHeatSupplementResumePlanner {
         return emptyPans.mapNotNull { targetPan ->
             val intentTarget = intentTargetsByPosition[targetPan.positionSn]
             val reservedFrontPan = reservedFrontPanForGroupPosition(targetPan, groupStart, reservedFrontPans)
-            val tasteCode = targetPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
-                ?: intentTarget?.tasteCode?.takeIf { it.isNotBlank() }
+            val intentReturnPositionSn = intentTarget?.returnPositionSn?.takeIf { it in 1..9 }
+            val returnPositionSn = intentReturnPositionSn
+                ?: reservedFrontPan?.positionSn
+                ?: return@mapNotNull null
+            val tasteCode = intentTarget
+                ?.takeIf { intentReturnPositionSn != null }
+                ?.tasteCode
+                ?.takeIf { it.isNotBlank() }
                 ?: reservedFrontPan?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+                ?: targetPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
             if (tasteCode.isNullOrBlank()) {
                 return@mapNotNull null
             }
-            if (targetPan.taste?.tasteCode.isNullOrBlank()) {
+            if (targetPan.taste?.tasteCode != tasteCode) {
                 targetPan.taste = Taste(tasteCode)
             }
             ResumeTarget(
                 kaoPan = targetPan,
                 tasteCode = tasteCode,
-                returnPositionSn = intentTarget?.returnPositionSn?.takeIf { it in 1..9 }
-                    ?: reservedFrontPan?.positionSn
+                returnPositionSn = returnPositionSn
             )
         }
     }
