@@ -50,6 +50,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceRemind
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
+import cn.niuyannet.kaochang.android.utils.OrderProcessingStageBridge
 import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -153,6 +155,9 @@ object KaoChangOperate {
     private val actionGroupLocks = ResourceLocks()
     private val faultHeatTransitionLock = Any()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
+    private val pausedSupplementSessionStore = SharedPreferenceActionGroupSessionStore(
+        key = SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION
+    )
     private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
     private val supplementBatchIntentRepository =
         SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
@@ -174,9 +179,164 @@ object KaoChangOperate {
         return actionGroupSessionStore.load() == null && actionGroupLocks.isIdle()
     }
 
+    fun hasPausedSupplementContinuation(): Boolean {
+        return hasPausedSupplementSession() && actionGroupLocks.isIdle()
+    }
+
+    private fun hasPausedSupplementSession(): Boolean {
+        val session = pausedSupplementSessionStore.load()
+            ?: actionGroupSessionStore.load()?.takeIf { it.pausedForOrder }
+            ?: return false
+        return session.type == ActionGroupSessionType.IN_SUPPLEMENT &&
+            session.pausedForOrder &&
+            session.resumeAfterAction in setOf("in1", "in2", "in3")
+    }
+
+    suspend fun resumePausedSupplementAfterOrder(reason: String): Boolean {
+        val session = pausedSupplementSessionStore.load()
+            ?: actionGroupSessionStore.load()?.takeIf { it.pausedForOrder }
+            ?: return true
+        if (!session.pausedForOrder || session.resumeAfterAction !in setOf("in1", "in2", "in3")) {
+            return true
+        }
+        val config = AppConfig.getAppConfig()
+        if (config.onlineStatus != 1 || config.errorStatus != 0 || config.inspectionMode != 0 ||
+            config.supplyStatus != 0 || config.isEnable != 1
+        ) {
+            logW(
+                LOG_SUPPLEMENT,
+                "暂停补肠暂不自动续作：reason=$reason，onlineStatus=${config.onlineStatus}，" +
+                    "errorStatus=${config.errorStatus}，inspectionMode=${config.inspectionMode}，" +
+                    "supplyStatus=${config.supplyStatus}，isEnable=${config.isEnable}"
+            )
+            return false
+        }
+        if (!VMModbusHelper.connectStatus()) {
+            logW(LOG_SUPPLEMENT, "暂停补肠暂不自动续作：Modbus 未连接，reason=$reason")
+            return false
+        }
+        val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == session.targetNo }
+        val box = KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == session.sourceNo }
+        if (pan == null || box == null) {
+            enterActionGroupMaintenance("暂停补肠续作失败：找不到目标烤盘或来源肠箱，session=$session")
+            return false
+        }
+        if (!actionGroupLocks.tryAcquire(session.resourceMask, session.sessionId)) {
+            logW(LOG_SUPPLEMENT, "暂停补肠续作资源忙：session=${session.sessionId}，held=${actionGroupLocks.snapshot()}")
+            return false
+        }
+
+        var resumeThrowable: Throwable? = null
+        val result = try {
+            actionGroupSessionStore.save(session.copy(pausedForOrder = false))
+            pausedSupplementSessionStore.clear()
+            config.moveStatus = 1
+            AppConfig.saveAppConfig(config)
+            InActionGroupRunner(
+                client = createAtomicActionClient(
+                    ActionGroupTelemetryContext(
+                        sessionId = session.sessionId,
+                        boxNo = session.sourceNo,
+                        panNo = session.targetNo,
+                        resourceLocks = actionGroupLocks.snapshot()
+                    )
+                ) { telemetry ->
+                    val currentSession = actionGroupSessionStore.load() ?: session
+                    val applied = applySupplementPhysicalTelemetry(
+                        telemetry = telemetry,
+                        plannedPan = pan,
+                        plannedBox = box,
+                        source = "订单完成后续作暂停补肠",
+                        boxAlreadyDeducted = currentSession.boxDeductionApplied,
+                        panAlreadyPlaced = currentSession.panPlacementApplied
+                    )
+                    if (!applied.stockInconsistent) {
+                        recordConfirmedSupplementSessionStage(
+                            sessionId = session.sessionId,
+                            actionName = telemetry.actionName,
+                            sourceBoxNo = session.sourceNo,
+                            targetPanNo = session.targetNo ?: 0,
+                            resultCode = telemetry.resultCode
+                        )
+                    }
+                },
+                logger = { message -> logD(LOG_ACTION_GROUP, message) },
+                operationLogger = { message -> LogUtils.i(message) },
+                failureLogger = { message -> LogUtils.e(message) },
+                onCurrentActionChanged = { actionName ->
+                    actionGroupSessionStore.load()?.let { current ->
+                        actionGroupSessionStore.save(
+                            current.copy(
+                                currentAction = actionName,
+                                checkpointVersion = current.checkpointVersion + 1L
+                            )
+                        )
+                    }
+                }
+            ).run(
+                sourceBoxNo = session.sourceNo,
+                targetPanNo = session.targetNo ?: 0,
+                startAfterCompletedAction = session.resumeAfterAction
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (throwable: Throwable) {
+            resumeThrowable = throwable
+            null
+        } finally {
+            actionGroupLocks.release(session.sessionId)
+            val settled = AppConfig.getAppConfig()
+            settled.moveStatus = 0
+            AppConfig.saveAppConfigDurable(settled)
+        }
+
+        resumeThrowable?.let { throwable ->
+            val detail = "暂停补肠续作异常：reason=$reason，session=${session.sessionId}，" +
+                "error=${throwable::class.java.simpleName}: ${throwable.message ?: "无详情"}"
+            logE(LOG_SUPPLEMENT, detail, throwable)
+            enterActionGroupMaintenance(detail)
+            return false
+        }
+
+        val handled = handleRecoveredActionGroupSession(
+            actionGroupSessionStore.load() ?: session,
+            requireNotNull(result),
+            reason
+        )
+        if (!handled) {
+            enterActionGroupMaintenance("暂停补肠续作失败：reason=$reason，session=${session.sessionId}，result=$result")
+        }
+        return handled
+    }
+
+    private fun normalizePausedSupplementHandoff() {
+        val active = actionGroupSessionStore.load()
+        if (active?.type == ActionGroupSessionType.IN_SUPPLEMENT && active.pausedForOrder &&
+            active.resumeAfterAction in setOf("in1", "in2", "in3")
+        ) {
+            val persisted = pausedSupplementSessionStore.load()
+            if (persisted == null || persisted.sessionId != active.sessionId ||
+                persisted.checkpointVersion < active.checkpointVersion
+            ) {
+                pausedSupplementSessionStore.save(active)
+            }
+            actionGroupSessionStore.clear()
+            return
+        }
+        val paused = pausedSupplementSessionStore.load()
+        if (active != null && !active.pausedForOrder && paused != null &&
+            active.sessionId == paused.sessionId
+        ) {
+            pausedSupplementSessionStore.clear()
+        }
+    }
+
     fun actionGroupRuntimeSnapshotForLog(): String {
         val session = actionGroupSessionStore.load()
-        return "session=${session?.sessionId ?: "无"}，resourceLocks=${actionGroupLocks.snapshot()}"
+        val pausedSupplement = pausedSupplementSessionStore.load()
+        return "session=${session?.sessionId ?: "无"}，" +
+            "pausedSupplement=${pausedSupplement?.sessionId ?: "无"}/${pausedSupplement?.resumeAfterAction ?: "无"}，" +
+            "resourceLocks=${actionGroupLocks.snapshot()}"
     }
 
     private fun logD(category: String, message: String) = LogUtils.d("[$category] $message")
@@ -964,6 +1124,15 @@ object KaoChangOperate {
 
     suspend fun ensureActionGroupReadyForOrderDispatch(reason: String): Boolean {
         val modbusConnected = VMModbusHelper.connectStatus()
+        normalizePausedSupplementHandoff()
+        if (modbusConnected && SupplementPauseController.shouldPauseForOrder() && hasPausedSupplementContinuation()) {
+            logI(
+                LOG_ACTION_GROUP,
+                "订单出餐暂不接管已暂停补肠会话，保留续作检查点：" +
+                    "session=${pausedSupplementSessionStore.load()?.sessionId}，reason=$reason"
+            )
+            return true
+        }
         val hasPendingSession = actionGroupSessionStore.load() != null
         val resourceLocksIdle = actionGroupLocks.isIdle()
         val decision = ActionGroupOrderRecoveryGatePolicy.evaluate(
@@ -999,6 +1168,14 @@ object KaoChangOperate {
             invalidateActionGroupRecoveryVerification(detail)
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
+        }
+        normalizePausedSupplementHandoff()
+        if (actionGroupSessionStore.load() == null && hasPausedSupplementSession()) {
+            if (SupplementPauseController.shouldPauseForOrder() || AppConfig.getAppConfig().onlineStatus != 1) {
+                logI(LOG_SUPPLEMENT, "动作组恢复检测到订单暂停补肠会话，暂缓续作：reason=$reason")
+                return true
+            }
+            return resumePausedSupplementAfterOrder(reason)
         }
         val client = createAtomicActionClient()
         val result = ActionGroupRecoveryBootstrap(
@@ -1185,6 +1362,7 @@ object KaoChangOperate {
             return false
         }
         actionGroupSessionStore.clear()
+        pausedSupplementSessionStore.clear()
         actionGroupLocks.clear()
         lastActionGroupRecoveryFailureReason = null
         actionGroupRecoveryVerified = false
@@ -1760,6 +1938,7 @@ object KaoChangOperate {
         val confirmed = supplementBatchIntentRepository.confirmManualSafety(reason) ?: return false
         clearFaultTimeoutCancelledReturnReservations(confirmed, reason)
         actionGroupSessionStore.clear()
+        pausedSupplementSessionStore.clear()
         actionGroupLocks.clear()
         val config = AppConfig.getAppConfig()
         if (config.moveStatus != 0) {
@@ -2525,12 +2704,34 @@ object KaoChangOperate {
                             "动作组故障锁存门禁拒绝启动下一根预取"
                         else -> null
                     }
+                },
+                pauseReasonBeforePick = {
+                    if (SupplementPauseController.shouldPauseForOrder()) "检测到订单待出餐" else null
+                },
+                pauseReasonAfterPrefetchAction = { actionName ->
+                    if (actionName in setOf("in2", "in3") && SupplementPauseController.shouldPauseForOrder()) {
+                        "检测到订单待出餐，$actionName 已完成，保留滚筒状态"
+                    } else {
+                        null
+                    }
                 }
             )
                 .run(plannedMoves.map { it.task })
                 .also {
                     pipelineResultForCleanup = it
                     actionGroupCompleted = true
+                    if (it is InActionGroupPipelineResult.Paused && it.pausedAfterAction in setOf("in1", "in2", "in3")) {
+                        actionGroupSessionStore.load()?.let { session ->
+                            val pausedSession = session.copy(
+                                lastConfirmedStage = it.pausedAfterAction,
+                                pausedForOrder = true,
+                                resumeAfterAction = it.pausedAfterAction,
+                                checkpointVersion = session.checkpointVersion + 1L
+                            )
+                            pausedSupplementSessionStore.save(pausedSession)
+                            actionGroupSessionStore.clear()
+                        }
+                    }
                 }
         } catch (e: CancellationException) {
             markSupplementPipelineCancellationRisk(
@@ -2541,8 +2742,11 @@ object KaoChangOperate {
             )
             throw e
         } finally {
+            val pausedSupplementContinuation = pipelineResultForCleanup is InActionGroupPipelineResult.Paused &&
+                hasPausedSupplementSession()
             val retainFailureEvidence = !actionGroupCompleted ||
-                pipelineResultForCleanup is InActionGroupPipelineResult.Failed
+                pipelineResultForCleanup is InActionGroupPipelineResult.Failed ||
+                pausedSupplementContinuation
             if (!retainFailureEvidence) {
                 actionGroupSessionStore.clear()
                 actionGroupLocks.release(owner)
@@ -2550,6 +2754,16 @@ object KaoChangOperate {
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
                 applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
+            } else if (pausedSupplementContinuation) {
+                actionGroupLocks.release(owner)
+                AppConfig.getAppConfig().moveStatus = 0
+                AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                publishRuntimeStateWithHttpFallback("补肠暂停等待订单完成")
+                logI(
+                    LOG_SUPPLEMENT,
+                    "补肠已暂停并保留续作会话：session=${pausedSupplementSessionStore.load()?.sessionId}，" +
+                        "action=${pausedSupplementSessionStore.load()?.resumeAfterAction}"
+                )
             }
             KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())
@@ -2570,6 +2784,7 @@ object KaoChangOperate {
                 logD(LOG_SUPPLEMENT, "补肠预取流水线结束：successCount=$completedCount，targetCount=${plannedMoves.size}")
             }
             is InActionGroupPipelineResult.Paused -> {
+                OrderProcessingStageBridge.publish(OrderProcessingStage.SUPPLEMENT_PAUSED)
                 logI(
                     LOG_SUPPLEMENT,
                     "补肠预取流水线暂停，剩余目标将重新规划：successCount=$completedCount，" +
@@ -4245,6 +4460,7 @@ object KaoChangOperate {
                         sourcePanNo = kaoPan.positionSn,
                         enableVoiceReminder = true,
                         onWindowOpened = {
+                            OrderProcessingStageBridge.publish(OrderProcessingStage.READY_TO_TAKE)
                             if (voiceReminderPending) {
                                 voiceReminderPending = false
                                 LogUtils.i(

@@ -20,6 +20,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventC
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
+import cn.niuyannet.kaochang.android.utils.OrderProcessingStageBridge
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.customview.customView
 import com.alibaba.fastjson.JSON
@@ -56,6 +58,7 @@ abstract class OrderActivity: BaseSauceDetection() {
     private var processingDialog: MaterialDialog? = null
     private var completedDialog: MaterialDialog? = null
     private var countDownTimer: CountDownTimer? = null
+    private val processingStageListener: (OrderProcessingStage) -> Unit = { updateOrderProcessingStage(it) }
 
     private fun orderEventStatusText(status: Int): String = when (status) {
         1 -> "1（开始夹取）"
@@ -106,6 +109,11 @@ abstract class OrderActivity: BaseSauceDetection() {
             cancelable(false)
             cancelOnTouchOutside(false)
         }
+        OrderProcessingStageBridge.register(processingStageListener)
+    }
+
+    private fun updateOrderProcessingStage(stage: OrderProcessingStage) {
+        processingDialog?.view?.findViewById<TextView>(R.id.tv_message)?.text = stage.customerText
     }
     
     /**
@@ -119,6 +127,7 @@ abstract class OrderActivity: BaseSauceDetection() {
      */
      fun showProcessingDialog(current: Int = 1, total: Int = 1) {
         updateProcessingDialog(current, total.coerceAtLeast(1))
+        updateOrderProcessingStage(OrderProcessingStage.WAITING)
         processingDialog?.show()
     }
 
@@ -185,6 +194,7 @@ abstract class OrderActivity: BaseSauceDetection() {
         countDownTimer?.cancel()
         processingDialog?.dismiss()
         completedDialog?.dismiss()
+        OrderProcessingStageBridge.unregister(processingStageListener)
 
 //        if (SauceDetectionUitls.cameraProvider != null) {
 //            SauceDetectionUitls.cameraProvider!!.unbindAll()
@@ -200,6 +210,13 @@ abstract class OrderActivity: BaseSauceDetection() {
     fun purchaseOrder(orderMessage:String) {
         val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
         SupplementPauseController.requestPauseForOrder(safeOrderNo)
+        OrderProcessingStageBridge.publish(
+            if (AppConfig.getAppConfig().moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
+                OrderProcessingStage.SUPPLEMENTING
+            } else {
+                OrderProcessingStage.WAITING
+            }
+        )
         cn.niuyannet.kaochang.android.services.SelfCleanManager.beginOrderTracking(safeOrderNo)
 
             lifecycleScope.launch(Dispatchers.IO) {
@@ -210,6 +227,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val checkInterval = 1000L
                 var waited = 0L
                 var preDeliveryReady = false
+                var lastWaitLogAt = -10_000L
+                var lastWaitSignature = ""
 
                 // 运动状态不为 0 或动作组资源锁未释放时，说明机械臂仍在忙碌。
                 // moveStatus 是本地机械动作状态，不是设备营业状态：
@@ -220,13 +239,18 @@ abstract class OrderActivity: BaseSauceDetection() {
                     ?: fallbackMaxWaitTime
                 while ((appState != 0 || actionGroupBusy) && waited < maxWaitTime) {
                     delay(checkInterval)
-                    LogUtils.d(
-                        "【订单流转】售卖优先等待当前机械动作安全收口：" +
-                            "currentMoveStatus=${OrderMoveStatusPolicy.describe(appState)}, " +
-                            "actionGroupBusy=$actionGroupBusy, waitedMs=$waited/$maxWaitTime"
-                    )
                     appState = AppConfig.getAppConfig().moveStatus
                     actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+                    val waitSignature = "$appState/$actionGroupBusy"
+                    if (waited == 0L || waitSignature != lastWaitSignature || waited - lastWaitLogAt >= 10_000L) {
+                        LogUtils.d(
+                            "【订单流转】等待机械动作安全收口：" +
+                                "moveStatus=${OrderMoveStatusPolicy.describe(appState)}, " +
+                                "actionGroupBusy=$actionGroupBusy, waitedMs=$waited/$maxWaitTime"
+                        )
+                        lastWaitLogAt = waited
+                        lastWaitSignature = waitSignature
+                    }
                     maxWaitTime = maxOf(
                         maxWaitTime,
                         OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(appState)
@@ -325,7 +349,12 @@ abstract class OrderActivity: BaseSauceDetection() {
                 }
             } finally {
                 cn.niuyannet.kaochang.android.services.SelfCleanManager.clearOrderTrackingIfMatches(safeOrderNo)
+                val resumeSupplement = KaoChangOperate.hasPausedSupplementContinuation()
                 SupplementPauseController.clearOrderPause(safeOrderNo)
+                if (resumeSupplement) {
+                    LogUtils.i("【补肠恢复】订单完成，继续执行订单期间暂停的补肠会话：orderNo=$safeOrderNo")
+                    KaoChangOperate.resumePausedSupplementAfterOrder("订单完成后恢复暂停补肠")
+                }
                 cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
             }
         }
@@ -398,6 +427,7 @@ abstract class OrderActivity: BaseSauceDetection() {
             }
 
             try {
+                OrderProcessingStageBridge.publish(OrderProcessingStage.DELIVERING)
                 val modbusReadyResult = ensureModbusReadyForDelivery(orderNo, item.id)
                 if (!modbusReadyResult.canStartDelivery) {
                     val config = AppConfig.getAppConfig()

@@ -26,7 +26,8 @@ class InActionGroupRunner(
     suspend fun run(
         sourceBoxNo: Int,
         targetPanNo: Int,
-        resumeFromRunningState: Boolean = false
+        resumeFromRunningState: Boolean = false,
+        startAfterCompletedAction: String? = null
     ): ActionGroupResult {
         if (!SourceBoxPositionPolicy.isValidSourceBox(sourceBoxNo)) {
             val reason = "源肠箱编号必须在 ${SourceBoxPositionPolicy.validRangeText()}，当前=$sourceBoxNo"
@@ -54,7 +55,11 @@ class InActionGroupRunner(
         return executeSteps(
             client = client,
             steps = steps,
-            startIndex = resumeStartIndex(steps, client, logger, resumeFromRunningState),
+            startIndex = startAfterCompletedAction?.let { completedAction ->
+                val completedIndex = steps.indexOfFirst { it.spec.name == completedAction }
+                require(completedIndex >= 0) { "未知补肠续作检查点：$completedAction" }
+                completedIndex + 1
+            } ?: resumeStartIndex(steps, client, logger, resumeFromRunningState),
             logger = logger,
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,

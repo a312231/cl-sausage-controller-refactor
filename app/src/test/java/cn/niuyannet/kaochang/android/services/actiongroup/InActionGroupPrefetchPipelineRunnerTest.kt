@@ -187,6 +187,83 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
+    fun pipeline_shouldRecheckPauseAfterIn7BeforeStartingNextTask() = runBlocking {
+        var orderWaiting = false
+        val client = OrderArrivesAfterActionClient("in7") { orderWaiting = true }
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            pauseReasonAfterCurrentTask = {
+                if (orderWaiting) "检测到订单待出餐" else null
+            }
+        )
+
+        val result = runner.run(
+            listOf(
+                InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+            )
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        assertEquals(listOf(13), (result as InActionGroupPipelineResult.Paused).completed.map { it.targetPanNo })
+        assertFalse(client.calls.contains("in1:18"))
+    }
+
+    @Test
+    fun pipeline_shouldPauseAfterIn1BeforePickingSausage() = runBlocking {
+        var orderWaiting = false
+        val client = OrderArrivesAfterActionClient("in1") { orderWaiting = true }
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            pauseReasonBeforePick = {
+                if (orderWaiting) "检测到订单待出餐" else null
+            }
+        )
+
+        val result = runner.run(
+            listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13))
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        assertTrue((result as InActionGroupPipelineResult.Paused).completed.isEmpty())
+        assertEquals(listOf("in1:17"), client.calls)
+    }
+
+    @Test
+    fun pipeline_shouldPauseAfterIn2WhenOrderArrivesBeforeIn3() = runBlocking {
+        var orderWaiting = false
+        val client = OrderArrivesAfterActionClient("in2") { orderWaiting = true }
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            pauseReasonAfterPrefetchAction = { action ->
+                if (action == "in2" && orderWaiting) "检测到订单待出餐" else null
+            }
+        )
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        assertEquals(listOf("in1:17", "in2:17"), client.calls)
+    }
+
+    @Test
+    fun pipeline_shouldPauseAfterIn3WhenOrderArrivesBeforeIn4() = runBlocking {
+        var orderWaiting = false
+        val client = OrderArrivesAfterActionClient("in3") { orderWaiting = true }
+        val runner = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            pauseReasonAfterPrefetchAction = { action ->
+                if (action == "in3" && orderWaiting) "检测到订单待出餐" else null
+            }
+        )
+
+        val result = runner.run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        assertEquals(listOf("in1:17", "in2:17", "in3:0"), client.calls)
+    }
+
+    @Test
     fun pipeline_shouldNotNotifyTaskCompletedWhenIn7Fails() = runBlocking {
         val client = FakeClient(
             results = queueOf(
@@ -556,6 +633,28 @@ class InActionGroupPrefetchPipelineRunnerTest {
             if (spec.name == "in6" && onCommandDispatched != null) {
                 onCommandDispatched()
                 yield()
+            }
+            return AtomicActionResult.Success
+        }
+    }
+
+    private class OrderArrivesAfterActionClient(
+        private val actionName: String,
+        private val onOrderArrives: () -> Unit
+    ) : AtomicActionClient {
+        val calls = mutableListOf<String>()
+
+        override suspend fun execute(
+            spec: AtomicActionSpec,
+            infoValue: Int,
+            onCommandDispatched: (suspend () -> Unit)?
+        ): AtomicActionResult {
+            calls += "${spec.name}:$infoValue"
+            if (spec.name == actionName) {
+                onOrderArrives()
+            }
+            if (spec.name == "in6") {
+                onCommandDispatched?.invoke()
             }
             return AtomicActionResult.Success
         }

@@ -82,7 +82,9 @@ data class ActionGroupSession(
     val stockBefore: Int? = null,
     val expectedStockAfter: Int? = null,
     val boxDeductionApplied: Boolean = false,
-    val panPlacementApplied: Boolean = false
+    val panPlacementApplied: Boolean = false,
+    val pausedForOrder: Boolean = false,
+    val resumeAfterAction: String? = null
 )
 
 enum class ActionGroupSessionType {

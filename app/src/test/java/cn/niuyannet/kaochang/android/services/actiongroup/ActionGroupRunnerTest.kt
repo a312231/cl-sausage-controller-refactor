@@ -33,6 +33,21 @@ class ActionGroupRunnerTest {
     }
 
     @Test
+    fun inRunner_shouldResumeFromActionAfterExplicitCompletedCheckpoint() = runBlocking {
+        val client = FakeClient()
+        val runner = InActionGroupRunner(client)
+
+        val result = runner.run(
+            sourceBoxNo = 17,
+            targetPanNo = 13,
+            startAfterCompletedAction = "in3"
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("in4:0", "in5:0", "in6:0", "in7:13"), client.calls)
+    }
+
+    @Test
     fun inRunner_shouldRejectInvalidBoxBeforeWritingAnyAction() = runBlocking {
         val client = FakeClient()
         val runner = InActionGroupRunner(client)

@@ -35,6 +35,8 @@ import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
+import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
+import cn.niuyannet.kaochang.android.utils.OrderProcessingStageBridge
 import cn.niuyannet.kaochang.android.updates.AppUpdateManager
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
@@ -232,6 +234,13 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             }
 
                             SupplementPauseController.requestPauseForOrder(orderNo)
+                            OrderProcessingStageBridge.publish(
+                                if (moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
+                                    OrderProcessingStage.SUPPLEMENTING
+                                } else {
+                                    OrderProcessingStage.WAITING
+                                }
+                            )
                             LogUtils.d(
                                 "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
                                     "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
@@ -465,6 +474,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         try {
             val json = JSON.parseObject(orderMessage)
             val orderNo = json.getString("order_no").orEmpty()
+            val receivedAtMs = System.currentTimeMillis()
+            val serverDispatchedAtMs = json.getLongValue("server_dispatched_at_ms")
+            val payTimeMs = json.getLongValue("pay_time_ms")
             if (orderNo.isNotBlank()) {
                 val now = System.currentTimeMillis()
                 recentIncomingOrderLogAtMs.entries.removeIf { now - it.value >= 5 * 60_000L }
@@ -485,6 +497,15 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 "itemId=${it.id}, productId=${it.productId}, tasteCode=${it.tasteCode}, quantity=${it.quantity}"
             }
             LogUtils.i("【订单】接单：订单号=$orderNo，数量=$totalQuantity，口味=$tasteSummary")
+            if (serverDispatchedAtMs > 0L) {
+                val dispatchToReceiveMs = receivedAtMs - serverDispatchedAtMs
+                val payToDispatchMs = if (payTimeMs > 0L) serverDispatchedAtMs - payTimeMs else null
+                LogUtils.i(
+                    "【订单时序】收到 MQTT 订单：orderNo=$orderNo，" +
+                        "receivedAtMs=$receivedAtMs，serverDispatchedAtMs=$serverDispatchedAtMs，" +
+                        "dispatchToReceiveMs=$dispatchToReceiveMs，payToDispatchMs=${payToDispatchMs ?: "unknown"}"
+                )
+            }
             LogUtils.d(
                 "【订单防漏跟踪】接单成功：orderNo=$orderNo, deviceId=${AppConfig.getDeviceId()}, " +
                     "itemCount=${goodsList.size}, totalQuantity=$totalQuantity, items=[$itemSummary]"

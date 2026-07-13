@@ -32,7 +32,8 @@ sealed class InActionGroupPipelineResult {
     ) : InActionGroupPipelineResult()
 
     data class Paused(
-        val completed: List<CompletedInActionGroupPipelineTask>
+        val completed: List<CompletedInActionGroupPipelineTask>,
+        val pausedAfterAction: String? = null
     ) : InActionGroupPipelineResult()
 
     data class Failed(
@@ -58,6 +59,8 @@ class InActionGroupPrefetchPipelineRunner(
     private val onCurrentActionChanged: (InActionGroupPipelineActionContext) -> Unit = {},
     private val actionClientProvider: (InActionGroupPipelineActionContext) -> AtomicActionClient = { client },
     private val pauseReasonAfterFallbackSource: (InActionGroupPipelineTask, Int) -> String? = { _, _ -> null },
+    private val pauseReasonBeforePick: () -> String? = { null },
+    private val pauseReasonAfterPrefetchAction: (String) -> String? = { null },
     private val shouldPauseAfterCurrentTask: () -> Boolean = { false },
     private val pauseReasonAfterCurrentTask: () -> String? = {
         if (shouldPauseAfterCurrentTask()) "检测到订单待出餐" else null
@@ -76,6 +79,10 @@ class InActionGroupPrefetchPipelineRunner(
             val task = tasks[index]
             val prefetched = when (val result = currentPrefetch.await()) {
                 is PrefetchResult.Success -> result
+                is PrefetchResult.Paused -> {
+                    logger("补肠预取在 in2 前暂停：targetPan=${task.targetPanNo}，reason=${result.reason}")
+                    return@coroutineScope InActionGroupPipelineResult.Paused(completed, result.completedActionName)
+                }
                 is PrefetchResult.Failed -> return@coroutineScope result.toPipelineFailure(completed, task)
             }
 
@@ -160,12 +167,14 @@ class InActionGroupPrefetchPipelineRunner(
                 )
             }
 
-            if (pauseRequestedAfterCurrent && index + 1 < tasks.size) {
+            val pauseReasonAfterIn7 = pauseReasonAfterCurrentTask()
+            if (index + 1 < tasks.size && (pauseRequestedAfterCurrent || pauseReasonAfterIn7 != null)) {
                 logger(
                     "补肠预取流水线已暂停：completedCount=${completed.size}，" +
-                        "remainingCount=${tasks.size - index - 1}"
+                        "remainingCount=${tasks.size - index - 1}，" +
+                        "reason=${pauseReasonAfterIn7 ?: "已在 in6 下发时登记暂停"}"
                 )
-                return@coroutineScope InActionGroupPipelineResult.Paused(completed)
+                return@coroutineScope InActionGroupPipelineResult.Paused(completed, "in7")
             }
 
             val next = nextPrefetch ?: if (index + 1 < tasks.size) {
@@ -236,6 +245,10 @@ class InActionGroupPrefetchPipelineRunner(
                 else -> return PrefetchResult.Failed("in1", in1, describe(in1), sourceBoxNo)
             }
 
+            pauseReasonBeforePick()?.let { reason ->
+                return PrefetchResult.Paused(reason, "in1")
+            }
+
             recordCurrentAction(sourceBoxNo, "in2")
             when (val in2 = executeRetriableAction(
                 AtomicActions.in2,
@@ -278,9 +291,18 @@ class InActionGroupPrefetchPipelineRunner(
                 )
             }
 
+            pauseReasonAfterPrefetchAction("in2")?.let { reason ->
+                return PrefetchResult.Paused(reason, "in2")
+            }
+
             recordCurrentAction(sourceBoxNo, "in3")
             when (val in3 = executeLoggedAction(task, AtomicActions.in3, 0, sourceBoxNo)) {
-                AtomicActionResult.Success -> return PrefetchResult.Success(sourceBoxNo)
+                AtomicActionResult.Success -> {
+                    pauseReasonAfterPrefetchAction("in3")?.let { reason ->
+                        return PrefetchResult.Paused(reason, "in3")
+                    }
+                    return PrefetchResult.Success(sourceBoxNo)
+                }
                 else -> return PrefetchResult.Failed("in3", in3, describe(in3), sourceBoxNo)
             }
         }
@@ -419,6 +441,7 @@ class InActionGroupPrefetchPipelineRunner(
     ): InActionGroupPipelineResult.Failed {
         val hasPrefetchedNext = when (nextPrefetch?.await()) {
             is PrefetchResult.Success -> true
+            is PrefetchResult.Paused -> false
             is PrefetchResult.Failed,
             null -> false
         }
@@ -444,6 +467,7 @@ class InActionGroupPrefetchPipelineRunner(
         val result = throwableToResult(actionName, throwable)
         val hasPrefetchedNext = when (nextPrefetch?.await()) {
             is PrefetchResult.Success -> true
+            is PrefetchResult.Paused -> false
             is PrefetchResult.Failed,
             null -> false
         }
@@ -476,6 +500,7 @@ class InActionGroupPrefetchPipelineRunner(
 
     private sealed class PrefetchResult {
         data class Success(val sourceBoxNo: Int) : PrefetchResult()
+        data class Paused(val reason: String, val completedActionName: String) : PrefetchResult()
         data class Failed(
             val actionName: String,
             val result: AtomicActionResult,
