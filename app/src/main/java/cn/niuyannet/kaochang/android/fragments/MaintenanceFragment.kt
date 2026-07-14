@@ -744,6 +744,13 @@ class MaintenanceFragment : Fragment() {
                         clearPanCooldownJob = null
                         return@launch
                     }
+                    if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
+                        binding.tvCooldownHint.text = ""
+                        setMaintenanceActionButtonsEnabled(true)
+                        ToastUtils.showShort("存在未收口的动作恢复记录，请先完成恢复后再清空烤盘")
+                        clearPanCooldownJob = null
+                        return@launch
+                    }
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
                     PanPhysicalStateDeltaReporter.reportPansChanged(
@@ -1103,8 +1110,20 @@ class MaintenanceFragment : Fragment() {
                     resetPanCooldownJob = null
                     return@launch
                 }
+                if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("存在未收口的动作恢复记录，请先完成恢复后再重置烤盘")
+                    resetPanCooldownJob = null
+                    return@launch
+                }
                 KaoChangAlgorithm.resetKaoPan { current, total, _ ->
                     binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
+                }
+                if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("存在未收口的动作恢复记录，请先完成恢复后再重置烤盘")
+                    resetPanCooldownJob = null
+                    return@launch
                 }
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
@@ -1140,7 +1159,8 @@ class MaintenanceFragment : Fragment() {
     private fun refreshKaoPanGrid() {
         val pans = KaoPanUiReservationStateBuilder.apply(
             pans = KaoPanHelper.getKaoPanList(),
-            activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+            activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi(),
+            recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
         )
         kaoPanAdapter.submitList(pans)
         kaoPanAdapter.notifyDataSetChanged()

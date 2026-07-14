@@ -62,18 +62,30 @@ class SupplementRecoverySafetySourceTest {
     }
 
     @Test
-    fun singleSupplementIsolation_shouldClearBusyStateBeforePublishing() {
+    fun singleSupplementFailure_shouldClearOnlyConfirmedPickFailureFallbackBeforePublishing() {
         val source = operateSource()
         val start = source.indexOf("private suspend fun moveSausageToKaoPanDetailed(")
         val isolationPublish = source.indexOf("markLowerPlatformIsolatedRuntimeState(", start)
         val prefix = source.substring(start, isolationPublish)
+        val safeFallback = prefix.lastIndexOf("val canClearFailedSession =")
         val clearMove = prefix.lastIndexOf("moveStatus = 0")
         val clearSession = prefix.lastIndexOf("actionGroupSessionStore.clear()")
         val releaseLock = prefix.lastIndexOf("actionGroupLocks.release(owner)")
 
-        assertTrue("半故障发布前必须清moveStatus", clearMove >= 0 && clearMove < isolationPublish)
-        assertTrue("半故障发布前必须清补肠session", clearSession >= 0 && clearSession < isolationPublish)
-        assertTrue("半故障发布前必须释放补肠资源锁", releaseLock >= 0 && releaseLock < isolationPublish)
+        assertTrue("必须先限定只有in2取肠失败且允许切箱才可清恢复证据", safeFallback >= 0)
+        assertTrue(prefix.substring(safeFallback).contains("failureActionName == \"in2\""))
+        assertTrue(prefix.substring(safeFallback).contains("failureCode == AtomicActionCodes.IR_PICK_FAILED"))
+        assertTrue(prefix.substring(safeFallback).contains("allowPickFailureFallback"))
+        assertTrue("安全切箱失败发布前必须清moveStatus", clearMove > safeFallback)
+        assertTrue("安全切箱失败发布前必须清补肠session", clearSession > safeFallback)
+        assertTrue("安全切箱失败发布前必须释放补肠资源锁", releaseLock > safeFallback)
+
+        val failureTail = source.substring(isolationPublish, source.indexOf("if (moveSuccess && supplementStateApplied)", isolationPublish))
+        assertTrue(
+            "其它物理不确定失败必须保留session并直接返回",
+            failureTail.contains("actionGroupResult is ActionGroupResult.Failed && !canClearFailedSession")
+        )
+        assertTrue(failureTail.contains("保留session、资源锁和moveStatus等待恢复"))
     }
 
     @Test
@@ -86,6 +98,23 @@ class SupplementRecoverySafetySourceTest {
         assertTrue(pipelineBlock.contains("actionGroupSessionStore.save("))
         assertTrue(pipelineBlock.contains("currentAction = context.actionName"))
         assertTrue(pipelineBlock.contains("checkpointVersion ="))
+    }
+
+    @Test
+    fun prefetchPipeline_shouldDurablyApplyCompletedTasksBeforeClearingSession() {
+        val source = operateSource()
+        val start = source.indexOf("private suspend fun moveSausagesToKaoPansByTasteInternal")
+        val end = source.indexOf("private fun describeAtomicActionResult", start)
+        val block = source.substring(start, end)
+        val completedForEach = block.indexOf("completed.forEach")
+        val finalSessionClear = block.lastIndexOf("actionGroupSessionStore.clear()")
+        val finalMoveReset = block.lastIndexOf("moveStatus = 0")
+        val pausedRelease = block.indexOf("补肠暂停等待订单完成")
+        assertTrue("预取完成目标必须先批量回写再清session", completedForEach >= 0 && finalSessionClear > completedForEach)
+        assertTrue("预取完成目标必须先批量回写再清moveStatus", completedForEach >= 0 && finalMoveReset > completedForEach)
+        assertTrue("预取暂停也必须先回写完成目标再释放机械状态", pausedRelease > completedForEach)
+        assertTrue("预取收口不能使用异步盘箱保存", !block.contains("saveKaoPanBoxListSync"))
+        assertTrue("预取收口不能使用异步烤盘保存", !block.contains("saveKaoPanListSync"))
     }
 
     @Test
@@ -113,6 +142,133 @@ class SupplementRecoverySafetySourceTest {
         val restore = block.indexOf("KaoChangAlgorithm.restoreRoastAlgorithmState()")
         val run = block.indexOf("KaoChangAlgorithm.runServer()")
         assertTrue(recover >= 0 && restore > recover && run > restore)
+    }
+
+    @Test
+    fun algorithmStartup_shouldPreserveBusyStateUntilUnifiedRecoveryCompletes() {
+        val algorithm = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt"
+        )
+        val runStart = algorithm.indexOf("fun runServer()")
+        val runEnd = algorithm.indexOf("private fun updateAvailableState", runStart)
+        val runBlock = algorithm.substring(runStart, runEnd)
+        assertTrue("算法启动不得在动作恢复前把moveStatus强制清零", !runBlock.contains("config.moveStatus = 0"))
+
+        val pollStart = algorithm.indexOf("private suspend fun pollKaoPanStatus()")
+        val pollEnd = algorithm.indexOf("private fun check", pollStart).let { if (it > pollStart) it else algorithm.length }
+        val pollBlock = algorithm.substring(pollStart, pollEnd)
+        val recoveryGate = pollBlock.indexOf("KaoChangOperate.isActionGroupRecoveryBlocked()")
+        val firstDispatchPreparation = pollBlock.indexOf("KaoChangOperate.stopAllHeatingIfNoSausage")
+        assertTrue(
+            "任何自动机械调度准备前必须经过统一恢复门禁",
+            recoveryGate >= 0 && firstDispatchPreparation > recoveryGate
+        )
+
+        val enableStart = algorithm.indexOf("fun enableRoastAlgorithm(")
+        val enableEnd = algorithm.indexOf("fun disableRoastAlgorithm(", enableStart)
+        assertTrue(
+            "人工开启算法也必须拒绝未收口恢复状态",
+            algorithm.substring(enableStart, enableEnd).contains("KaoChangOperate.isActionGroupRecoveryBlocked()")
+        )
+    }
+
+    @Test
+    fun uiAndSchedulingIntent_shouldUseSessionJournalAndBootstrapRecoveryGate() {
+        val operate = operateSource()
+        val gateStart = operate.indexOf("fun isActionGroupRecoveryBlocked()")
+        assertTrue("找不到统一动作恢复门禁", gateStart >= 0)
+        val gateEnd = operate.indexOf("fun hasActiveSupplementReturnBinding", gateStart)
+        val gate = operate.substring(gateStart, gateEnd)
+        assertTrue(gate.contains("!actionGroupRecoveryVerified"))
+        assertTrue(gate.contains("actionGroupSessionStore.load() != null"))
+        assertTrue(gate.contains("panMoveJournalStore.load() != null"))
+
+        val activeStart = operate.indexOf("fun activeSupplementBatchIntentForUi()")
+        val activeEnd = operate.indexOf("fun clearCompletedHeatReturnBindingIfSourcesCleared", activeStart)
+        assertTrue(
+            operate.substring(activeStart, activeEnd).contains("isActionGroupRecoveryBlocked()")
+        )
+
+        val maintenance = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt"
+        )
+        val refreshStart = maintenance.indexOf("private fun refreshKaoPanGrid()")
+        val refreshEnd = maintenance.indexOf("private fun setupGrid()", refreshStart)
+        assertTrue(
+            maintenance.substring(refreshStart, refreshEnd)
+                .contains("recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()")
+        )
+
+        val clearPanBlock = maintenance.substring(
+            maintenance.indexOf("private fun setupButtons()"),
+            maintenance.indexOf("private fun showConfirmDiscardAndResetPanDialog")
+        )
+        assertTrue("维护清盘前必须阻止未收口IN/OUT会话", clearPanBlock.contains("isActionGroupRecoveryBlocked()"))
+        val testPage = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/fragments/TestFragment.kt"
+        )
+        val moveStart = testPage.indexOf("private fun executePanMoveCommandFromTestPage()")
+        val moveEnd = testPage.indexOf("private fun formatCommandHex", moveStart)
+        assertTrue(
+            "测试页裸搬盘必须经过统一恢复门禁",
+            testPage.substring(moveStart, moveEnd).contains("isActionGroupRecoveryBlocked()")
+        )
+        val atomicStart = testPage.indexOf("private fun executeAtomicActionFromTestPage")
+        val atomicEnd = testPage.indexOf("private fun", atomicStart + 10)
+        assertTrue(
+            "测试页原子动作必须经过统一恢复门禁",
+            testPage.substring(atomicStart, atomicEnd).contains("isActionGroupRecoveryBlocked()")
+        )
+        assertTrue(
+            "测试页裸搬盘仅允许全盘空的维护校准",
+            testPage.substring(moveStart, moveEnd).contains("!it.isHasSausage && it.status == KaoPan.STATUS_EMPTY")
+        )
+    }
+
+    @Test
+    fun orderFastPathAndOutFailures_shouldPreserveAllRecoveryEvidence() {
+        val source = operateSource()
+        val gateStart = source.indexOf("suspend fun ensureActionGroupReadyForOrderDispatch")
+        val gateEnd = source.indexOf("suspend fun recoverActionGroupStateAfterModbusReady", gateStart)
+        assertTrue(
+            "订单快速门禁必须显式包含搬盘journal",
+            source.substring(gateStart, gateEnd).contains("panMoveJournalStore.load()")
+        )
+
+        val manualStart = source.indexOf("suspend fun takeSausage(kaoPan: KaoPan)")
+        val formalStart = source.indexOf("suspend fun takeSausageResult(", manualStart)
+        val manual = source.substring(manualStart, formalStart)
+        val manualFailure = manual.substring(
+            manual.indexOf("is ActionGroupResult.Failed ->"),
+            manual.indexOf("} finally {", manual.indexOf("is ActionGroupResult.Failed ->"))
+        )
+        assertTrue("维护OUT失败不得清session", !manualFailure.contains("actionGroupSessionStore.clear()"))
+        assertTrue("维护OUT失败必须耐久保存错误盘状态", manualFailure.contains("saveKaoPanListDurable"))
+
+        val formalEnd = source.indexOf("internal fun applySuccessfulTakePanState", formalStart)
+        val formal = source.substring(formalStart, formalEnd)
+        val formalFailure = formal.substring(
+            formal.indexOf("if (takeResult == TakeSausageResult.ERROR)"),
+            formal.indexOf("when (takeResult)")
+        )
+        assertTrue("正式OUT失败不得清session", !formalFailure.contains("actionGroupSessionStore.clear()"))
+        assertTrue("OUT finally只能在会话已收口后清moveStatus", formal.contains("actionGroupSessionStore.load()?.sessionId"))
+    }
+
+    @Test
+    fun manualSupplementSafetyConfirmation_shouldOnlyClearMatchingInSessionWithoutMoveJournal() {
+        val source = operateSource()
+        val start = source.indexOf("fun confirmPendingSupplementBatchSafety")
+        val end = source.indexOf("private fun clearFaultTimeoutCancelledReturnReservations", start)
+        val block = source.substring(start, end)
+        val journalGate = block.indexOf("panMoveJournalStore.load()")
+        val confirm = block.indexOf("confirmManualSafety")
+        val moveDurable = block.indexOf("saveAppConfigDurable")
+        val sessionClear = block.indexOf("actionGroupSessionStore.clear()")
+        assertTrue("确认前必须先拒绝搬盘journal冲突", journalGate >= 0 && journalGate < confirm)
+        assertTrue(block.contains("ActionGroupSessionType.IN_SUPPLEMENT"))
+        assertTrue(block.contains("session.batchId != pending.batchId"))
+        assertTrue("必须先耐久清moveStatus再清session", moveDurable >= 0 && sessionClear > moveDurable)
     }
 
     private fun operateSource(): String {

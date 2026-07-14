@@ -118,7 +118,7 @@ class ActionPhysicalStateReducerSourceTest {
         assertTrue("out1 reducer 必须识别 OUT_REMOVED_FROM_PAN", block.contains("shouldApplyOutRemovedFromPan("))
         assertTrue("out1 离盘后必须触发 MQTT 物理增量", block.contains("action_physical:out1:removed_from_pan"))
         assertTrue("out1 离盘后必须上报变化烤盘", block.contains("PanPhysicalStateDeltaReporter.reportPanChanged("))
-        assertTrue("out1 reducer 必须保存当前烤盘列表", block.contains("saveKaoPanListSync("))
+        assertTrue("out1 reducer 必须耐久保存当前烤盘列表", block.contains("saveKaoPanListDurable("))
     }
 
     private fun sourceText(): String {

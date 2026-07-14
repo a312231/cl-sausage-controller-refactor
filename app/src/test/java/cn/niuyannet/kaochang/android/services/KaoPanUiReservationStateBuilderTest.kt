@@ -14,7 +14,10 @@ class KaoPanUiReservationStateBuilderTest {
             pan(2, tasteCode = "A"),
             pan(6, tasteCode = "B"),
             pan(13, tasteCode = "A"),
-            pan(14, tasteCode = "A"),
+            pan(14, tasteCode = "A").apply {
+                status = KaoPan.STATUS_BAKING
+                isHasSausage = true
+            },
             pan(15, tasteCode = "B")
         )
         val intent = SupplementBatchIntent(
@@ -51,7 +54,7 @@ class KaoPanUiReservationStateBuilderTest {
     }
 
     @Test
-    fun apply_shouldInferWaitReturnFromLowHeatSourceAfterIntentCompleted() {
+    fun apply_shouldNotInferWaitReturnFromLowHeatSourceWithoutBinding() {
         val pans = mutableListOf(
             pan(1, tasteCode = "A").apply { isHasGrilling = true },
             pan(13, tasteCode = "A").apply {
@@ -62,12 +65,11 @@ class KaoPanUiReservationStateBuilderTest {
 
         KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
 
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, pans.first { it.positionSn == 1 }.uiReservationState)
-        assertEquals("A", pans.first { it.positionSn == 1 }.uiReservationTaste.tasteCode)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 1 }.uiReservationState)
     }
 
     @Test
-    fun apply_shouldInferWaitReturnFromHighHeatSourceBySameTasteFrontTarget() {
+    fun apply_shouldNotInferWaitReturnFromHighHeatSourceWithoutBinding() {
         val pans = mutableListOf(
             pan(8, tasteCode = "A"),
             pan(9, tasteCode = "B"),
@@ -80,8 +82,7 @@ class KaoPanUiReservationStateBuilderTest {
         KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
 
         assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 8 }.uiReservationState)
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, pans.first { it.positionSn == 9 }.uiReservationState)
-        assertEquals("B", pans.first { it.positionSn == 9 }.uiReservationTaste.tasteCode)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 9 }.uiReservationState)
     }
 
     @Test
@@ -97,8 +98,8 @@ class KaoPanUiReservationStateBuilderTest {
         KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
 
         val target = pans.first { it.positionSn == 8 }
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
-        assertEquals("B", target.uiReservationTaste.tasteCode)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, target.uiReservationState)
+        assertEquals(null, target.uiReservationTaste)
         assertEquals(null, target.taste)
     }
 
@@ -115,8 +116,8 @@ class KaoPanUiReservationStateBuilderTest {
         KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
 
         val target = pans.first { it.positionSn == 8 }
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
-        assertEquals("B", target.uiReservationTaste.tasteCode)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, target.uiReservationState)
+        assertEquals(null, target.uiReservationTaste)
         assertEquals("A", target.taste.tasteCode)
     }
 
@@ -133,8 +134,8 @@ class KaoPanUiReservationStateBuilderTest {
         KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
 
         val target = pans.first { it.positionSn == 8 }
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
-        assertEquals("B", target.uiReservationTaste.tasteCode)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, target.uiReservationState)
+        assertEquals(null, target.uiReservationTaste)
     }
 
     @Test
@@ -154,8 +155,60 @@ class KaoPanUiReservationStateBuilderTest {
 
         KaoPanUiReservationStateBuilder.apply(pans, activeIntent = null)
 
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, pans.first { it.positionSn == 8 }.uiReservationState)
-        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, pans.first { it.positionSn == 9 }.uiReservationState)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 8 }.uiReservationState)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 9 }.uiReservationState)
+    }
+
+    @Test
+    fun apply_shouldNotShowOldLowBindingAfterSourcePositionWasReusedByHighMove() {
+        val pans = mutableListOf(
+            blankPan(1),
+            pan(13, tasteCode = "B").apply {
+                status = KaoPan.STATUS_SELLABLE_KEEP_WARM
+                isHasSausage = true
+            }
+        )
+        val intent = SupplementBatchIntent(
+            batchId = "high-container",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = true,
+                    originBatchId = "old-low",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                )
+            )
+        )
+
+        KaoPanUiReservationStateBuilder.apply(pans, intent)
+
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 1 }.uiReservationState)
+    }
+
+    @Test
+    fun apply_shouldSuppressReservationsWhileMoveRecoveryIsBlocked() {
+        val pans = mutableListOf(blankPan(1), blankPan(13))
+        val intent = SupplementBatchIntent(
+            batchId = "low",
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    originBatchId = "low",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                )
+            )
+        )
+
+        KaoPanUiReservationStateBuilder.apply(pans, intent, recoveryBlocked = true)
+
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 1 }.uiReservationState)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 13 }.uiReservationState)
     }
 
     @Test

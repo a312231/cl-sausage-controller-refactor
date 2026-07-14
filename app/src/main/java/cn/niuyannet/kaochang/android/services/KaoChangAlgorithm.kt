@@ -286,10 +286,7 @@ object KaoChangAlgorithm {
         ) {
             modbusReportedUnavailable = true
         }
-        logD(LOG_ALGORITHM, "算法准备0：moveStatus=${config.moveStatus}")
-        config.moveStatus = 0
-        AppConfig.saveAppConfig(config)
-        logD(LOG_ALGORITHM, "算法准备1：moveStatus=${config.moveStatus}")
+        logD(LOG_ALGORITHM, "算法准备：保留moveStatus=${config.moveStatus}，等待统一动作恢复确认")
         serviceStartTime = System.currentTimeMillis()
         startupHeatingStateRestored = false
         logD(LOG_ALGORITHM, "智能烤肠算法服务启动")
@@ -805,6 +802,10 @@ object KaoChangAlgorithm {
         }
         if (!VMModbusHelper.connectStatus()) {
             logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
+            return
+        }
+        if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
+            logD(LOG_ALGORITHM, "动作恢复尚未收口，跳过本轮自动调度")
             return
         }
         if (kaoPanBoxList.isEmpty()) {
@@ -1432,6 +1433,9 @@ object KaoChangAlgorithm {
                     "拒绝开启烤肠算法：下位机未连接，暂不恢复温度：" +
                         "reason=$reason，onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}"
                 )
+                false
+            } else if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
+                logW(LOG_ALGORITHM, "拒绝开启烤肠算法：动作恢复尚未收口，reason=$reason")
                 false
             } else {
                 KaoChangOperate.actionDebug()

@@ -250,6 +250,7 @@ object HighCurrentTrafficMode {
                         .filter { it.isHasSausage }
                         .map { it.positionSn }
                         .toSet(),
+                    sourcePanStatuses = list.associate { it.positionSn to it.status },
                     reason = "高并发调度入口检测补热源盘已清空"
                 )
                 if (schedulingEnabled) {

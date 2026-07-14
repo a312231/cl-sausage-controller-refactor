@@ -16,6 +16,8 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
@@ -214,7 +216,11 @@ class TestFragment : Fragment() {
 
     private fun executeAtomicActionFromTestPage(item: TestAtomicActionItem, infoValue: Int) {
         lifecycleScope.launch {
-            if (AppConfig.getAppConfig().moveStatus == 5) {
+            val config = AppConfig.getAppConfig()
+            if (config.moveStatus != 0 || config.isEnable == 1 ||
+                KaoChangOperate.hasActiveSupplementReturnBinding() ||
+                    KaoChangOperate.isActionGroupRecoveryBlocked()
+            ) {
                 AdminOperationLogger.w(
                     action = "执行300/400原子动作",
                     page = AdminOperationLogger.PAGE_TEST,
@@ -338,14 +344,25 @@ class TestFragment : Fragment() {
         }
 
         lifecycleScope.launch {
-            if (AppConfig.getAppConfig().moveStatus == 5) {
+            val config = AppConfig.getAppConfig()
+            val allPansEmpty = KaoPanHelper.getKaoPanList().all {
+                !it.isHasSausage && it.status == KaoPan.STATUS_EMPTY
+            }
+            if (config.moveStatus != 0 || config.isEnable == 1 ||
+                KaoChangOperate.hasActiveSupplementReturnBinding() ||
+                KaoChangOperate.isActionGroupRecoveryBlocked() ||
+                !allPansEmpty
+            ) {
                 AdminOperationLogger.w(
                     action = "测试烤盘搬移202/203",
                     page = AdminOperationLogger.PAGE_TEST,
                     result = AdminOperationLogger.RESULT_REJECT,
-                    detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，拒绝原因=当前正在自清洁"
+                    detail = "源烤盘位=$sourcePosition，目标烤盘位=$targetPosition，" +
+                        "拒绝原因=仅允许算法关闭、机械空闲且无待回搬binding时测试，" +
+                        "moveStatus=${config.moveStatus}，isEnable=${config.isEnable}，" +
+                        "hasBinding=${KaoChangOperate.hasActiveSupplementReturnBinding()}，allPansEmpty=$allPansEmpty"
                 )
-                showToast("当前正在自清洁，测试下位机动作已禁用")
+                showToast("仅允许算法关闭、机械空闲且全盘空时校准搬盘")
                 return@launch
             }
 

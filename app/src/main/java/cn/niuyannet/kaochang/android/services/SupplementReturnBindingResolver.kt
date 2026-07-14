@@ -36,7 +36,7 @@ internal object SupplementReturnBindingResolver {
         val intentTarget = activeIntent?.let { intent ->
             intent.targets.firstOrNull {
                 it.positionSn == sourcePan.positionSn &&
-                    targetMatchesAllowedType(it.positionSn, intent.type, allowedTypes) &&
+                    targetMatchesAllowedType(it, intent.type, allowedTypes) &&
                     it.returnPositionSn in returnPositionRange &&
                     !it.cancelledByFaultTimeout &&
                     !it.skippedBySupplyDegrade
@@ -125,13 +125,18 @@ internal object SupplementReturnBindingResolver {
     }
 
     private fun targetMatchesAllowedType(
-        positionSn: Int,
+        target: SupplementBatchIntentTarget,
         intentType: SupplementBatchType,
         allowedTypes: Set<SupplementBatchType>
     ): Boolean {
-        return intentType in allowedTypes ||
-            allowedTypes.any { type ->
-                SupplementBatchIntentRepository.positionMatchesType(positionSn, type)
-            }
+        val originType = target.originBatchType
+        return if (originType != null) {
+            originType in allowedTypes
+        } else {
+            intentType in allowedTypes ||
+                allowedTypes.any { type ->
+                    SupplementBatchIntentRepository.positionMatchesType(target.positionSn, type)
+                }
+        }
     }
 }

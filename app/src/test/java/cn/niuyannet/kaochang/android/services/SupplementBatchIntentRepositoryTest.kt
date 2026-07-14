@@ -401,6 +401,73 @@ class SupplementBatchIntentRepositoryTest {
         assertEquals(listOf(18, 25, 26), store.intent?.targets?.map { it.positionSn })
         assertEquals(listOf(true, false, false), store.intent?.targets?.map { it.completed })
         assertEquals(listOf(3, 10, 11), store.intent?.targets?.map { it.returnPositionSn })
+        assertEquals(
+            listOf(SupplementBatchType.LOW_HEAT_16_18, SupplementBatchType.HIGH_HEAT_25_33, SupplementBatchType.HIGH_HEAT_25_33),
+            store.intent?.targets?.map { it.originBatchType }
+        )
+        assertEquals(
+            lowIntent.batchId,
+            store.intent?.targets?.first { it.positionSn == 18 }?.originBatchId
+        )
+        assertEquals(
+            highIntent?.batchId,
+            store.intent?.targets?.first { it.positionSn == 25 }?.originBatchId
+        )
+    }
+
+    @Test
+    fun markReturned_shouldOnlyRemoveMatchingOriginBinding() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val low = repository.begin(
+            listOf(target(18, "A", returnPositionSn = 1)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(low.batchId, 18)
+        val high = repository.begin(
+            listOf(target(25, "A", returnPositionSn = 1)),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markCompleted(high.batchId, 25)
+
+        assertTrue(
+            repository.markReturned(
+                originBatchId = low.batchId,
+                originBatchType = SupplementBatchType.LOW_HEAT_16_18,
+                sourcePositionSn = 18,
+                returnPositionSn = 1
+            )
+        )
+        assertEquals(listOf(25), store.intent?.targets?.map { it.positionSn })
+        assertFalse(
+            repository.markReturned(
+                originBatchId = low.batchId,
+                originBatchType = SupplementBatchType.LOW_HEAT_16_18,
+                sourcePositionSn = 25,
+                returnPositionSn = 1
+            )
+        )
+    }
+
+    @Test
+    fun reopenSupplyDegradedTarget_shouldPreserveOriginAndReturnBinding() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            listOf(
+                target(25, "A", returnPositionSn = 3),
+                target(26, "A", returnPositionSn = 4)
+            ),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markSkippedBySupplyDegrade(intent.batchId, 25, "库存暂不足")
+
+        assertTrue(repository.reopenSupplyDegradedTarget(intent.batchId, 25, "人工补货完成"))
+        val target = store.intent!!.targets.first { it.positionSn == 25 }
+        assertFalse(target.skippedBySupplyDegrade)
+        assertEquals(intent.batchId, target.originBatchId)
+        assertEquals(SupplementBatchType.HIGH_HEAT_25_33, target.originBatchType)
+        assertEquals(3, target.returnPositionSn)
     }
 
     @Test
@@ -504,6 +571,27 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun clearCompletedHeatReturnIfSourceCleared_shouldDropLowBindingWhenSourceWasReusedAsSellablePan() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            listOf(target(13, "A", returnPositionSn = 1)),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )!!
+        repository.markCompleted(intent.batchId, 13)
+
+        assertTrue(
+            repository.clearCompletedHeatReturnIfSourceCleared(
+                types = setOf(SupplementBatchType.LOW_HEAT_13_15),
+                sourcePositionsWithSausage = setOf(13),
+                sourcePanStatuses = mapOf(13 to KaoPan.STATUS_SELLABLE_KEEP_WARM),
+                reason = "旧低并发源盘已被高并发可售盘复用"
+            )
+        )
+        assertNull(store.intent)
+    }
+
+    @Test
     fun markSkippedBySupplyDegrade_shouldRemoveTargetFromRemainingWithoutManualConfirmation() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)
@@ -546,6 +634,33 @@ class SupplementBatchIntentRepositoryTest {
         repository.clear("清空烤盘")
 
         assertNull(store.intent)
+    }
+
+    @Test
+    fun loadActive_shouldDurablyMigrateLegacyTargetWithoutUsingContainerBatchId() {
+        val store = MemorySupplementBatchIntentStore().apply {
+            intent = SupplementBatchIntent(
+                batchId = "new-high-container",
+                type = SupplementBatchType.HIGH_HEAT_25_33,
+                createdAtMs = 123L,
+                targets = mutableListOf(
+                    SupplementBatchIntentTarget(
+                        positionSn = 18,
+                        tasteCode = "A",
+                        returnPositionSn = 3,
+                        completed = true
+                    )
+                )
+            )
+        }
+        val repository = repository(store)
+
+        val migrated = repository.loadActive()!!.targets.single()
+
+        assertEquals(SupplementBatchType.LOW_HEAT_16_18, migrated.originBatchType)
+        assertEquals("legacy:123:LOW_HEAT_16_18:18", migrated.originBatchId)
+        assertFalse(migrated.originBatchId == "new-high-container")
+        assertEquals(migrated.originBatchId, store.intent!!.targets.single().originBatchId)
     }
 
     private fun target(

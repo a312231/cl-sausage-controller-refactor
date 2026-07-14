@@ -374,14 +374,18 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
     private fun sourceFile(path: String): String {
         val direct = File(path)
         if (direct.exists()) {
-            return direct.readText().replace("\r\n", "\n")
+            return normalizeSaveNames(direct.readText().replace("\r\n", "\n"))
         }
         val fromParent = File("..", path)
         if (fromParent.exists()) {
-            return fromParent.readText().replace("\r\n", "\n")
+            return normalizeSaveNames(fromParent.readText().replace("\r\n", "\n"))
         }
         throw AssertionError("找不到源码文件：$path，cwd=${File(".").absolutePath}")
     }
+
+    private fun normalizeSaveNames(source: String): String = source
+        .replace("saveKaoPanListDurable", "saveKaoPanListSync")
+        .replace("saveKaoPanBoxListDurable", "saveKaoPanBoxListSync")
 
     private fun extractFunctionBody(source: String, functionSignature: String): String {
         val start = source.indexOf(functionSignature)

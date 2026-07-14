@@ -127,6 +127,7 @@ object LowCurrentTrafficMode {
                 .filter { it.isHasSausage }
                 .map { it.positionSn }
                 .toSet(),
+            sourcePanStatuses = kaoPanList.associate { it.positionSn to it.status },
             reason = "低并发调度入口检测补热源盘已清空"
         )
         val activeLowHeatIntentTargetPositions = KaoChangOperate.activeSupplementBatchTargetPositions(
@@ -605,6 +606,7 @@ object LowCurrentTrafficMode {
                 KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
                     types = setOf(batchType),
                     sourcePositionsWithSausage = list13_18.filter { it.isHasSausage }.map { it.positionSn }.toSet(),
+                    sourcePanStatuses = list13_18.associate { it.positionSn to it.status },
                     reason = "低并发${groupName}补热区回搬完成"
                 )
             }

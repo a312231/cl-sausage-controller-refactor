@@ -648,7 +648,19 @@ class MaintenanceBoxFragment : Fragment() {
                 if (code == 0) {
                     val json = JSON.parseObject(content)
                     if (ApiResponseCompat.isSuccessful(json)) {
-                        KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
+                        try {
+                            KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+                        } catch (e: Exception) {
+                            restoreClearSnapshots(snapshots)
+                            AdminOperationLogger.w(
+                                action = "加满烤肠箱",
+                                page = AdminOperationLogger.PAGE_BOX,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，本地库存耐久保存失败：${e.message}"
+                            )
+                            ToastUtils.showShort("服务器已接收补货，但本机库存保存失败，请保持维护并重试同步")
+                            return@updateStock
+                        }
                         PanPhysicalStateDeltaReporter.reportStocksChanged(
                             changedStocks = selectedBoxes,
                             reason = "maintenance_box_refill:boxes=${boxPositionListText(selectedBoxes)}",

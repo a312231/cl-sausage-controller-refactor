@@ -289,7 +289,7 @@ internal fun collectOldLowHeatReturnReservations(
     activeIntent
         ?.targets
         ?.filter { target ->
-            isOldLowHeatIntentTarget(activeIntent.type, target.positionSn) &&
+            isOldLowHeatIntentTarget(activeIntent.type, target) &&
                 !target.cancelledByFaultTimeout &&
                 !target.skippedBySupplyDegrade &&
                 target.returnPositionSn in 1..9
@@ -305,26 +305,6 @@ internal fun collectOldLowHeatReturnReservations(
             reservations[frontPan.positionSn] = OldLowHeatReturnReservation(
                 positionSn = frontPan.positionSn,
                 tasteCode = tasteCode
-            )
-        }
-
-    val activeOldLowHeatTastes = activeOldLowHeatByPosition.values
-        .mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
-        .toSet()
-    frontPans
-        .filter { pan ->
-            pan.positionSn in 1..9 &&
-                !pan.isHasSausage &&
-                pan.isHasGrilling &&
-                pan.taste?.tasteCode in activeOldLowHeatTastes
-        }
-        .forEach { pan ->
-            reservations.putIfAbsent(
-                pan.positionSn,
-                OldLowHeatReturnReservation(
-                    positionSn = pan.positionSn,
-                    tasteCode = pan.taste?.tasteCode?.takeIf { it.isNotBlank() }
-                )
             )
         }
 
@@ -348,7 +328,7 @@ internal fun collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
     activeIntent
         ?.targets
         ?.filter {
-            isOldLowHeatIntentTarget(activeIntent.type, it.positionSn) &&
+            isOldLowHeatIntentTarget(activeIntent.type, it) &&
                 !it.cancelledByFaultTimeout &&
                 !it.skippedBySupplyDegrade
         }
@@ -365,30 +345,6 @@ internal fun collectCommittedOldLowHeatSourcePositionsForHighHeatReturn(
             }
         }
 
-    val remainingSources = sourcePans.filter { it.positionSn !in committedSources }
-    if (remainingSources.isEmpty()) {
-        return committedSources
-    }
-    val reservedCountByTaste = frontPans
-        .filter {
-            it.positionSn in 1..9 &&
-                !it.isHasSausage &&
-                it.isHasGrilling &&
-                !it.taste?.tasteCode.isNullOrBlank()
-        }
-        .groupingBy { it.taste.tasteCode }
-        .eachCount()
-        .toMutableMap()
-
-    remainingSources.forEach { sourcePan ->
-        val tasteCode = sourcePan.taste?.tasteCode?.takeIf { it.isNotBlank() } ?: return@forEach
-        val reservedCount = reservedCountByTaste[tasteCode] ?: 0
-        if (reservedCount <= 0) {
-            return@forEach
-        }
-        committedSources += sourcePan.positionSn
-        reservedCountByTaste[tasteCode] = reservedCount - 1
-    }
     return committedSources
 }
 
@@ -420,9 +376,12 @@ internal fun collectStableHighSuspiciousOldLowHeatSources(
         return emptyList()
     }
     val activeLowHeatTargetPositions = activeIntent
-        ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
         ?.targets
-        ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
+        ?.filter {
+            isOldLowHeatIntentTarget(activeIntent.type, it) &&
+                !it.cancelledByFaultTimeout &&
+                !it.skippedBySupplyDegrade
+        }
         ?.map { it.positionSn }
         ?.toSet()
         ?: emptySet()
@@ -458,7 +417,7 @@ internal fun selectOldLowHeatReturnTarget(
     val intentTarget = activeIntent?.let { intent ->
         intent.targets.firstOrNull {
             it.positionSn == sourcePan.positionSn &&
-                isOldLowHeatIntentTarget(intent.type, it.positionSn) &&
+            isOldLowHeatIntentTarget(intent.type, it) &&
                 it.returnPositionSn in 1..9 &&
                 !it.cancelledByFaultTimeout &&
                 !it.skippedBySupplyDegrade
@@ -481,24 +440,21 @@ internal fun selectOldLowHeatReturnTarget(
         )
         return specifiedTarget
     }
-    if (activeIntent != null) {
-        return null
-    }
-
-    return frontPans
-        .filter {
-            it.positionSn in 1..9 &&
-                !it.isHasSausage &&
-                it.isHasGrilling &&
-                it.taste?.tasteCode == tasteCode
-        }
-        .minByOrNull { it.positionSn }
+    return null
 }
 
-private fun isOldLowHeatIntentTarget(intentType: SupplementBatchType, positionSn: Int): Boolean {
-    return intentType in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) ||
-        SupplementBatchIntentRepository.positionMatchesType(positionSn, SupplementBatchType.LOW_HEAT_13_15) ||
-        SupplementBatchIntentRepository.positionMatchesType(positionSn, SupplementBatchType.LOW_HEAT_16_18)
+private fun isOldLowHeatIntentTarget(
+    intentType: SupplementBatchType,
+    target: SupplementBatchIntentTarget
+): Boolean {
+    val originType = target.originBatchType
+    return if (originType != null) {
+        originType in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18)
+    } else {
+        intentType in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) ||
+            SupplementBatchIntentRepository.positionMatchesType(target.positionSn, SupplementBatchType.LOW_HEAT_13_15) ||
+            SupplementBatchIntentRepository.positionMatchesType(target.positionSn, SupplementBatchType.LOW_HEAT_16_18)
+    }
 }
 
 internal fun shouldDiscardWaitingOldLowHeatSource(

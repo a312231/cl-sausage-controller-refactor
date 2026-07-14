@@ -326,6 +326,14 @@ object KaoPanHelper {
         PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
     }
 
+    fun saveKaoPanBoxListDurable(list: List<KaoPanBox>) {
+        val durableList = list.toMutableList()
+        check(
+            PreferenceUtils.saveListPreferenceDurable(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, durableList)
+        ) { "关键烤肠箱库存落盘失败" }
+        kaoPanBoxList = durableList
+    }
+
 
     /**
      * 保存口味列表

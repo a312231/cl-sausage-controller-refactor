@@ -612,7 +612,7 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
-    fun collectProtectedOldLowHeatReturnPositions_shouldFallbackToExistingReservedFrontWithMatchingSource() {
+    fun collectProtectedOldLowHeatReturnPositions_shouldNotInferBindingFromPhysicalReservationOnly() {
         val frontPans = frontPansWithReservedTarget(position = 3, tasteCode = "A")
         val oldLowHeatPans = listOf(
             oldLowHeatPan(position = 13, tasteCode = "A", startTime = 1_000L, holdingTime = 0L, status = 1)
@@ -624,7 +624,7 @@ class HighCurrentTrafficModeStateHelperTest {
             activeIntent = null
         )
 
-        assertEquals(setOf(3), protected)
+        assertEquals(emptySet<Int>(), protected)
     }
 
     @Test
