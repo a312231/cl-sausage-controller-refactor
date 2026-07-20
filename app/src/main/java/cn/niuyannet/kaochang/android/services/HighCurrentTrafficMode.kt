@@ -1227,8 +1227,7 @@ object HighCurrentTrafficMode {
                         frontPans = list1_21,
                         activeIntent = activeIntent,
                         allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
-                        returnPositionRange = 1..21,
-                        allowLegacyFallback = true
+                        returnPositionRange = 1..21
                     )
                     val targetPan = bindingResult.targetPan
                     if (targetPan == null) {
@@ -1394,8 +1393,7 @@ object HighCurrentTrafficMode {
                 frontPans = TrafficModeHelper.getTrafficModePositions(1, 21, list),
                 activeIntent = activeIntent,
                 allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
-                returnPositionRange = 1..21,
-                allowLegacyFallback = true
+                returnPositionRange = 1..21
             )
             val targetPan = bindingResult.targetPan
             if (targetPan == null) {

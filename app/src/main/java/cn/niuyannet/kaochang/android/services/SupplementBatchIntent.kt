@@ -28,6 +28,13 @@ data class SupplementBatchIntentTarget(
     var originBatchType: SupplementBatchType? = null
 )
 
+data class ManualSupplementReturnBinding(
+    val sourcePositionSn: Int,
+    val tasteCode: String,
+    val returnPositionSn: Int,
+    val originBatchType: SupplementBatchType
+)
+
 data class SupplementBatchIntent(
     var batchId: String = "",
     var type: SupplementBatchType = SupplementBatchType.UNKNOWN,
@@ -576,6 +583,76 @@ class SupplementBatchIntentRepository(
             "【补肠批次恢复】供给恢复后重新开放原目标：reason=$reason，batchId=$batchId，targetPan=$targetPanNo"
         )
         return true
+    }
+
+    fun rebindCompletedHeatTargets(
+        bindings: List<ManualSupplementReturnBinding>,
+        reason: String
+    ): SupplementBatchIntent? {
+        if (bindings.isEmpty()) {
+            return null
+        }
+        if (bindings.any { it.tasteCode.isBlank() }) {
+            return null
+        }
+        val sourcePositions = bindings.map { it.sourcePositionSn }
+        val returnPositions = bindings.map { it.returnPositionSn }
+        if (sourcePositions.size != sourcePositions.toSet().size ||
+            returnPositions.size != returnPositions.toSet().size
+        ) {
+            return null
+        }
+        if (bindings.any { binding ->
+                val sourceMatchesOrigin =
+                    isHeatSupplementBatch(binding.originBatchType) &&
+                        positionMatchesType(binding.sourcePositionSn, binding.originBatchType)
+                val returnRange = if (binding.originBatchType == SupplementBatchType.HIGH_HEAT_25_33) 1..21 else 1..9
+                !sourceMatchesOrigin || binding.returnPositionSn !in returnRange
+            }
+        ) {
+            return null
+        }
+
+        val active = loadActive()
+        if (active != null && (active.remainingTargets().isNotEmpty() || active.requiresManualConfirm)) {
+            warnLogger(
+                "【补肠批次恢复】存在未完成或待人工确认批次，拒绝人工孤儿回搬绑定：" +
+                    "batchId=${active.batchId}，reason=$reason"
+            )
+            return null
+        }
+        val retained = active?.retainedCompletedHeatReturnTargets().orEmpty()
+        val retainedSources = retained.map { it.positionSn }.toSet()
+        val retainedReturns = retained.mapNotNull { it.returnPositionSn }.toSet()
+        if (sourcePositions.any { it in retainedSources } || returnPositions.any { it in retainedReturns }) {
+            return null
+        }
+
+        val now = clock()
+        val batchId = "manual-rebind:$now"
+        val manualTargets = bindings.map { binding ->
+            SupplementBatchIntentTarget(
+                positionSn = binding.sourcePositionSn,
+                tasteCode = binding.tasteCode,
+                returnPositionSn = binding.returnPositionSn,
+                completed = true,
+                originBatchId = batchId,
+                originBatchType = binding.originBatchType
+            )
+        }
+        val intent = SupplementBatchIntent(
+            batchId = batchId,
+            type = SupplementBatchType.UNKNOWN,
+            targets = (retained + manualTargets).map { it.copy() }.toMutableList(),
+            createdAtMs = now,
+            updatedAtMs = now
+        )
+        saveDurableOrThrow(intent)
+        infoLogger(
+            "【补肠批次恢复】已保存人工孤儿回搬绑定：reason=$reason，" +
+                "batchId=$batchId，bindings=${bindings.map { "${it.sourcePositionSn}->${it.returnPositionSn}" }}"
+        )
+        return intent
     }
 
     private fun migrateLegacyTargetOrigins(intent: SupplementBatchIntent): Boolean {

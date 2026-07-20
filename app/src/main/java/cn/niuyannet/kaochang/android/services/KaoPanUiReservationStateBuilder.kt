@@ -16,6 +16,10 @@ object KaoPanUiReservationStateBuilder {
         }
 
         if (recoveryBlocked) {
+            val completedHeatReturnIntent = activeIntent?.let { intent ->
+                intent.copy(targets = intent.retainedCompletedHeatReturnTargets().toMutableList())
+            }
+            applyActiveIntent(pans, completedHeatReturnIntent)
             return pans
         }
         applyActiveIntent(pans, activeIntent)

@@ -46,6 +46,57 @@ class MaintenanceLowerPlatformUiSourceTest {
         )
     }
 
+    @Test
+    fun maintenanceLayout_shouldExposeOrphanReturnButton() {
+        val layout = sourceFile("app/src/main/res/layout/fragment_maintenance.xml")
+        assertTrue(layout.contains("@+id/btn_rebind_orphan_returns"))
+    }
+
+    @Test
+    fun maintenanceFragment_shouldExplainUnboundHeatSources() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val updateBody = extractFunctionBody(source, "private fun updateLowerPlatformUi()")
+        assertTrue(updateBody.contains("补热区存在未绑定烤肠"))
+        assertTrue(updateBody.contains("需要按当前空位建立回搬目标"))
+    }
+
+    @Test
+    fun orphanReturnClick_shouldRequireExplicitConfirmationAndCallRebindOnly() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val clickBody = extractFunctionBody(source, "binding.btnRebindOrphanReturns.setOnClickListener")
+        assertTrue(clickBody.contains("setPositiveButton"))
+        assertTrue(clickBody.contains("previewOrphanSupplementReturns"))
+        assertTrue(clickBody.contains("rebindOrphanSupplementReturnsToCurrentEmptyFront"))
+        assertTrue(clickBody.contains("expectedBindings"))
+        assertTrue(clickBody.contains("confirmOrphanSupplementSourceTaste"))
+        assertTrue(clickBody.contains("activeSupplementBatchTargetPositions"))
+        assertTrue(clickBody.contains("PAN_PERSIST_FAILED"))
+        assertFalse(clickBody.contains("moveKaoPanToKaoPan"))
+    }
+
+    @Test
+    fun orphanReturnCommit_shouldPersistFullPanSnapshot() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val commitBody = extractFunctionBody(
+            source,
+            "internal suspend fun rebindOrphanSupplementReturnsToCurrentEmptyFront"
+        )
+
+        assertTrue(commitBody.contains("frontPans = pans,"))
+        assertFalse(commitBody.contains("frontPans = pans.filter"))
+    }
+
+    @Test
+    fun orphanReturnPreview_shouldNotNormalizeProductionPanState() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val previewBody = extractFunctionBody(source, "internal fun previewOrphanSupplementReturns()")
+        val sourceSelectionBody = extractFunctionBody(source, "private fun orphanSupplementSourcePans")
+
+        assertTrue(previewBody.contains("orphanSupplementSourcePans"))
+        assertFalse(sourceSelectionBody.contains("normalizeLegacySellableKeepWarmSources"))
+        assertTrue(sourceSelectionBody.contains("isRecognizedSource"))
+    }
+
     private fun sourceFile(path: String): String {
         val direct = File(path)
         if (direct.exists()) {

@@ -30,8 +30,7 @@ internal object SupplementReturnBindingResolver {
         frontPans: List<KaoPan>,
         activeIntent: SupplementBatchIntent?,
         allowedTypes: Set<SupplementBatchType>,
-        returnPositionRange: IntRange,
-        allowLegacyFallback: Boolean = false
+        returnPositionRange: IntRange
     ): Result {
         val intentTarget = activeIntent?.let { intent ->
             intent.targets.firstOrNull {
@@ -57,16 +56,7 @@ internal object SupplementReturnBindingResolver {
             )
         }
 
-        if (!allowLegacyFallback) {
-            return Result(sourcePan, null, null, tasteCode, FailureReason.NO_BINDING)
-        }
-        if (activeIntent != null) {
-            return Result(sourcePan, null, null, tasteCode, FailureReason.NO_BINDING)
-        }
-        val legacyTarget = selectUniqueLegacyTarget(frontPans, tasteCode, returnPositionRange)
-            ?: return Result(sourcePan, null, null, tasteCode, FailureReason.NO_BINDING)
-        restoreReturnReservation(legacyTarget, tasteCode)
-        return Result(sourcePan, legacyTarget, legacyTarget.positionSn, tasteCode, FailureReason.NONE)
+        return Result(sourcePan, null, null, tasteCode, FailureReason.NO_BINDING)
     }
 
     private fun resolveBoundTarget(
@@ -87,31 +77,6 @@ internal object SupplementReturnBindingResolver {
         }
         restoreReturnReservation(targetPan, tasteCode)
         return Result(sourcePan, targetPan, returnPositionSn, tasteCode, FailureReason.NONE)
-    }
-
-    private fun selectUniqueLegacyTarget(
-        frontPans: List<KaoPan>,
-        tasteCode: String,
-        returnPositionRange: IntRange
-    ): KaoPan? {
-        val reservedSameTasteTargets = frontPans.filter {
-            it.positionSn in returnPositionRange &&
-                !it.isHasSausage &&
-                it.status == KaoPan.STATUS_EMPTY &&
-                it.isHasGrilling &&
-                it.taste?.tasteCode == tasteCode
-        }
-        if (reservedSameTasteTargets.size == 1) {
-            return reservedSameTasteTargets.single()
-        }
-
-        val sameTasteTargets = frontPans.filter {
-            it.positionSn in returnPositionRange &&
-                !it.isHasSausage &&
-                it.status == KaoPan.STATUS_EMPTY &&
-                it.taste?.tasteCode == tasteCode
-        }
-        return sameTasteTargets.singleOrNull()
     }
 
     private fun restoreReturnReservation(

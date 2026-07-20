@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -116,12 +117,28 @@ class SupplementReturnBindingResolverTest {
             frontPans = frontPans,
             activeIntent = intent,
             allowedTypes = setOf(SupplementBatchType.LOW_HEAT_16_18),
-            returnPositionRange = 1..9,
-            allowLegacyFallback = true
+            returnPositionRange = 1..9
         )
 
         assertNull(result.targetPan)
         assertEquals(SupplementReturnBindingResolver.FailureReason.NO_BINDING, result.failureReason)
+    }
+
+    @Test
+    fun resolveReturnTarget_shouldRejectMissingIntentEvenWhenUniqueSameTasteEmptyExists() {
+        val frontPans = (1..9).map { position -> frontPan(position, if (position == 3) "A" else "B") }
+        val result = SupplementReturnBindingResolver.resolveReturnTarget(
+            sourcePan = sourcePan(18, "A"),
+            frontPans = frontPans,
+            activeIntent = null,
+            allowedTypes = setOf(SupplementBatchType.LOW_HEAT_16_18),
+            returnPositionRange = 1..9
+        )
+
+        assertNull(result.targetPan)
+        assertNull(result.returnPositionSn)
+        assertEquals(SupplementReturnBindingResolver.FailureReason.NO_BINDING, result.failureReason)
+        assertFalse(frontPans.first { it.positionSn == 3 }.isHasGrilling)
     }
 
     private fun frontPan(positionSn: Int, tasteCode: String): KaoPan =

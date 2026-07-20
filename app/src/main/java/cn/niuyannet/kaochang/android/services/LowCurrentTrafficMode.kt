@@ -570,8 +570,7 @@ object LowCurrentTrafficMode {
                 frontPans = list1_9,
                 activeIntent = activeIntent,
                 allowedTypes = setOfNotNull(batchType),
-                returnPositionRange = 1..9,
-                allowLegacyFallback = true
+                returnPositionRange = 1..9
             )
             val targetPan = bindingResult.targetPan
             if (targetPan == null) {

@@ -162,6 +162,10 @@ object KaoChangOperate {
     private val panMoveJournalStore = SharedPreferencePanMoveJournalStore()
     private val supplementBatchIntentRepository =
         SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
+    private val orphanSupplementReturnCoordinator = OrphanSupplementReturnCoordinator(
+        repository = supplementBatchIntentRepository,
+        savePansDurable = { pans -> KaoPanHelper.saveKaoPanListDurable(pans) }
+    )
 
     @Volatile
     private var lastActionGroupRecoveryFailureReason: String? = null
@@ -2186,6 +2190,96 @@ object KaoChangOperate {
             return null
         }
         return supplementBatchIntentRepository.loadActive()
+    }
+
+    internal fun previewOrphanSupplementReturns(): OrphanSupplementReturnCoordinator.OperationResult {
+        val pans = KaoPanHelper.getKaoPanList()
+        val sources = orphanSupplementSourcePans(pans)
+        return orphanSupplementReturnCoordinator.preview(
+            sources = sources,
+            frontPans = pans.filter { it.positionSn in 1..21 },
+            reservedFrontPositions = activeReturnPositions()
+        )
+    }
+
+    internal suspend fun rebindOrphanSupplementReturnsToCurrentEmptyFront(
+        expectedBindings: List<OrphanSupplementReturnPlanner.Binding>,
+        reason: String
+    ): OrphanSupplementReturnCoordinator.OperationResult {
+        val pans = KaoPanHelper.getKaoPanList()
+        val sources = orphanSupplementSourcePans(pans)
+        return orphanSupplementReturnCoordinator.commit(
+            expectedBindings = expectedBindings,
+            sources = sources,
+            frontPans = pans,
+            reservedFrontPositions = activeReturnPositions(),
+            reason = reason
+        )
+    }
+
+    fun confirmOrphanSupplementSourceTaste(sourcePositionSn: Int, tasteCode: String): Boolean {
+        val normalizedTaste = tasteCode.trim()
+        if (normalizedTaste.isBlank()) {
+            return false
+        }
+        val availableTastes = KaoPanHelper.getKaoPanBoxList()
+            .mapNotNull { it.tasteCode?.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (normalizedTaste !in availableTastes) {
+            return false
+        }
+        val pans = KaoPanHelper.getKaoPanList()
+        val activeBoundSources = supplementBatchIntentRepository.loadActive()
+            ?.targets
+            ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade && it.returnPositionSn != null }
+            ?.map { it.positionSn }
+            ?.toSet()
+            .orEmpty()
+        val source = pans.firstOrNull {
+            it.positionSn == sourcePositionSn &&
+                OrphanSupplementReturnPlanner.isRecognizedSource(it) &&
+                it.positionSn !in activeBoundSources
+        } ?: return false
+        val previousTaste = source.taste
+        source.taste = Taste(normalizedTaste)
+        return try {
+            KaoPanHelper.saveKaoPanListDurable(pans)
+            true
+        } catch (_: Exception) {
+            source.taste = previousTaste
+            false
+        }
+    }
+
+    fun completedHeatReturnIntentForUi(): SupplementBatchIntent? {
+        val active = supplementBatchIntentRepository.loadActive() ?: return null
+        val retained = active.retainedCompletedHeatReturnTargets()
+        if (retained.isEmpty()) {
+            return null
+        }
+        return active.copy(targets = retained.map { it.copy() }.toMutableList())
+    }
+
+    private fun activeReturnPositions(): Set<Int> = supplementBatchIntentRepository.loadActive()
+        ?.targets
+        ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
+        ?.mapNotNull { it.returnPositionSn }
+        ?.filter { it in 1..21 }
+        ?.toSet()
+        .orEmpty()
+
+    private fun orphanSupplementSourcePans(pans: List<KaoPan>): List<KaoPan> {
+        val activeBoundSources = supplementBatchIntentRepository.loadActive()
+            ?.targets
+            ?.filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade && it.returnPositionSn != null }
+            ?.map { it.positionSn }
+            ?.toSet()
+            .orEmpty()
+        return pans.filter {
+            OrphanSupplementReturnPlanner.isRecognizedSource(it) &&
+                it.positionSn !in activeBoundSources
+        }
     }
 
     fun clearCompletedHeatReturnBindingIfSourcesCleared(

@@ -32,7 +32,10 @@ import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
+import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnCoordinator
+import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnPlanner
 import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
+import cn.niuyannet.kaochang.android.services.SupplementBatchType
 import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
@@ -268,18 +271,24 @@ class MaintenanceFragment : Fragment() {
     private fun updateLowerPlatformUi() {
         val config = AppConfig.getAppConfig()
         val intent = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
+        val orphanPreview = KaoChangOperate.previewOrphanSupplementReturns()
+        val hasOrphanSources = orphanPreview.bindings.isNotEmpty() || orphanPreview.failure != null
         val needsLowerPlatformRecovery =
             LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(config)
 
         val actionName = config.lowerPlatformIsolationActionName.takeIf { it.isNotBlank() } ?: "未知动作"
         val statusText: String
         val statusColor: Int
-        when (config.lowerPlatformStatus) {
-            AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED -> {
+        when {
+            hasOrphanSources -> {
+                statusText = "补热区存在未绑定烤肠，需要按当前空位建立回搬目标"
+                statusColor = AndroidR.color.holo_orange_dark
+            }
+            config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED -> {
                 statusText = "下平台半故障：暂停自动补肠，待人工确认，动作=$actionName"
                 statusColor = AndroidR.color.holo_orange_dark
             }
-            AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED -> {
+            config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_SUPPLY_DEGRADED -> {
                 statusText = "下平台：供给降级，请检查烤肠箱/取肠红外"
                 statusColor = AndroidR.color.holo_orange_dark
             }
@@ -299,6 +308,7 @@ class MaintenanceFragment : Fragment() {
             needsLowerPlatformRecovery -> "确认下平台安全并恢复补肠"
             else -> "确认续补安全"
         }
+        binding.btnRebindOrphanReturns.visibility = if (hasOrphanSources) View.VISIBLE else View.GONE
     }
 
     private fun setConsumableManualButtonsEnabled(enabled: Boolean) {
@@ -1058,6 +1068,113 @@ class MaintenanceFragment : Fragment() {
                 .setNegativeButton("取消", null)
                 .show()
         }
+
+        binding.btnRebindOrphanReturns.setOnClickListener {
+            val preview = KaoChangOperate.previewOrphanSupplementReturns()
+            val expectedBindings = preview.bindings
+            when (preview.failure) {
+                OrphanSupplementReturnCoordinator.Failure.NO_TASTE -> {
+                    val boundSources = KaoChangOperate.completedHeatReturnIntentForUi()
+                        ?.targets
+                        ?.map { it.positionSn }
+                        ?.toSet()
+                        .orEmpty()
+                    val activeSupplementSources = KaoChangOperate.activeSupplementBatchTargetPositions(
+                        setOf(
+                            SupplementBatchType.LOW_HEAT_13_15,
+                            SupplementBatchType.LOW_HEAT_16_18,
+                            SupplementBatchType.HIGH_HEAT_25_33
+                        )
+                    )
+                    val missingSourcePositions = KaoPanHelper.getKaoPanList()
+                        .filter {
+                            OrphanSupplementReturnPlanner.isRecognizedSource(it) &&
+                                it.taste?.tasteCode.isNullOrBlank() &&
+                                it.positionSn !in boundSources &&
+                                it.positionSn !in activeSupplementSources
+                        }
+                        .map { it.positionSn }
+                        .sorted()
+                    val sourcePositionSn = missingSourcePositions.firstOrNull()
+                    val tasteCodes = KaoPanHelper.getKaoPanBoxList()
+                        .mapNotNull { it.tasteCode?.takeIf(String::isNotBlank) }
+                        .distinct()
+                        .sorted()
+                    if (sourcePositionSn == null || tasteCodes.isEmpty()) {
+                        ToastUtils.showShort("缺少可确认的源盘或当前烤肠箱口味")
+                        return@setOnClickListener
+                    }
+                    var selectedTaste: String? = null
+                    AlertDialog.Builder(requireContext())
+                        .setTitle("确认补热源盘口味")
+                        .setMessage(
+                            "缺少口味的补热源盘=$missingSourcePositions\n" +
+                                "本次为源盘 $sourcePositionSn 选择当前烤肠箱口味，保存后请重新预览。"
+                        )
+                        .setSingleChoiceItems(tasteCodes.toTypedArray(), -1) { _, which ->
+                            selectedTaste = tasteCodes[which]
+                        }
+                        .setPositiveButton("确认口味") { _, _ ->
+                            val tasteCode = selectedTaste
+                            if (tasteCode == null) {
+                                ToastUtils.showShort("请先选择口味")
+                            } else if (KaoChangOperate.confirmOrphanSupplementSourceTaste(sourcePositionSn, tasteCode)) {
+                                ToastUtils.showShort("源盘口味已保存，请重新预览回搬目标")
+                                updateLowerPlatformUi()
+                                refreshKaoPanGrid()
+                            } else {
+                                ToastUtils.showShort("源盘口味保存失败，现场状态或口味已变化")
+                            }
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+                OrphanSupplementReturnCoordinator.Failure.INSUFFICIENT_TARGETS ->
+                    ToastUtils.showShort("当前前区安全空位不足，不能建立回搬目标")
+                OrphanSupplementReturnCoordinator.Failure.UNSAFE_SOURCE ->
+                    ToastUtils.showShort("补热源盘状态已变化，请刷新后核对")
+                null -> {
+                    if (expectedBindings.isEmpty()) {
+                        ToastUtils.showShort("当前没有需要建立回搬目标的补热烤肠")
+                        updateLowerPlatformUi()
+                        return@setOnClickListener
+                    }
+                    val bindingPreview = expectedBindings.joinToString("\n") {
+                        "${it.sourcePositionSn} -> ${it.returnPositionSn} / ${it.tasteCode}"
+                    }
+                    AlertDialog.Builder(requireContext())
+                        .setTitle("确认按当前空位建立回搬目标")
+                        .setMessage("请核对以下绑定，只保存元数据，不会执行搬盘：\n\n$bindingPreview")
+                        .setPositiveButton("确认建立") { _, _ ->
+                            lifecycleScope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    KaoChangOperate.rebindOrphanSupplementReturnsToCurrentEmptyFront(
+                                        expectedBindings = expectedBindings,
+                                        reason = "维护人员确认按当前空位建立回搬目标"
+                                    )
+                                }
+                                when (result.failure) {
+                                    null -> ToastUtils.showShort("回搬目标已建立")
+                                    OrphanSupplementReturnCoordinator.Failure.STALE_PREVIEW ->
+                                        ToastUtils.showShort("盘位已变化，请重新预览后确认")
+                                    OrphanSupplementReturnCoordinator.Failure.CONFLICT ->
+                                        ToastUtils.showShort("现有补肠批次或回搬目标冲突，未建立新绑定")
+                                    OrphanSupplementReturnCoordinator.Failure.INTENT_PERSIST_FAILED ->
+                                        ToastUtils.showShort("回搬绑定落盘失败，未修改盘位")
+                                    OrphanSupplementReturnCoordinator.Failure.PAN_PERSIST_FAILED ->
+                                        ToastUtils.showLong("盘位落盘失败，回搬绑定已保留，请重启后核对待回补标记")
+                                    else -> ToastUtils.showShort("现场状态已变化，请重新预览")
+                                }
+                                updateLowerPlatformUi()
+                                refreshKaoPanGrid()
+                            }
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+                else -> ToastUtils.showShort("当前不能建立回搬目标，请刷新后重试")
+            }
+        }
     }
 
     private fun showConfirmDiscardAndResetPanDialog() {
@@ -1157,10 +1274,15 @@ class MaintenanceFragment : Fragment() {
 
     @SuppressLint("NotifyDataSetChanged")
     private fun refreshKaoPanGrid() {
+        val recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
         val pans = KaoPanUiReservationStateBuilder.apply(
             pans = KaoPanHelper.getKaoPanList(),
-            activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi(),
-            recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
+            activeIntent = if (recoveryBlocked) {
+                KaoChangOperate.completedHeatReturnIntentForUi()
+            } else {
+                KaoChangOperate.activeSupplementBatchIntentForUi()
+            },
+            recoveryBlocked = recoveryBlocked
         )
         kaoPanAdapter.submitList(pans)
         kaoPanAdapter.notifyDataSetChanged()

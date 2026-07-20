@@ -514,6 +514,93 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun rebindCompletedHeatTargets_shouldPersistNewOriginAndReturnBindings() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val bindings = listOf(
+            ManualSupplementReturnBinding(25, "A", 2, SupplementBatchType.HIGH_HEAT_25_33),
+            ManualSupplementReturnBinding(26, "A", 5, SupplementBatchType.HIGH_HEAT_25_33)
+        )
+
+        val saved = repository.rebindCompletedHeatTargets(bindings, "运维确认按当前空位回搬")
+
+        assertEquals(SupplementBatchType.UNKNOWN, saved?.type)
+        assertEquals(listOf(25, 26), saved?.targets?.map { it.positionSn })
+        assertEquals(listOf(2, 5), saved?.targets?.map { it.returnPositionSn })
+        assertEquals(listOf(true, true), saved?.targets?.map { it.completed })
+        assertTrue(saved!!.targets.all { it.originBatchId?.startsWith("manual-rebind:") == true })
+        assertEquals(
+            listOf(SupplementBatchType.HIGH_HEAT_25_33, SupplementBatchType.HIGH_HEAT_25_33),
+            saved.targets.map { it.originBatchType }
+        )
+    }
+
+    @Test
+    fun rebindCompletedHeatTargets_shouldRejectDuplicateSourceOrReturnPosition() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        assertNull(
+            repository.rebindCompletedHeatTargets(
+                listOf(
+                    ManualSupplementReturnBinding(25, "A", 2, SupplementBatchType.HIGH_HEAT_25_33),
+                    ManualSupplementReturnBinding(25, "A", 3, SupplementBatchType.HIGH_HEAT_25_33)
+                ),
+                "重复绑定测试"
+            )
+        )
+    }
+
+    @Test
+    fun rebindCompletedHeatTargets_shouldPreserveExistingCompletedBinding() {
+        val existing = SupplementBatchIntent(
+            batchId = "existing",
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "B",
+                    returnPositionSn = 1,
+                    completed = true,
+                    originBatchId = "existing",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                )
+            )
+        )
+        val store = MemorySupplementBatchIntentStore().apply { save(existing) }
+        val repository = repository(store)
+
+        val saved = repository.rebindCompletedHeatTargets(
+            listOf(ManualSupplementReturnBinding(25, "A", 2, SupplementBatchType.HIGH_HEAT_25_33)),
+            "补充孤儿绑定"
+        )
+
+        assertEquals(listOf(13, 25), saved?.targets?.map { it.positionSn })
+        assertEquals(listOf(1, 2), saved?.targets?.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun rebindCompletedHeatTargets_shouldRejectSourceThatDoesNotMatchOriginBatchType() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        val saved = repository.rebindCompletedHeatTargets(
+            listOf(
+                ManualSupplementReturnBinding(
+                    sourcePositionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 10,
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            ),
+            "来源类型不匹配测试"
+        )
+
+        assertNull(saved)
+        assertNull(store.intent)
+    }
+
+    @Test
     fun clearCompletedHeatReturnIfSourceCleared_shouldClearOnlyRequestedSourceType() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)

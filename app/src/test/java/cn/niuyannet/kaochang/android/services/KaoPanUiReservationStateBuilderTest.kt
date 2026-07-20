@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class KaoPanUiReservationStateBuilderTest {
@@ -209,6 +210,79 @@ class KaoPanUiReservationStateBuilderTest {
 
         assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 1 }.uiReservationState)
         assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 13 }.uiReservationState)
+    }
+
+    @Test
+    fun apply_shouldShowManuallyReboundReturnAfterReload() {
+        val source = KaoPan().apply {
+            positionSn = 25
+            isHasSausage = true
+            status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+            holdingTime = 2_000L
+            taste = Taste("A")
+        }
+        val target = blankPan(2)
+        val intent = SupplementBatchIntent(
+            batchId = "manual-rebind:1000",
+            type = SupplementBatchType.UNKNOWN,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 25,
+                    tasteCode = "A",
+                    returnPositionSn = 2,
+                    completed = true,
+                    originBatchId = "manual-rebind:1000",
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            )
+        )
+
+        KaoPanUiReservationStateBuilder.apply(listOf(target, source), intent)
+
+        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
+        assertEquals("A", target.uiReservationTaste.tasteCode)
+        assertTrue(source.isHasSausage)
+        assertEquals(KaoPan.STATUS_WAITING_RETURN_KEEP_WARM, source.status)
+    }
+
+    @Test
+    fun apply_shouldKeepCompletedHeatReturnVisibleWhenRecoveryIsBlocked() {
+        val source = KaoPan().apply {
+            positionSn = 25
+            isHasSausage = true
+            status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
+            holdingTime = 2_000L
+            taste = Taste("A")
+        }
+        val target = blankPan(2)
+        val pending = blankPan(13)
+        val intent = SupplementBatchIntent(
+            type = SupplementBatchType.UNKNOWN,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 25,
+                    tasteCode = "A",
+                    returnPositionSn = 2,
+                    completed = true,
+                    originBatchId = "manual-rebind:1000",
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                ),
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "B",
+                    returnPositionSn = 3,
+                    completed = false,
+                    originBatchId = "manual-rebind:1000",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                )
+            )
+        )
+
+        KaoPanUiReservationStateBuilder.apply(listOf(target, source, pending), intent, recoveryBlocked = true)
+
+        assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
+        assertEquals("A", target.uiReservationTaste.tasteCode)
+        assertEquals(KaoPan.UI_RESERVATION_NONE, pending.uiReservationState)
     }
 
     @Test
