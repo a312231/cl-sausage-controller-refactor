@@ -1,10 +1,36 @@
 package cn.niuyannet.kaochang.android.services
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 class HighCurrentTrafficModeSourceTest {
+
+    @Test
+    fun highInitialization_shouldUseTypedCommonSupplementEntry() {
+        val source = sourceText()
+        val resume = functionBlock(source, "private suspend fun resumeHighInitialization(", "/**\n     * 低并发 -> 高并发过渡")
+        val initialize = functionBlock(source, "private suspend fun initHighTrafficMode(", "/**\n     * 向 25~33")
+
+        assertTrue(resume.contains("batchTypeOverride = SupplementBatchType.HIGH_INITIALIZATION_1_21"))
+        assertTrue(initialize.contains("batchTypeOverride = SupplementBatchType.HIGH_INITIALIZATION_1_21"))
+    }
+
+    @Test
+    fun newHighHeatBatchEntrypoints_shouldRequireCompletePlanBeforeHeating() {
+        val source = sourceText()
+        val transition = functionBlock(source, "private suspend fun lowTrafficModeTransition(", "/**\n     * 低转高期间")
+        val stable = functionBlock(source, "private suspend fun addHighHeatSausage(", "private suspend fun resumeIncompleteHighHeatSupplement(")
+
+        listOf(transition, stable).forEach { block ->
+            val guard = block.indexOf("HighHeatSupplementResumePlanner.isCompleteInitialPlan(")
+            val heating = block.indexOf("KaoChangOperate.heating(3)")
+            assertTrue("新批次必须先检查完整九目标", guard >= 0)
+            assertTrue("完整九目标检查必须早于三区加热", heating > guard)
+            assertFalse("不能只按非空目标启动新批次", block.contains("if (targets.isNotEmpty())"))
+        }
+    }
 
     @Test
     fun lowToHighTransition_shouldNotLetPendingHighHeatBatchBlockOldLowHeatReturn() {
@@ -110,5 +136,12 @@ class HighCurrentTrafficModeSourceTest {
             File("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         ).first { it.exists() }
         return sourceFile.readText().replace("\r\n", "\n")
+    }
+
+    private fun functionBlock(source: String, startMarker: String, endMarker: String): String {
+        val start = source.indexOf(startMarker)
+        assertTrue("缺少函数：$startMarker", start >= 0)
+        val end = source.indexOf(endMarker, start).let { if (it >= 0) it else source.length }
+        return source.substring(start, end)
     }
 }

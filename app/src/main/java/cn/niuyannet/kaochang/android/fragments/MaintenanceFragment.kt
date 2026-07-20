@@ -32,6 +32,7 @@ import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
+import cn.niuyannet.kaochang.android.services.LowToHighDemandGate
 import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnCoordinator
 import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnPlanner
 import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
@@ -761,6 +762,12 @@ class MaintenanceFragment : Fragment() {
                         clearPanCooldownJob = null
                         return@launch
                     }
+                    KaoPanHelper.getKaoPanList()
+                        .filter { it.positionSn in 1..21 && it.isHasSausage }
+                        .map { it.positionSn }
+                        .forEach { positionSn ->
+                            LowToHighDemandGate.recordNonDemandEmpty(positionSn, "manual_clear")
+                        }
                     KaoPanHelper.clearKaoPan()
                     KaoPanHelper.init()
                     PanPhysicalStateDeltaReporter.reportPansChanged(

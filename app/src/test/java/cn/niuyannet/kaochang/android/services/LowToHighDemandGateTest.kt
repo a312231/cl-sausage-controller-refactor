@@ -13,6 +13,7 @@ class LowToHighDemandGateTest {
 
     @Before
     fun setUp() {
+        LowToHighDemandGate.replaceStateStoreForTest(MemoryLowToHighDemandStateStore())
         LowToHighDemandGate.replaceInfoLoggerForTest { }
     }
 
@@ -20,6 +21,7 @@ class LowToHighDemandGateTest {
     fun tearDown() {
         LowToHighDemandGate.clearAll("test cleanup")
         LowToHighDemandGate.resetInfoLoggerForTest()
+        LowToHighDemandGate.resetStateStoreForTest()
     }
 
     @Test
@@ -32,6 +34,39 @@ class LowToHighDemandGateTest {
         assertEquals(
             setOf(1, 2, 3, 4, 7),
             LowToHighDemandGate.effectiveEmptyFrontPositions(frontPans)
+        )
+    }
+
+    @Test
+    fun effectiveEmptyFrontPositions_shouldExcludePersistedInitializationAndSupplyGaps() {
+        LowToHighDemandGate.recordNonDemandEmpty(5, "initialization_gap")
+        LowToHighDemandGate.recordNonDemandEmpty(6, "supply_gap")
+
+        assertEquals(
+            setOf(1, 2, 3, 4, 7, 8, 9),
+            LowToHighDemandGate.effectiveEmptyFrontPositions(frontPans(emptyPositions = (1..9).toSet()))
+        )
+    }
+
+    @Test
+    fun canTriggerLowToHigh_shouldStillCountSaleEmptyPositionsThatHaveReturnBindings() {
+        assertTrue(
+            LowToHighDemandGate.canTriggerLowToHigh(
+                frontPans = frontPans(emptyPositions = (1..8).toSet()),
+                lowHeatPans = lowHeatPans(activeBakingPositions = (13..18).toSet())
+            )
+        )
+    }
+
+    @Test
+    fun canTriggerLowToHigh_shouldRejectWhenEightEmptyPositionsAreOnlyNonDemandGaps() {
+        (1..8).forEach { LowToHighDemandGate.recordNonDemandEmpty(it, "manual_clear") }
+
+        assertFalse(
+            LowToHighDemandGate.canTriggerLowToHigh(
+                frontPans = frontPans(emptyPositions = (1..8).toSet()),
+                lowHeatPans = lowHeatPans(activeBakingPositions = (13..18).toSet())
+            )
         )
     }
 
@@ -288,4 +323,23 @@ class LowToHighDemandGateTest {
                 }
             }
         }
+
+    private class MemoryLowToHighDemandStateStore : LowToHighDemandStateStore {
+        private var state = LowToHighDemandState()
+
+        override fun load(): LowToHighDemandLoadResult = LowToHighDemandLoadResult(
+            LowToHighDemandLoadStatus.PRESENT,
+            state.copy(blockedFrontPositions = state.blockedFrontPositions.toMutableSet())
+        )
+
+        override fun saveDurable(state: LowToHighDemandState): Boolean {
+            this.state = state.copy(blockedFrontPositions = state.blockedFrontPositions.toMutableSet())
+            return true
+        }
+
+        override fun clearDurable(): Boolean {
+            state = LowToHighDemandState()
+            return true
+        }
+    }
 }

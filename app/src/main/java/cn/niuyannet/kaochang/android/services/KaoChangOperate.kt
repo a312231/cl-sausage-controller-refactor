@@ -1653,7 +1653,7 @@ object KaoChangOperate {
         }
         applySuccessfulTakePanState(pan)
         if (isManualTake) {
-            LowToHighDemandGate.clearPosition(pan.positionSn, "维护手动取肠动作组恢复完成")
+            LowToHighDemandGate.recordNonDemandEmpty(pan.positionSn, "manual_clear")
         }
         try {
             KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
@@ -2484,6 +2484,7 @@ object KaoChangOperate {
                     supplementBatchIntentRepository.markCompleted(batchId, target.kaoPan.positionSn)
                 }
                 is SupplementMoveResult.SupplyDegraded -> {
+                    recordNonDemandFrontForSupplementTarget(batchId, target.kaoPan.positionSn, "supply_degrade")
                     if (result.failedBoxNos.isNotEmpty()) {
                         supplementBatchIntentRepository.markFailure(
                             batchId = batchId,
@@ -2501,6 +2502,7 @@ object KaoChangOperate {
                     break
                 }
                 is SupplementMoveResult.LowerPlatformIsolated -> {
+                    recordNonDemandFrontForSupplementTarget(batchId, target.kaoPan.positionSn, "lower_platform_isolated")
                     if (result.requiresManualConfirm) {
                         supplementBatchIntentRepository.markFailure(
                             batchId = batchId,
@@ -2526,6 +2528,7 @@ object KaoChangOperate {
                     break
                 }
                 is SupplementMoveResult.HardFailure -> {
+                    recordNonDemandFrontForSupplementTarget(batchId, target.kaoPan.positionSn, "action_failure")
                     supplementBatchIntentRepository.markFailure(
                         batchId = batchId,
                         targetPanNo = target.kaoPan.positionSn,
@@ -2543,6 +2546,43 @@ object KaoChangOperate {
         return movedCount
     }
 
+    internal fun shouldCreateSupplementIntent(
+        targets: List<SupplementTarget>,
+        batchType: SupplementBatchType?
+    ): Boolean =
+        targets.size > 1 ||
+            targets.any { it.returnPositionSn != null } ||
+            batchType?.let { SupplementBatchIntentRepository.isInitializationBatch(it) } == true
+
+    internal fun initializationGapPositions(
+        requestedTargets: List<SupplementTarget>,
+        batchType: SupplementBatchType?
+    ): Set<Int> =
+        if (batchType?.let { SupplementBatchIntentRepository.isInitializationBatch(it) } == true) {
+            requestedTargets.map { it.kaoPan.positionSn }.filter { it in 1..21 }.toSet()
+        } else {
+            emptySet()
+        }
+
+    private fun recordNonDemandFrontForSupplementTarget(
+        batchId: String?,
+        targetPanNo: Int,
+        reason: String
+    ) {
+        val intent = supplementBatchIntentRepository.loadActive()
+            ?.takeIf { it.batchId == batchId }
+            ?: return
+        val target = intent.targets.firstOrNull { it.positionSn == targetPanNo } ?: return
+        val frontPosition = if (SupplementBatchIntentRepository.isInitializationBatch(intent.type)) {
+            target.positionSn
+        } else {
+            target.returnPositionSn
+        }
+        if (frontPosition != null && frontPosition in 1..21) {
+            LowToHighDemandGate.recordNonDemandEmpty(frontPosition, reason)
+        }
+    }
+
     suspend fun moveSausagesToKaoPansByTaste(
         targets: List<SupplementTarget>,
         batchTypeOverride: SupplementBatchType? = null
@@ -2550,7 +2590,7 @@ object KaoChangOperate {
         return moveSausagesToKaoPansByTasteInternal(
             targets = targets,
             existingBatchId = null,
-            createIntent = targets.size > 1 || targets.any { it.returnPositionSn != null },
+            createIntent = shouldCreateSupplementIntent(targets, batchTypeOverride),
             stageForSerial = "补肠串行动作",
             batchTypeOverride = batchTypeOverride
         )
@@ -2566,6 +2606,9 @@ object KaoChangOperate {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
             return 0
+        }
+        initializationGapPositions(validTargets, batchTypeOverride).forEach { positionSn ->
+            LowToHighDemandGate.recordNonDemandEmpty(positionSn, "initialization_gap")
         }
         val availability = planExecutableSupplementTargets(
             targets = validTargets,
@@ -3623,6 +3666,9 @@ object KaoChangOperate {
                 rawResult = describeAtomicActionResult(resolvedAtomicResult),
                 requiresManualConfirm = requiresManualConfirm
             )
+            targetPanNo?.let {
+                recordNonDemandFrontForSupplementTarget(batchId, it, "lower_platform_isolated")
+            }
             targetPanNo?.let { panNo ->
                 if (requiresManualConfirm) {
                     supplementBatchIntentRepository.markFailure(
@@ -3654,6 +3700,9 @@ object KaoChangOperate {
             SupplementBatchIntentRepository.isInitializationBatch(batchType) &&
             result.actionName.startsWith("in")
         ) {
+            targetPanNo?.let {
+                recordNonDemandFrontForSupplementTarget(batchId, it, "initialization_action_failure")
+            }
             supplementBatchIntentRepository.markFailure(
                 batchId = batchId,
                 targetPanNo = targetPanNo,
@@ -3697,6 +3746,9 @@ object KaoChangOperate {
                 actionName = result.actionName
             )
             targetPanNo?.let {
+                recordNonDemandFrontForSupplementTarget(batchId, it, "pipeline_supply_degrade")
+            }
+            targetPanNo?.let {
                 supplementBatchIntentRepository.markFailure(
                     batchId = batchId,
                     targetPanNo = it,
@@ -3725,6 +3777,9 @@ object KaoChangOperate {
                     "targetPan=$targetPanNo，failedBoxes=$failedBoxNos，reason=$degradeReason"
             )
             return
+        }
+        targetPanNo?.let {
+            recordNonDemandFrontForSupplementTarget(batchId, it, "pipeline_action_failure")
         }
         supplementBatchIntentRepository.markFailure(
             batchId = batchId,
@@ -4702,7 +4757,7 @@ object KaoChangOperate {
                 ActionGroupResult.Success,
                 ActionGroupResult.Discarded -> {
                     applySuccessfulTakePanState(kaoPan)
-                    LowToHighDemandGate.clearPosition(kaoPan.positionSn, "维护手动取肠完成")
+                    LowToHighDemandGate.recordNonDemandEmpty(kaoPan.positionSn, "manual_clear")
                     KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
                     clearReturnBindingForSourceIfAny(kaoPan.positionSn)
                     refreshTemperatureAfterStablePanMutation("维护手动取肠完成：pan=${kaoPan.positionSn}")

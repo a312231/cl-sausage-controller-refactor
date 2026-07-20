@@ -1182,7 +1182,9 @@ object KaoChangAlgorithm {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val targetPans = kaoPanList.filter { it.isHasSausage }
         val targetPositions = targetPans.map { it.positionSn }
-        LowToHighDemandGate.clearAll("管理员批量重置烤盘")
+        targetPositions.filter { it in 1..21 }.forEach { positionSn ->
+            LowToHighDemandGate.recordNonDemandEmpty(positionSn, "manual_clear")
+        }
         LogUtils.i("【维护操作】管理员触发批量丢弃重置烤盘，待处理烤盘=$targetPositions")
         targetPans.forEachIndexed { index, kaoPan ->
             progressCallback?.invoke(index + 1, targetPans.size, kaoPan)

@@ -15,6 +15,36 @@ import org.junit.Test
 
 class HighHeatSupplementResumePlannerTest {
 
+    @Test
+    fun isCompleteInitialPlan_shouldAcceptNineDistinctTargets() {
+        val targets = (25..33).mapIndexed { index, source ->
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                kaoPan = supplementPan(source, "A", false),
+                tasteCode = "A",
+                returnPositionSn = index + 1
+            )
+        }
+
+        assertTrue(HighHeatSupplementResumePlanner.isCompleteInitialPlan(targets))
+    }
+
+    @Test
+    fun isCompleteInitialPlan_shouldRejectPartialOrDuplicateReturnTargets() {
+        val partial = (25..31).map { source ->
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                supplementPan(source, "A", false), "A", source - 24
+            )
+        }
+        val duplicate = (25..33).map { source ->
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                supplementPan(source, "A", false), "A", 1
+            )
+        }
+
+        assertFalse(HighHeatSupplementResumePlanner.isCompleteInitialPlan(partial))
+        assertFalse(HighHeatSupplementResumePlanner.isCompleteInitialPlan(duplicate))
+    }
+
     @Before
     fun setUpAppConfig() {
         setAppConfigInMemory(AppConfigBean())

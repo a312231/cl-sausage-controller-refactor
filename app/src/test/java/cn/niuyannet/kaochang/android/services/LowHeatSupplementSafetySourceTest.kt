@@ -16,7 +16,7 @@ class LowHeatSupplementSafetySourceTest {
 
         assertTrue(
             publicBlock.contains(
-                "createIntent = targets.size > 1 || targets.any { it.returnPositionSn != null }"
+                "createIntent = shouldCreateSupplementIntent(targets, batchTypeOverride)"
             )
         )
     }

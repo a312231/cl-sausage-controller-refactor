@@ -87,6 +87,20 @@ class SupplementSupplyDegradeSourceTest {
     }
 
     @Test
+    fun pipelineFailure_shouldRecordNonDemandBeforeEveryTerminalBranch() {
+        val source = sourceText()
+        val start = source.indexOf("private suspend fun handlePipelineSupplementFailure(")
+        val end = source.indexOf("private fun describeAtomicActionResult", start).let { if (it >= 0) it else source.length }
+        val block = source.substring(start, end)
+
+        assertTrue("四类终止路径都必须先记录非需求空位", block.split("recordNonDemandFrontForSupplementTarget(").size - 1 >= 4)
+        assertTrue(block.indexOf("recordNonDemandFrontForSupplementTarget(") < block.indexOf("markLowerPlatformIsolatedRuntimeState("))
+        assertTrue(block.indexOf("recordNonDemandFrontForSupplementTarget(", block.indexOf("SupplementBatchIntentRepository.isInitializationBatch")) < block.indexOf("enterActionGroupMaintenance(", block.indexOf("SupplementBatchIntentRepository.isInitializationBatch")))
+        assertTrue(block.indexOf("recordNonDemandFrontForSupplementTarget(", block.indexOf("isPipelineSupplyDegradableFailure")) < block.indexOf("markSupplyDegradedRuntimeState(", block.indexOf("isPipelineSupplyDegradableFailure")))
+        assertTrue(block.lastIndexOf("recordNonDemandFrontForSupplementTarget(") < block.lastIndexOf("supplementBatchIntentRepository.markFailure("))
+    }
+
+    @Test
     fun serialTasteSupplement_shouldPassBatchTypeSoHeatAndInitializationCanDiverge() {
         val source = sourceText()
         val serialStart = source.indexOf("private suspend fun moveSausagesToKaoPansByTasteSerial(")

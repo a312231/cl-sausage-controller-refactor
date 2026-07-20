@@ -7,9 +7,20 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 
 class SupplementSuccessPanStateTest {
+    @Before
+    fun setUp() {
+        LowToHighDemandGate.replaceStateStoreForTest(InMemoryLowToHighDemandStateStoreForTest())
+    }
+
+    @After
+    fun tearDown() {
+        LowToHighDemandGate.resetStateStoreForTest()
+    }
 
     @Test
     fun applySuccessfulTakePanState_shouldClearLowHeatReservationAfterSold() {

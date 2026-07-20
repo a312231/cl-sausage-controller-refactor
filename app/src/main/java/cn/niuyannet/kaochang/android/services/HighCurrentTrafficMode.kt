@@ -539,14 +539,18 @@ object HighCurrentTrafficMode {
                     returnPositionSn = target.returnPositionSn
                 )
             }
-            if (targets.isEmpty()) {
+            val completeInitialPlan = HighHeatSupplementResumePlanner.isCompleteInitialPlan(plannedTargets)
+            if (!completeInitialPlan) {
                 LogUtils.w(
                     TAG,
-                    "【并发切换】低转高过渡：无法规划 25~33 高并发补热批次，frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste"
+                    "【并发切换】低转高过渡：25~33 未形成完整九目标，跳过新批次，" +
+                        "plannedSources=${plannedTargets.map { it.positionSn }}，" +
+                        "plannedReturns=${plannedTargets.map { it.returnPositionSn }}，" +
+                        "frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste"
                 )
             }
 
-            val movedCount = if (targets.isNotEmpty()) {
+            val movedCount = if (completeInitialPlan) {
                 KaoChangOperate.heating(3)
                 KaoChangOperate.moveSausagesToKaoPansByTaste(
                     targets,
@@ -1065,10 +1069,13 @@ object HighCurrentTrafficMode {
                 supplementGroup = list25_33,
                 listBox = listBox
             )
-            if (plannedTargets.isEmpty()) {
+            if (!HighHeatSupplementResumePlanner.isCompleteInitialPlan(plannedTargets)) {
                 LogUtils.w(
                     TAG,
-                    "【高并发补肠】跳过 25~33 补热区补肠：当前无可执行补肠目标，frontEmpty=${emptyPositions.size}，zone3Empty=${emptyPositions25_33.size}"
+                    "【高并发补肠】跳过 25~33 补热区补肠：未形成完整九目标，" +
+                        "plannedSources=${plannedTargets.map { it.positionSn }}，" +
+                        "plannedReturns=${plannedTargets.map { it.returnPositionSn }}，" +
+                        "frontEmpty=${emptyPositions.size}，zone3Empty=${emptyPositions25_33.size}"
                 )
                 return 0
             }
