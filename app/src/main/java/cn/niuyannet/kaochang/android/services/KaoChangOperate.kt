@@ -222,6 +222,84 @@ object KaoChangOperate {
             actionGroupLocks.isIdle()
     }
 
+    fun abandonSupplementPrefetchForManualPanClear(
+        statusReadings: List<Int>,
+        reason: String
+    ): Boolean {
+        val session = when (val read = readSupplementPrefetchEvidence()) {
+            DurableEvidenceReadResult.Absent -> return false
+            is DurableEvidenceReadResult.Valid -> read.value
+            is DurableEvidenceReadResult.Corrupted -> {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "人工清盘拒绝放弃损坏的双 lane 会话：reason=$reason，" +
+                        "fingerprint=${read.fingerprint}，detail=${read.reason}"
+                )
+                return false
+            }
+        }
+        val config = AppConfig.getAppConfig()
+        val evidence = runCatching {
+            ManualPanClearPolicy.Evidence(
+                onlineStatus = config.onlineStatus,
+                isEnable = config.isEnable,
+                statusReadings = statusReadings,
+                hasValidPrefetchSession = true,
+                hasActionGroupSession = actionGroupSessionStore.load() != null,
+                hasPausedSupplementSession = pausedSupplementSessionStore.load() != null,
+                hasPanMoveJournal = panMoveJournalStore.load() != null,
+                hasPendingOrder = !session.pendingOrderNo.isNullOrBlank()
+            )
+        }.getOrElse { error ->
+            logW(LOG_ACTION_GROUP, "人工清盘读取其他恢复证据失败，拒绝放弃双 lane 会话：reason=$reason，error=${error.message}")
+            return false
+        }
+        if (!ManualPanClearPolicy.canAbandonSupplementPrefetch(evidence)) {
+            logW(
+                LOG_ACTION_GROUP,
+                "人工清盘不满足双 lane 放弃条件：reason=$reason，sessionId=${session.sessionId}，" +
+                    "onlineStatus=${config.onlineStatus}，isEnable=${config.isEnable}，" +
+                    "status201连续读数=$statusReadings，pendingOrderNo=${session.pendingOrderNo}"
+            )
+            return false
+        }
+        val oldMoveStatus = config.moveStatus
+        val committed = ManualPanClearCommitter.commit(
+            persistIdle = {
+                config.moveStatus = 0
+                runCatching {
+                    AppConfig.saveAppConfigDurable(config)
+                    true
+                }.getOrElse { error ->
+                    config.moveStatus = oldMoveStatus
+                    logW(LOG_ACTION_GROUP, "人工清盘耐久归零 moveStatus 失败，保留双 lane 会话和锁：reason=$reason，error=${error.message}")
+                    false
+                }
+            },
+            clearSession = {
+                runCatching {
+                    supplementPrefetchSessionRepository.clearIfRevision(session.sessionId, session.revision)
+                }.getOrElse { error ->
+                    logW(LOG_ACTION_GROUP, "人工清盘清除双 lane 会话失败：reason=$reason，error=${error.message}")
+                    false
+                }
+            },
+            releaseOwner = { actionGroupLocks.release(session.sessionId) }
+        )
+        if (!committed) {
+            logW(LOG_ACTION_GROUP, "人工清盘放弃双 lane 残留未完成，恢复证据或锁仍保留：reason=$reason，sessionId=${session.sessionId}")
+            return false
+        }
+        lastActionGroupRecoveryFailureReason = null
+        markActionGroupRecoveryVerified("人工清盘放弃无订单双 lane 残留：$reason")
+        logW(
+            LOG_ACTION_GROUP,
+            "人工清盘已放弃无订单双 lane 残留：reason=$reason，sessionId=${session.sessionId}，" +
+                "moveStatus=${moveStatusDesc(oldMoveStatus)}->${moveStatusDesc(config.moveStatus)}"
+        )
+        return true
+    }
+
     fun isPanMoveRecoveryBlocked(): Boolean = panMoveJournalStore.load() != null
 
     fun isActionGroupRecoveryBlocked(): Boolean =

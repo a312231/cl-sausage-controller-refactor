@@ -101,6 +101,43 @@ object MoveStatusRecoveryPolicy {
     }
 }
 
+object ManualPanClearPolicy {
+    data class Evidence(
+        val onlineStatus: Int,
+        val isEnable: Int,
+        val statusReadings: List<Int>,
+        val hasValidPrefetchSession: Boolean,
+        val hasActionGroupSession: Boolean,
+        val hasPausedSupplementSession: Boolean,
+        val hasPanMoveJournal: Boolean,
+        val hasPendingOrder: Boolean
+    )
+
+    fun canAbandonSupplementPrefetch(evidence: Evidence): Boolean {
+        return evidence.onlineStatus == 3 &&
+            evidence.isEnable == 0 &&
+            MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(evidence.statusReadings) &&
+            evidence.hasValidPrefetchSession &&
+            !evidence.hasActionGroupSession &&
+            !evidence.hasPausedSupplementSession &&
+            !evidence.hasPanMoveJournal &&
+            !evidence.hasPendingOrder
+    }
+}
+
+object ManualPanClearCommitter {
+    fun commit(
+        persistIdle: () -> Boolean,
+        clearSession: () -> Boolean,
+        releaseOwner: () -> Unit
+    ): Boolean {
+        if (!runCatching(persistIdle).getOrDefault(false)) return false
+        if (!runCatching(clearSession).getOrDefault(false)) return false
+        releaseOwner()
+        return true
+    }
+}
+
 object SourceBoxPositionPolicy {
     const val POLICY_VERSION = 2
     private val disabledSourceBoxes = setOf(1, 11, 12, 22)

@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -111,6 +112,27 @@ class SupplementPrefetchRecoveryWiringSourceTest {
         assertTrue(cancellation > dedicated)
         assertTrue(preservingMaintenance > cancellation)
         assertTrue(rethrow > preservingMaintenance)
+    }
+
+    @Test
+    fun manualPanClear_shouldAbandonOnlyOrderlessPrefetchResidueThroughDedicatedEntry() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val maintenance = source("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+
+        assertTrue(operate.contains("fun abandonSupplementPrefetchForManualPanClear("))
+        assertTrue(operate.contains("ManualPanClearPolicy.Evidence("))
+        assertTrue(operate.contains("ManualPanClearCommitter.commit("))
+        assertTrue(operate.contains("supplementPrefetchSessionRepository.clearIfRevision("))
+        assertTrue(operate.contains("actionGroupLocks.release(session.sessionId)"))
+        assertTrue(operate.contains("config.moveStatus = oldMoveStatus"))
+        assertTrue(operate.contains("markActionGroupRecoveryVerified("))
+
+        assertTrue(maintenance.contains("allowSupplementPrefetchAbandon: Boolean = false"))
+        assertTrue(maintenance.contains("KaoChangOperate.abandonSupplementPrefetchForManualPanClear("))
+        assertEquals(
+            1,
+            Regex("allowSupplementPrefetchAbandon\\s*=\\s*true").findAll(maintenance).count()
+        )
     }
 
     private fun functionBlock(startMarker: String, endMarker: String): String {

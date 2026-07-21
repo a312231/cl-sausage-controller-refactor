@@ -80,6 +80,71 @@ class ProtocolStatusPolicyTest {
     }
 
     @Test
+    fun manualPanClear_shouldAllowAbandoningOrderlessPrefetchResidueWhenMaintenanceIsPhysicallyIdle() {
+        assertEquals(
+            true,
+            ManualPanClearPolicy.canAbandonSupplementPrefetch(manualPanClearEvidence())
+        )
+    }
+
+    @Test
+    fun manualPanClear_shouldRequireMaintenanceWithAlgorithmDisabled() {
+        val base = manualPanClearEvidence()
+
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(onlineStatus = 1)))
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(isEnable = 1)))
+    }
+
+    @Test
+    fun manualPanClear_shouldRequireTwoConsecutiveIdleReadingsAndValidPrefetchEvidence() {
+        val base = manualPanClearEvidence()
+
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(statusReadings = listOf(0))))
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(statusReadings = listOf(0, 1))))
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(hasValidPrefetchSession = false)))
+    }
+
+    @Test
+    fun manualPanClear_shouldRejectOtherRecoveryEvidenceOrPendingOrder() {
+        val base = manualPanClearEvidence()
+
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(hasActionGroupSession = true)))
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(hasPausedSupplementSession = true)))
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(hasPanMoveJournal = true)))
+        assertEquals(false, ManualPanClearPolicy.canAbandonSupplementPrefetch(base.copy(hasPendingOrder = true)))
+    }
+
+    @Test
+    fun manualPanClearCommit_shouldRetainSessionAndOwnerWhenIdlePersistenceFails() {
+        var sessionRaw = "session"
+        val owners = mutableSetOf("session-owner")
+
+        val committed = ManualPanClearCommitter.commit(
+            persistIdle = { throw IllegalStateException("disk full") },
+            clearSession = { sessionRaw = ""; true },
+            releaseOwner = { owners.remove("session-owner") }
+        )
+
+        assertEquals(false, committed)
+        assertEquals("session", sessionRaw)
+        assertEquals(setOf("session-owner"), owners)
+    }
+
+    @Test
+    fun manualPanClearCommit_shouldPersistBeforeClearingSessionAndReleasingOwner() {
+        val steps = mutableListOf<String>()
+
+        val committed = ManualPanClearCommitter.commit(
+            persistIdle = { steps += "persist"; true },
+            clearSession = { steps += "clear"; true },
+            releaseOwner = { steps += "release" }
+        )
+
+        assertEquals(true, committed)
+        assertEquals(listOf("persist", "clear", "release"), steps)
+    }
+
+    @Test
     fun zone3SelfClean_shouldNotMarkPendingWhenFourFNoOpSuppressed() {
         assertEquals(
             false,
@@ -106,4 +171,15 @@ class ProtocolStatusPolicyTest {
         assertEquals(true, FourFSelfCleanNoOpPolicy.isNoOp("4f_self_clean_no_op"))
         assertEquals(false, FourFSelfCleanNoOpPolicy.isNoOp("201=2"))
     }
+
+    private fun manualPanClearEvidence() = ManualPanClearPolicy.Evidence(
+        onlineStatus = 3,
+        isEnable = 0,
+        statusReadings = listOf(0, 0),
+        hasValidPrefetchSession = true,
+        hasActionGroupSession = false,
+        hasPausedSupplementSession = false,
+        hasPanMoveJournal = false,
+        hasPendingOrder = false
+    )
 }

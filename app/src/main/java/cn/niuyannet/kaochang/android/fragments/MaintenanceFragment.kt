@@ -427,9 +427,12 @@ class MaintenanceFragment : Fragment() {
         )
     }
 
-    private suspend fun tryRecoverIdleMoveStatus(reason: String): Boolean {
+    private suspend fun tryRecoverIdleMoveStatus(
+        reason: String,
+        allowSupplementPrefetchAbandon: Boolean = false
+    ): Boolean {
         val config = AppConfig.getAppConfig()
-        if (config.moveStatus == 0) {
+        if (config.moveStatus == 0 && !allowSupplementPrefetchAbandon) {
             return true
         }
         val statusReadings = withContext(Dispatchers.IO) {
@@ -447,6 +450,12 @@ class MaintenanceFragment : Fragment() {
                 )
                 listOf(first, second)
             }
+        }
+        if (
+            allowSupplementPrefetchAbandon &&
+            KaoChangOperate.abandonSupplementPrefetchForManualPanClear(statusReadings, reason)
+        ) {
+            return true
         }
         val actionGroupIdle = KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
         if (MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings, actionGroupIdle)) {
@@ -662,7 +671,8 @@ class MaintenanceFragment : Fragment() {
         reason: String,
         waitingText: String,
         update: ((String) -> Unit)? = null,
-        timeoutMs: Long = MANUAL_ACTION_IDLE_TIMEOUT_MS
+        timeoutMs: Long = MANUAL_ACTION_IDLE_TIMEOUT_MS,
+        allowSupplementPrefetchAbandon: Boolean = false
     ): Boolean {
         val result = withTimeoutOrNull(timeoutMs) {
             while (
@@ -670,7 +680,7 @@ class MaintenanceFragment : Fragment() {
                 !KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
             ) {
                 update?.invoke(waitingText)
-                if (tryRecoverIdleMoveStatus(reason)) {
+                if (tryRecoverIdleMoveStatus(reason, allowSupplementPrefetchAbandon)) {
                     if (KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()) {
                         break
                     }
@@ -740,7 +750,8 @@ class MaintenanceFragment : Fragment() {
                         waitingText = "等待机械动作完成后清空烤盘",
                         update = {
                             binding.tvCooldownHint.text = it
-                        }
+                        },
+                        allowSupplementPrefetchAbandon = true
                     )
                     if (!idleReady) {
                         AdminOperationLogger.w(
