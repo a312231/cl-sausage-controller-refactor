@@ -8,7 +8,7 @@
 ## Git 分支管理
 
 - `develop` 是日常开发和 Bug 修复的唯一长期入口，仓库根目录默认停在该分支。
-- `main` 是已验证并正式发布的生产稳定线，禁止直接开发、禁止 force push。
+- `master` 是 Gitee 默认分支和已验证并正式发布的生产稳定线，禁止直接开发、禁止 force push。
 - 仅在高风险或需要独立审核时从 `develop` 创建短期 `fix/<简短主题>`，合回后立即删除本地和远端分支。
 - Android 与后端正式发布使用同名 `stack-<版本>-r<修订>` annotated tag 配对，版本号与制品 SHA-256 以发布清单为准。
 - 不再使用版本号长期分支、`archive/*`、`stable/*`、`codex/*` 或 Git worktree 作为日常开发入口。
