@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
+import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
+import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -11,6 +13,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.security.MessageDigest
 
 class SupplementPrefetchSessionRepositoryTest {
     @Test
@@ -292,6 +295,78 @@ class SupplementPrefetchSessionRepositoryTest {
     }
 
     @Test
+    fun sharedPreferenceStore_shouldRoundTripSavedSession() {
+        var raw: String? = null
+        val store = SharedPreferenceSupplementPrefetchSessionStore(
+            readRaw = { raw },
+            writeRawDurably = { raw = it; true }
+        )
+        listOf(baseSession(), committedDeliveredPendingOrderSession()).forEach { expected ->
+            store.save(expected)
+            assertEquals(expected, store.load())
+        }
+    }
+
+    @Test
+    fun sharedPreferenceStore_shouldReadLiveDeliveredCheckpoint() {
+        val raw = LIVE_DELIVERED_CHECKPOINT
+        val store = SharedPreferenceSupplementPrefetchSessionStore(
+            readRaw = { raw },
+            writeRawDurably = { true }
+        )
+
+        val session = requireNotNull(store.load())
+
+        assertEquals("in_pipeline:1784513895477", session.sessionId)
+        assertEquals(40L, session.revision)
+        assertEquals(SupplementBarrierState.DELIVERY_COMMITTED, session.barrierState)
+        assertEquals(SupplementPipelinePhase.RUNNING, session.phase)
+        assertEquals(7, session.deliveryLane?.targetPanNo)
+        assertEquals(9, session.deliveryLane?.sourceBoxNo)
+        assertEquals("in7", session.deliveryLane?.lastConfirmedStage)
+        assertTrue(session.deliveryLane?.panPlacementApplied == true)
+    }
+
+    @Test
+    fun sharedPreferenceStore_shouldFailClosedWhenRequiredEvidenceFieldIsMissing() {
+        val requiredFields = listOf(
+            "schemaVersion",
+            "revision",
+            "sessionId",
+            "startedAtMs",
+            "resourceMask",
+            "barrierState",
+            "phase",
+            "deliveryLane",
+            "deliveryLane.lifecycle",
+            "deliveryLane.boxDeductionApplied",
+            "deliveryLane.panPlacementApplied"
+        )
+
+        requiredFields.forEach { fieldPath ->
+            val json = JSON.parseObject(LIVE_DELIVERED_CHECKPOINT)
+            if (fieldPath.startsWith("deliveryLane.")) {
+                json.getJSONObject("deliveryLane").remove(fieldPath.substringAfter('.'))
+            } else {
+                json.remove(fieldPath)
+            }
+            var raw = JSON.toJSONString(json)
+            val expectedRaw = raw
+            val store = SharedPreferenceSupplementPrefetchSessionStore(
+                readRaw = { raw },
+                writeRawDurably = { raw = it; true }
+            )
+
+            val result = store.read()
+
+            assertTrue("missing $fieldPath must fail closed", result is DurableEvidenceReadResult.Corrupted)
+            result as DurableEvidenceReadResult.Corrupted
+            assertEquals(sha256(expectedRaw), result.fingerprint)
+            assertEquals(expectedRaw, raw)
+        }
+    }
+
+    @Test
     fun revisionClear_shouldRejectStaleOwnerAndKeepSession() {
         val repository = SupplementPrefetchSessionRepository(MemoryStore())
         val created = repository.create(baseSession())
@@ -384,10 +459,18 @@ class SupplementPrefetchSessionRepositoryTest {
         catch (_: SupplementPrefetchSessionCorruptedException) { }
     }
 
+    private fun sha256(raw: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(raw.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
     private class MemoryStore : SupplementPrefetchSessionStore {
         private var value: SupplementPrefetchPipelineSession? = null
         override fun load() = value
         override fun save(session: SupplementPrefetchPipelineSession) { value = session }
         override fun clear() { value = null }
+    }
+
+    companion object {
+        private const val LIVE_DELIVERED_CHECKPOINT = """{"barrierState":"DELIVERY_COMMITTED","batchId":"supplement:1784513735981:1-2-3-4-5-6-7-8-9","deliveryLane":{"boxDeductionApplied":true,"currentAction":"in7","expectedStockAfter":4,"lastConfirmedStage":"in7","lifecycle":"PHYSICAL_APPLIED","panPlacementApplied":true,"sourceBoxCandidates":[10,9],"sourceBoxNo":9,"stockBefore":5,"targetPanNo":7,"taste":"C"},"phase":"RUNNING","resourceMask":7,"revision":40,"schemaVersion":1,"sessionId":"in_pipeline:1784513895477","startedAtMs":1784513895478}"""
     }
 }

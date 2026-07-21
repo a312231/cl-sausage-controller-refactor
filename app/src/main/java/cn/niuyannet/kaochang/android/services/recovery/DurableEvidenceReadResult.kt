@@ -20,10 +20,16 @@ object DurableEvidenceCodec {
     inline fun <reified T> read(
         raw: String?,
         validator: (T) -> Boolean
+    ): DurableEvidenceReadResult<T> = read(raw, { JSON.parseObject(it, T::class.java) }, validator)
+
+    inline fun <T> read(
+        raw: String?,
+        parser: (String) -> T?,
+        validator: (T) -> Boolean
     ): DurableEvidenceReadResult<T> {
         if (raw.isNullOrBlank()) return DurableEvidenceReadResult.Absent
         val parsed = try {
-            JSON.parseObject(raw, T::class.java)
+            parser(raw)
         } catch (error: Exception) {
             return corrupted(raw, "JSON_PARSE_${error.javaClass.simpleName}")
         } ?: return corrupted(raw, "JSON_PARSE_NULL")

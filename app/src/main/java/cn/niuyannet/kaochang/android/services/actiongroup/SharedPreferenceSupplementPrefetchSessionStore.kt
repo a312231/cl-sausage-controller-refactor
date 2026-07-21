@@ -2,10 +2,12 @@ package cn.niuyannet.kaochang.android.services.actiongroup
 
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
-import cn.niuyannet.kaochang.android.utils.PreferenceUtils
-import com.alibaba.fastjson.JSON
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceCodec
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
+import cn.niuyannet.kaochang.android.utils.PreferenceUtils
+import com.alibaba.fastjson.JSON
+import com.alibaba.fastjson.JSONArray
+import com.alibaba.fastjson.JSONObject
 
 class SharedPreferenceSupplementPrefetchSessionStore(
     private val file: String = AppConfig.Sp_File_URL,
@@ -32,7 +34,11 @@ class SharedPreferenceSupplementPrefetchSessionStore(
     }
 
     override fun read(): DurableEvidenceReadResult<SupplementPrefetchPipelineSession> =
-        DurableEvidenceCodec.read(readRaw(), SupplementPrefetchSessionValidator::isValid)
+        DurableEvidenceCodec.read(
+            readRaw(),
+            ::decodeSupplementPrefetchSession,
+            SupplementPrefetchSessionValidator::isValid
+        )
 
     override fun save(session: SupplementPrefetchPipelineSession) {
         check(mutationAllowed("save")) { "恢复证据损坏锁存期间禁止写入补肠预取会话" }
@@ -59,6 +65,107 @@ class SharedPreferenceSupplementPrefetchSessionStore(
             sharedLocks.getOrPut(file to key) { Any() }
     }
 }
+
+private fun decodeSupplementPrefetchSession(raw: String): SupplementPrefetchPipelineSession {
+    val json = JSON.parseObject(raw)
+    return SupplementPrefetchPipelineSession(
+        schemaVersion = json.requiredInt("schemaVersion"),
+        revision = json.requiredLong("revision"),
+        sessionId = json.requiredString("sessionId"),
+        batchId = json.optionalString("batchId"),
+        startedAtMs = json.requiredLong("startedAtMs"),
+        resourceMask = json.requiredInt("resourceMask"),
+        deliveryLane = json.requiredObject("deliveryLane").toSupplementPrefetchLane(),
+        prefetchLane = json.optionalObject("prefetchLane")?.toSupplementPrefetchLane(),
+        barrierState = json.requiredEnum("barrierState"),
+        pendingOrderNo = json.optionalString("pendingOrderNo"),
+        phase = json.requiredEnum("phase")
+    )
+}
+
+private fun JSONObject.toSupplementPrefetchLane() = SupplementPrefetchLaneCheckpoint(
+    sourceBoxNo = requiredInt("sourceBoxNo"),
+    sourceBoxCandidates = requiredIntList("sourceBoxCandidates"),
+    targetPanNo = requiredInt("targetPanNo"),
+    taste = optionalString("taste"),
+    returnPosition = optionalInt("returnPosition"),
+    currentAction = optionalString("currentAction"),
+    lifecycle = requiredEnum("lifecycle"),
+    lastConfirmedStage = optionalString("lastConfirmedStage"),
+    stockBefore = optionalInt("stockBefore"),
+    expectedStockAfter = optionalInt("expectedStockAfter"),
+    boxDeductionApplied = requiredBoolean("boxDeductionApplied"),
+    panPlacementApplied = requiredBoolean("panPlacementApplied"),
+    failedSourceBoxNos = optionalIntList("failedSourceBoxNos")
+)
+
+private fun JSONObject.requiredInt(field: String): Int {
+    val value = requiredIntegralNumber(field)
+    require(value in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) { "$field 超出 Int 范围" }
+    return value.toInt()
+}
+
+private fun JSONObject.requiredLong(field: String): Long = requiredIntegralNumber(field)
+
+private fun JSONObject.requiredIntegralNumber(field: String): Long {
+    val value = this[field]
+    require(value is Byte || value is Short || value is Int || value is Long) { "$field 必须是整数" }
+    return (value as Number).toLong()
+}
+
+private fun JSONObject.optionalInt(field: String): Int? {
+    if (!containsKey(field) || this[field] == null) return null
+    return requiredInt(field)
+}
+
+private fun JSONObject.requiredString(field: String): String {
+    val value = this[field]
+    require(value is String) { "$field 必须是字符串" }
+    return value
+}
+
+private fun JSONObject.optionalString(field: String): String? {
+    if (!containsKey(field) || this[field] == null) return null
+    return requiredString(field)
+}
+
+private fun JSONObject.requiredBoolean(field: String): Boolean {
+    val value = this[field]
+    require(value is Boolean) { "$field 必须是布尔值" }
+    return value
+}
+
+private fun JSONObject.requiredObject(field: String): JSONObject {
+    val value = this[field]
+    require(value is JSONObject) { "$field 必须是对象" }
+    return value
+}
+
+private fun JSONObject.optionalObject(field: String): JSONObject? {
+    if (!containsKey(field) || this[field] == null) return null
+    return requiredObject(field)
+}
+
+private fun JSONObject.requiredIntList(field: String): List<Int> {
+    val value = this[field]
+    require(value is JSONArray) { "$field 必须是整数数组" }
+    return value.mapIndexed { index, item ->
+        require(item is Byte || item is Short || item is Int || item is Long) {
+            "$field[$index] 必须是整数"
+        }
+        val number = (item as Number).toLong()
+        require(number in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) { "$field[$index] 超出 Int 范围" }
+        number.toInt()
+    }
+}
+
+private fun JSONObject.optionalIntList(field: String): List<Int> {
+    if (!containsKey(field) || this[field] == null) return emptyList()
+    return requiredIntList(field)
+}
+
+private inline fun <reified T : Enum<T>> JSONObject.requiredEnum(field: String): T =
+    enumValueOf(requiredString(field))
 
 object SupplementPrefetchSessionValidator {
     fun isValid(session: SupplementPrefetchPipelineSession): Boolean = failureReason(session) == null
