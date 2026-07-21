@@ -68,12 +68,21 @@ object BusinessTimeWindowHelper {
         minute: Int,
         dayOfWeek: Int = currentDayOfWeek()
     ): Boolean {
+        if (isContinuousAllDayRange(resolveTimeRange(businessTime, dayOfWeek))) {
+            return false
+        }
         val remainingMillis = remainingMillisUntilClose(currentTimeStr, businessTime, dayOfWeek)
         if (remainingMillis < 0) {
             return false
         }
         val beforeCloseMillis = minute.coerceAtLeast(0) * 60L * 1000L
         return remainingMillis <= beforeCloseMillis
+    }
+
+    private fun isContinuousAllDayRange(timeRange: Pair<String, String>?): Boolean {
+        timeRange ?: return false
+        return parseSecondOfDay(timeRange.first) == 0 &&
+            parseSecondOfDay(timeRange.second) == SECONDS_PER_DAY - 1
     }
 
     private fun isTimeInRange(currentSecondOfDay: Int, startText: String, endText: String): Boolean {

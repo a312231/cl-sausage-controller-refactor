@@ -54,15 +54,15 @@ class BusinessTimeWindowHelperTest {
     }
 
     @Test
-    fun isBeforeCloseWindow_shouldUseSecondPrecisionBoundary() {
+    fun isBeforeCloseWindow_shouldIgnoreContinuousAllDayRange() {
         val businessTime = BusinessTime().apply {
             mode = "everyday"
             defaultTime = listOf("00:00:00", "23:59:59")
         }
 
         assertFalse(BusinessTimeWindowHelper.isBeforeCloseWindow("23:58:58", businessTime, 1))
-        assertTrue(BusinessTimeWindowHelper.isBeforeCloseWindow("23:58:59", businessTime, 1))
-        assertTrue(BusinessTimeWindowHelper.isBeforeCloseWindow("23:59:59", businessTime, 1))
+        assertFalse(BusinessTimeWindowHelper.isBeforeCloseWindow("23:58:59", businessTime, 1))
+        assertFalse(BusinessTimeWindowHelper.isBeforeCloseWindow("23:59:59", businessTime, 1))
     }
 
     @Test
