@@ -3565,7 +3565,8 @@ object KaoChangOperate {
                         }
                         val applied = if (parallelEnabled &&
                             telemetry.resultCode == AtomicActionCodes.COMPLETED &&
-                            telemetry.physicalCheckpoint != null
+                            (ActionPhysicalStateReducerPolicy.shouldApplySupplementPickedFromBox(telemetry) ||
+                                ActionPhysicalStateReducerPolicy.shouldApplySupplementPlacedOnPan(telemetry))
                         ) {
                             when (val checkpoint = requireNotNull(physicalCoordinator)
                                 .applySuccessfulPhysicalCheckpoint(context.laneRole, telemetry.actionName) { lane ->

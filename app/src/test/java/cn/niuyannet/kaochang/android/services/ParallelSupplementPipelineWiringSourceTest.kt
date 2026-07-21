@@ -89,6 +89,20 @@ class ParallelSupplementPipelineWiringSourceTest {
     }
 
     @Test
+    fun parallelPhysicalCoordinator_shouldOnlyHandleDurableInventoryAndPanCheckpoints() {
+        val block = pipelineBlock(operateSource())
+        val branchStart = block.indexOf("val applied = if (parallelEnabled &&")
+        val branchEnd = block.indexOf(") {", branchStart)
+
+        assertTrue(branchStart >= 0)
+        assertTrue(branchEnd > branchStart)
+        val admission = block.substring(branchStart, branchEnd)
+        assertTrue(admission.contains("ActionPhysicalStateReducerPolicy.shouldApplySupplementPickedFromBox(telemetry)"))
+        assertTrue(admission.contains("ActionPhysicalStateReducerPolicy.shouldApplySupplementPlacedOnPan(telemetry)"))
+        assertTrue(!admission.contains("telemetry.physicalCheckpoint != null"))
+    }
+
+    @Test
     fun parallelE5SafeClosure_shouldPassSessionContextAndUseSeparateOutcome() {
         val block = pipelineBlock(operateSource())
         val handler = functionBlock(
