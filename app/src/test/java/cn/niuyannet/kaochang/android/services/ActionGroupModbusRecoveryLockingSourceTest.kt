@@ -179,7 +179,10 @@ class ActionGroupModbusRecoveryLockingSourceTest {
     ) {
         val ensureBlockStart = source.indexOf("if (!ensureModbusReady(\"$ensureActionName\")) {")
         assertTrue("入口必须单独判断 ensureModbusReady：$ensureActionName", ensureBlockStart >= 0)
-        val recoverBlockStart = source.indexOf("if (!recoverActionGroupStateAfterModbusReady(\"$recoverReason\")) {", ensureBlockStart)
+        val recoverCall = Regex(
+            """if\s*\(\s*!recoverActionGroupStateAfterModbusReady\s*\(\s*"${Regex.escape(recoverReason)}"(?:\s*,[^{}]*?)?\s*\)\s*\)\s*\{"""
+        )
+        val recoverBlockStart = recoverCall.find(source, ensureBlockStart)?.range?.first ?: -1
         assertTrue("入口必须单独判断 recoverActionGroupStateAfterModbusReady：$recoverReason", recoverBlockStart > ensureBlockStart)
 
         val ensureBlock = source.substring(ensureBlockStart, recoverBlockStart)

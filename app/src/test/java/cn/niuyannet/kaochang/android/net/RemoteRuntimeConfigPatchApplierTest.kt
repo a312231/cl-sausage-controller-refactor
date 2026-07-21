@@ -173,4 +173,30 @@ class RemoteRuntimeConfigPatchApplierTest {
         assertEquals(2, config.onlineStatus)
         assertEquals(listOf("isEnable"), result.rejectedFields)
     }
+
+    @Test
+    fun apply_shouldApplyExplicitIntegerParallelPrefetchPatch() {
+        val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 0 }
+        val patch = JSONObject().apply { put("enableParallelSupplementPrefetch", 1) }
+
+        val result = RemoteRuntimeConfigPatchApplier.apply(config, patch)
+
+        assertTrue(result.hasApplied)
+        assertEquals(1, config.enableParallelSupplementPrefetch)
+        assertEquals(listOf("enableParallelSupplementPrefetch"), result.appliedFields)
+    }
+
+    @Test
+    fun apply_shouldRejectNonIntegerParallelPrefetchPatchWithoutChangingLocalValue() {
+        listOf<Any?>(null, "1", 1.0, true, 2, -1).forEach { value ->
+            val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 1 }
+            val patch = JSONObject().apply { put("enableParallelSupplementPrefetch", value) }
+
+            val result = RemoteRuntimeConfigPatchApplier.apply(config, patch)
+
+            assertFalse("patch=$value", result.hasApplied)
+            assertEquals("patch=$value", 1, config.enableParallelSupplementPrefetch)
+            assertEquals(listOf("enableParallelSupplementPrefetch"), result.rejectedFields)
+        }
+    }
 }

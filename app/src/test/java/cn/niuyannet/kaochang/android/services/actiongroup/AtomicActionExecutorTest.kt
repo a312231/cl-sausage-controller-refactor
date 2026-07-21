@@ -11,6 +11,93 @@ import org.junit.Test
 class AtomicActionExecutorTest {
 
     @Test
+    fun execute_shouldFinishPollingBeforeRethrowingCommandDispatchCallbackFailure() = runBlocking {
+        val events = mutableListOf<String>()
+        val gateway = object : AtomicModbusGateway {
+            private val results = ArrayDeque(listOf(
+                AtomicActionCodes.IDLE,
+                AtomicActionCodes.RUNNING,
+                AtomicActionCodes.COMPLETED
+            ))
+
+            override suspend fun writeRegister(address: Int, value: Int): AtomicIoResult = AtomicIoResult.Success
+
+            override suspend fun readRegister(address: Int): AtomicReadResult {
+                val value = if (address == AtomicActions.in1.resultRegister) {
+                    results.removeFirstOrNull() ?: AtomicActionCodes.COMPLETED
+                } else {
+                    AtomicActionCodes.IDLE
+                }
+                events += "read:$value"
+                return AtomicReadResult.Success(value)
+            }
+        }
+        val executor = AtomicActionExecutor(gateway, logger = {})
+
+        try {
+            executor.execute(
+                AtomicActions.in1,
+                onCommandDispatched = {
+                    events += "callback"
+                    error("durable checkpoint failed")
+                },
+                onRunningConfirmed = { events += "running-callback" }
+            )
+            org.junit.Assert.fail("expected callback failure")
+        } catch (error: IllegalStateException) {
+            assertEquals("durable checkpoint failed", error.message)
+        }
+
+        assertTrue(events.indexOf("callback") >= 0)
+        assertTrue(events.indexOf("read:2") > events.indexOf("callback"))
+        assertFalse(events.contains("running-callback"))
+    }
+
+    @Test
+    fun execute_shouldInvokeRunningConfirmedExactlyOnce() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(
+                361 to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.RUNNING,
+                    COMPLETED
+                )
+            )
+        )
+        val executor = AtomicActionExecutor(gateway, logger = {})
+        var runningConfirmedCount = 0
+
+        val result = executor.execute(
+            spec = AtomicActions.in6,
+            onRunningConfirmed = { runningConfirmedCount += 1 }
+        )
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(1, runningConfirmedCount)
+    }
+
+    @Test
+    fun execute_shouldNotInvokeRunningConfirmedForFastCompletionWithoutRunning() = runBlocking {
+        val gateway = FakeGateway(
+            reads = mapOf(
+                361 to queueOf(AtomicActionCodes.IDLE, COMPLETED),
+                360 to queueOf(AtomicActionCodes.IDLE)
+            )
+        )
+        val executor = AtomicActionExecutor(gateway, logger = {})
+        var runningConfirmedCount = 0
+
+        val result = executor.execute(
+            spec = AtomicActions.in6,
+            onRunningConfirmed = { runningConfirmedCount += 1 }
+        )
+
+        assertEquals(AtomicActionResult.Success, result)
+        assertEquals(0, runningConfirmedCount)
+    }
+
+    @Test
     fun execute_shouldWriteInfoBeforeCommandAndReturnSuccess() = runBlocking {
         val gateway = FakeGateway(
             reads = mapOf(311 to queueOf(AtomicActionCodes.IDLE, AtomicActionCodes.RUNNING, COMPLETED))

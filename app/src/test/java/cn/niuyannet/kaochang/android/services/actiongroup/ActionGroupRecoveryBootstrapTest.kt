@@ -422,10 +422,12 @@ class ActionGroupRecoveryBootstrapTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             onCommandDispatched?.invoke()
+            onRunningConfirmed?.invoke()
             states[spec.name] = COMPLETED
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }

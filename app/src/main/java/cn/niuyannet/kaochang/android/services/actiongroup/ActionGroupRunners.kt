@@ -21,7 +21,10 @@ class InActionGroupRunner(
     private val operationLogContext: ActionGroupOperationLogContext? = null,
     private val operationLogger: (String) -> Unit = {},
     private val failureLogger: (String) -> Unit = operationLogger,
-    private val onCurrentActionChanged: (String) -> Unit = {}
+    private val onCurrentActionChanged: (String) -> Unit = {},
+    private val onActionCommandWritten: (String) -> Unit = {},
+    private val onActionRunningConfirmed: (String) -> Unit = {},
+    private val onActionTerminalConfirmed: (String, AtomicActionResult) -> Unit = { _, _ -> }
 ) {
     suspend fun run(
         sourceBoxNo: Int,
@@ -64,7 +67,11 @@ class InActionGroupRunner(
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,
             failureLogger = failureLogger,
-            onCurrentActionChanged = onCurrentActionChanged
+            onCurrentActionChanged = onCurrentActionChanged,
+            onActionCommandWritten = onActionCommandWritten,
+            onActionRunningConfirmed = onActionRunningConfirmed,
+            onActionTerminalConfirmed = onActionTerminalConfirmed,
+            actionLifecycleHooksEnabled = true
         )
     }
 }
@@ -155,6 +162,10 @@ private suspend fun executeSteps(
     operationLogger: (String) -> Unit,
     failureLogger: (String) -> Unit,
     onCurrentActionChanged: (String) -> Unit = {},
+    onActionCommandWritten: (String) -> Unit = {},
+    onActionRunningConfirmed: (String) -> Unit = {},
+    onActionTerminalConfirmed: (String, AtomicActionResult) -> Unit = { _, _ -> },
+    actionLifecycleHooksEnabled: Boolean = false,
     enableVoiceReminder: Boolean = false,
     onWindowOpened: suspend () -> Unit = {},
     windowOpenBufferMs: Long = 0L
@@ -181,9 +192,37 @@ private suspend fun executeSteps(
         }
         val result = if (step.retryableErrorCode == null) {
             onCurrentActionChanged(step.spec.name)
-            mapActionResult(step, client.execute(step.spec, step.infoValue, dispatchHook))
+            val atomicResult = client.execute(
+                step.spec,
+                step.infoValue,
+                onCommandDispatched = if (actionLifecycleHooksEnabled || dispatchHook != null) {
+                    {
+                        onActionCommandWritten(step.spec.name)
+                        dispatchHook?.invoke()
+                    }
+                } else {
+                    null
+                },
+                onRunningConfirmed = if (actionLifecycleHooksEnabled) {
+                    { onActionRunningConfirmed(step.spec.name) }
+                } else {
+                    null
+                }
+            )
+            if (atomicResult !is AtomicActionResult.Timeout && atomicResult !is AtomicActionResult.ModbusError) {
+                onActionTerminalConfirmed(step.spec.name, atomicResult)
+            }
+            mapActionResult(step, atomicResult)
         } else {
-            executeRetriableStep(client, step, logger, onCurrentActionChanged)
+            executeRetriableStep(
+                client,
+                step,
+                logger,
+                onCurrentActionChanged,
+                onActionCommandWritten,
+                onActionRunningConfirmed,
+                onActionTerminalConfirmed
+            )
         }
         val elapsedMs = (System.currentTimeMillis() - stepStartedAtMs).coerceAtLeast(0L)
         logger(
@@ -250,17 +289,29 @@ private suspend fun executeRetriableStep(
     client: AtomicActionClient,
     step: ActionStep,
     logger: (String) -> Unit,
-    onCurrentActionChanged: (String) -> Unit
+    onCurrentActionChanged: (String) -> Unit,
+    onActionCommandWritten: (String) -> Unit,
+    onActionRunningConfirmed: (String) -> Unit,
+    onActionTerminalConfirmed: (String, AtomicActionResult) -> Unit
 ): ActionGroupResult {
     var lastResult: AtomicActionResult = AtomicActionResult.Success
     for (attempt in 1..step.maxAttempts) {
         onCurrentActionChanged(step.spec.name)
-        val result = client.execute(step.spec, step.infoValue)
+        val result = client.execute(
+            step.spec,
+            step.infoValue,
+            onCommandDispatched = { onActionCommandWritten(step.spec.name) },
+            onRunningConfirmed = { onActionRunningConfirmed(step.spec.name) }
+        )
         lastResult = result
         if (result == AtomicActionResult.Success) {
+            onActionTerminalConfirmed(step.spec.name, result)
             return ActionGroupResult.Success
         }
         if (!isRetryable(result, step.retryableErrorCode!!) || attempt == step.maxAttempts) {
+            if (result !is AtomicActionResult.Timeout && result !is AtomicActionResult.ModbusError) {
+                onActionTerminalConfirmed(step.spec.name, result)
+            }
             return mapActionResult(step, result)
         }
         logger("重试原子动作：action=${step.spec.name}，attempt=$attempt/${step.maxAttempts}，reason=${describe(result)}")

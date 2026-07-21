@@ -190,7 +190,7 @@ class KaoPanUiReservationStateBuilderTest {
     }
 
     @Test
-    fun apply_shouldSuppressReservationsWhileMoveRecoveryIsBlocked() {
+    fun apply_shouldKeepPendingSupplementVisibleWhileRecoveryIsBlocked() {
         val pans = mutableListOf(blankPan(1), blankPan(13))
         val intent = SupplementBatchIntent(
             batchId = "low",
@@ -208,8 +208,11 @@ class KaoPanUiReservationStateBuilderTest {
 
         KaoPanUiReservationStateBuilder.apply(pans, intent, recoveryBlocked = true)
 
-        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 1 }.uiReservationState)
-        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 13 }.uiReservationState)
+        assertEquals(
+            KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT,
+            pans.first { it.positionSn == 13 }.uiReservationState
+        )
+        assertEquals("A", pans.first { it.positionSn == 13 }.uiReservationTaste?.tasteCode)
     }
 
     @Test
@@ -282,7 +285,8 @@ class KaoPanUiReservationStateBuilderTest {
 
         assertEquals(KaoPan.UI_RESERVATION_WAIT_RETURN, target.uiReservationState)
         assertEquals("A", target.uiReservationTaste.tasteCode)
-        assertEquals(KaoPan.UI_RESERVATION_NONE, pending.uiReservationState)
+        assertEquals(KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT, pending.uiReservationState)
+        assertEquals("B", pending.uiReservationTaste?.tasteCode)
     }
 
     @Test

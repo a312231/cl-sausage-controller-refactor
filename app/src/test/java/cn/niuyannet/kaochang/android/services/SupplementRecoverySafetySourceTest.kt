@@ -271,6 +271,27 @@ class SupplementRecoverySafetySourceTest {
         assertTrue("必须先耐久清moveStatus再清session", moveDurable >= 0 && sessionClear > moveDurable)
     }
 
+    @Test
+    fun durableDoubleLaneEvidence_shouldBlockAutomaticMoveStatusReset() {
+        val source = operateSource()
+        val start = source.indexOf("fun isActionGroupIdleForMoveStatusRecovery()")
+        val end = source.indexOf("fun isPanMoveRecoveryBlocked()", start)
+        val block = source.substring(start, end)
+
+        assertTrue(block.contains("hasBlockingSupplementPrefetchEvidence"))
+    }
+
+    @Test
+    fun maintenance_shouldPreserveMoveStatusWhileDoubleLaneEvidenceExists() {
+        val source = operateSource()
+        val start = source.indexOf("private fun enterActionGroupMaintenance(")
+        val end = source.indexOf("private fun", start + 20)
+        val block = source.substring(start, end)
+
+        assertTrue(block.contains("hasBlockingSupplementPrefetchEvidence"))
+        assertTrue(block.contains("保留双 lane 恢复证据和 moveStatus"))
+    }
+
     private fun operateSource(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"),

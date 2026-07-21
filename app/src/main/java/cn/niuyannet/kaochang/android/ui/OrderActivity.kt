@@ -15,7 +15,6 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
-import cn.niuyannet.kaochang.android.services.SupplementPauseController
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventCompensationPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
@@ -209,7 +208,7 @@ abstract class OrderActivity: BaseSauceDetection() {
      */
     fun purchaseOrder(orderMessage:String) {
         val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
-        SupplementPauseController.requestPauseForOrder(safeOrderNo)
+        KaoChangOperate.requestSupplementPauseForOrder(safeOrderNo)
         OrderProcessingStageBridge.publish(
             if (AppConfig.getAppConfig().moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
                 OrderProcessingStage.SUPPLEMENTING
@@ -316,8 +315,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                 // 当前订单动作结束后，本地动作状态恢复为空闲；如果本单没有拿到出餐控制权，
                 // 不能清掉补肠/搬盘/丢弃等其他动作的 moveStatus。
                 if (preDeliveryReady) {
-                    AppConfig.getAppConfig().moveStatus = 0
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
+                    KaoChangOperate.clearOrderMoveStatusIfRecoverySafe("订单动作完成：$safeOrderNo")
                 }
                 withContext(Dispatchers.Main) {
                     val config = AppConfig.getAppConfig()
@@ -349,12 +347,10 @@ abstract class OrderActivity: BaseSauceDetection() {
                 }
             } finally {
                 cn.niuyannet.kaochang.android.services.SelfCleanManager.clearOrderTrackingIfMatches(safeOrderNo)
-                val resumeSupplement = KaoChangOperate.hasPausedSupplementContinuation()
-                SupplementPauseController.clearOrderPause(safeOrderNo)
-                if (resumeSupplement) {
-                    LogUtils.i("【补肠恢复】订单完成，继续执行订单期间暂停的补肠会话：orderNo=$safeOrderNo")
-                    KaoChangOperate.resumePausedSupplementAfterOrder("订单完成后恢复暂停补肠")
-                }
+                KaoChangOperate.clearSupplementPauseAndResume(
+                    safeOrderNo,
+                    "订单完成后恢复暂停补肠"
+                )
                 cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
             }
         }

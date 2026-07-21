@@ -17,6 +17,9 @@ class ResourceLocks {
 
     @Synchronized
     fun tryAcquire(mask: Int, owner: String): Boolean {
+        owners[owner]?.let { ownedMask ->
+            return ownedMask == mask
+        }
         if ((heldMask and mask) != 0) {
             return false
         }
@@ -31,6 +34,19 @@ class ResourceLocks {
 
     @Synchronized
     fun forceAcquire(mask: Int, owner: String) {
+        owners[owner]?.let { ownedMask ->
+            check(ownedMask == mask) {
+                "资源 owner 已持有不同 mask：owner=$owner，owned=${describe(ownedMask)}，requested=${describe(mask)}"
+            }
+            return
+        }
+        val conflictingOwner = owners.entries.firstOrNull { (_, ownedMask) ->
+            (ownedMask and mask) != 0
+        }
+        check(conflictingOwner == null) {
+            "资源已被其他 owner 持有：requestedOwner=$owner，" +
+                "conflictingOwner=${conflictingOwner?.key}，mask=${describe(mask)}"
+        }
         owners[owner] = mask
     }
 

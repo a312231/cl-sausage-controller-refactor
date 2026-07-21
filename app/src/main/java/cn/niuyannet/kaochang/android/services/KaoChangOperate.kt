@@ -46,8 +46,26 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
 import cn.niuyannet.kaochang.android.services.actiongroup.PendingActionGroupOrderEvent
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupOrderEventStore
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupSessionStore
+import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceSupplementPrefetchSessionStore
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementActionLifecycle
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementBarrierState
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalCheckpointResult
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalMutation
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPhysicalStateCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrderGatePolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrderPauseSafety
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchLaneCheckpoint
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchRecoveryCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchRecoveryResult
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchResumePlanner
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchResumePreparation
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchResumePlan
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchSessionRepository
 import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
+import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
@@ -155,6 +173,10 @@ object KaoChangOperate {
     private val actionGroupLocks = ResourceLocks()
     private val faultHeatTransitionLock = Any()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
+    private val supplementPrefetchSessionStore = SharedPreferenceSupplementPrefetchSessionStore()
+    private val supplementPrefetchSessionRepository = SupplementPrefetchSessionRepository(
+        supplementPrefetchSessionStore
+    )
     private val pausedSupplementSessionStore = SharedPreferenceActionGroupSessionStore(
         key = SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION
     )
@@ -176,13 +198,27 @@ object KaoChangOperate {
     @Volatile
     private var supplementBlockedUntilMs: Long = 0L
 
+    private fun isParallelSupplementPrefetchEnabled(): Boolean {
+        val config = AppConfig.getAppConfig()
+        return config.enableActionGroupPrefetch == 1 &&
+            config.enableParallelSupplementPrefetch == 1
+    }
+
     fun isActionGroupBusyForOrderGate(): Boolean {
-        return !actionGroupLocks.isIdle()
+        val evidence = readSupplementPrefetchEvidence()
+        val safePausedForOrder = evidence is DurableEvidenceReadResult.Valid &&
+            SupplementPrefetchOrderPauseSafety.isSafe(evidence.value)
+        return SupplementPrefetchOrderGatePolicy.isBusy(
+            locksIdle = actionGroupLocks.isIdle(),
+            evidencePresent = evidence !is DurableEvidenceReadResult.Absent,
+            safePausedForOrder = safePausedForOrder
+        )
     }
 
     fun isActionGroupIdleForMoveStatusRecovery(): Boolean {
         return actionGroupSessionStore.load() == null &&
             panMoveJournalStore.load() == null &&
+            !hasBlockingSupplementPrefetchEvidence() &&
             actionGroupLocks.isIdle()
     }
 
@@ -191,7 +227,35 @@ object KaoChangOperate {
     fun isActionGroupRecoveryBlocked(): Boolean =
         !actionGroupRecoveryVerified ||
             actionGroupSessionStore.load() != null ||
-            panMoveJournalStore.load() != null
+            panMoveJournalStore.load() != null ||
+            hasBlockingSupplementPrefetchEvidence()
+
+    private fun readSupplementPrefetchEvidence(): DurableEvidenceReadResult<SupplementPrefetchPipelineSession> =
+        runCatching { supplementPrefetchSessionStore.read() }
+            .getOrElse { error ->
+                DurableEvidenceReadResult.Corrupted(
+                    fingerprint = error::class.java.simpleName,
+                    reason = "双 lane 会话读取异常：${error.message}",
+                    rawLength = 0
+                )
+            }
+
+    private fun hasBlockingSupplementPrefetchEvidence(): Boolean =
+        readSupplementPrefetchEvidence() !is DurableEvidenceReadResult.Absent
+
+    private fun activeSupplementPrefetchSessionOrNull(context: String): SupplementPrefetchPipelineSession? {
+        return when (val read = readSupplementPrefetchEvidence()) {
+            DurableEvidenceReadResult.Absent -> null
+            is DurableEvidenceReadResult.Valid -> read.value
+            is DurableEvidenceReadResult.Corrupted -> {
+                enterActionGroupMaintenance(
+                    "双 lane 会话读取失败，已禁止相关动作：context=$context，" +
+                        "fingerprint=${read.fingerprint}，reason=${read.reason}"
+                )
+                null
+            }
+        }
+    }
 
     fun hasActiveSupplementReturnBinding(): Boolean = supplementBatchIntentRepository
         .loadActive()
@@ -199,7 +263,407 @@ object KaoChangOperate {
         ?.isNotEmpty() == true
 
     fun hasPausedSupplementContinuation(): Boolean {
-        return hasPausedSupplementSession() && actionGroupLocks.isIdle()
+        val parallelPaused = activeSafePausedSupplementSession() != null
+        return (parallelPaused || hasPausedSupplementSession()) && actionGroupLocks.isIdle()
+    }
+
+    private fun activeSafePausedSupplementSession(): SupplementPrefetchPipelineSession? {
+        return when (val read = readSupplementPrefetchEvidence()) {
+            is DurableEvidenceReadResult.Valid -> read.value.takeIf(SupplementPrefetchOrderPauseSafety::isSafe)
+            else -> null
+        }
+    }
+
+    private fun supplementPipelineOutcome(
+        result: InActionGroupPipelineResult?
+    ): SupplementPipelineOutcome = when (result) {
+        is InActionGroupPipelineResult.Success -> SupplementPipelineOutcome.SUCCESS
+        is InActionGroupPipelineResult.Paused -> SupplementPipelineOutcome.PAUSED_FOR_ORDER
+        is InActionGroupPipelineResult.Failed -> SupplementPipelineOutcome.FAILED
+        null -> SupplementPipelineOutcome.CANCELLED
+    }
+
+    fun requestSupplementPauseForOrder(orderNo: String) {
+        if (orderNo.isBlank()) return
+        SupplementPauseController.requestPauseForOrder(orderNo)
+        val session = activeSupplementPrefetchSessionOrNull("订单暂停请求") ?: return
+        runCatching { supplementPrefetchSessionRepository.requestOrderBarrier(orderNo) }
+            .onFailure { error ->
+                val lockError = runCatching {
+                    actionGroupLocks.forceAcquire(session.resourceMask, session.sessionId)
+                }.exceptionOrNull()
+                enterActionGroupMaintenance(
+                    "订单暂停补肠 barrier 落盘失败，保留双 lane 会话：orderNo=$orderNo，" +
+                        "error=${error.message}，lockError=${lockError?.message}",
+                    preserveMoveStatus = true
+                )
+            }
+    }
+
+    suspend fun clearSupplementPauseAndResume(orderNo: String, reason: String): Boolean {
+        if (orderNo.isBlank()) return true
+        val parallelSession = when (val read = readSupplementPrefetchEvidence()) {
+            DurableEvidenceReadResult.Absent -> null
+            is DurableEvidenceReadResult.Valid -> read.value
+            is DurableEvidenceReadResult.Corrupted -> {
+                enterActionGroupMaintenance(
+                    "订单结束读取双 lane 会话失败，已保留订单暂停：" +
+                        "fingerprint=${read.fingerprint}，reason=${read.reason}"
+                )
+                return false
+            }
+        }
+        if (parallelSession?.pendingOrderNo == orderNo) {
+            if (!actionGroupLocks.tryAcquire(parallelSession.resourceMask, parallelSession.sessionId)) {
+                logW(LOG_SUPPLEMENT, "双 lane 订单结束续作资源忙，保留 barrier：session=${parallelSession.sessionId}")
+                return false
+            }
+            val preparation = runCatching {
+                SupplementPrefetchResumePlanner.prepareAfterOrder(supplementPrefetchSessionRepository, orderNo)
+            }.getOrElse { error ->
+                enterActionGroupMaintenance("双 lane 订单结束续作准备失败：reason=$reason，error=${error.message}")
+                return false
+            }
+            if (preparation !is SupplementPrefetchResumePreparation.Unsafe) {
+                SupplementPauseController.clearOrderPause(orderNo)
+            }
+            return handleParallelSupplementResumePreparation(preparation, reason, lockAlreadyOwned = true)
+        }
+        SupplementPauseController.clearOrderPause(orderNo)
+        return resumePausedSupplementAfterOrder(reason)
+    }
+
+    fun clearOrderMoveStatusIfRecoverySafe(reason: String): Boolean {
+        if (hasBlockingSupplementPrefetchEvidence()) {
+            logW(LOG_ORDER, "订单收尾保留双 lane 恢复证据和 moveStatus：reason=$reason")
+            return false
+        }
+        val config = AppConfig.getAppConfig()
+        config.moveStatus = 0
+        AppConfig.saveAppConfig(config)
+        return true
+    }
+
+    private fun restoreParallelSupplementBusyMoveStatus() {
+        val config = AppConfig.getAppConfig()
+        config.moveStatus = 1
+        AppConfig.saveAppConfigDurable(config)
+    }
+
+    private suspend fun handleParallelSupplementResumePreparation(
+        preparation: SupplementPrefetchResumePreparation,
+        reason: String,
+        lockAlreadyOwned: Boolean
+    ): Boolean = when (preparation) {
+        SupplementPrefetchResumePreparation.NoSession -> true
+        is SupplementPrefetchResumePreparation.Unsafe -> {
+            enterActionGroupMaintenance("双 lane 续作检查失败：reason=$reason，${preparation.reason}")
+            false
+        }
+        is SupplementPrefetchResumePreparation.ReplanRemaining -> {
+            runCatching {
+                supplementBatchIntentRepository.markCompleted(
+                    preparation.batchId,
+                    preparation.targetPanNo
+                )
+                SupplementPipelineCompletionCoordinator.complete(
+                    clearSession = {
+                        supplementPrefetchSessionRepository.clearIfRevision(
+                            preparation.sessionId,
+                            preparation.revision
+                        )
+                    },
+                    persistIdle = {
+                        val config = AppConfig.getAppConfig()
+                        config.moveStatus = 0
+                        AppConfig.saveAppConfigDurable(config)
+                    },
+                    releaseLock = { actionGroupLocks.release(preparation.sessionId) },
+                    publish = { publishRuntimeStateWithHttpFallback("双 lane 当前根已完成，等待重新规划") },
+                    restoreBusy = { restoreParallelSupplementBusyMoveStatus() }
+                )
+            }.fold(
+                onSuccess = { completion ->
+                    when (completion) {
+                        SupplementPipelineCompletionResult.Success -> true
+                        is SupplementPipelineCompletionResult.Failed -> {
+                            enterActionGroupMaintenance(
+                                "双 lane 已完成会话收口失败：reason=$reason，" +
+                                    "error=${completion.reason}，restoreError=${completion.restoreFailure?.message}",
+                                preserveMoveStatus = true
+                            )
+                            false
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    val restoreError = runCatching { restoreParallelSupplementBusyMoveStatus() }.exceptionOrNull()
+                    enterActionGroupMaintenance(
+                        "双 lane 已完成会话收口失败：reason=$reason，error=${error.message}，" +
+                            "restoreError=${restoreError?.message}",
+                        preserveMoveStatus = true
+                    )
+                    false
+                }
+            )
+        }
+        is SupplementPrefetchResumePreparation.Ready -> resumePreparedParallelSupplement(
+            preparation.plan,
+            reason,
+            lockAlreadyOwned
+        )
+    }
+
+    private suspend fun resumePreparedParallelSupplement(
+        plan: SupplementPrefetchResumePlan,
+        reason: String,
+        lockAlreadyOwned: Boolean
+    ): Boolean {
+        val session = activeSupplementPrefetchSessionOrNull("双 lane 续作执行前") ?: return false
+        val lane = session.deliveryLane
+        if (session.sessionId != plan.sessionId || lane?.sourceBoxNo != plan.sourceBoxNo ||
+            lane.targetPanNo != plan.targetPanNo || lane.lastConfirmedStage != plan.resumeAfterAction
+        ) {
+            enterActionGroupMaintenance("双 lane 续作计划与持久化会话不一致：plan=$plan")
+            return false
+        }
+        val runtime = AppConfig.getAppConfig()
+        if (runtime.onlineStatus != 1 || runtime.errorStatus != 0 || runtime.inspectionMode != 0 ||
+            runtime.supplyStatus != 0 || runtime.isEnable != 1 || !VMModbusHelper.connectStatus()
+        ) {
+            logW(LOG_SUPPLEMENT, "双 lane 续作运行态门禁拒绝下发，保留会话和锁：reason=$reason")
+            return false
+        }
+        if (!lockAlreadyOwned && !actionGroupLocks.tryAcquire(plan.resourceMask, plan.sessionId)) {
+            return false
+        }
+        val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == plan.targetPanNo }
+        val box = KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == plan.sourceBoxNo }
+        if (pan == null || box == null) {
+            enterActionGroupMaintenance("双 lane 续作找不到目标盘或来源箱：plan=$plan")
+            return false
+        }
+        runCatching {
+            runtime.moveStatus = 1
+            AppConfig.saveAppConfigDurable(runtime)
+        }.onFailure {
+            enterActionGroupMaintenance("双 lane 续作 moveStatus 落盘失败：${it.message}")
+            return false
+        }
+
+        var physicalFailure: String? = null
+        val physicalCoordinator = SupplementPrefetchPhysicalStateCoordinator(
+            repository = supplementPrefetchSessionRepository,
+            persistPhysicalState = { _, _ ->
+                KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+                KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+            },
+            publishPhysicalDelta = { _, actionName ->
+                val currentLane = requireNotNull(supplementPrefetchSessionRepository.load()?.deliveryLane)
+                if (actionName == "in2") {
+                    KaoPanHelper.getKaoPanBoxList()
+                        .firstOrNull { it.positionSn == currentLane.sourceBoxNo }
+                        ?.let { changed ->
+                            PanPhysicalStateDeltaReporter.reportStockChanged(
+                                changed,
+                                "action_physical:parallel_resume_in2:box=${changed.positionSn}:pan=${currentLane.targetPanNo}",
+                                "parallel_resume_action_physical_in2"
+                            )
+                        }
+                } else if (actionName == "in7") {
+                    KaoPanHelper.getKaoPanList()
+                        .firstOrNull { it.positionSn == currentLane.targetPanNo }
+                        ?.let { changed ->
+                            PanPhysicalStateDeltaReporter.reportPanChanged(
+                                changed,
+                                "action_physical:parallel_resume_in7:box=${currentLane.sourceBoxNo}:pan=${changed.positionSn}",
+                                "parallel_resume_action_physical_in7"
+                            )
+                        }
+                }
+            }
+        )
+        val client = createAtomicActionClient(
+            ActionGroupTelemetryContext(
+                sessionId = plan.sessionId,
+                boxNo = plan.sourceBoxNo,
+                panNo = plan.targetPanNo,
+                resourceLocks = actionGroupLocks.snapshot()
+            )
+        ) { telemetry ->
+            if (telemetry.eventPhase == AtomicActionExecutor.ACTION_EVENT_PHASE_FINISHED &&
+                telemetry.resultCode == AtomicActionCodes.COMPLETED &&
+                telemetry.actionName in setOf("in2", "in7")
+            ) {
+                val checkpoint = physicalCoordinator.applySuccessfulPhysicalCheckpoint(
+                    SupplementLaneRole.DELIVERY,
+                    telemetry.actionName
+                ) { currentLane ->
+                    val currentPan = KaoPanHelper.getKaoPanList()
+                        .firstOrNull { it.positionSn == currentLane.targetPanNo }
+                    val currentBox = KaoPanHelper.getKaoPanBoxList()
+                        .firstOrNull { it.positionSn == currentLane.sourceBoxNo }
+                    when {
+                        telemetry.actionName == "in2" && currentBox?.num == currentLane.expectedStockAfter ->
+                            SupplementPhysicalMutation.ALREADY_APPLIED
+                        telemetry.actionName == "in7" && currentPan?.isHasSausage == true ->
+                            SupplementPhysicalMutation.ALREADY_APPLIED
+                        else -> {
+                            val applied = applySupplementPhysicalTelemetry(
+                                telemetry,
+                                pan,
+                                box,
+                                "订单结束后双 lane 续作",
+                                currentLane.boxDeductionApplied,
+                                currentLane.panPlacementApplied,
+                                persistAndPublish = false
+                            )
+                            when {
+                                applied.stockInconsistent -> SupplementPhysicalMutation.FAILED
+                                applied.boxDeducted || applied.panPlaced -> SupplementPhysicalMutation.APPLIED
+                                else -> SupplementPhysicalMutation.ALREADY_APPLIED
+                            }
+                        }
+                    }
+                }
+                if (checkpoint is SupplementPhysicalCheckpointResult.Failed) {
+                    physicalFailure = checkpoint.reason
+                }
+            }
+        }
+        val result = try {
+            InActionGroupRunner(
+                client = client,
+                logger = { logD(LOG_ACTION_GROUP, it) },
+                operationLogger = LogUtils::i,
+                failureLogger = LogUtils::e,
+                onCurrentActionChanged = { actionName ->
+                    val currentLane = requireNotNull(supplementPrefetchSessionRepository.load()?.deliveryLane)
+                    if (currentLane.currentAction != actionName) {
+                        supplementPrefetchSessionRepository.prepareAction(
+                            SupplementLaneRole.DELIVERY,
+                            currentLane,
+                            actionName
+                        )
+                    }
+                },
+                onActionCommandWritten = { actionName ->
+                    val currentLane = supplementPrefetchSessionRepository.load()?.deliveryLane
+                    if (currentLane?.lifecycle == SupplementActionLifecycle.PREPARED) {
+                        supplementPrefetchSessionRepository.markCommandWritten(SupplementLaneRole.DELIVERY, actionName)
+                    }
+                },
+                onActionRunningConfirmed = { actionName ->
+                    val currentLane = supplementPrefetchSessionRepository.load()?.deliveryLane
+                    if (currentLane?.lifecycle == SupplementActionLifecycle.COMMAND_WRITTEN) {
+                        supplementPrefetchSessionRepository.markRunningConfirmed(SupplementLaneRole.DELIVERY, actionName)
+                    }
+                },
+                onActionTerminalConfirmed = { actionName, actionResult ->
+                    physicalFailure?.let { error(it) }
+                    if (actionResult == AtomicActionResult.Success) {
+                        val currentLane = requireNotNull(supplementPrefetchSessionRepository.load()?.deliveryLane)
+                        if (currentLane.lifecycle in setOf(
+                                SupplementActionLifecycle.COMMAND_WRITTEN,
+                                SupplementActionLifecycle.RUNNING_CONFIRMED
+                            )
+                        ) {
+                            supplementPrefetchSessionRepository.markTerminalConfirmed(
+                                SupplementLaneRole.DELIVERY,
+                                actionName,
+                                allowWithoutRunningEvidence = true
+                            )
+                        }
+                    }
+                }
+            ).run(plan.sourceBoxNo, plan.targetPanNo, startAfterCompletedAction = plan.resumeAfterAction)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            enterActionGroupMaintenance("双 lane 续作异常，保留会话和锁：reason=$reason，error=${error.message}")
+            return false
+        }
+        if (result != ActionGroupResult.Success) {
+            enterActionGroupMaintenance("双 lane 续作失败，保留会话和锁：reason=$reason，result=$result")
+            return false
+        }
+        return finishParallelSupplementResume(plan, pan, box, reason)
+    }
+
+    private suspend fun finishParallelSupplementResume(
+        plan: SupplementPrefetchResumePlan,
+        pan: KaoPan,
+        box: KaoPanBox,
+        reason: String
+    ): Boolean {
+        val session = supplementPrefetchSessionRepository.load()
+            ?: return false
+        val lane = session.deliveryLane
+        if (lane?.currentAction != "in7" || !lane.panPlacementApplied) {
+            enterActionGroupMaintenance("双 lane 续作成功但缺少 in7 落盘证据：reason=$reason")
+            return false
+        }
+        return try {
+            applySuccessfulSupplementMove(
+                pan,
+                box,
+                boxAlreadyDeducted = lane.boxDeductionApplied,
+                panAlreadyPlaced = lane.panPlacementApplied
+            ) ?: error("双 lane 续作完成后盘箱缓存缺失")
+            KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+            KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+            supplementBatchIntentRepository.markCompleted(plan.batchId, plan.targetPanNo)
+            if (session.prefetchLane != null) {
+                supplementPrefetchSessionRepository.promotePrefetchAfterDelivery(
+                    allowPausedCheckpoint = true
+                )
+                val next = SupplementPrefetchResumePlanner.prepareRecovered(
+                    supplementPrefetchSessionRepository
+                )
+                if (next !is SupplementPrefetchResumePreparation.Ready) {
+                    error("双 lane 当前根完成后预取 lane 无法续作：$next")
+                }
+                return resumePreparedParallelSupplement(
+                    next.plan,
+                    "$reason：当前根完成后续作预取根",
+                    lockAlreadyOwned = true
+                )
+            }
+            val latest = requireNotNull(supplementPrefetchSessionRepository.load())
+            when (val completion = SupplementPipelineCompletionCoordinator.complete(
+                clearSession = {
+                    supplementPrefetchSessionRepository.clearIfRevision(latest.sessionId, latest.revision)
+                },
+                persistIdle = {
+                    val config = AppConfig.getAppConfig()
+                    config.moveStatus = 0
+                    AppConfig.saveAppConfigDurable(config)
+                },
+                releaseLock = { actionGroupLocks.release(plan.sessionId) },
+                publish = { publishRuntimeStateWithHttpFallback("双 lane 订单结束续作完成") },
+                restoreBusy = { restoreParallelSupplementBusyMoveStatus() }
+            )) {
+                SupplementPipelineCompletionResult.Success -> true
+                is SupplementPipelineCompletionResult.Failed -> {
+                    enterActionGroupMaintenance(
+                        "双 lane 续作耐久收口失败，保留 busy 状态：${completion.reason}，" +
+                            "restoreError=${completion.restoreFailure?.message}",
+                        preserveMoveStatus = true
+                    )
+                    false
+                }
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            val restoreError = runCatching { restoreParallelSupplementBusyMoveStatus() }.exceptionOrNull()
+            enterActionGroupMaintenance(
+                "双 lane 续作耐久收口失败，保留证据：${error.message}，" +
+                    "restoreError=${restoreError?.message}",
+                preserveMoveStatus = true
+            )
+            false
+        }
     }
 
     private fun hasPausedSupplementSession(): Boolean {
@@ -998,10 +1462,18 @@ object KaoChangOperate {
         )
     }
 
-    private fun enterActionGroupMaintenance(reason: String, code: FaultCode = FaultCode.ACTION_GROUP_FAILED) {
+    private fun enterActionGroupMaintenance(
+        reason: String,
+        code: FaultCode = FaultCode.ACTION_GROUP_FAILED,
+        preserveMoveStatus: Boolean = false
+    ) {
         markDeviceErrorAndUpload(code, reason)
         val config = AppConfig.getAppConfig()
-        config.moveStatus = 0
+        if (preserveMoveStatus || hasBlockingSupplementPrefetchEvidence()) {
+            logW(LOG_ACTION_GROUP, "进入维护时保留双 lane 恢复证据和 moveStatus：reason=$reason")
+        } else {
+            config.moveStatus = 0
+        }
         config.onlineStatus = 3
         config.isEnable = 0
         AppConfig.saveAppConfig(config)
@@ -1179,7 +1651,10 @@ object KaoChangOperate {
         return recoverActionGroupStateAfterModbusReady(reason)
     }
 
-    suspend fun recoverActionGroupStateAfterModbusReady(reason: String): Boolean {
+    suspend fun recoverActionGroupStateAfterModbusReady(
+        reason: String,
+        stopAfterParallelSessionHandled: Boolean = false
+    ): Boolean {
         if (!VMModbusHelper.connectStatus()) {
             val evidence = buildActionGroupRecoveryResidueEvidence(reason)
             val detail = "动作组恢复早退：Modbus 未连接，reason=$reason，evidence=${evidence.summary()}"
@@ -1187,6 +1662,99 @@ object KaoChangOperate {
             invalidateActionGroupRecoveryVerification(detail)
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
+        }
+        val doubleLaneSession = when (val read = readSupplementPrefetchEvidence()) {
+            DurableEvidenceReadResult.Absent -> null
+            is DurableEvidenceReadResult.Valid -> read.value
+            is DurableEvidenceReadResult.Corrupted -> {
+                enterActionGroupMaintenance(
+                    "双 lane 会话损坏，禁止进入通用动作组恢复：fingerprint=${read.fingerprint}，reason=${read.reason}"
+                )
+                return false
+            }
+        }
+        val panMoveJournal = runCatching { panMoveJournalStore.load() }
+            .getOrElse { error ->
+                enterActionGroupMaintenance("搬盘 journal 读取失败，禁止恢复：${error.message}")
+                return false
+        }
+        if (doubleLaneSession != null) {
+            val lockFailure = runCatching {
+                actionGroupLocks.forceAcquire(doubleLaneSession.resourceMask, doubleLaneSession.sessionId)
+            }.exceptionOrNull()
+            if (lockFailure != null) {
+                enterActionGroupMaintenance(
+                    "双 lane 恢复资源锁冲突，保留恢复证据：session=${doubleLaneSession.sessionId}，" +
+                        "error=${lockFailure.message}",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+        }
+        if (doubleLaneSession != null && panMoveJournal != null) {
+            enterActionGroupMaintenance(
+                "双 lane 会话与搬盘 journal 同时存在，无法安全判定机械归属，已保留二者：" +
+                    "session=${doubleLaneSession.sessionId}，moveId=${panMoveJournal.moveId}"
+            )
+            return false
+        }
+        if (doubleLaneSession != null) {
+            val dedicated = try {
+                SupplementPrefetchRecoveryCoordinator(
+                    client = createAtomicActionClient(),
+                    repository = supplementPrefetchSessionRepository,
+                    betweenSnapshots = { delay(200L) },
+                    logger = { message -> logD(LOG_ACTION_GROUP, message) }
+                ).recover()
+            } catch (cancellation: CancellationException) {
+                enterActionGroupMaintenance(
+                    "双 lane 专用恢复被取消，保留 session、资源锁和 moveStatus：" +
+                        "session=${doubleLaneSession.sessionId}",
+                    preserveMoveStatus = true
+                )
+                throw cancellation
+            }
+            logI(
+                LOG_ACTION_GROUP,
+                "双 lane 会话存在，禁止进入通用动作组恢复：session=${doubleLaneSession.sessionId}，result=$dedicated"
+            )
+            val recovered = when (dedicated) {
+                SupplementPrefetchRecoveryResult.Idle -> {
+                    enterActionGroupMaintenance("双 lane 会话在专用恢复期间消失，拒绝进入通用恢复")
+                    false
+                }
+                is SupplementPrefetchRecoveryResult.PausedForOrder -> {
+                    val config = AppConfig.getAppConfig()
+                    config.moveStatus = 0
+                    AppConfig.saveAppConfigDurable(config)
+                    actionGroupLocks.release(dedicated.session.sessionId)
+                    markActionGroupRecoveryVerified("双 lane 订单暂停检查点已验证：$reason")
+                    true
+                }
+                is SupplementPrefetchRecoveryResult.ReadyToResume -> {
+                    val preparation = SupplementPrefetchResumePlanner.prepareRecovered(
+                        supplementPrefetchSessionRepository
+                    )
+                    handleParallelSupplementResumePreparation(
+                        preparation,
+                        "双 lane 启动恢复：$reason",
+                        lockAlreadyOwned = true
+                    )
+                }
+                is SupplementPrefetchRecoveryResult.MaintenanceRequired -> {
+                    enterActionGroupMaintenance(dedicated.reason)
+                    false
+                }
+            }
+            if (stopAfterParallelSessionHandled) {
+                logI(
+                    LOG_ACTION_GROUP,
+                    "本次调用已处理既有双 lane 会话，禁止继续使用恢复前目标快照：" +
+                        "session=${doubleLaneSession.sessionId}，recovered=$recovered，reason=$reason"
+                )
+                return false
+            }
+            return recovered
         }
         val panMoveRecovered = runCatching { recoverPanMoveJournalAfterModbusReady(reason) }
             .getOrElse { error ->
@@ -1465,6 +2033,10 @@ object KaoChangOperate {
     }
 
     suspend fun confirmClearActionGroupRecoveryResidue(reason: String): Boolean {
+        if (hasBlockingSupplementPrefetchEvidence()) {
+            logW(LOG_ACTION_GROUP, "双 lane 会话存在，拒绝人工清理通用动作组残留：reason=$reason")
+            return false
+        }
         val evidence = buildActionGroupRecoveryResidueEvidence(reason)
         val decision = ActionGroupManualResidueClearPolicy.evaluate(evidence)
         if (!decision.canShowManualClear) {
@@ -2061,6 +2633,10 @@ object KaoChangOperate {
 
     fun confirmPendingSupplementBatchSafety(reason: String): Boolean {
         val pending = pendingSupplementBatchRequiresManualConfirm() ?: return false
+        if (hasBlockingSupplementPrefetchEvidence()) {
+            logW(LOG_SUPPLEMENT, "双 lane 会话存在，拒绝人工确认清理补肠恢复证据：batchId=${pending.batchId}")
+            return false
+        }
         if (panMoveJournalStore.load() != null) {
             logW(LOG_SUPPLEMENT, "存在搬盘journal，拒绝确认补肠现场安全：batchId=${pending.batchId}")
             return false
@@ -2189,6 +2765,10 @@ object KaoChangOperate {
         if (isActionGroupRecoveryBlocked()) {
             return null
         }
+        return supplementBatchIntentRepository.loadActive()
+    }
+
+    fun maintenanceKaoPanIntentForUi(): SupplementBatchIntent? {
         return supplementBatchIntentRepository.loadActive()
     }
 
@@ -2670,7 +3250,11 @@ object KaoChangOperate {
             )
             return 0
         }
-        if (!recoverActionGroupStateAfterModbusReady("补肠预取流水线入口前恢复检查")) {
+        if (!recoverActionGroupStateAfterModbusReady(
+                "补肠预取流水线入口前恢复检查",
+                stopAfterParallelSessionHandled = true
+            )
+        ) {
             return 0
         }
 
@@ -2756,9 +3340,10 @@ object KaoChangOperate {
             return 0
         }
 
-        val owner = "in_pipeline:${System.currentTimeMillis()}"
+        val parallelEnabled = isParallelSupplementPrefetchEnabled()
+        val sessionId = "in_pipeline:${System.currentTimeMillis()}"
         val lockMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
-        if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
+        if (!actionGroupLocks.tryAcquire(lockMask, sessionId)) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
             publishRuntimeStateWithHttpFallback("补肠预取流水线资源忙终止")
@@ -2857,27 +3442,50 @@ object KaoChangOperate {
         var pipelineResultForCleanup: InActionGroupPipelineResult? = null
         var latestCurrentAction: InActionGroupPipelineActionContext? = null
         var latestRiskAction: InActionGroupPipelineActionContext? = null
+        var safeParallelSupplyDegrade: Boolean
         val result = try {
             val firstMove = plannedMoves.first()
             val firstBox = KaoPanHelper.getKaoPanBoxList()
                 .firstOrNull { it.positionSn == firstMove.task.sourceBoxCandidates.first() }
-            actionGroupSessionStore.save(
-                ActionGroupSession(
-                    sessionId = owner,
-                    type = ActionGroupSessionType.IN_SUPPLEMENT,
-                    sourceNo = firstMove.task.sourceBoxCandidates.first(),
-                    targetNo = firstMove.task.targetPanNo,
-                    currentAction = "in_pipeline",
-                    resourceMask = lockMask,
-                    batchId = batchId,
-                    taste = firstMove.tasteCode,
-                    returnPosition = firstMove.returnPosition,
-                    prefetch = true,
-                    checkpointVersion = 1L,
-                    stockBefore = firstBox?.num,
-                    expectedStockAfter = firstBox?.num?.let { (it - 1).coerceAtLeast(0) }
+            if (parallelEnabled) {
+                check(readSupplementPrefetchEvidence() is DurableEvidenceReadResult.Absent) {
+                    "已有或损坏的双 lane 补肠证据，禁止覆盖启动新流水线"
+                }
+                supplementPrefetchSessionRepository.create(
+                    SupplementPrefetchPipelineSession(
+                        sessionId = sessionId,
+                        batchId = batchId,
+                        resourceMask = lockMask,
+                        deliveryLane = SupplementPrefetchLaneCheckpoint(
+                            sourceBoxNo = firstMove.task.sourceBoxCandidates.first(),
+                            sourceBoxCandidates = firstMove.task.sourceBoxCandidates,
+                            targetPanNo = firstMove.task.targetPanNo,
+                            taste = firstMove.tasteCode,
+                            returnPosition = firstMove.returnPosition,
+                            stockBefore = firstBox?.num,
+                            expectedStockAfter = firstBox?.num?.let { (it - 1).coerceAtLeast(0) }
+                        )
+                    )
                 )
-            )
+            } else {
+                actionGroupSessionStore.save(
+                    ActionGroupSession(
+                        sessionId = sessionId,
+                        type = ActionGroupSessionType.IN_SUPPLEMENT,
+                        sourceNo = firstMove.task.sourceBoxCandidates.first(),
+                        targetNo = firstMove.task.targetPanNo,
+                        currentAction = "in_pipeline",
+                        resourceMask = lockMask,
+                        batchId = batchId,
+                        taste = firstMove.tasteCode,
+                        returnPosition = firstMove.returnPosition,
+                        prefetch = true,
+                        checkpointVersion = 1L,
+                        stockBefore = firstBox?.num,
+                        expectedStockAfter = firstBox?.num?.let { (it - 1).coerceAtLeast(0) }
+                    )
+                )
+            }
             logD(
                 LOG_ACTION_GROUP,
                 "补肠预取流水线开始：protocol=300_400，targetCount=${plannedMoves.size}，" +
@@ -2894,14 +3502,52 @@ object KaoChangOperate {
             LogUtils.i(
                 "【补肠】开始批量补肠：目标烤盘=${plannedMoves.joinToString(",") { it.task.targetPanNo.toString() }}，" +
                     "口味=${plannedMoves.mapNotNull { it.tasteCode }.distinct().joinToString(",").ifBlank { "未知" }}，" +
-                    "口味数量=$tasteSummary"
+                "口味数量=$tasteSummary"
             )
+            val physicalCoordinator = if (parallelEnabled) {
+                SupplementPrefetchPhysicalStateCoordinator(
+                    repository = supplementPrefetchSessionRepository,
+                    persistPhysicalState = { _, _ ->
+                        KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+                        KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+                    },
+                    publishPhysicalDelta = { role, actionName ->
+                        val session = requireNotNull(supplementPrefetchSessionRepository.load())
+                        val lane = if (role == SupplementLaneRole.DELIVERY) {
+                            session.deliveryLane
+                        } else {
+                            session.prefetchLane
+                        } ?: error("$role lane 不存在")
+                        if (actionName == "in2") {
+                            val changedBox = KaoPanHelper.getKaoPanBoxList()
+                                .firstOrNull { it.positionSn == lane.sourceBoxNo }
+                                ?: error("in2 来源肠箱不存在：${lane.sourceBoxNo}")
+                            PanPhysicalStateDeltaReporter.reportStockChanged(
+                                changedStock = changedBox,
+                                reason = "action_physical:parallel_in2:box=${lane.sourceBoxNo}:pan=${lane.targetPanNo}",
+                                source = "parallel_action_physical_in2"
+                            )
+                        } else if (actionName == "in7") {
+                            val changedPan = KaoPanHelper.getKaoPanList()
+                                .firstOrNull { it.positionSn == lane.targetPanNo }
+                                ?: error("in7 目标烤盘不存在：${lane.targetPanNo}")
+                            PanPhysicalStateDeltaReporter.reportPanChanged(
+                                changedPan = changedPan,
+                                reason = "action_physical:parallel_in7:box=${lane.sourceBoxNo}:pan=${lane.targetPanNo}",
+                                source = "parallel_action_physical_in7"
+                            )
+                        }
+                    }
+                )
+            } else {
+                null
+            }
             InActionGroupPrefetchPipelineRunner(
                 client = createAtomicActionClient(),
                 actionClientProvider = { context ->
                     createAtomicActionClient(
                         ActionGroupTelemetryContext(
-                            sessionId = owner,
+                            sessionId = sessionId,
                             boxNo = context.sourceBoxNo,
                             panNo = context.targetPanNo,
                             resourceLocks = actionGroupLocks.snapshot()
@@ -2917,14 +3563,60 @@ object KaoChangOperate {
                             )
                             return@createAtomicActionClient
                         }
-                        val applied = applySupplementPhysicalTelemetry(
-                            telemetry = telemetry,
-                            plannedPan = move.kaoPan,
-                            plannedBox = box,
-                            source = "补肠预取流水线",
-                            boxAlreadyDeducted = context.targetPanNo in physicallyDeductedTargetPanNos,
-                            panAlreadyPlaced = context.targetPanNo in physicallyPlacedTargetPanNos
-                        )
+                        val applied = if (parallelEnabled &&
+                            telemetry.resultCode == AtomicActionCodes.COMPLETED &&
+                            telemetry.physicalCheckpoint != null
+                        ) {
+                            when (val checkpoint = requireNotNull(physicalCoordinator)
+                                .applySuccessfulPhysicalCheckpoint(context.laneRole, telemetry.actionName) { lane ->
+                                    val alreadyApplied = when (telemetry.actionName) {
+                                        "in2" -> lane.expectedStockAfter?.let { expected ->
+                                            KaoPanHelper.getKaoPanBoxList()
+                                                .firstOrNull { it.positionSn == lane.sourceBoxNo }
+                                                ?.num == expected
+                                        } == true
+                                        "in7" -> KaoPanHelper.getKaoPanList()
+                                            .firstOrNull { it.positionSn == lane.targetPanNo }
+                                            ?.isHasSausage == true
+                                        else -> false
+                                    }
+                                    if (alreadyApplied) {
+                                        return@applySuccessfulPhysicalCheckpoint SupplementPhysicalMutation.ALREADY_APPLIED
+                                    }
+                                    val physical = applySupplementPhysicalTelemetry(
+                                        telemetry = telemetry,
+                                        plannedPan = move.kaoPan,
+                                        plannedBox = box,
+                                        source = "补肠双 lane 流水线",
+                                        boxAlreadyDeducted = lane.boxDeductionApplied,
+                                        panAlreadyPlaced = lane.panPlacementApplied,
+                                        persistAndPublish = false
+                                    )
+                                    when {
+                                        physical.stockInconsistent -> SupplementPhysicalMutation.FAILED
+                                        physical.boxDeducted || physical.panPlaced -> SupplementPhysicalMutation.APPLIED
+                                        else -> SupplementPhysicalMutation.FAILED
+                                    }
+                                }) {
+                                is SupplementPhysicalCheckpointResult.Failed ->
+                                    throw IllegalStateException(checkpoint.reason, checkpoint.cause)
+                                SupplementPhysicalCheckpointResult.Applied,
+                                SupplementPhysicalCheckpointResult.AlreadyApplied ->
+                                    AppliedSupplementPhysicalTelemetry(
+                                        boxDeducted = telemetry.actionName == "in2",
+                                        panPlaced = telemetry.actionName == "in7"
+                                    )
+                            }
+                        } else {
+                            applySupplementPhysicalTelemetry(
+                                telemetry = telemetry,
+                                plannedPan = move.kaoPan,
+                                plannedBox = box,
+                                source = "补肠预取流水线",
+                                boxAlreadyDeducted = context.targetPanNo in physicallyDeductedTargetPanNos,
+                                panAlreadyPlaced = context.targetPanNo in physicallyPlacedTargetPanNos
+                            )
+                        }
                         if (applied.boxDeducted) {
                             physicallyDeductedTargetPanNos += context.targetPanNo
                         }
@@ -2935,7 +3627,7 @@ object KaoChangOperate {
                             stockInconsistentTargetPanNos += context.targetPanNo
                         } else {
                             recordConfirmedSupplementSessionStage(
-                                sessionId = owner,
+                                sessionId = sessionId,
                                 actionName = telemetry.actionName,
                                 sourceBoxNo = context.sourceBoxNo,
                                 targetPanNo = context.targetPanNo,
@@ -2958,6 +3650,14 @@ object KaoChangOperate {
                         sourceBoxNo = sourceBoxNo,
                         reason = "补肠预取流水线连续取肠失败后跳过候选箱"
                     )
+                },
+                onTerminalPrefetchPickFailure = { context ->
+                    if (parallelEnabled) {
+                        recordIrPickFailureAndSave(
+                            sourceBoxNo = context.sourceBoxNo,
+                            reason = "补肠双 lane prefetch 最终取肠失败"
+                        )
+                    }
                 },
                 onPickSucceeded = { sourceBoxNo ->
                     LowerPlatformRuntimeStateReporter.markSupplyBoxRecoveredAfterSuccessfulTake(
@@ -2982,37 +3682,146 @@ object KaoChangOperate {
                     val currentBoxStock = KaoPanHelper.getKaoPanBoxList()
                         .firstOrNull { it.positionSn == context.sourceBoxNo }
                         ?.num
-                    actionGroupSessionStore.save(
-                        ActionGroupSession(
-                            sessionId = owner,
-                            type = ActionGroupSessionType.IN_SUPPLEMENT,
-                            sourceNo = context.sourceBoxNo,
-                            targetNo = context.targetPanNo,
-                            currentAction = context.actionName,
-                            resourceMask = lockMask,
-                            startedAtMs = previousSession?.startedAtMs ?: System.currentTimeMillis(),
-                            batchId = batchId,
-                            taste = checkpointMove?.tasteCode,
-                            returnPosition = checkpointMove?.returnPosition,
-                            prefetch = true,
-                            checkpointVersion = (previousSession?.checkpointVersion ?: 0L) + 1L,
-                            lastConfirmedStage = previousSession?.lastConfirmedStage.takeIf { sameMove },
-                            stockBefore = if (sameMove) previousSession?.stockBefore else currentBoxStock,
-                            expectedStockAfter = if (sameMove) {
-                                previousSession?.expectedStockAfter
-                            } else {
-                                currentBoxStock?.let { (it - 1).coerceAtLeast(0) }
-                            },
-                            boxDeductionApplied = sameMove && previousSession?.boxDeductionApplied == true,
-                            panPlacementApplied = sameMove && previousSession?.panPlacementApplied == true
+                    if (parallelEnabled) {
+                        val parallelSession = requireNotNull(supplementPrefetchSessionRepository.load())
+                        val existingLane = if (context.laneRole == SupplementLaneRole.DELIVERY) {
+                            parallelSession.deliveryLane
+                        } else {
+                            parallelSession.prefetchLane
+                        }
+                        val switchingFallbackSource = existingLane?.currentAction == "in2" &&
+                            context.actionName == "in1" &&
+                            existingLane.sourceBoxNo != context.sourceBoxNo
+                        if (switchingFallbackSource) {
+                            supplementPrefetchSessionRepository.restartLaneAfterPickFailure(
+                                role = context.laneRole,
+                                failedSourceBoxNo = requireNotNull(existingLane?.sourceBoxNo),
+                                fallbackSourceBoxNo = context.sourceBoxNo,
+                                targetPanNo = context.targetPanNo,
+                                stockBefore = currentBoxStock
+                            )
+                        } else if (existingLane?.currentAction != context.actionName) {
+                            val lane = (existingLane ?: SupplementPrefetchLaneCheckpoint(
+                                sourceBoxNo = context.sourceBoxNo,
+                                sourceBoxCandidates = context.task.sourceBoxCandidates,
+                                targetPanNo = context.targetPanNo,
+                                taste = checkpointMove?.tasteCode,
+                                returnPosition = checkpointMove?.returnPosition,
+                                stockBefore = currentBoxStock,
+                                expectedStockAfter = currentBoxStock?.let { (it - 1).coerceAtLeast(0) }
+                            )).copy(
+                                sourceBoxNo = context.sourceBoxNo,
+                                targetPanNo = context.targetPanNo
+                            )
+                            supplementPrefetchSessionRepository.prepareAction(
+                                context.laneRole,
+                                lane,
+                                context.actionName
+                            )
+                        }
+                    } else {
+                        actionGroupSessionStore.save(
+                            ActionGroupSession(
+                                sessionId = sessionId,
+                                type = ActionGroupSessionType.IN_SUPPLEMENT,
+                                sourceNo = context.sourceBoxNo,
+                                targetNo = context.targetPanNo,
+                                currentAction = context.actionName,
+                                resourceMask = lockMask,
+                                startedAtMs = previousSession?.startedAtMs ?: System.currentTimeMillis(),
+                                batchId = batchId,
+                                taste = checkpointMove?.tasteCode,
+                                returnPosition = checkpointMove?.returnPosition,
+                                prefetch = true,
+                                checkpointVersion = (previousSession?.checkpointVersion ?: 0L) + 1L,
+                                lastConfirmedStage = previousSession?.lastConfirmedStage.takeIf { sameMove },
+                                stockBefore = if (sameMove) previousSession?.stockBefore else currentBoxStock,
+                                expectedStockAfter = if (sameMove) {
+                                    previousSession?.expectedStockAfter
+                                } else {
+                                    currentBoxStock?.let { (it - 1).coerceAtLeast(0) }
+                                },
+                                boxDeductionApplied = sameMove && previousSession?.boxDeductionApplied == true,
+                                panPlacementApplied = sameMove && previousSession?.panPlacementApplied == true
+                            )
                         )
-                    )
+                    }
                     logD(
                         LOG_ACTION_GROUP,
                         "补肠预取流水线当前动作：targetPan=${context.targetPanNo}，" +
                             "sourceBox=${context.sourceBoxNo}，action=${context.actionName}"
                     )
                 },
+                onActionCommandWritten = { context ->
+                    if (parallelEnabled) {
+                        val session = requireNotNull(supplementPrefetchSessionRepository.load())
+                        val lane = if (context.laneRole == SupplementLaneRole.DELIVERY) {
+                            session.deliveryLane
+                        } else {
+                            session.prefetchLane
+                        }
+                        if (lane?.lifecycle == SupplementActionLifecycle.PREPARED) {
+                            supplementPrefetchSessionRepository.markCommandWritten(
+                                context.laneRole,
+                                context.actionName
+                            )
+                        }
+                    }
+                },
+                onActionRunningConfirmed = { context ->
+                    if (parallelEnabled) {
+                        val session = requireNotNull(supplementPrefetchSessionRepository.load())
+                        val lane = if (context.laneRole == SupplementLaneRole.DELIVERY) {
+                            session.deliveryLane
+                        } else {
+                            session.prefetchLane
+                        }
+                        if (lane?.lifecycle == SupplementActionLifecycle.COMMAND_WRITTEN) {
+                            supplementPrefetchSessionRepository.markRunningConfirmed(
+                                context.laneRole,
+                                context.actionName
+                            )
+                        }
+                    }
+                },
+                onActionTerminalConfirmed = { context, _ ->
+                    if (parallelEnabled) {
+                        val session = requireNotNull(supplementPrefetchSessionRepository.load())
+                        val lane = if (context.laneRole == SupplementLaneRole.DELIVERY) {
+                            session.deliveryLane
+                        } else {
+                            session.prefetchLane
+                        }
+                        if (lane?.lifecycle == SupplementActionLifecycle.COMMAND_WRITTEN ||
+                            lane?.lifecycle == SupplementActionLifecycle.RUNNING_CONFIRMED
+                        ) {
+                            supplementPrefetchSessionRepository.markTerminalConfirmed(
+                                context.laneRole,
+                                context.actionName,
+                                allowWithoutRunningEvidence = true
+                            )
+                        }
+                    }
+                },
+                onPrefetchPromoted = {
+                    if (parallelEnabled) {
+                        supplementPrefetchSessionRepository.promotePrefetchAfterDelivery()
+                    }
+                },
+                onPausedPrefetchPromoted = {
+                    if (parallelEnabled) {
+                        supplementPrefetchSessionRepository.promotePrefetchAfterDelivery(
+                            allowPausedCheckpoint = true
+                        )
+                    }
+                },
+                beforeDeliveryCommit = { context ->
+                    !parallelEnabled || supplementPrefetchSessionRepository.tryCommitDelivery(
+                        context.sourceBoxNo,
+                        context.targetPanNo
+                    )
+                },
+                parallelEnabled = parallelEnabled,
                 pauseReasonAfterCurrentTask = {
                     when {
                         SupplementPauseController.shouldPauseForOrder() -> "检测到订单待出餐"
@@ -3036,7 +3845,10 @@ object KaoChangOperate {
                 .also {
                     pipelineResultForCleanup = it
                     actionGroupCompleted = true
-                    if (it is InActionGroupPipelineResult.Paused && it.pausedAfterAction in setOf("in1", "in2", "in3")) {
+                    if (!parallelEnabled &&
+                        it is InActionGroupPipelineResult.Paused &&
+                        it.pausedAfterAction in setOf("in1", "in2", "in3")
+                    ) {
                         actionGroupSessionStore.load()?.let { session ->
                             val pausedSession = session.copy(
                                 lastConfirmedStage = it.pausedAfterAction,
@@ -3057,15 +3869,52 @@ object KaoChangOperate {
                 throwable = e
             )
             throw e
+        } catch (e: Exception) {
+            enterActionGroupMaintenance(
+                "补肠预取流水线 durable session/runner 接线异常，保留 session/锁/moveStatus：" +
+                    "${e::class.java.simpleName}:${e.message}",
+                preserveMoveStatus = true
+            )
+            throw e
         } finally {
+            safeParallelSupplyDegrade = parallelEnabled &&
+                (pipelineResultForCleanup as? InActionGroupPipelineResult.Failed)?.let { failure ->
+                    ParallelSupplementE5ClosurePolicy.canRelease(
+                        failure,
+                        activeSupplementPrefetchSessionOrNull("双 lane E5 安全收口判定"),
+                        sessionId
+                    )
+                } == true
             val pausedSupplementContinuation = pipelineResultForCleanup is InActionGroupPipelineResult.Paused &&
                 hasPausedSupplementSession()
+            val safePausedSession = activeSafePausedSupplementSession()
+            val safeParallelSuccess = parallelEnabled &&
+                pipelineResultForCleanup is InActionGroupPipelineResult.Success &&
+                activeSupplementPrefetchSessionOrNull("双 lane 成功收口判定")?.sessionId == sessionId
+            val safeReleaseConfirmed =
+                (pipelineResultForCleanup is InActionGroupPipelineResult.Paused &&
+                    safePausedSession?.sessionId == sessionId) ||
+                    safeParallelSupplyDegrade ||
+                    safeParallelSuccess
+            val retainParallelEvidence = SupplementPipelineFailureRetentionPolicy.shouldRetain(
+                evidenceActive = hasBlockingSupplementPrefetchEvidence(),
+                outcome = if (safeParallelSupplyDegrade) {
+                    SupplementPipelineOutcome.SUPPLY_DEGRADED
+                } else {
+                    supplementPipelineOutcome(pipelineResultForCleanup)
+                },
+                safeReleaseConfirmed = safeReleaseConfirmed
+            )
             val retainFailureEvidence = !actionGroupCompleted ||
-                pipelineResultForCleanup is InActionGroupPipelineResult.Failed ||
+                (pipelineResultForCleanup is InActionGroupPipelineResult.Failed && !safeParallelSupplyDegrade) ||
                 pausedSupplementContinuation ||
-                durableCompletionFailed
+                durableCompletionFailed ||
+                retainParallelEvidence
             if (retainFailureEvidence) {
                 logW(LOG_ACTION_GROUP, "补肠预取流水线保留session/锁/moveStatus，等待恢复或人工确认")
+            }
+            if (retainParallelEvidence) {
+                logW(LOG_ACTION_GROUP, "补肠双 lane 失败，保留 session、资源锁和 moveStatus")
             }
             runCatching {
                 KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
@@ -3088,31 +3937,118 @@ object KaoChangOperate {
             applyCompletedPipelineTask(completedTask)
         }
 
-        if (result is InActionGroupPipelineResult.Success && !durableCompletionFailed) {
+        if (safeParallelSupplyDegrade && result is InActionGroupPipelineResult.Failed) {
             runCatching {
-                val settledConfig = AppConfig.getAppConfig()
-                settledConfig.moveStatus = 0
-                AppConfig.saveAppConfigDurable(settledConfig)
-                actionGroupSessionStore.clear()
-                actionGroupLocks.release(owner)
-                publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
-                applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
+                handleParallelE5SupplyDegrade(result, taskByPanNo, batchId)
             }.onFailure { error ->
+                safeParallelSupplyDegrade = false
                 durableCompletionFailed = true
                 enterActionGroupMaintenance(
-                    "补肠预取流水线完成后session/moveStatus耐久收口失败，保留恢复证据：${error.message}"
+                    "补肠双 lane E5 安全降级落盘失败，保留 session/锁/moveStatus：${error.message}"
                 )
             }
+        }
+
+        runCatching {
+            val session = supplementPrefetchSessionRepository.load()
+            val delivery = session?.deliveryLane
+            if (session?.barrierState == SupplementBarrierState.DELIVERY_COMMITTED &&
+                !session.pendingOrderNo.isNullOrBlank() &&
+                session.prefetchLane == null &&
+                delivery?.currentAction == "in7" &&
+                delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
+                delivery.boxDeductionApplied &&
+                delivery.panPlacementApplied
+            ) {
+                supplementPrefetchSessionRepository.pauseCommittedDeliveryForPendingOrder()
+            }
+        }.onFailure { error ->
+            durableCompletionFailed = true
+            enterActionGroupMaintenance(
+                "补肠预取已提交 delivery 转订单安全暂停失败，保留 session/锁/moveStatus：${error.message}"
+            )
+        }
+
+        val safePausedSession = activeSafePausedSupplementSession()
+        val effectiveOutcome = when {
+            safeParallelSupplyDegrade -> SupplementPipelineOutcome.SUPPLY_DEGRADED
+            safePausedSession != null -> SupplementPipelineOutcome.PAUSED_FOR_ORDER
+            else -> supplementPipelineOutcome(result)
+        }
+        val parallelSessionForCleanup = if (parallelEnabled) {
+            activeSupplementPrefetchSessionOrNull("双 lane 最终收口")
+        } else {
+            null
+        }
+        val safeReleaseConfirmed = safePausedSession?.sessionId == sessionId ||
+            (parallelSessionForCleanup?.sessionId == sessionId &&
+                (result is InActionGroupPipelineResult.Success || safeParallelSupplyDegrade))
+        val retainParallelEvidence = SupplementPipelineFailureRetentionPolicy.shouldRetain(
+            evidenceActive = hasBlockingSupplementPrefetchEvidence(),
+            outcome = effectiveOutcome,
+            safeReleaseConfirmed = safeReleaseConfirmed
+        )
+        if ((result is InActionGroupPipelineResult.Success || safeParallelSupplyDegrade) &&
+            !durableCompletionFailed &&
+            !retainParallelEvidence
+        ) {
+            val completionFailure = if (parallelEnabled) {
+                val latest = requireNotNull(parallelSessionForCleanup)
+                when (val completion = SupplementPipelineCompletionCoordinator.complete(
+                    clearSession = {
+                        supplementPrefetchSessionRepository.clearIfRevision(latest.sessionId, latest.revision)
+                    },
+                    persistIdle = {
+                        val settledConfig = AppConfig.getAppConfig()
+                        settledConfig.moveStatus = 0
+                        AppConfig.saveAppConfigDurable(settledConfig)
+                    },
+                    releaseLock = { actionGroupLocks.release(sessionId) },
+                    publish = { publishRuntimeStateWithHttpFallback("补肠双 lane 流水线收口") },
+                    restoreBusy = {
+                        val busyConfig = AppConfig.getAppConfig()
+                        busyConfig.moveStatus = 1
+                        AppConfig.saveAppConfigDurable(busyConfig)
+                    }
+                )) {
+                    SupplementPipelineCompletionResult.Success -> null
+                    is SupplementPipelineCompletionResult.Failed -> completion.cause
+                }
+            } else {
+                runCatching {
+                    val settledConfig = AppConfig.getAppConfig()
+                    settledConfig.moveStatus = 0
+                    AppConfig.saveAppConfigDurable(settledConfig)
+                    actionGroupSessionStore.clear()
+                    actionGroupLocks.release(sessionId)
+                    publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
+                }.exceptionOrNull()
+            }
+            if (completionFailure != null) {
+                durableCompletionFailed = true
+                enterActionGroupMaintenance(
+                    "补肠预取流水线完成后session/moveStatus耐久收口失败，保留恢复证据：" +
+                        "${completionFailure.message}",
+                    preserveMoveStatus = true
+                )
+            } else {
+                applyPendingActionGroupDisableIfIdle("补肠预取流水线会话收口")
+            }
         } else if (
-            result is InActionGroupPipelineResult.Paused &&
-            hasPausedSupplementSession() &&
-            !durableCompletionFailed
+            (result is InActionGroupPipelineResult.Paused || safePausedSession != null) &&
+            (hasPausedSupplementSession() || safePausedSession != null) &&
+            !durableCompletionFailed &&
+            !retainParallelEvidence
         ) {
             runCatching {
                 val settledConfig = AppConfig.getAppConfig()
                 settledConfig.moveStatus = 0
                 AppConfig.saveAppConfigDurable(settledConfig)
-                actionGroupLocks.release(owner)
+                if (safePausedSession != null) {
+                    actionGroupLocks.release(requireNotNull(safePausedSession).sessionId)
+                } else {
+                    actionGroupLocks.release(sessionId)
+                }
                 publishRuntimeStateWithHttpFallback("补肠暂停等待订单完成")
                 logI(
                     LOG_SUPPLEMENT,
@@ -3139,6 +4075,15 @@ object KaoChangOperate {
                 )
             }
             is InActionGroupPipelineResult.Failed -> {
+                if (safeParallelSupplyDegrade && !durableCompletionFailed) {
+                    logW(
+                        LOG_SUPPLEMENT,
+                        "补肠双 lane 普通 E5 已按供给降级安全收口：" +
+                            "lane=${result.laneRole}，targetPan=${result.task?.targetPanNo}，" +
+                            "failedBoxes=${result.failedSourceBoxNos}"
+                    )
+                    return completedCount
+                }
                 val timeoutResolution = if (result.result is AtomicActionResult.Timeout) {
                     val timeoutBatchType = batchId?.let {
                         supplementBatchIntentRepository.loadActive()
@@ -3165,7 +4110,13 @@ object KaoChangOperate {
                     }
                     else -> Unit
                 }
-                handlePipelineSupplementFailure(result, taskByPanNo, batchId, timeoutResolution)
+                handlePipelineSupplementFailure(
+                    result,
+                    taskByPanNo,
+                    batchId,
+                    timeoutResolution,
+                    parallelSessionActive = parallelEnabled
+                )
                 logW(
                     LOG_ACTION_GROUP,
                     "补肠预取失败后保留session、资源锁和moveStatus，等待维护/启动恢复：" +
@@ -3205,7 +4156,8 @@ object KaoChangOperate {
         plannedBox: KaoPanBox,
         source: String,
         boxAlreadyDeducted: Boolean,
-        panAlreadyPlaced: Boolean
+        panAlreadyPlaced: Boolean,
+        persistAndPublish: Boolean = true
     ): AppliedSupplementPhysicalTelemetry {
         if (ActionPhysicalStateReducerPolicy.shouldApplySupplementPickedFromBox(telemetry)) {
             if (!ActionPhysicalStateReducerPolicy.isSupplementTelemetryForPlannedMove(
@@ -3242,7 +4194,9 @@ object KaoChangOperate {
                 )
                 return AppliedSupplementPhysicalTelemetry(stockInconsistent = true)
             }
-            KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+            if (persistAndPublish) {
+                KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+            }
             logD(
                 LOG_SUPPLEMENT,
                 "$source 动作级物理状态已回写：in2 已从肠箱取肠并扣库存，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
@@ -3251,11 +4205,13 @@ object KaoChangOperate {
                 "【补肠】烤盘${telemetry.panNo} in2 完成：已从烤肠箱${telemetry.boxNo}取肠并扣减库存，" +
                     "箱库存=$boxStockBefore->${plannedBox.num}"
             )
-            PanPhysicalStateDeltaReporter.reportStockChanged(
-                changedStock = plannedBox,
-                reason = "action_physical:in2:picked_from_box:box=${telemetry.boxNo}:pan=${telemetry.panNo}",
-                source = "action_physical_in2"
-            )
+            if (persistAndPublish) {
+                PanPhysicalStateDeltaReporter.reportStockChanged(
+                    changedStock = plannedBox,
+                    reason = "action_physical:in2:picked_from_box:box=${telemetry.boxNo}:pan=${telemetry.panNo}",
+                    source = "action_physical_in2"
+                )
+            }
             return AppliedSupplementPhysicalTelemetry(boxDeducted = true)
         }
 
@@ -3297,18 +4253,22 @@ object KaoChangOperate {
                 )
                 return AppliedSupplementPhysicalTelemetry()
             }
-            KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
-            KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+            if (persistAndPublish) {
+                KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+                KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+            }
             logD(
                 LOG_SUPPLEMENT,
                 "$source 动作级物理状态已回写：in7 已夹肠落盘并开始烤制，sourceBox=${telemetry.boxNo}，targetPan=${telemetry.panNo}"
             )
             LogUtils.i("【补肠】烤盘${telemetry.panNo} in7 完成：烤肠已落入烤盘并开始烤制计时")
-            PanPhysicalStateDeltaReporter.reportPanChanged(
-                changedPan = plannedPan,
-                reason = "action_physical:in7:placed_on_pan:box=${telemetry.boxNo}:pan=${telemetry.panNo}",
-                source = "action_physical_in7"
-            )
+            if (persistAndPublish) {
+                PanPhysicalStateDeltaReporter.reportPanChanged(
+                    changedPan = plannedPan,
+                    reason = "action_physical:in7:placed_on_pan:box=${telemetry.boxNo}:pan=${telemetry.panNo}",
+                    source = "action_physical_in7"
+                )
+            }
             return AppliedSupplementPhysicalTelemetry(panPlaced = true)
         }
 
@@ -3601,11 +4561,57 @@ object KaoChangOperate {
         return true
     }
 
+    private fun handleParallelE5SupplyDegrade(
+        result: InActionGroupPipelineResult.Failed,
+        taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
+        batchId: String?
+    ) {
+        val targetPanNo = requireNotNull(result.task?.targetPanNo)
+        val plannedMove = taskByPanNo[targetPanNo]
+        val failedBoxNos = (result.failedSourceBoxNos + result.sourceBoxNo)
+            .filterNotNull()
+            .distinct()
+        if (result.laneRole == SupplementLaneRole.DELIVERY) {
+            result.sourceBoxNo?.let { finalFailedBox ->
+                recordIrPickFailureAndSave(
+                    sourceBoxNo = finalFailedBox,
+                    reason = "补肠双 lane 普通 E5 候选耗尽"
+                )
+            }
+        }
+        val reason = SupplementPickFailurePolicy.buildSupplyDegradedReason(
+            targetPanNo = targetPanNo,
+            tasteCode = plannedMove?.tasteCode,
+            failedBoxNos = failedBoxNos,
+            actionName = result.actionName
+        )
+        recordNonDemandFrontForSupplementTarget(batchId, targetPanNo, "parallel_e5_supply_degrade")
+        supplementBatchIntentRepository.markSkippedBySupplyDegrade(
+            batchId = batchId,
+            targetPanNo = targetPanNo,
+            reason = reason
+        )
+        markSupplyDegradedRuntimeState(
+            reason = reason,
+            failedBoxNos = failedBoxNos,
+            details = LowerPlatformEpisodeDetails(
+                sourceBoxNo = result.sourceBoxNo,
+                targetPanNo = targetPanNo,
+                tasteCode = plannedMove?.tasteCode,
+                batchId = batchId,
+                errorCode = AtomicActionExecutor.formatCode(AtomicActionCodes.IR_PICK_FAILED),
+                rawResult = describeAtomicActionResult(result.result),
+                requiresManualConfirm = false
+            )
+        )
+    }
+
     private suspend fun handlePipelineSupplementFailure(
         result: InActionGroupPipelineResult.Failed,
         taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
         batchId: String?,
-        timeoutProbe: TimeoutProbe? = null
+        timeoutProbe: TimeoutProbe? = null,
+        parallelSessionActive: Boolean
     ) {
         val batchType = batchId?.let {
             supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
@@ -3644,7 +4650,8 @@ object KaoChangOperate {
             batchType = batchType,
             actionName = result.actionName,
             result = resolvedAtomicResult,
-            hasPrefetchedNext = result.hasPrefetchedNext
+            hasPrefetchedNext = result.hasPrefetchedNext,
+            parallelSessionActive = parallelSessionActive
         )
         if (lowerPlatformIsolationDecision != LowerPlatformIsolationPolicy.Decision.NotIsolatable) {
             val isolationReason = LowerPlatformIsolationPolicy.buildIsolationReason(
@@ -4430,6 +5437,13 @@ object KaoChangOperate {
         val targetPosition = newKaoPan.positionSn
         if (sourcePosition==targetPosition){
             return true
+        }
+        if (hasBlockingSupplementPrefetchEvidence()) {
+            logW(
+                LOG_PAN_MOVE,
+                "双 lane 补肠会话存在，拒绝启动搬盘：source=$sourcePosition，target=$targetPosition"
+            )
+            return false
         }
         if (panMoveJournalStore.load() != null) {
             enterActionGroupMaintenance(

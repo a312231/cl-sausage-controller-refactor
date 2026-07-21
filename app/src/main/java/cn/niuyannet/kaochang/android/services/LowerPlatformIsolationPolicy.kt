@@ -3,6 +3,10 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
+import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementActionLifecycle
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
 
 object LowerPlatformIsolationPolicy {
     private val ISOLATABLE_SUPPLEMENT_ACTIONS = setOf("in1", "in2", "in3", "in4", "in5")
@@ -37,9 +41,6 @@ object LowerPlatformIsolationPolicy {
         if (actionName == "in3" || actionName == "in4") {
             return Decision.IsolatedRequiresManualConfirm
         }
-        if (hasPrefetchedNext) {
-            return Decision.NotIsolatable
-        }
         if (actionName == "in2" && failed.errorCode == AtomicActionCodes.IR_PICK_FAILED) {
             return Decision.NotIsolatable
         }
@@ -50,7 +51,8 @@ object LowerPlatformIsolationPolicy {
         batchType: SupplementBatchType?,
         actionName: String,
         result: AtomicActionResult,
-        hasPrefetchedNext: Boolean
+        hasPrefetchedNext: Boolean,
+        parallelSessionActive: Boolean = false
     ): Decision {
         if (batchType != null && SupplementBatchIntentRepository.isInitializationBatch(batchType)) {
             return Decision.NotIsolatable
@@ -60,6 +62,12 @@ object LowerPlatformIsolationPolicy {
         }
         if (result is AtomicActionResult.Timeout) {
             return Decision.NotIsolatable
+        }
+        if (parallelSessionActive &&
+            actionName == "in2" &&
+            (result as? AtomicActionResult.Failed)?.errorCode == AtomicActionCodes.IR_PICK_FAILED
+        ) {
+            return Decision.IsolatedSilent
         }
         if (shouldTreatAsLowerPlatformSemiFault(batchType, actionName, result, hasPrefetchedNext)) {
             return Decision.IsolatedRequiresManualConfirm
@@ -124,5 +132,41 @@ object LowerPlatformIsolationPolicy {
         return "补肠下平台隔离：action=$actionName，error=$errorText，" +
             "targetPan=${targetPanNo ?: "未知"}，sourceBox=${sourceBoxNo ?: "未知"}，" +
             "hasPrefetchedNext=$hasPrefetchedNext"
+    }
+}
+
+object ParallelSupplementE5ClosurePolicy {
+    fun canRelease(
+        result: InActionGroupPipelineResult.Failed,
+        session: SupplementPrefetchPipelineSession?,
+        expectedSessionId: String
+    ): Boolean {
+        val failed = result.result as? AtomicActionResult.Failed ?: return false
+        if (result.actionName != "in2" || failed.errorCode != AtomicActionCodes.IR_PICK_FAILED) {
+            return false
+        }
+        if (session == null || session.sessionId != expectedSessionId) {
+            return false
+        }
+        val failedLane = when (result.laneRole) {
+            SupplementLaneRole.DELIVERY -> session.deliveryLane
+            SupplementLaneRole.PREFETCH -> session.prefetchLane
+        } ?: return false
+        if (failedLane.currentAction != "in2" ||
+            failedLane.lifecycle != SupplementActionLifecycle.TERMINAL_CONFIRMED ||
+            failedLane.boxDeductionApplied ||
+            failedLane.panPlacementApplied
+        ) {
+            return false
+        }
+        return when (result.laneRole) {
+            SupplementLaneRole.DELIVERY -> session.prefetchLane == null
+            SupplementLaneRole.PREFETCH -> session.deliveryLane?.let { delivery ->
+                delivery.currentAction == "in7" &&
+                    delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
+                    delivery.boxDeductionApplied &&
+                    delivery.panPlacementApplied
+            } == true
+        }
     }
 }

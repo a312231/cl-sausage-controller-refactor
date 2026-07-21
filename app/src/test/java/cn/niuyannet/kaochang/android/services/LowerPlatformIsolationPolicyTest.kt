@@ -2,6 +2,13 @@ package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
+import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
+import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineTask
+import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementActionLifecycle
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchLaneCheckpoint
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -132,6 +139,91 @@ class LowerPlatformIsolationPolicyTest {
             "in1",
             failed(AtomicActionCodes.IN1_X_RESET_FAILED)
         ))
+    }
+
+    @Test
+    fun prefetchedNext_shouldNotByItselfEscalateOrdinaryLowerPlatformFailure() {
+        assertEquals(
+            LowerPlatformIsolationPolicy.Decision.IsolatedSilent,
+            LowerPlatformIsolationPolicy.classifySupplementActionFailure(
+                actionName = "in1",
+                result = failed(AtomicActionCodes.IN1_X_RESET_FAILED),
+                hasPrefetchedNext = true
+            )
+        )
+    }
+
+    @Test
+    fun parallelIn2E5_shouldCloseAtLaneLevelButKeepUncertainEvidenceFailClosed() {
+        assertEquals(
+            LowerPlatformIsolationPolicy.Decision.IsolatedSilent,
+            LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+                batchType = SupplementBatchType.LOW_HEAT_13_15,
+                actionName = "in2",
+                result = failed(AtomicActionCodes.IR_PICK_FAILED),
+                hasPrefetchedNext = true,
+                parallelSessionActive = true
+            )
+        )
+        assertEquals(
+            LowerPlatformIsolationPolicy.Decision.NotIsolatable,
+            LowerPlatformIsolationPolicy.classifyForSupplementBatch(
+                batchType = SupplementBatchType.LOW_HEAT_13_15,
+                actionName = "in2",
+                result = AtomicActionResult.ModbusError("drop"),
+                hasPrefetchedNext = true,
+                parallelSessionActive = true
+            )
+        )
+    }
+
+    @Test
+    fun parallelE5Closure_shouldRequireSafeFailedLaneAndCompletedDeliveryEvidence() {
+        val failure = InActionGroupPipelineResult.Failed(
+            completed = emptyList(),
+            task = InActionGroupPipelineTask(listOf(18), 14),
+            sourceBoxNo = 18,
+            failedSourceBoxNos = listOf(18),
+            actionName = "in2",
+            result = failed(AtomicActionCodes.IR_PICK_FAILED),
+            message = "e5",
+            hasPrefetchedNext = false,
+            laneRole = SupplementLaneRole.PREFETCH
+        )
+        val completedDelivery = SupplementPrefetchLaneCheckpoint(
+            sourceBoxNo = 17,
+            sourceBoxCandidates = listOf(17),
+            targetPanNo = 13,
+            currentAction = "in7",
+            lifecycle = SupplementActionLifecycle.PHYSICAL_APPLIED,
+            lastConfirmedStage = "in7",
+            boxDeductionApplied = true,
+            panPlacementApplied = true
+        )
+        val failedPrefetch = SupplementPrefetchLaneCheckpoint(
+            sourceBoxNo = 18,
+            sourceBoxCandidates = listOf(18),
+            targetPanNo = 14,
+            currentAction = "in2",
+            lifecycle = SupplementActionLifecycle.TERMINAL_CONFIRMED,
+            lastConfirmedStage = "in2"
+        )
+        val session = SupplementPrefetchPipelineSession(
+            sessionId = "session-e5",
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above,
+            deliveryLane = completedDelivery,
+            prefetchLane = failedPrefetch
+        )
+
+        assertTrue(ParallelSupplementE5ClosurePolicy.canRelease(failure, session, "session-e5"))
+        assertFalse(
+            ParallelSupplementE5ClosurePolicy.canRelease(
+                failure,
+                session.copy(deliveryLane = completedDelivery.copy(panPlacementApplied = false)),
+                "session-e5"
+            )
+        )
+        assertFalse(ParallelSupplementE5ClosurePolicy.canRelease(failure, session, "other-owner"))
     }
 
     @Test

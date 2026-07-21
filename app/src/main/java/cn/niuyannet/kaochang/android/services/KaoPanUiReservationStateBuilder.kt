@@ -8,20 +8,13 @@ object KaoPanUiReservationStateBuilder {
     fun apply(
         pans: List<KaoPan>,
         activeIntent: SupplementBatchIntent?,
-        recoveryBlocked: Boolean = false
+        @Suppress("UNUSED_PARAMETER") recoveryBlocked: Boolean = false
     ): List<KaoPan> {
         pans.forEach { pan ->
             pan.uiReservationState = KaoPan.UI_RESERVATION_NONE
             pan.uiReservationTaste = null
         }
 
-        if (recoveryBlocked) {
-            val completedHeatReturnIntent = activeIntent?.let { intent ->
-                intent.copy(targets = intent.retainedCompletedHeatReturnTargets().toMutableList())
-            }
-            applyActiveIntent(pans, completedHeatReturnIntent)
-            return pans
-        }
         applyActiveIntent(pans, activeIntent)
         return pans
     }

@@ -1,0 +1,130 @@
+package cn.niuyannet.kaochang.android.services
+
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.File
+
+class SupplementPrefetchRecoveryWiringSourceTest {
+
+    @Test
+    fun doubleLaneRecovery_shouldPrecedePanAndGenericRecovery() {
+        val block = functionBlock("suspend fun recoverActionGroupStateAfterModbusReady", "private fun recoverPanMoveJournalAfterModbusReady")
+        val coexistence = block.indexOf("doubleLaneSession != null && panMoveJournal != null")
+        val dedicated = block.indexOf("SupplementPrefetchRecoveryCoordinator(")
+        val panRecovery = block.indexOf("recoverPanMoveJournalAfterModbusReady(reason)")
+        val generic = block.indexOf("ActionGroupRecoveryBootstrap(")
+
+        assertTrue(coexistence >= 0)
+        assertTrue(block.contains("双 lane 会话与搬盘 journal 同时存在"))
+        assertTrue(dedicated > coexistence)
+        assertTrue(panRecovery > dedicated)
+        assertTrue(generic > panRecovery)
+    }
+
+    @Test
+    fun activeSession_shouldBlockIdleRecoveryAndPanMoveBeforeJournalWrite() {
+        val idle = functionBlock("fun isActionGroupIdleForMoveStatusRecovery()", "fun isPanMoveRecoveryBlocked()")
+        assertTrue(idle.contains("hasBlockingSupplementPrefetchEvidence"))
+
+        val panMove = functionBlock("private suspend fun moveKaoPanToKaoPanInternal(", "private fun")
+        val sessionGate = panMove.indexOf("hasBlockingSupplementPrefetchEvidence")
+        val journalWrite = panMove.indexOf("saveDurable(journal)")
+        assertTrue(sessionGate >= 0 && journalWrite > sessionGate)
+    }
+
+    @Test
+    fun manualCleanupEntries_shouldRejectActiveSessionBeforeClearingEvidence() {
+        val residue = functionBlock("suspend fun confirmClearActionGroupRecoveryResidue", "fun getLastActionGroupRecoveryFailureReason")
+        val supplement = functionBlock("fun confirmPendingSupplementBatchSafety", "private fun clearFaultTimeoutCancelledReturnReservations")
+
+        assertTrue(residue.indexOf("hasBlockingSupplementPrefetchEvidence") in 0 until residue.indexOf("actionGroupSessionStore.clear()"))
+        assertTrue(supplement.indexOf("hasBlockingSupplementPrefetchEvidence") in 0 until supplement.indexOf("confirmManualSafety"))
+    }
+
+    @Test
+    fun legacyPipelineCleanup_shouldNotReleaseWhileParallelSessionExists() {
+        val block = functionBlock("private suspend fun moveSausagesToKaoPansByTasteInternal", "private fun describeAtomicActionResult")
+        assertTrue(block.contains("SupplementPipelineFailureRetentionPolicy.shouldRetain"))
+        assertTrue(block.contains("补肠双 lane 失败，保留 session、资源锁和 moveStatus"))
+    }
+
+    @Test
+    fun recoveredDelivery_shouldPromoteAndResumePrefetchOnlyAfterIn7Placement() {
+        val block = functionBlock("private suspend fun finishParallelSupplementResume", "private fun hasPausedSupplementSession")
+        val placementGate = block.indexOf("!lane.panPlacementApplied")
+        val promote = block.indexOf("promotePrefetchAfterDelivery")
+        val resume = block.indexOf("resumePreparedParallelSupplement")
+
+        assertTrue(placementGate >= 0)
+        assertTrue(promote > placementGate)
+        assertTrue(resume > promote)
+    }
+
+    @Test
+    fun completedParallelSessions_shouldUseEvidenceLastCleanupAndPreservingMaintenance() {
+        val replan = functionBlock(
+            "private suspend fun handleParallelSupplementResumePreparation",
+            "private suspend fun resumePreparedParallelSupplement"
+        )
+        val finished = functionBlock(
+            "private suspend fun finishParallelSupplementResume",
+            "private fun hasPausedSupplementSession"
+        )
+
+        listOf(replan, finished).forEach { block ->
+            assertTrue(block.contains("SupplementPipelineCompletionCoordinator.complete("))
+            assertTrue(block.contains("clearSession ="))
+            assertTrue(block.contains("persistIdle ="))
+            assertTrue(block.contains("publish ="))
+            assertTrue(block.contains("restoreBusy ="))
+            assertTrue(block.contains("preserveMoveStatus = true"))
+        }
+    }
+
+    @Test
+    fun livePipeline_shouldFinalizeCommittedDeliveryAfterApplyingCompletedTasks() {
+        val block = functionBlock(
+            "private suspend fun moveSausagesToKaoPansByTasteInternal",
+            "private fun describeAtomicActionResult"
+        )
+        val applyCompleted = block.indexOf("completed.forEach")
+        val finalizePause = block.indexOf("pauseCommittedDeliveryForPendingOrder", applyCompleted)
+        val safeRelease = block.indexOf("activeSafePausedSupplementSession", finalizePause)
+
+        assertTrue(applyCompleted >= 0)
+        assertTrue(finalizePause > applyCompleted)
+        assertTrue(safeRelease > finalizePause)
+    }
+
+    @Test
+    fun cancelledDedicatedRecovery_shouldEnterPreservingMaintenanceBeforeRethrow() {
+        val block = functionBlock(
+            "suspend fun recoverActionGroupStateAfterModbusReady",
+            "private fun recoverPanMoveJournalAfterModbusReady"
+        )
+        val dedicated = block.indexOf("SupplementPrefetchRecoveryCoordinator(")
+        val cancellation = block.indexOf("catch (cancellation: CancellationException)", dedicated)
+        val preservingMaintenance = block.indexOf("preserveMoveStatus = true", cancellation)
+        val rethrow = block.indexOf("throw cancellation", preservingMaintenance)
+
+        assertTrue(dedicated >= 0)
+        assertTrue(cancellation > dedicated)
+        assertTrue(preservingMaintenance > cancellation)
+        assertTrue(rethrow > preservingMaintenance)
+    }
+
+    private fun functionBlock(startMarker: String, endMarker: String): String {
+        val source = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = source.indexOf(startMarker)
+        require(start >= 0) { "missing start marker: $startMarker" }
+        val end = source.indexOf(endMarker, start + startMarker.length)
+        require(end > start) { "missing end marker: $endMarker" }
+        return source.substring(start, end)
+    }
+
+    private fun source(path: String): String = listOf(File(path), File("../$path"))
+        .firstOrNull { it.isFile }
+        ?.readText()
+        ?.replace("\r\n", "\n")
+        ?: error("source file not found: $path")
+}

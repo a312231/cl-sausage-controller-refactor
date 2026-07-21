@@ -97,6 +97,21 @@ class MaintenanceLowerPlatformUiSourceTest {
         assertTrue(sourceSelectionBody.contains("isRecognizedSource"))
     }
 
+    @Test
+    fun maintenanceGrid_shouldUseDurableIntentWithoutOpeningSchedulerGate() {
+        val fragment = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val refresh = extractFunctionBody(fragment, "private fun refreshKaoPanGrid()")
+        val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val accessor = extractFunctionBody(operate, "fun maintenanceKaoPanIntentForUi()")
+        val schedulerAccessor = extractFunctionBody(operate, "fun activeSupplementBatchIntentForUi()")
+
+        assertTrue(refresh.contains("maintenanceKaoPanIntentForUi()"))
+        assertFalse(refresh.contains("completedHeatReturnIntentForUi()"))
+        assertTrue(accessor.contains("supplementBatchIntentRepository.loadActive()"))
+        assertFalse(accessor.contains("isActionGroupRecoveryBlocked()"))
+        assertTrue(schedulerAccessor.contains("isActionGroupRecoveryBlocked()"))
+    }
+
     private fun sourceFile(path: String): String {
         val direct = File(path)
         if (direct.exists()) {

@@ -712,6 +712,7 @@ object AppConfig {
         val oldModeTypeForTransitionDiagnostics = config.modeType
         val oldTransitionModeForTransitionDiagnostics = config.transitionMode
         val faultRuntimeSnapshot = FaultRuntimeSnapshot.from(config)
+        applyRemoteParallelSupplementPrefetchConfig(config, jsonData)
         if (jsonData == null) {
             val hasFallback = hasValidDeviceConfig()
             val message = "远端配置数据为空，responseLength=${rawContent?.length ?: 0}"
@@ -1139,6 +1140,19 @@ object AppConfig {
             .forEach { preservedFields.add("$it(local_runtime_preserved)") }
 
         return preservedFields
+    }
+
+    internal fun applyRemoteParallelSupplementPrefetchConfig(
+        config: AppConfigBean,
+        jsonData: JSONObject?
+    ) {
+        val rawValue = jsonData?.get("enableParallelSupplementPrefetch")
+        config.enableParallelSupplementPrefetch =
+            if (rawValue is Byte || rawValue is Short || rawValue is Int || rawValue is Long) {
+                if ((rawValue as Number).toLong() == 1L) 1 else 0
+            } else {
+                0
+            }
     }
 
     fun getDeviceId(): String {

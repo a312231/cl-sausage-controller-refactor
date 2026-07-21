@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -13,6 +15,205 @@ import org.junit.Test
 import kotlin.coroutines.cancellation.CancellationException
 
 class InActionGroupPrefetchPipelineRunnerTest {
+
+    @Test
+    fun parallelPipeline_shouldStartNextPrefetchOnlyAfterCurrentIn6RunningConfirmed() = runBlocking {
+        val client = ParallelProbeClient()
+        val running = async {
+            InActionGroupPrefetchPipelineRunner(client, parallelEnabled = true).run(
+                listOf(
+                    InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                    InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+                )
+            )
+        }
+
+        withTimeout(1_000L) {
+            while (!client.calls.contains("running:in6:0")) delay(1L)
+            while (client.calls.count { it == "in3:0" } < 2) delay(1L)
+        }
+        assertTrue(client.calls.indexOf("running:in6:0") < client.calls.indexOf("in1:18"))
+        assertEquals(1, client.calls.count { it == "in4:0" })
+
+        client.releaseCurrentIn7.complete(Unit)
+        assertTrue(running.await() is InActionGroupPipelineResult.Success)
+    }
+
+    @Test
+    fun parallelPipeline_shouldFallbackToStartingNextPrefetchAfterIn6SuccessWithoutRunningSignal() = runBlocking {
+        val client = ParallelProbeClient(
+            emitRunningConfirmed = false,
+            blockCurrentIn7 = false
+        )
+
+        val result = InActionGroupPrefetchPipelineRunner(client, parallelEnabled = true).run(
+            listOf(
+                InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+            )
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Success)
+        assertTrue(client.calls.indexOf("done:in6:0") < client.calls.indexOf("in1:18"))
+    }
+
+    @Test
+    fun parallelPipeline_shouldNeverDispatchNextIn4BeforeCurrentIn7Completes() = runBlocking {
+        val client = ParallelProbeClient()
+        val running = async {
+            InActionGroupPrefetchPipelineRunner(client, parallelEnabled = true).run(
+                listOf(
+                    InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                    InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+                )
+            )
+        }
+
+        withTimeout(1_000L) {
+            while (client.calls.count { it == "in3:0" } < 2) delay(1L)
+        }
+        assertEquals(1, client.calls.count { it == "in4:0" })
+
+        client.releaseCurrentIn7.complete(Unit)
+        assertTrue(running.await() is InActionGroupPipelineResult.Success)
+        assertTrue(client.calls.indexOf("done:in7:13") < client.calls.lastIndexOf("in4:0"))
+    }
+
+    @Test
+    fun parallelPipeline_shouldPromotePrefetchLaneBeforeSecondIn4() = runBlocking {
+        val client = ParallelProbeClient(blockCurrentIn7 = false)
+        val events = mutableListOf<String>()
+
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            parallelEnabled = true,
+            onCurrentActionChanged = { events += "action:${it.laneRole}:${it.targetPanNo}:${it.actionName}" },
+            onPrefetchPromoted = { events += "promote:${it.sourceBoxNo}->${it.targetPanNo}" }
+        ).run(
+            listOf(
+                InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+                InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+            )
+        )
+
+        assertTrue(result is InActionGroupPipelineResult.Success)
+        assertTrue(events.contains("action:${SupplementLaneRole.PREFETCH}:14:in1"))
+        assertTrue(
+            events.indexOf("promote:18->14") <
+                events.indexOf("action:${SupplementLaneRole.DELIVERY}:14:in4")
+        )
+    }
+
+    @Test
+    fun parallelOrderPause_shouldPromotePrefetchPausedAfterIn1() = runBlocking {
+        assertParallelOrderPausePromotesCheckpoint("in1")
+    }
+
+    @Test
+    fun parallelOrderPause_shouldPromotePrefetchPausedAfterIn2() = runBlocking {
+        assertParallelOrderPausePromotesCheckpoint("in2")
+    }
+
+    @Test
+    fun parallelOrderPause_shouldPromotePrefetchPausedAfterIn3() = runBlocking {
+        assertParallelOrderPausePromotesCheckpoint("in3")
+    }
+
+    @Test
+    fun parallelOrderPause_withFinalPrefetchE5_shouldIsolateOnceAndReturnPrefetchFailure() = runBlocking {
+        var orderWaiting = false
+        val client = ParallelTerminalClient(
+            waitForDeliveryAtPrefetchAction = "in2",
+            prefetchIn2Result = AtomicActionResult.Failed(
+                AtomicActionCodes.IR_PICK_FAILED,
+                "取肠红外未确认有肠"
+            ),
+            onDeliveryIn7 = { orderWaiting = true }
+        )
+        val terminalPickFailures = mutableListOf<InActionGroupPipelineActionContext>()
+
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = FakeClient(),
+            actionClientProvider = client::withContext,
+            parallelEnabled = true,
+            pauseReasonAfterCurrentTask = { if (orderWaiting) "检测到订单待出餐" else null },
+            onTerminalPrefetchPickFailure = { terminalPickFailures += it }
+        ).run(twoParallelTasks())
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals(SupplementLaneRole.PREFETCH, failed.laneRole)
+        assertEquals("in2", failed.actionName)
+        assertEquals(18, failed.sourceBoxNo)
+        assertEquals(1, terminalPickFailures.size)
+        assertEquals(SupplementLaneRole.PREFETCH, terminalPickFailures.single().laneRole)
+        assertEquals("in2", terminalPickFailures.single().actionName)
+    }
+
+    @Test
+    fun deliveryFailure_withFinalPrefetchE5_shouldIsolateOnceButKeepDeliveryFailurePrimary() = runBlocking {
+        val client = ParallelTerminalClient(
+            waitForDeliveryAtPrefetchAction = "in2",
+            prefetchIn2Result = AtomicActionResult.Failed(
+                AtomicActionCodes.IR_PICK_FAILED,
+                "取肠红外未确认有肠"
+            ),
+            deliveryIn7Result = AtomicActionResult.Failed(AtomicActionCodes.LIFT_FAILED, "升降台故障")
+        )
+        val terminalPickFailures = mutableListOf<InActionGroupPipelineActionContext>()
+
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = FakeClient(),
+            actionClientProvider = client::withContext,
+            parallelEnabled = true,
+            onTerminalPrefetchPickFailure = { terminalPickFailures += it }
+        ).run(twoParallelTasks())
+
+        assertTrue(result is InActionGroupPipelineResult.Failed)
+        val failed = result as InActionGroupPipelineResult.Failed
+        assertEquals(SupplementLaneRole.DELIVERY, failed.laneRole)
+        assertEquals("in7", failed.actionName)
+        assertEquals(17, failed.sourceBoxNo)
+        assertEquals(1, terminalPickFailures.size)
+        assertEquals(18, terminalPickFailures.single().sourceBoxNo)
+    }
+
+    @Test
+    fun pipeline_shouldExposeCommandRunningAndTerminalLifecycleForSuccessfulActions() = runBlocking {
+        val client = FakeClient()
+        val commandWritten = mutableListOf<String>()
+        val runningConfirmed = mutableListOf<String>()
+        val terminalConfirmed = mutableListOf<String>()
+
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            onActionCommandWritten = { commandWritten += it.actionName },
+            onActionRunningConfirmed = { runningConfirmed += it.actionName },
+            onActionTerminalConfirmed = { context, actionResult ->
+                if (actionResult == AtomicActionResult.Success) terminalConfirmed += context.actionName
+            }
+        ).run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Success)
+        assertEquals((1..7).map { "in$it" }, commandWritten)
+        assertEquals((1..7).map { "in$it" }, runningConfirmed)
+        assertEquals((1..7).map { "in$it" }, terminalConfirmed)
+    }
+
+    @Test
+    fun pipeline_shouldPauseAtIn3WhenDeliveryBarrierRejectsCommit() = runBlocking {
+        val client = FakeClient()
+
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = client,
+            parallelEnabled = true,
+            beforeDeliveryCommit = { false }
+        ).run(listOf(InActionGroupPipelineTask(listOf(17), targetPanNo = 13)))
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        assertEquals("in3", (result as InActionGroupPipelineResult.Paused).pausedAfterAction)
+        assertEquals(listOf("in1:17", "in2:17", "in3:0"), client.calls)
+    }
 
     @Test
     fun pipeline_shouldReportTheActualSourceBoxAfterIn2Succeeds() = runBlocking {
@@ -432,6 +633,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(result is InActionGroupPipelineResult.Failed)
         val failed = result as InActionGroupPipelineResult.Failed
         assertEquals("in2", failed.actionName)
+        assertEquals(SupplementLaneRole.DELIVERY, failed.laneRole)
         assertEquals(18, failed.sourceBoxNo)
         assertEquals(listOf(17, 18), failed.failedSourceBoxNos)
         assertEquals(listOf(17), skippedPickFailureBoxes)
@@ -461,6 +663,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
         assertTrue(result is InActionGroupPipelineResult.Failed)
         val failed = result as InActionGroupPipelineResult.Failed
         assertEquals("in5", failed.actionName)
+        assertEquals(SupplementLaneRole.DELIVERY, failed.laneRole)
         assertEquals(false, failed.hasPrefetchedNext)
         assertEquals(
             listOf("in1:17", "in2:17", "in3:0", "in4:0", "in5:0", "in5:0", "in5:0"),
@@ -598,6 +801,39 @@ class InActionGroupPrefetchPipelineRunnerTest {
         }
     }
 
+    private suspend fun assertParallelOrderPausePromotesCheckpoint(actionName: String) {
+        var orderWaiting = false
+        val client = ParallelTerminalClient(
+            waitForDeliveryAtPrefetchAction = actionName,
+            onDeliveryIn7 = { orderWaiting = true }
+        )
+        val promoted = mutableListOf<InActionGroupPipelineActionContext>()
+
+        val result = InActionGroupPrefetchPipelineRunner(
+            client = FakeClient(),
+            actionClientProvider = client::withContext,
+            parallelEnabled = true,
+            pauseReasonBeforePick = { if (orderWaiting) "检测到订单待出餐" else null },
+            pauseReasonAfterPrefetchAction = {
+                if (orderWaiting) "检测到订单待出餐" else null
+            },
+            pauseReasonAfterCurrentTask = { if (orderWaiting) "检测到订单待出餐" else null },
+            onPausedPrefetchPromoted = { promoted += it }
+        ).run(twoParallelTasks())
+
+        assertTrue(result is InActionGroupPipelineResult.Paused)
+        assertEquals(listOf(13), (result as InActionGroupPipelineResult.Paused).completed.map { it.targetPanNo })
+        assertEquals(1, promoted.size)
+        assertEquals(actionName, promoted.single().actionName)
+        assertEquals(18, promoted.single().sourceBoxNo)
+        assertEquals(14, promoted.single().targetPanNo)
+    }
+
+    private fun twoParallelTasks(): List<InActionGroupPipelineTask> = listOf(
+        InActionGroupPipelineTask(listOf(17), targetPanNo = 13),
+        InActionGroupPipelineTask(listOf(18), targetPanNo = 14)
+    )
+
     private class FakeClient(
         private val results: ArrayDeque<AtomicActionResult> = ArrayDeque()
     ) : AtomicActionClient {
@@ -606,15 +842,51 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
+            onCommandDispatched?.invoke()
             if (spec.name == "in6" && onCommandDispatched != null) {
-                onCommandDispatched()
                 calls += "dispatch:in6"
                 yield()
             }
+            onRunningConfirmed?.invoke()
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
+        }
+    }
+
+    private class ParallelProbeClient(
+        private val emitRunningConfirmed: Boolean = true,
+        private val blockCurrentIn7: Boolean = true
+    ) : AtomicActionClient {
+        val calls = mutableListOf<String>()
+        val releaseCurrentIn7 = CompletableDeferred<Unit>()
+        private var in7Count = 0
+
+        override suspend fun execute(
+            spec: AtomicActionSpec,
+            infoValue: Int,
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
+        ): AtomicActionResult {
+            calls += "${spec.name}:$infoValue"
+            onCommandDispatched?.invoke()
+            if (spec.name == "in6" && emitRunningConfirmed) {
+                calls += "running:in6:$infoValue"
+                onRunningConfirmed?.invoke()
+                yield()
+            } else if (spec.name != "in6") {
+                onRunningConfirmed?.invoke()
+            }
+            if (spec.name == "in7") {
+                in7Count += 1
+                if (in7Count == 1 && blockCurrentIn7) {
+                    releaseCurrentIn7.await()
+                }
+            }
+            calls += "done:${spec.name}:$infoValue"
+            return AtomicActionResult.Success
         }
     }
 
@@ -625,7 +897,8 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             if (spec.name == throwOnAction) {
                 throw throwable
@@ -634,6 +907,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 onCommandDispatched()
                 yield()
             }
+            onRunningConfirmed?.invoke()
             return AtomicActionResult.Success
         }
     }
@@ -647,7 +921,8 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             if (spec.name == actionName) {
@@ -656,6 +931,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
             if (spec.name == "in6") {
                 onCommandDispatched?.invoke()
             }
+            onRunningConfirmed?.invoke()
             return AtomicActionResult.Success
         }
     }
@@ -682,7 +958,8 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             val currentContext = requireNotNull(context) { "ContextCapturingClient requires action context" }
             calls += "${spec.name}:${currentContext.sourceBoxNo}->${currentContext.targetPanNo}"
@@ -691,6 +968,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 calls += "dispatch:in6:${currentContext.sourceBoxNo}->${currentContext.targetPanNo}"
                 yield()
             }
+            onRunningConfirmed?.invoke()
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }
     }
@@ -702,7 +980,8 @@ class InActionGroupPrefetchPipelineRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             if (spec.name == "in3") {
                 in3Count += 1
@@ -722,8 +1001,49 @@ class InActionGroupPrefetchPipelineRunnerTest {
                 calls += "dispatch:in6"
                 yield()
             }
+            onRunningConfirmed?.invoke()
             return AtomicActionResult.Success
         }
+    }
+
+    private class ParallelTerminalClient(
+        private val waitForDeliveryAtPrefetchAction: String,
+        private val prefetchIn2Result: AtomicActionResult = AtomicActionResult.Success,
+        private val deliveryIn7Result: AtomicActionResult = AtomicActionResult.Success,
+        private val onDeliveryIn7: () -> Unit = {}
+    ) {
+        private val prefetchTargetReached = CompletableDeferred<Unit>()
+        private val deliveryIn7Reached = CompletableDeferred<Unit>()
+
+        fun withContext(context: InActionGroupPipelineActionContext): AtomicActionClient =
+            object : AtomicActionClient {
+                override suspend fun execute(
+                    spec: AtomicActionSpec,
+                    infoValue: Int,
+                    onCommandDispatched: (suspend () -> Unit)?,
+                    onRunningConfirmed: (suspend () -> Unit)?
+                ): AtomicActionResult {
+                    onCommandDispatched?.invoke()
+                    onRunningConfirmed?.invoke()
+                    if (context.laneRole == SupplementLaneRole.PREFETCH &&
+                        spec.name == waitForDeliveryAtPrefetchAction
+                    ) {
+                        prefetchTargetReached.complete(Unit)
+                        deliveryIn7Reached.await()
+                    }
+                    if (context.laneRole == SupplementLaneRole.DELIVERY && spec.name == "in7") {
+                        prefetchTargetReached.await()
+                        onDeliveryIn7()
+                        deliveryIn7Reached.complete(Unit)
+                        return deliveryIn7Result
+                    }
+                    return if (context.laneRole == SupplementLaneRole.PREFETCH && spec.name == "in2") {
+                        prefetchIn2Result
+                    } else {
+                        AtomicActionResult.Success
+                    }
+                }
+            }
     }
 
     companion object {

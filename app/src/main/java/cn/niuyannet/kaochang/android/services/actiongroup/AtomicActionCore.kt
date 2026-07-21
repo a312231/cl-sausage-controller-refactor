@@ -1,7 +1,10 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 object AtomicActionCodes {
     const val IDLE = 0x0000
@@ -93,7 +96,8 @@ interface AtomicActionClient {
     suspend fun execute(
         spec: AtomicActionSpec,
         infoValue: Int = 0,
-        onCommandDispatched: (suspend () -> Unit)? = null
+        onCommandDispatched: (suspend () -> Unit)? = null,
+        onRunningConfirmed: (suspend () -> Unit)? = null
     ): AtomicActionResult
 }
 
@@ -125,7 +129,8 @@ class AtomicActionExecutor(
     override suspend fun execute(
         spec: AtomicActionSpec,
         infoValue: Int,
-        onCommandDispatched: (suspend () -> Unit)?
+        onCommandDispatched: (suspend () -> Unit)?,
+        onRunningConfirmed: (suspend () -> Unit)?
     ): AtomicActionResult {
         val startedAtMs = System.currentTimeMillis()
         return when (val current = readResult(spec)) {
@@ -163,20 +168,42 @@ class AtomicActionExecutor(
                         eventPhase = ACTION_EVENT_PHASE_RUNNING_CONFIRMED,
                         resultCode = current.value
                     )
-                    onCommandDispatched?.invoke()
-                    pollUntilFinish(
+                    val commandCallbackFailure = invokeCommandDispatchedSafely(onCommandDispatched)
+                    if (commandCallbackFailure != null) {
+                        return finishPollingAfterCommandCallback(
+                            spec = spec,
+                            callbackFailure = commandCallbackFailure
+                        ) {
+                            pollUntilFinish(
+                                spec = spec,
+                                startedAtMs = startedAtMs,
+                                requireFreshStateBeforeSuccess = false,
+                                hasAlreadyObservedRunning = true,
+                                allowFastCompletedWhenCommandCleared = false,
+                                onRunningConfirmed = null
+                            )
+                        }
+                    }
+                    val callbackFailure = invokeRunningConfirmedSafely(onRunningConfirmed)
+                    finishPollingAfterRunningCallback(
                         spec = spec,
-                        startedAtMs = startedAtMs,
-                        requireFreshStateBeforeSuccess = false,
-                        hasAlreadyObservedRunning = true,
-                        allowFastCompletedWhenCommandCleared = false
-                    )
+                        callbackFailure = callbackFailure
+                    ) {
+                        pollUntilFinish(
+                            spec = spec,
+                            startedAtMs = startedAtMs,
+                            requireFreshStateBeforeSuccess = false,
+                            hasAlreadyObservedRunning = true,
+                            allowFastCompletedWhenCommandCleared = false,
+                            onRunningConfirmed = null
+                        )
+                    }
                 } else {
                     val clearResult = clearStaleCommandMirrorIfNeeded(spec, current.value, startedAtMs)
                     if (clearResult != null) {
                         return clearResult
                     }
-                    startAndPoll(spec, infoValue, startedAtMs, onCommandDispatched)
+                    startAndPoll(spec, infoValue, startedAtMs, onCommandDispatched, onRunningConfirmed)
                 }
             }
         }
@@ -219,7 +246,8 @@ class AtomicActionExecutor(
         spec: AtomicActionSpec,
         infoValue: Int,
         startedAtMs: Long,
-        onCommandDispatched: (suspend () -> Unit)?
+        onCommandDispatched: (suspend () -> Unit)?,
+        onRunningConfirmed: (suspend () -> Unit)?
     ): AtomicActionResult {
         logger(
             "准备下发原子动作：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
@@ -299,16 +327,22 @@ class AtomicActionExecutor(
                     infoValue = infoValue,
                     commandValue = AtomicActionCodes.RUNNING
                 )
-                onCommandDispatched?.invoke()
+                val commandCallbackFailure = invokeCommandDispatchedSafely(onCommandDispatched)
+                return finishPollingAfterCommandCallback(
+                    spec = spec,
+                    callbackFailure = commandCallbackFailure
+                ) {
+                    pollUntilFinish(
+                        spec = spec,
+                        startedAtMs = startedAtMs,
+                        requireFreshStateBeforeSuccess = true,
+                        hasAlreadyObservedRunning = false,
+                        allowFastCompletedWhenCommandCleared = true,
+                        onRunningConfirmed = if (commandCallbackFailure == null) onRunningConfirmed else null
+                    )
+                }
             }
         }
-        return pollUntilFinish(
-            spec = spec,
-            startedAtMs = startedAtMs,
-            requireFreshStateBeforeSuccess = true,
-            hasAlreadyObservedRunning = false,
-            allowFastCompletedWhenCommandCleared = true
-        )
     }
 
     private suspend fun pollUntilFinish(
@@ -316,7 +350,8 @@ class AtomicActionExecutor(
         startedAtMs: Long,
         requireFreshStateBeforeSuccess: Boolean,
         hasAlreadyObservedRunning: Boolean,
-        allowFastCompletedWhenCommandCleared: Boolean
+        allowFastCompletedWhenCommandCleared: Boolean,
+        onRunningConfirmed: (suspend () -> Unit)?
     ): AtomicActionResult {
         var lastRunningLogAtMs = 0L
         var hasLoggedRunning = hasAlreadyObservedRunning
@@ -531,6 +566,22 @@ class AtomicActionExecutor(
                                     eventPhase = ACTION_EVENT_PHASE_RUNNING_CONFIRMED,
                                     resultCode = code
                                 )
+                                val callbackFailure = invokeRunningConfirmedSafely(onRunningConfirmed)
+                                if (callbackFailure != null) {
+                                    return finishPollingAfterRunningCallback(
+                                        spec = spec,
+                                        callbackFailure = callbackFailure
+                                    ) {
+                                        pollUntilFinish(
+                                            spec = spec,
+                                            startedAtMs = startedAtMs,
+                                            requireFreshStateBeforeSuccess = false,
+                                            hasAlreadyObservedRunning = true,
+                                            allowFastCompletedWhenCommandCleared = false,
+                                            onRunningConfirmed = null
+                                        )
+                                    }
+                                }
                                 logger(
                                     "动作启动确认成功：sessionId=${telemetryContext.sessionId}，action=${spec.name}，" +
                                         "resultRegister（结果寄存器）=${spec.resultRegister}，resultCode=${formatCode(code)}，elapsedMs=$elapsedMs"
@@ -614,6 +665,66 @@ class AtomicActionExecutor(
             ),
             startedAtMs
         )
+    }
+
+    private suspend fun invokeRunningConfirmedSafely(
+        callback: (suspend () -> Unit)?
+    ): Throwable? = try {
+        callback?.invoke()
+        null
+    } catch (e: Exception) {
+        e
+    }
+
+    private suspend fun invokeCommandDispatchedSafely(
+        callback: (suspend () -> Unit)?
+    ): Throwable? = try {
+        callback?.invoke()
+        null
+    } catch (e: Exception) {
+        e
+    }
+
+    private suspend fun finishPollingAfterCommandCallback(
+        spec: AtomicActionSpec,
+        callbackFailure: Throwable?,
+        pollToTerminal: suspend () -> AtomicActionResult
+    ): AtomicActionResult {
+        if (callbackFailure == null) {
+            return pollToTerminal()
+        }
+        val terminalResult = if (callbackFailure is CancellationException) {
+            withContext(NonCancellable) { pollToTerminal() }
+        } else {
+            pollToTerminal()
+        }
+        logger(
+            "原子动作命令下发回调失败，已继续监控至明确终态后延迟抛出：" +
+                "action=${spec.name}，callback=onCommandDispatched，terminalResult=$terminalResult，" +
+                "error=${callbackFailure::class.java.simpleName}:${callbackFailure.message}"
+        )
+        throw callbackFailure
+    }
+
+    private suspend fun finishPollingAfterRunningCallback(
+        spec: AtomicActionSpec,
+        callbackFailure: Throwable?,
+        pollToTerminal: suspend () -> AtomicActionResult
+    ): AtomicActionResult {
+        if (callbackFailure == null) {
+            return pollToTerminal()
+        }
+        val terminalResult = if (callbackFailure is CancellationException) {
+            withContext(NonCancellable) { pollToTerminal() }
+        } else {
+            pollToTerminal()
+        }
+        logger(
+            "原子动作运行确认回调失败，已继续监控至明确终态后延迟抛出：" +
+                "action=${spec.name}，callback=onRunningConfirmed，terminalResult=$terminalResult，" +
+                "error=${callbackFailure::class.java.simpleName}:${callbackFailure.message}"
+        )
+        throw callbackFailure
     }
 
     private suspend fun buildStartupNotConfirmedMessage(

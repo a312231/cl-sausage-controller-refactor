@@ -1284,11 +1284,7 @@ class MaintenanceFragment : Fragment() {
         val recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
         val pans = KaoPanUiReservationStateBuilder.apply(
             pans = KaoPanHelper.getKaoPanList(),
-            activeIntent = if (recoveryBlocked) {
-                KaoChangOperate.completedHeatReturnIntentForUi()
-            } else {
-                KaoChangOperate.activeSupplementBatchIntentForUi()
-            },
+            activeIntent = KaoChangOperate.maintenanceKaoPanIntentForUi(),
             recoveryBlocked = recoveryBlocked
         )
         kaoPanAdapter.submitList(pans)

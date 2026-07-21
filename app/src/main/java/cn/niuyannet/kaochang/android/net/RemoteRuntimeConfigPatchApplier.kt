@@ -51,6 +51,10 @@ object RemoteRuntimeConfigPatchApplier {
                 "transitionMode" -> applyIntRange(config, field, entry.value, 0, 2) { config.transitionMode = it }
                 "highConcurrencyResidualDrain" ->
                     applyIntRange(config, field, entry.value, 0, 1) { config.highConcurrencyResidualDrain = it }
+                "enableParallelSupplementPrefetch" ->
+                    applyStrictBinaryInt(config, field, entry.value) {
+                        config.enableParallelSupplementPrefetch = it
+                    }
                 "keepWarmTemperature" ->
                     applyTemperatureTarget(config, field, entry.value, normalizedFields) { config.keepWarmTemperature = it }
                 "heatingTemperature" ->
@@ -114,6 +118,23 @@ object RemoteRuntimeConfigPatchApplier {
         }
         setter(intValue)
         return readIntField(config, field) == intValue
+    }
+
+    private fun applyStrictBinaryInt(
+        config: AppConfigBean,
+        field: String,
+        value: Any?,
+        setter: (Int) -> Unit
+    ): Boolean {
+        if (value !is Byte && value !is Short && value !is Int && value !is Long) {
+            return false
+        }
+        val intValue = (value as Number).toLong()
+        if (intValue !in 0L..1L) {
+            return false
+        }
+        setter(intValue.toInt())
+        return readIntField(config, field) == intValue.toInt()
     }
 
     private fun applyHeatingOffset(
@@ -192,6 +213,7 @@ object RemoteRuntimeConfigPatchApplier {
             "modeType" -> config.modeType
             "transitionMode" -> config.transitionMode
             "highConcurrencyResidualDrain" -> config.highConcurrencyResidualDrain
+            "enableParallelSupplementPrefetch" -> config.enableParallelSupplementPrefetch
             "keepWarmTemperature" -> config.keepWarmTemperature
             "heatingTemperature" -> config.heatingTemperature
             "zone1HeatingOffset" -> config.zone1HeatingOffset

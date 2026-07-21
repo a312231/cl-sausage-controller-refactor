@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class ActionGroupRunnerTest {
@@ -15,7 +16,8 @@ class ActionGroupRunnerTest {
             override suspend fun execute(
                 spec: AtomicActionSpec,
                 infoValue: Int,
-                onCommandDispatched: (suspend () -> Unit)?
+                onCommandDispatched: (suspend () -> Unit)?,
+                onRunningConfirmed: (suspend () -> Unit)?
             ): AtomicActionResult {
                 assertEquals(spec.name, checkpoints.last())
                 return AtomicActionResult.Success
@@ -30,6 +32,47 @@ class ActionGroupRunnerTest {
 
         assertEquals(ActionGroupResult.Success, result)
         assertEquals(listOf("in1", "in2", "in3", "in4", "in5", "in6", "in7"), checkpoints)
+    }
+
+    @Test
+    fun inRunnerResume_shouldExposeLifecycleHooksForEveryRemainingAction() = runBlocking {
+        val events = mutableListOf<String>()
+        val client = object : AtomicActionClient {
+            override suspend fun execute(
+                spec: AtomicActionSpec,
+                infoValue: Int,
+                onCommandDispatched: (suspend () -> Unit)?,
+                onRunningConfirmed: (suspend () -> Unit)?
+            ): AtomicActionResult {
+                onCommandDispatched?.invoke()
+                onRunningConfirmed?.invoke()
+                return AtomicActionResult.Success
+            }
+        }
+        val runner = InActionGroupRunner(
+            client = client,
+            onCurrentActionChanged = { events += "prepare:$it" },
+            onActionCommandWritten = { events += "command:$it" },
+            onActionRunningConfirmed = { events += "running:$it" },
+            onActionTerminalConfirmed = { action, result -> events += "terminal:$action:$result" }
+        )
+
+        val result = runner.run(
+            sourceBoxNo = 17,
+            targetPanNo = 13,
+            startAfterCompletedAction = "in3"
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(
+            listOf(
+                "prepare:in4", "command:in4", "running:in4", "terminal:in4:Success",
+                "prepare:in5", "command:in5", "running:in5", "terminal:in5:Success",
+                "prepare:in6", "command:in6", "running:in6", "terminal:in6:Success",
+                "prepare:in7", "command:in7", "running:in7", "terminal:in7:Success"
+            ),
+            events
+        )
     }
 
     @Test
@@ -401,6 +444,43 @@ class ActionGroupRunnerTest {
         assertTrue(locks.tryAcquire(ResourceMask.above, owner = "legacy_self_clean"))
     }
 
+    @Test
+    fun resourceLocks_shouldAllowSameOwnerSameMaskIdempotently() {
+        val locks = ResourceLocks()
+        val mask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+
+        assertTrue(locks.tryAcquire(mask, owner = "parallel-session"))
+        assertTrue(locks.tryAcquire(mask, owner = "parallel-session"))
+        assertTrue(!locks.tryAcquire(ResourceMask.bottom, owner = "parallel-session"))
+        assertTrue(!locks.tryAcquire(ResourceMask.above, owner = "order-session"))
+    }
+
+    @Test
+    fun resourceLocks_orderResumeShouldReacquireActiveSessionOwnerIdempotently() {
+        val locks = ResourceLocks()
+        val sessionId = "parallel-session-for-order"
+        val mask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+
+        assertTrue(locks.tryAcquire(mask, sessionId))
+        assertTrue(locks.tryAcquire(mask, sessionId))
+        locks.release(sessionId)
+        assertTrue(locks.isIdle())
+    }
+
+    @Test
+    fun resourceLocks_forceAcquire_shouldRejectOtherOwnerConflictWithoutOverwriting() {
+        val locks = ResourceLocks()
+        assertTrue(locks.tryAcquire(ResourceMask.above, owner = "order-session"))
+
+        try {
+            locks.forceAcquire(ResourceMask.above, owner = "parallel-session")
+            fail("forceAcquire must reject a resource held by another owner")
+        } catch (_: IllegalStateException) {
+            locks.release("order-session")
+            assertTrue(locks.tryAcquire(ResourceMask.above, owner = "parallel-session"))
+        }
+    }
+
     private class FakeClient(
         private val results: ArrayDeque<AtomicActionResult> = ArrayDeque(),
         private val states: MutableMap<String, Int> = mutableMapOf()
@@ -410,13 +490,15 @@ class ActionGroupRunnerTest {
         override suspend fun execute(
             spec: AtomicActionSpec,
             infoValue: Int,
-            onCommandDispatched: (suspend () -> Unit)?
+            onCommandDispatched: (suspend () -> Unit)?,
+            onRunningConfirmed: (suspend () -> Unit)?
         ): AtomicActionResult {
             calls += "${spec.name}:$infoValue"
             if (spec.name == "out4" && onCommandDispatched != null) {
                 calls += "dispatch:out4"
             }
             onCommandDispatched?.invoke()
+            onRunningConfirmed?.invoke()
             states[spec.name] = COMPLETED
             return results.removeFirstOrNull() ?: AtomicActionResult.Success
         }

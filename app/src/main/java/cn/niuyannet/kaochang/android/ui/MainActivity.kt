@@ -29,7 +29,6 @@ import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.PowerLossRecoveryGuard
-import cn.niuyannet.kaochang.android.services.SupplementPauseController
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -233,7 +232,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                                 return@runOnUiThread
                             }
 
-                            SupplementPauseController.requestPauseForOrder(orderNo)
+                            KaoChangOperate.requestSupplementPauseForOrder(orderNo)
                             OrderProcessingStageBridge.publish(
                                 if (moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
                                     OrderProcessingStage.SUPPLEMENTING
