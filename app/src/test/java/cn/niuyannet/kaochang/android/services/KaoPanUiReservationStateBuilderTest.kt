@@ -333,7 +333,7 @@ class KaoPanUiReservationStateBuilderTest {
     }
 
     @Test
-    fun apply_shouldIgnoreFaultTimeoutCancelledReturnTargets() {
+    fun apply_shouldShowFaultTimeoutCancelledSupplementTargetsUntilBatchCloseout() {
         val pans = mutableListOf(
             blankPan(2),
             blankPan(13)
@@ -353,7 +353,8 @@ class KaoPanUiReservationStateBuilderTest {
         KaoPanUiReservationStateBuilder.apply(pans, intent)
 
         assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 2 }.uiReservationState)
-        assertEquals(KaoPan.UI_RESERVATION_NONE, pans.first { it.positionSn == 13 }.uiReservationState)
+        assertEquals(KaoPan.UI_RESERVATION_CANCELLED_SUPPLEMENT, pans.first { it.positionSn == 13 }.uiReservationState)
+        assertEquals("A", pans.first { it.positionSn == 13 }.uiReservationTaste?.tasteCode)
     }
 
     private fun pan(positionSn: Int, tasteCode: String): KaoPan =

@@ -1,5 +1,10 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBootstrap
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
+
 enum class PanMove203Decision {
     WaitingForStart,
     Running,
@@ -136,6 +141,78 @@ object ManualPanClearCommitter {
         releaseOwner()
         return true
     }
+}
+
+data class ManualSupplementPrefetchRecoveryDecision(
+    val canRecover: Boolean,
+    val reason: String
+)
+
+data class ManualSupplementConfirmResult(
+    val ok: Boolean,
+    val reason: String
+)
+
+object ManualSupplementPrefetchRecoveryPolicy {
+    fun evaluate(
+        pendingBatchId: String,
+        failedTargetPanNo: Int?,
+        failedActionName: String?,
+        session: SupplementPrefetchPipelineSession,
+        hasPausedSupplementSession: Boolean,
+        hasPanMoveJournal: Boolean,
+        snapshots: List<ActionGroupRecoveryResidueEvidence>,
+        algorithmEnabled: Boolean = false
+    ): ManualSupplementPrefetchRecoveryDecision {
+        val matchingLane = listOfNotNull(session.deliveryLane, session.prefetchLane).any { lane ->
+            lane.targetPanNo == failedTargetPanNo && lane.currentAction == failedActionName
+        }
+        val expectedActions = ActionGroupRecoveryBootstrap.allSpecs.map { it.name }.toSet()
+        return when {
+            algorithmEnabled -> rejectManualSupplementPrefetchRecovery("烤制算法仍开启，请先关闭算法")
+            pendingBatchId.isBlank() || session.batchId != pendingBatchId ->
+                rejectManualSupplementPrefetchRecovery(
+                    "待确认批次与双 lane 会话批次不一致：pending=$pendingBatchId，session=${session.batchId}"
+                )
+            failedTargetPanNo == null || failedActionName.isNullOrBlank() || !matchingLane ->
+                rejectManualSupplementPrefetchRecovery(
+                    "待确认失败动作与双 lane 会话坐标不一致：target=$failedTargetPanNo，action=$failedActionName"
+                )
+            !session.pendingOrderNo.isNullOrBlank() ->
+                rejectManualSupplementPrefetchRecovery("双 lane 会话仍绑定订单，禁止人工收口")
+            hasPausedSupplementSession ->
+                rejectManualSupplementPrefetchRecovery("仍存在订单暂停补肠会话，禁止人工收口")
+            hasPanMoveJournal ->
+                rejectManualSupplementPrefetchRecovery("仍存在搬盘 journal，禁止人工收口")
+            snapshots.size < 2 ->
+                rejectManualSupplementPrefetchRecovery("下位机状态尚未完成连续两次空闲确认")
+            snapshots.any { !it.modbusConnected } ->
+                rejectManualSupplementPrefetchRecovery("Modbus 未稳定连接")
+            snapshots.any { it.moveStatus !in 0..1 } ->
+                rejectManualSupplementPrefetchRecovery("当前存在非补肠机械状态，禁止人工收口")
+            snapshots.any { it.session != null } ->
+                rejectManualSupplementPrefetchRecovery("仍存在通用动作组会话，禁止人工收口")
+            snapshots.any { it.legacyActionStatus201 != AtomicActionCodes.IDLE } ->
+                rejectManualSupplementPrefetchRecovery("201（旧动作状态寄存器）连续读数存在非空闲值")
+            snapshots.any { snapshot -> snapshot.resultStates.map { it.actionName }.toSet() != expectedActions } ->
+                rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器快照不完整")
+            snapshots.any { snapshot -> snapshot.resultStates.any { it.value == null } } ->
+                rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器存在读取失败")
+            snapshots.any { snapshot -> snapshot.resultStates.any { it.value != AtomicActionCodes.IDLE } } ->
+                rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器连续读数存在非空闲值")
+            else -> ManualSupplementPrefetchRecoveryDecision(
+                canRecover = true,
+                reason = "同批次双 lane 失败动作已由人工确认且下位机连续空闲"
+            )
+        }
+    }
+
+    private fun rejectManualSupplementPrefetchRecovery(
+        reason: String
+    ): ManualSupplementPrefetchRecoveryDecision = ManualSupplementPrefetchRecoveryDecision(
+        canRecover = false,
+        reason = reason
+    )
 }
 
 object SourceBoxPositionPolicy {

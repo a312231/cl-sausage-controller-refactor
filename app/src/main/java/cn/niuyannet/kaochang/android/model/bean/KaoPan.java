@@ -70,6 +70,7 @@ public class KaoPan implements Serializable {
     public static final int UI_RESERVATION_NONE = 0;
     public static final int UI_RESERVATION_WAIT_SUPPLEMENT = 1;
     public static final int UI_RESERVATION_WAIT_RETURN = 2;
+    public static final int UI_RESERVATION_CANCELLED_SUPPLEMENT = 3;
 
     @JSONField(serialize = false, deserialize = false)
     private transient int uiReservationState; // 仅管理页展示使用，不参与持久化/调度

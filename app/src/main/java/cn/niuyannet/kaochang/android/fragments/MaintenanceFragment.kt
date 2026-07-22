@@ -1059,29 +1059,33 @@ class MaintenanceFragment : Fragment() {
                         "待补位置=${intent.remainingTargets().map { it.positionSn }}"
                 )
                 .setPositiveButton("已确认安全") { _, _ ->
-                    val ok = KaoChangOperate.confirmPendingSupplementBatchSafety("维护人员现场确认")
-                    if (ok) {
-                        val isolationRecovered =
-                            LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction(
-                                "维护人员现场确认续补安全"
+                    lifecycleScope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            KaoChangOperate.confirmPendingSupplementBatchSafety("维护人员现场确认")
+                        }
+                        if (result.ok) {
+                            val isolationRecovered =
+                                LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction(
+                                    "维护人员现场确认续补安全"
+                                )
+                            ToastUtils.showShort(if (isolationRecovered) "已确认续补安全并恢复下平台补肠" else "已确认续补安全")
+                            AdminOperationLogger.w(
+                                action = "确认续补安全",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "批次=${intent.batchId}，下平台隔离恢复=${if (isolationRecovered) "是" else "否"}"
                             )
-                        ToastUtils.showShort(if (isolationRecovered) "已确认续补安全并恢复下平台补肠" else "已确认续补安全")
-                        AdminOperationLogger.w(
-                            action = "确认续补安全",
-                            page = AdminOperationLogger.PAGE_PAN,
-                            result = AdminOperationLogger.RESULT_DONE,
-                            detail = "批次=${intent.batchId}，下平台隔离恢复=${if (isolationRecovered) "是" else "否"}"
-                        )
-                    } else {
-                        ToastUtils.showShort("确认失败，当前没有待确认批次")
-                        AdminOperationLogger.w(
-                            action = "确认续补安全",
-                            page = AdminOperationLogger.PAGE_PAN,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = "失败原因=当前没有待确认批次"
-                        )
+                        } else {
+                            ToastUtils.showShort("确认失败：${result.reason}")
+                            AdminOperationLogger.w(
+                                action = "确认续补安全",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "失败原因=${result.reason}"
+                            )
+                        }
+                        updateManualSupplementConfirmButtonVisibility()
                     }
-                    updateManualSupplementConfirmButtonVisibility()
                 }
                 .setNegativeButton("取消", null)
                 .show()

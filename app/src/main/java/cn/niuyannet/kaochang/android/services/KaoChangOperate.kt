@@ -2765,15 +2765,28 @@ object KaoChangOperate {
         return if (intent.requiresManualConfirm) intent else null
     }
 
-    fun confirmPendingSupplementBatchSafety(reason: String): Boolean {
-        val pending = pendingSupplementBatchRequiresManualConfirm() ?: return false
-        if (hasBlockingSupplementPrefetchEvidence()) {
-            logW(LOG_SUPPLEMENT, "双 lane 会话存在，拒绝人工确认清理补肠恢复证据：batchId=${pending.batchId}")
-            return false
+    suspend fun confirmPendingSupplementBatchSafety(reason: String): ManualSupplementConfirmResult {
+        val pending = pendingSupplementBatchRequiresManualConfirm()
+            ?: return ManualSupplementConfirmResult(false, "当前没有待确认批次")
+        when (val evidence = readSupplementPrefetchEvidence()) {
+            DurableEvidenceReadResult.Absent -> Unit
+            is DurableEvidenceReadResult.Corrupted -> {
+                val rejectReason = "双 lane 会话损坏，禁止人工确认：fingerprint=${evidence.fingerprint}，reason=${evidence.reason}"
+                logW(LOG_SUPPLEMENT, rejectReason)
+                return ManualSupplementConfirmResult(false, rejectReason)
+            }
+            is DurableEvidenceReadResult.Valid -> {
+                return confirmPendingSupplementBatchSafetyWithPrefetchSession(
+                    pending = pending,
+                    session = evidence.value,
+                    reason = reason
+                )
+            }
         }
         if (panMoveJournalStore.load() != null) {
-            logW(LOG_SUPPLEMENT, "存在搬盘journal，拒绝确认补肠现场安全：batchId=${pending.batchId}")
-            return false
+            val rejectReason = "存在搬盘journal，拒绝确认补肠现场安全：batchId=${pending.batchId}"
+            logW(LOG_SUPPLEMENT, rejectReason)
+            return ManualSupplementConfirmResult(false, rejectReason)
         }
         val sessions = listOfNotNull(
             actionGroupSessionStore.load(),
@@ -2783,14 +2796,16 @@ object KaoChangOperate {
             session.type != ActionGroupSessionType.IN_SUPPLEMENT || session.batchId != pending.batchId
         }
         if (conflictingSession != null || (sessions.isEmpty() && !actionGroupLocks.isIdle())) {
+            val rejectReason = "补肠现场安全确认与当前动作会话冲突：pendingBatchId=${pending.batchId}"
             logW(
                 LOG_SUPPLEMENT,
-                "补肠现场安全确认与当前动作会话冲突，拒绝清理恢复证据：" +
+                "$rejectReason，拒绝清理恢复证据：" +
                     "pendingBatchId=${pending.batchId}，session=$conflictingSession，locks=${actionGroupLocks.snapshot()}"
             )
-            return false
+            return ManualSupplementConfirmResult(false, rejectReason)
         }
-        val confirmed = supplementBatchIntentRepository.confirmManualSafety(reason) ?: return false
+        val confirmed = supplementBatchIntentRepository.confirmManualSafety(reason)
+            ?: return ManualSupplementConfirmResult(false, "当前没有待确认批次")
         clearFaultTimeoutCancelledReturnReservations(confirmed, reason)
         val config = AppConfig.getAppConfig()
         if (config.moveStatus != 0) {
@@ -2808,8 +2823,87 @@ object KaoChangOperate {
         if (pausedSupplementSessionStore.load() != null) {
             pausedSupplementSessionStore.clear()
         }
-        actionGroupLocks.clear()
-        return true
+        sessions.forEach { actionGroupLocks.release(it.sessionId) }
+        return ManualSupplementConfirmResult(true, "已确认续补安全")
+    }
+
+    private suspend fun confirmPendingSupplementBatchSafetyWithPrefetchSession(
+        pending: SupplementBatchIntent,
+        session: SupplementPrefetchPipelineSession,
+        reason: String
+    ): ManualSupplementConfirmResult {
+        val firstSnapshot = buildActionGroupRecoveryResidueEvidence("人工确认续补安全：第一次空闲确认")
+        delay(500L)
+        val secondSnapshot = buildActionGroupRecoveryResidueEvidence("人工确认续补安全：第二次空闲确认")
+        val snapshots = listOf(firstSnapshot, secondSnapshot)
+        val decision = ManualSupplementPrefetchRecoveryPolicy.evaluate(
+            pendingBatchId = pending.batchId,
+            failedTargetPanNo = pending.failedTargetPanNo,
+            failedActionName = pending.failedActionName,
+            session = session,
+            hasPausedSupplementSession = pausedSupplementSessionStore.load() != null,
+            hasPanMoveJournal = panMoveJournalStore.load() != null,
+            snapshots = snapshots,
+            algorithmEnabled = AppConfig.getAppConfig().isEnable == 1
+        )
+        if (!decision.canRecover) {
+            logW(
+                LOG_SUPPLEMENT,
+                "拒绝人工确认双 lane 补肠收口：batchId=${pending.batchId}，reason=${decision.reason}，" +
+                    "session=${session.sessionId}，snapshots=${snapshots.map { it.summary() }}"
+            )
+            return ManualSupplementConfirmResult(false, decision.reason)
+        }
+        runCatching {
+            supplementBatchIntentRepository.markManualConfirmStrategyPrefetchPreserveRemaining(
+                batchId = pending.batchId,
+                reason = reason
+            )
+        }.getOrElse { error ->
+            val rejectReason = "双 lane 人工确认策略落盘失败：${error.message}"
+            logW(LOG_SUPPLEMENT, "$rejectReason，保留 session/锁/moveStatus：batchId=${pending.batchId}")
+            return ManualSupplementConfirmResult(false, rejectReason)
+        }.takeIf { it } ?: return ManualSupplementConfirmResult(false, "双 lane 人工确认策略落盘失败：当前批次不匹配")
+
+        val oldMoveStatus = AppConfig.getAppConfig().moveStatus
+        val completion = SupplementPipelineCompletionCoordinator.complete(
+            persistIdle = {
+                val config = AppConfig.getAppConfig()
+                config.moveStatus = 0
+                AppConfig.saveAppConfigDurable(config)
+            },
+            publish = { publishRuntimeStateWithHttpFallback("人工确认双 lane 补肠收口") },
+            clearSession = {
+                supplementPrefetchSessionRepository.clearIfRevision(session.sessionId, session.revision)
+            },
+            releaseLock = { actionGroupLocks.release(session.sessionId) },
+            restoreBusy = {
+                val config = AppConfig.getAppConfig()
+                config.moveStatus = if (oldMoveStatus != 0) oldMoveStatus else 1
+                AppConfig.saveAppConfigDurable(config)
+            }
+        )
+        if (completion is SupplementPipelineCompletionResult.Failed) {
+            val rejectReason = "双 lane 会话收口失败：${completion.reason}"
+            logW(
+                LOG_SUPPLEMENT,
+                "$rejectReason，保留待确认批次：batchId=${pending.batchId}，" +
+                    "restoreError=${completion.restoreFailure?.message}"
+            )
+            return ManualSupplementConfirmResult(false, rejectReason)
+        }
+
+        val confirmed = supplementBatchIntentRepository.confirmManualSafetyPreservingRemainingTargets(reason)
+            ?: return ManualSupplementConfirmResult(false, "双 lane 已收口，但待确认批次写入失败，请刷新维护页后重试")
+        lastActionGroupRecoveryFailureReason = null
+        markActionGroupRecoveryVerified("人工确认双 lane 补肠现场安全：$reason")
+        logW(
+            LOG_SUPPLEMENT,
+            "人工确认双 lane 补肠现场安全并完成收口：batchId=${confirmed.batchId}，" +
+                "session=${session.sessionId}，failedTarget=${pending.failedTargetPanNo}，" +
+                "failedAction=${pending.failedActionName}，remaining=${confirmed.remainingTargets().map { it.positionSn }}"
+        )
+        return ManualSupplementConfirmResult(true, decision.reason)
     }
 
     private fun clearFaultTimeoutCancelledReturnReservations(intent: SupplementBatchIntent, reason: String) {
@@ -3083,15 +3177,43 @@ object KaoChangOperate {
             )
             return PendingSupplementBatchHandling.BLOCKED
         }
-
         val pans = KaoPanHelper.getKaoPanList()
-        val targets = intent.remainingTargets().mapNotNull { target ->
+        intent.remainingTargets().forEach { target ->
+            if (pans.firstOrNull { it.positionSn == target.positionSn }?.isHasSausage == true) {
+                supplementBatchIntentRepository.markCompleted(intent.batchId, target.positionSn)
+            }
+        }
+        val refreshedIntent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
+        if (refreshedIntent.remainingTargets().isEmpty()) {
+            logD(
+                LOG_SUPPLEMENT,
+                "补热批次已全部上盘，保留回搬绑定等待源盘搬回前区：reason=$reason，" +
+                    "batchId=${refreshedIntent.batchId}，type=${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}"
+            )
+            return PendingSupplementBatchHandling.NONE
+        }
+        if (supplementBatchIntentRepository.cancelRemainingHeatTargetsAfterFaultTimeoutIfExpired(
+                types = setOf(refreshedIntent.type),
+                reason = "打开算法后检测到长故障，取消旧批次未开始补肠目标:$reason"
+            ) { cancelledIntent ->
+                clearFaultTimeoutCancelledReturnReservations(cancelledIntent, "补热批次长故障取消未开始目标，释放回搬预留")
+            }
+        ) {
+            logW(
+                LOG_SUPPLEMENT,
+                "补热批次故障已超过10分钟，取消未开始目标并等待已上盘烤肠收口后重新调度：" +
+                    "reason=$reason，batchId=${refreshedIntent.batchId}，type=${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}"
+            )
+            return PendingSupplementBatchHandling.NONE
+        }
+
+        val targets = refreshedIntent.remainingTargets().mapNotNull { target ->
             val pan = pans.firstOrNull { it.positionSn == target.positionSn }
             if (pan == null) {
-                logW(LOG_SUPPLEMENT, "未完成补肠批次找不到目标烤盘，跳过：batchId=${intent.batchId}，targetPan=${target.positionSn}")
+                logW(LOG_SUPPLEMENT, "未完成补肠批次找不到目标烤盘，跳过：batchId=${refreshedIntent.batchId}，targetPan=${target.positionSn}")
                 null
             } else if (pan.isHasSausage) {
-                supplementBatchIntentRepository.markCompleted(intent.batchId, target.positionSn)
+                supplementBatchIntentRepository.markCompleted(refreshedIntent.batchId, target.positionSn)
                 null
             } else {
                 pan.applySupplementIntentTaste(target.tasteCode)
@@ -3135,22 +3257,22 @@ object KaoChangOperate {
             return PendingSupplementBatchHandling.BLOCKED
         }
 
-        applyHeatingForSupplementBatch(intent.type)
+        applyHeatingForSupplementBatch(refreshedIntent.type)
         LogUtils.i(
                 "【补肠批次恢复】检测到未完成补肠批次，人工确认后续补：reason=$reason，" +
-                "batchId=${intent.batchId}，type=${SupplementBatchIntentRepository.typeText(intent.type)}，" +
+                "batchId=${refreshedIntent.batchId}，type=${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}，" +
                 "目标烤盘=${executableTargets.joinToString(",") { it.kaoPan.positionSn.toString() }}，" +
                 "跳过不可执行目标=${availability.skippedTargets.map { it.targetPositionSn }}，" +
                 "skippedDetails=${availability.describeSkippedTargets()}"
         )
         val movedCount = moveSausagesToKaoPansByTasteInternal(
             targets = executableTargets,
-            existingBatchId = intent.batchId,
+            existingBatchId = refreshedIntent.batchId,
             createIntent = false,
             stageForSerial = "补肠批次恢复"
         )
         LogUtils.i(
-            "【补肠批次恢复】未完成补肠批次续补结束：batchId=${intent.batchId}，目标数=${targets.size}，完成数=$movedCount"
+            "【补肠批次恢复】未完成补肠批次续补结束：batchId=${refreshedIntent.batchId}，目标数=${targets.size}，完成数=$movedCount"
         )
         return PendingSupplementBatchHandling.RESUMED
     }

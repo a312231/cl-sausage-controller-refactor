@@ -28,7 +28,7 @@ class LowHeatSupplementSafetySourceTest {
         val handlerEnd = source.indexOf("private fun isInitializationBatch(", handlerStart)
         val handlerBlock = source.substring(handlerStart, handlerEnd)
 
-        assertTrue(handlerBlock.contains("existingBatchId = intent.batchId"))
+        assertTrue(handlerBlock.contains("existingBatchId = refreshedIntent.batchId"))
         assertTrue(handlerBlock.contains("createIntent = false"))
     }
 

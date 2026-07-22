@@ -47,6 +47,7 @@ data class SupplementBatchIntent(
     var maturityCloseoutPreparedAtMs: Long = 0L,
     var maturityCloseoutMaturedPositions: MutableList<Int> = mutableListOf(),
     var maturityCloseoutRemainingPositions: MutableList<Int> = mutableListOf(),
+    var manualConfirmStrategy: String = "",
     var createdAtMs: Long = 0L,
     var updatedAtMs: Long = 0L
 ) {
@@ -221,6 +222,7 @@ class SupplementBatchIntentRepository(
         intent.failedTargetPanNo = null
         intent.failureMessage = null
         intent.requiresManualConfirm = false
+        intent.manualConfirmStrategy = ""
         if (intent.isComplete()) {
             if (shouldRetainCompletedHeatIntentForReturn(intent)) {
                 saveDurableOrThrow(intent)
@@ -260,6 +262,7 @@ class SupplementBatchIntentRepository(
         intent.failedTargetPanNo = null
         intent.failureMessage = null
         intent.requiresManualConfirm = false
+        intent.manualConfirmStrategy = ""
         if (intent.isComplete()) {
             if (shouldRetainCompletedHeatIntentForReturn(intent)) {
                 saveDurableOrThrow(intent)
@@ -313,6 +316,9 @@ class SupplementBatchIntentRepository(
 
     fun confirmManualSafety(reason: String): SupplementBatchIntent? {
         val intent = loadActive() ?: return null
+        if (intent.manualConfirmStrategy == MANUAL_CONFIRM_STRATEGY_PREFETCH_PRESERVE_REMAINING) {
+            return confirmManualSafetyPreservingRemainingTargets(reason)
+        }
         if (!intent.requiresManualConfirm) {
             return intent
         }
@@ -357,6 +363,46 @@ class SupplementBatchIntentRepository(
         return intent
     }
 
+    fun markManualConfirmStrategyPrefetchPreserveRemaining(batchId: String, reason: String): Boolean {
+        val intent = loadActive() ?: return false
+        if (intent.batchId != batchId) {
+            return false
+        }
+        intent.manualConfirmStrategy = MANUAL_CONFIRM_STRATEGY_PREFETCH_PRESERVE_REMAINING
+        intent.updatedAtMs = clock()
+        saveDurableOrThrow(intent)
+        warnLogger(
+            "【补肠批次恢复】已标记双 lane 人工确认策略，保留未完成目标等待续补/超时收口：" +
+                "reason=$reason，batchId=${intent.batchId}，remaining=${intent.remainingTargets().map { it.positionSn }}"
+        )
+        return true
+    }
+
+    fun confirmManualSafetyPreservingRemainingTargets(reason: String): SupplementBatchIntent? {
+        val intent = loadActive() ?: return null
+        if (!intent.requiresManualConfirm && intent.manualConfirmStrategy.isBlank()) {
+            return intent
+        }
+        intent.requiresManualConfirm = false
+        intent.manualConfirmStrategy = ""
+        intent.updatedAtMs = clock()
+        if (intent.isComplete()) {
+            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                saveDurableOrThrow(intent)
+            } else {
+                clearDurableOrThrow()
+            }
+        } else {
+            saveDurableOrThrow(intent)
+        }
+        warnLogger(
+            "【补肠批次恢复】人工已确认双 lane 现场安全，保留未完成目标等待续补或超时收口：" +
+                "reason=$reason，batchId=${intent.batchId}，type=${typeText(intent.type)}，" +
+                "remaining=${intent.remainingTargets().map { it.positionSn }}，failureAtMs=${intent.failureAtMs}"
+        )
+        return intent
+    }
+
     fun shouldDelayHeatReturnForBatchCompleteness(
         types: Set<SupplementBatchType>,
         onFaultTimeoutCancelled: (SupplementBatchIntent) -> Unit = {}
@@ -395,6 +441,46 @@ class SupplementBatchIntentRepository(
                 "remaining=${intent.remainingTargets().map { it.positionSn }}，faultElapsedMs=$faultElapsedMs"
         )
         return false
+    }
+
+    fun cancelRemainingHeatTargetsAfterFaultTimeoutIfExpired(
+        types: Set<SupplementBatchType>,
+        reason: String,
+        onFaultTimeoutCancelled: (SupplementBatchIntent) -> Unit = {}
+    ): Boolean {
+        val intent = loadActive() ?: return false
+        if (intent.type !in types ||
+            !isHeatSupplementBatch(intent.type) ||
+            intent.remainingTargets().isEmpty() ||
+            intent.failureAtMs <= 0L
+        ) {
+            return false
+        }
+        val faultElapsedMs = clock() - intent.failureAtMs
+        if (faultElapsedMs <= HEAT_FAULT_RESUME_WINDOW_MS) {
+            return false
+        }
+        val cancelledTargets = cancelRemainingTargetsByFaultTimeout(intent)
+        intent.requiresManualConfirm = false
+        intent.manualConfirmStrategy = ""
+        intent.updatedAtMs = clock()
+        onFaultTimeoutCancelled(intent)
+        if (intent.isComplete()) {
+            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                saveDurableOrThrow(intent)
+            } else {
+                clearDurableOrThrow()
+            }
+        } else {
+            saveDurableOrThrow(intent)
+        }
+        warnLogger(
+            "【补肠批次恢复】补热批次故障已超过10分钟，取消未完成目标并等待已上盘烤肠收口：" +
+                "reason=$reason，batchId=${intent.batchId}，type=${typeText(intent.type)}，" +
+                "cancelled=$cancelledTargets，remaining=${intent.remainingTargets().map { it.positionSn }}，" +
+                "faultElapsedMs=$faultElapsedMs"
+        )
+        return cancelledTargets.isNotEmpty()
     }
 
     fun clearCompletedHeatReturnIfSourceCleared(
@@ -540,6 +626,7 @@ class SupplementBatchIntentRepository(
 
     companion object {
         const val HEAT_FAULT_RESUME_WINDOW_MS: Long = 10 * 60 * 1000L
+        const val MANUAL_CONFIRM_STRATEGY_PREFETCH_PRESERVE_REMAINING: String = "PREFETCH_PRESERVE_REMAINING"
 
         fun inferType(positions: List<Int>): SupplementBatchType {
             val sorted = positions.sorted()

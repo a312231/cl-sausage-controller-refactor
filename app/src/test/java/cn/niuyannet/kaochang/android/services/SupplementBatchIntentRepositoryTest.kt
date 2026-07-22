@@ -179,6 +179,58 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun confirmManualSafetyPreservingRemainingTargets_shouldKeepHeatTargetsAfterTenMinuteFaultTimeout() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(
+                target(13, "A", returnPositionSn = 1),
+                target(14, "A", returnPositionSn = 2),
+                target(15, "A", returnPositionSn = 3)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )!!
+        repository.markCompleted(intent.batchId, 13)
+        repository.markFailure(intent.batchId, 14, "in1", "双 lane in1 下平台故障", true)
+        repository.markManualConfirmStrategyPrefetchPreserveRemaining(intent.batchId, "单测预写策略")
+        now = 1000L + 20 * 60 * 1000L
+
+        val confirmed = repository.confirmManualSafetyPreservingRemainingTargets("双 lane 人工确认")!!
+
+        assertFalse(confirmed.requiresManualConfirm)
+        assertEquals("", confirmed.manualConfirmStrategy)
+        assertEquals(listOf(14, 15), confirmed.remainingTargets().map { it.positionSn })
+        assertTrue(confirmed.targets.none { it.cancelledByFaultTimeout })
+        assertEquals(confirmed.batchId, store.intent!!.batchId)
+    }
+
+    @Test
+    fun confirmManualSafety_shouldUsePrefetchPreserveStrategyEvenAfterSessionEvidenceWasCleared() {
+        val store = MemorySupplementBatchIntentStore()
+        var now = 1000L
+        val repository = repository(store) { now }
+        val intent = repository.begin(
+            listOf(
+                target(25, "B", returnPositionSn = 7),
+                target(26, "B", returnPositionSn = 8),
+                target(27, "B", returnPositionSn = 9)
+            ),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markCompleted(intent.batchId, 25)
+        repository.markFailure(intent.batchId, 26, "in1", "双 lane 已清 session 后重试", true)
+        repository.markManualConfirmStrategyPrefetchPreserveRemaining(intent.batchId, "单测预写策略")
+        now = 1000L + 20 * 60 * 1000L
+
+        val confirmed = repository.confirmManualSafety("session 已清后重试")!!
+
+        assertFalse(confirmed.requiresManualConfirm)
+        assertEquals(listOf(26, 27), confirmed.remainingTargets().map { it.positionSn })
+        assertTrue(confirmed.targets.none { it.cancelledByFaultTimeout })
+    }
+
+    @Test
     fun shouldDelayHeatReturnForBatchCompleteness_shouldOnlyDelayWithinFaultWindow() {
         val store = MemorySupplementBatchIntentStore()
         var now = 1000L

@@ -104,6 +104,7 @@ internal fun formatKaoPanStatusText(
         KaoPan.STATUS_EMPTY -> when (kaoPan.uiReservationState) {
             KaoPan.UI_RESERVATION_WAIT_SUPPLEMENT -> "待补肠"
             KaoPan.UI_RESERVATION_WAIT_RETURN -> "待回补"
+            KaoPan.UI_RESERVATION_CANCELLED_SUPPLEMENT -> "本批取消"
             else -> "空缺"
         }
         KaoPan.STATUS_BAKING -> {

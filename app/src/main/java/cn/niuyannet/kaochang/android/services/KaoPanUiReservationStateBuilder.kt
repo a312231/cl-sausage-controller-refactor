@@ -26,6 +26,15 @@ object KaoPanUiReservationStateBuilder {
         val intent = activeIntent ?: return
         val remainingTargetPositions = intent.remainingTargets().map { it.positionSn }.toSet()
         intent.targets
+            .filter { it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
+            .forEach { target ->
+                pans.firstOrNull { it.positionSn == target.positionSn && it.status == 0 && !it.isHasSausage }
+                    ?.apply {
+                        uiReservationState = KaoPan.UI_RESERVATION_CANCELLED_SUPPLEMENT
+                        uiReservationTaste = target.tasteCode.toUiTaste()
+                    }
+            }
+        intent.targets
             .filter { !it.cancelledByFaultTimeout && !it.skippedBySupplyDegrade }
             .forEach { target ->
             val taste = target.tasteCode.toUiTaste()

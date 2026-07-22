@@ -37,9 +37,16 @@ class SupplementPrefetchRecoveryWiringSourceTest {
     fun manualCleanupEntries_shouldRejectActiveSessionBeforeClearingEvidence() {
         val residue = functionBlock("suspend fun confirmClearActionGroupRecoveryResidue", "fun getLastActionGroupRecoveryFailureReason")
         val supplement = functionBlock("fun confirmPendingSupplementBatchSafety", "private fun clearFaultTimeoutCancelledReturnReservations")
+        val doubleLaneCompletion = supplement.indexOf("SupplementPipelineCompletionCoordinator.complete(")
+        val doubleLaneConfirm = supplement.indexOf("confirmManualSafetyPreservingRemainingTargets", doubleLaneCompletion)
+        val genericConfirm = supplement.indexOf("confirmManualSafety(reason)")
+        val strategyMark = supplement.indexOf("markManualConfirmStrategyPrefetchPreserveRemaining")
 
         assertTrue(residue.indexOf("hasBlockingSupplementPrefetchEvidence") in 0 until residue.indexOf("actionGroupSessionStore.clear()"))
-        assertTrue(supplement.indexOf("hasBlockingSupplementPrefetchEvidence") in 0 until supplement.indexOf("confirmManualSafety"))
+        assertTrue(supplement.indexOf("readSupplementPrefetchEvidence()") in 0 until supplement.indexOf("confirmManualSafety"))
+        assertTrue(strategyMark >= 0 && strategyMark < doubleLaneCompletion)
+        assertTrue(genericConfirm >= 0 && genericConfirm < doubleLaneCompletion)
+        assertTrue(doubleLaneCompletion >= 0 && doubleLaneConfirm > doubleLaneCompletion)
     }
 
     @Test
@@ -95,6 +102,26 @@ class SupplementPrefetchRecoveryWiringSourceTest {
         assertTrue(applyCompleted >= 0)
         assertTrue(finalizePause > applyCompleted)
         assertTrue(safeRelease > finalizePause)
+    }
+
+    @Test
+    fun pendingHeatBatch_shouldCancelLongFaultOnlyAfterSchedulingIsAllowed() {
+        val block = functionBlock(
+            "suspend fun handlePendingSupplementBatchIfAny",
+            "private fun isInitializationBatch"
+        )
+        val manualConfirmGate = block.indexOf("if (intent.requiresManualConfirm)")
+        val schedulingGate = block.indexOf("if (!schedulingEnabled || !boxSupplyAvailable")
+        val occupiedReconcile = block.indexOf("markCompleted(intent.batchId")
+        val timeoutCancel = block.indexOf("cancelRemainingHeatTargetsAfterFaultTimeoutIfExpired")
+        val resumeMove = block.indexOf("moveSausagesToKaoPansByTasteInternal")
+
+        assertTrue(manualConfirmGate >= 0)
+        assertTrue(schedulingGate > manualConfirmGate)
+        assertTrue(occupiedReconcile > schedulingGate)
+        assertTrue(timeoutCancel > occupiedReconcile)
+        assertTrue(timeoutCancel > schedulingGate)
+        assertTrue(resumeMove > timeoutCancel)
     }
 
     @Test
