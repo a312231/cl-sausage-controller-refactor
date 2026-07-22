@@ -570,7 +570,7 @@ class InActionGroupPrefetchPipelineRunnerTest {
     }
 
     @Test
-    fun pipeline_shouldPauseAfterFallbackSourceCompletesWithoutStartingStaleNextPrefetch() = runBlocking {
+    fun pipeline_shouldRequireReplanAfterFallbackSourceCompletesWithoutStartingStaleNextPrefetch() = runBlocking {
         val client = FakeClient(
             results = queueOf(
                 AtomicActionResult.Success,
@@ -599,10 +599,11 @@ class InActionGroupPrefetchPipelineRunnerTest {
             )
         )
 
-        assertTrue(result is InActionGroupPipelineResult.Paused)
-        val paused = result as InActionGroupPipelineResult.Paused
-        assertEquals(listOf(1), paused.completed.map { it.targetPanNo })
-        assertEquals(20, paused.completed.single().sourceBoxNo)
+        assertTrue(result is InActionGroupPipelineResult.ReplanRequired)
+        val replan = result as InActionGroupPipelineResult.ReplanRequired
+        assertEquals(listOf(1), replan.completed.map { it.targetPanNo })
+        assertEquals(20, replan.completed.single().sourceBoxNo)
+        assertTrue(replan.reason.contains("重新规划剩余目标"))
         assertEquals(
             "备用箱被实际消耗后，不应继续启动旧计划里的下一根预取",
             1,

@@ -804,8 +804,45 @@ object KaoChangAlgorithm {
             logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
             return
         }
-        if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
-            logD(LOG_ALGORITHM, "动作恢复尚未收口，跳过本轮自动调度")
+        val actionGroupRecoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
+        if (actionGroupRecoveryBlocked) {
+            refreshActiveBakingTimeBeforeMaturityCheck(config, kaoPanList)
+            runCatching {
+                val closeout = KaoChangOperate.prepareLowInitializationMaturityCloseout(
+                    config = config,
+                    pans = kaoPanList,
+                    nowMs = System.currentTimeMillis(),
+                    recoveryBlocked = true
+                )
+                if (closeout != null) {
+                    val beforeSellable = if (closeout.requiresPanSettlement) {
+                        KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+                    } else {
+                        null
+                    }
+                    if (closeout.requiresPanSettlement) {
+                        check(settleMaturedLowFrontBeforeRecoveryReturn(config, kaoPanList, closeout)) {
+                            "低并发残缺初始化成熟盘状态收口失败"
+                        }
+                    }
+                    KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+                    KaoChangOperate.completeLowInitializationMaturityCloseout(closeout)
+                    if (beforeSellable != null) {
+                        runCatching {
+                            KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
+                                beforeSellable,
+                                KaoPanHelper.getKaoPanList(),
+                                "恢复门禁阻塞期间一区成熟转保温"
+                            )
+                        }.onFailure { error ->
+                            logW(LOG_ALGORITHM, "一区成熟收口已耐久完成，可售状态等待快照补偿：${error.message}")
+                        }
+                    }
+                }
+            }.onFailure { error ->
+                logW(LOG_ALGORITHM, "低并发残缺初始化成熟收口失败，保持恢复门禁：${error.message}")
+            }
+            logD(LOG_ALGORITHM, "动作恢复尚未收口，跳过本轮机械调度")
             return
         }
         if (kaoPanBoxList.isEmpty()) {
@@ -973,6 +1010,45 @@ object KaoChangAlgorithm {
             beforeSellable,
             KaoPanHelper.getKaoPanList(),
             "机械门禁前整区成熟转保温"
+        )
+        return true
+    }
+
+    private fun settleMaturedLowFrontBeforeRecoveryReturn(
+        config: AppConfigBean,
+        kaoPanList: List<KaoPan>,
+        closeout: LowInitializationMaturityCloseoutPolicy.Closeout
+    ): Boolean {
+        val applyKeepWarm: (Int) -> Boolean = { area ->
+            val result = KaoChangOperate.keepWarmForMaturityCloseout(area)
+            if (!result.isSuccess) {
+                logW(
+                    LOG_ALGORITHM,
+                    "一区成熟收口保温写入失败，保持批次证据等待重试：" +
+                        "status=${result.status}，message=${result.message ?: "无详情"}"
+                )
+            }
+            result.isSuccess
+        }
+        val settlement = if (closeout.preparedBeforeEvaluation) {
+            MaturedZoneKeepWarmSettler.settlePreparedZoneOne(
+                pans = kaoPanList,
+                config = config,
+                nowMs = System.currentTimeMillis(),
+                preparedPositions = closeout.maturedPositions,
+                applyKeepWarm = applyKeepWarm
+            )
+        } else {
+            MaturedZoneKeepWarmSettler.settleMaturedZoneOne(
+                pans = kaoPanList,
+                config = config,
+                nowMs = System.currentTimeMillis(),
+                applyKeepWarm = applyKeepWarm
+            )
+        } ?: return false
+        logI(
+            LOG_ALGORITHM,
+            "【加热控制】恢复门禁阻塞期间一区成熟收口：positions=${settlement.positions}"
         )
         return true
     }

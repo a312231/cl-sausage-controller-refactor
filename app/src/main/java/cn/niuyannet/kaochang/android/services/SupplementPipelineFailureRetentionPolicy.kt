@@ -1,8 +1,14 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementActionLifecycle
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementBarrierState
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPipelinePhase
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
+
 enum class SupplementPipelineOutcome {
     SUCCESS,
     PAUSED_FOR_ORDER,
+    REPLAN_REQUIRED,
     SUPPLY_DEGRADED,
     FAILED,
     CANCELLED,
@@ -19,11 +25,31 @@ object SupplementPipelineFailureRetentionPolicy {
         return when (outcome) {
             SupplementPipelineOutcome.SUCCESS,
             SupplementPipelineOutcome.PAUSED_FOR_ORDER,
+            SupplementPipelineOutcome.REPLAN_REQUIRED,
             SupplementPipelineOutcome.SUPPLY_DEGRADED -> !safeReleaseConfirmed
             SupplementPipelineOutcome.FAILED,
             SupplementPipelineOutcome.CANCELLED,
             SupplementPipelineOutcome.RECOVERY_FAILED -> true
         }
+    }
+}
+
+object SupplementPipelineReplanReleasePolicy {
+    fun canRelease(
+        session: SupplementPrefetchPipelineSession?,
+        expectedSessionId: String,
+        expectedRevision: Long,
+        durableStateSaved: Boolean
+    ): Boolean {
+        if (!durableStateSaved || session == null) return false
+        if (session.sessionId != expectedSessionId || session.revision != expectedRevision) return false
+        if (session.pendingOrderNo != null || session.phase != SupplementPipelinePhase.RUNNING) return false
+        if (session.barrierState != SupplementBarrierState.DELIVERY_COMMITTED || session.prefetchLane != null) return false
+        val delivery = session.deliveryLane ?: return false
+        return delivery.currentAction == "in7" &&
+            delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
+            delivery.boxDeductionApplied &&
+            delivery.panPlacementApplied
     }
 }
 

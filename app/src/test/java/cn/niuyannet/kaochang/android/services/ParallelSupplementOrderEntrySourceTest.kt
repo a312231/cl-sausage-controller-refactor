@@ -97,6 +97,49 @@ class ParallelSupplementOrderEntrySourceTest {
         assertTrue(block.contains("actionGroupLocks.release(requireNotNull(safePausedSession).sessionId)"))
     }
 
+    @Test
+    fun fallbackReplan_shouldYieldToCommittedOrderBeforeCompletionCleanup() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("val completed = when (result)")
+        val end = operate.indexOf("private fun describeAtomicActionResult", start)
+        val block = operate.substring(start, end)
+
+        val orderPause = block.indexOf("supplementPrefetchSessionRepository.pauseCommittedDeliveryForPendingOrder()")
+        val safePausedRead = block.indexOf("val safePausedSession = activeSafePausedSupplementSession()")
+        val replanRelease = block.indexOf("val safeReplanReleaseConfirmed")
+        val completion = block.indexOf("SupplementPipelineCompletionCoordinator.complete(")
+
+        assertTrue("订单 barrier 必须先转为安全暂停", orderPause >= 0)
+        assertTrue("必须在重规划释放前重新读取安全订单暂停", orderPause < safePausedRead)
+        assertTrue("订单暂停判定必须早于重规划释放判定", safePausedRead < replanRelease)
+        assertTrue("重规划与订单仲裁必须发生在最终清 session 前", replanRelease < completion)
+        assertTrue(block.contains("safePausedSession != null -> SupplementPipelineOutcome.PAUSED_FOR_ORDER"))
+        assertTrue(block.contains("(result is InActionGroupPipelineResult.ReplanRequired && safeReplanReleaseConfirmed)"))
+    }
+
+    @Test
+    fun fallbackReplan_shouldDeferFailureRetentionLogUntilFinalReleaseDecision() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val finallyStart = operate.indexOf("} finally {")
+        val finallyEnd = operate.indexOf("val completed = when (result)", finallyStart)
+        val finallyBlock = operate.substring(finallyStart, finallyEnd)
+
+        assertTrue(finallyBlock.contains("val deferReplanRetentionLog"))
+        assertTrue(finallyBlock.contains("if (retainFailureEvidence && !deferReplanRetentionLog)"))
+        assertTrue(finallyBlock.contains("if (retainParallelEvidence && !deferReplanRetentionLog)"))
+
+        val resultLogStart = operate.lastIndexOf("is InActionGroupPipelineResult.ReplanRequired ->")
+        val resultLogEnd = operate.indexOf("is InActionGroupPipelineResult.Paused ->", resultLogStart)
+        val resultLogBlock = operate.substring(resultLogStart, resultLogEnd)
+        assertTrue(operate.contains("var pausedCleanupSucceeded = false"))
+        assertTrue(operate.contains("pausedCleanupSucceeded = true"))
+        assertTrue(resultLogBlock.contains("safePausedSession != null && pausedCleanupSucceeded"))
+        assertTrue(resultLogBlock.contains("订单优先，保留暂停session，moveStatus/锁已释放"))
+        assertTrue(resultLogBlock.contains("if (safeReplanReleaseConfirmed && !durableCompletionFailed)"))
+        assertTrue(resultLogBlock.contains("logW("))
+        assertTrue(resultLogBlock.contains("保留session/锁/moveStatus"))
+    }
+
     private fun source(path: String): String = listOf(File(path), File("../$path"))
         .firstOrNull { it.isFile }
         ?.readText()

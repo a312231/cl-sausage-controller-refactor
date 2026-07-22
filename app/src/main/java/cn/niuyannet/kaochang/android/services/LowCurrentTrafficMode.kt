@@ -405,7 +405,7 @@ object LowCurrentTrafficMode {
      * - 2：补 16~18
      * - 3：前区空位不足 3 且 13~18 补热区为空，可关 2 区加热
      */
-    private fun lowConcurrencyIntestinalSupplementation(
+    internal fun lowConcurrencyIntestinalSupplementation(
         p1_9: Int,
         p13_15: Int,
         p16_18: Int
@@ -755,8 +755,19 @@ object LowCurrentTrafficMode {
         }
     }
 
-    private fun validSupplyBoxesByTaste(listBox: List<KaoPanBox>, tasteCode: String): List<KaoPanBox> {
-        return TrafficModeHelper.findSupplyBoxesByTaste(listBox, tasteCode)
+    private fun validSupplyBoxesByTaste(
+        listBox: List<KaoPanBox>,
+        tasteCode: String,
+        isBoxAvailable: (KaoPanBox) -> Boolean = KaoPanHelper::isSupplyBoxAvailableForAutoSupplement
+    ): List<KaoPanBox> {
+        if (tasteCode.isBlank()) return emptyList()
+        return listBox
+            .filter {
+                it.tasteCode == tasteCode &&
+                    isBoxAvailable(it) &&
+                    SourceBoxPositionPolicy.isValidSourceBox(it.positionSn)
+            }
+            .sortedByDescending { it.positionSn }
     }
 
     private fun logLowHeatSupplementGate(
@@ -830,18 +841,19 @@ object LowCurrentTrafficMode {
         groupName: String,
         selectedFrontPositions: List<KaoPan>,
         neededTastes: List<String>,
-        listBox: List<KaoPanBox>
+        listBox: List<KaoPanBox>,
+        isBoxAvailable: (KaoPanBox) -> Boolean = KaoPanHelper::isSupplyBoxAvailableForAutoSupplement
     ): String {
         val missingTastes = neededTastes
             .distinct()
-            .filter { tasteCode -> validSupplyBoxesByTaste(listBox, tasteCode).isEmpty() }
+            .filter { tasteCode -> validSupplyBoxesByTaste(listBox, tasteCode, isBoxAvailable).isEmpty() }
         val frontTasteSummary = selectedFrontPositions.joinToString(",") { pan ->
             "${pan.positionSn}:${pan.taste?.tasteCode?.takeIf { it.isNotBlank() } ?: "未预留"}"
         }.ifBlank { "空" }
         val availableStockSummary = listBox
             .mapNotNull { it.tasteCode?.takeIf { tasteCode -> tasteCode.isNotBlank() } }
             .distinct()
-            .flatMap { tasteCode -> validSupplyBoxesByTaste(listBox, tasteCode) }
+            .flatMap { tasteCode -> validSupplyBoxesByTaste(listBox, tasteCode, isBoxAvailable) }
             .groupBy { it.tasteCode.orEmpty() }
             .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
             .entries
@@ -871,10 +883,11 @@ object LowCurrentTrafficMode {
     internal fun planLowHeatSupplementTargets(
         selectedFrontPositions: List<KaoPan>,
         supplementPositions: List<KaoPan>,
-        listBox: List<KaoPanBox>
+        listBox: List<KaoPanBox>,
+        isBoxAvailable: (KaoPanBox) -> Boolean = KaoPanHelper::isSupplyBoxAvailableForAutoSupplement
     ): LowHeatSupplementPlan {
         val maxCount = minOf(selectedFrontPositions.size, supplementPositions.size)
-        val remainingStockByTaste = buildAvailableStockByTaste(listBox)
+        val remainingStockByTaste = buildAvailableStockByTaste(listBox, isBoxAvailable)
         val plannedFrontPans = mutableListOf<KaoPan>()
         val targets = mutableListOf<KaoChangOperate.SupplementTarget>()
         supplementPositions.take(maxCount).forEach { targetPan ->
@@ -905,10 +918,13 @@ object LowCurrentTrafficMode {
         return LowHeatSupplementPlan(plannedFrontPans, targets)
     }
 
-    private fun buildAvailableStockByTaste(listBox: List<KaoPanBox>): MutableMap<String, Int> {
+    private fun buildAvailableStockByTaste(
+        listBox: List<KaoPanBox>,
+        isBoxAvailable: (KaoPanBox) -> Boolean
+    ): MutableMap<String, Int> {
         return listBox
             .filter {
-                KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) &&
+                isBoxAvailable(it) &&
                     SourceBoxPositionPolicy.isValidSourceBox(it.positionSn) &&
                     !it.tasteCode.isNullOrBlank()
             }

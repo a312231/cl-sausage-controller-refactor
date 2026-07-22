@@ -357,6 +357,7 @@ object KaoChangOperate {
     ): SupplementPipelineOutcome = when (result) {
         is InActionGroupPipelineResult.Success -> SupplementPipelineOutcome.SUCCESS
         is InActionGroupPipelineResult.Paused -> SupplementPipelineOutcome.PAUSED_FOR_ORDER
+        is InActionGroupPipelineResult.ReplanRequired -> SupplementPipelineOutcome.REPLAN_REQUIRED
         is InActionGroupPipelineResult.Failed -> SupplementPipelineOutcome.FAILED
         null -> SupplementPipelineOutcome.CANCELLED
     }
@@ -2704,6 +2705,61 @@ object KaoChangOperate {
         RESUMED
     }
 
+    internal fun prepareLowInitializationMaturityCloseout(
+        config: AppConfigBean,
+        pans: List<KaoPan>,
+        nowMs: Long,
+        recoveryBlocked: Boolean
+    ): LowInitializationMaturityCloseoutPolicy.Closeout? {
+        val intent = supplementBatchIntentRepository.loadActive()
+            ?: return null
+        if (intent.type == SupplementBatchType.HIGH_INITIALIZATION_1_21) {
+            return null
+        }
+        if (intent.type != SupplementBatchType.LOW_INITIALIZATION_1_9) {
+            return null
+        }
+        val unfinishedSupplementPlacementEvidence =
+            actionGroupSessionStore.load()?.type == ActionGroupSessionType.IN_SUPPLEMENT ||
+                pausedSupplementSessionStore.load() != null ||
+                panMoveJournalStore.load() != null ||
+                readSupplementPrefetchEvidence() !is DurableEvidenceReadResult.Absent
+        val closeout = LowInitializationMaturityCloseoutPolicy.evaluate(
+            intent = intent,
+            pans = pans,
+            config = config,
+            nowMs = nowMs,
+            recoveryBlocked = recoveryBlocked,
+            unfinishedSupplementPlacementEvidence = unfinishedSupplementPlacementEvidence
+        ) ?: return null
+
+        check(
+            supplementBatchIntentRepository.prepareLowInitializationMaturityCloseout(
+                closeout.batchId,
+                closeout.maturedPositions,
+                closeout.remainingPositions
+            )
+        ) { "低并发残缺初始化成熟收口阶段落盘失败" }
+        return closeout
+    }
+
+    internal fun completeLowInitializationMaturityCloseout(closeout: LowInitializationMaturityCloseoutPolicy.Closeout) {
+        check(
+            supplementBatchIntentRepository.clearPreparedLowInitializationMaturityCloseout(
+                closeout.batchId,
+                closeout.maturedPositions,
+                closeout.remainingPositions,
+                "恢复门禁阻塞且已落盘初始化烤肠全部成熟，关闭剩余直补目标"
+            )
+        ) { "低并发残缺初始化成熟收口 intent 已变化，拒绝清理" }
+        logW(
+            LOG_SUPPLEMENT,
+            "低并发残缺初始化按成熟批次收口，不再向一区直补生肠：" +
+                "batchId=${closeout.batchId}，matured=${closeout.maturedPositions}，" +
+                "cancelled=${closeout.remainingPositions}"
+        )
+    }
+
     fun pendingSupplementBatchRequiresManualConfirm(): SupplementBatchIntent? {
         val intent = supplementBatchIntentRepository.loadActive() ?: return null
         return if (intent.requiresManualConfirm) intent else null
@@ -3518,6 +3574,8 @@ object KaoChangOperate {
         }
         var actionGroupCompleted = false
         var pipelineResultForCleanup: InActionGroupPipelineResult? = null
+        var replanExpectedRevision: Long? = null
+        var pausedCleanupSucceeded = false
         var latestCurrentAction: InActionGroupPipelineActionContext? = null
         var latestRiskAction: InActionGroupPipelineActionContext? = null
         var safeParallelSupplyDegrade: Boolean
@@ -3924,6 +3982,11 @@ object KaoChangOperate {
                 .also {
                     pipelineResultForCleanup = it
                     actionGroupCompleted = true
+                    if (parallelEnabled && it is InActionGroupPipelineResult.ReplanRequired) {
+                        replanExpectedRevision = activeSupplementPrefetchSessionOrNull("备用箱重规划收口快照")
+                            ?.takeIf { session -> session.sessionId == sessionId }
+                            ?.revision
+                    }
                     if (!parallelEnabled &&
                         it is InActionGroupPipelineResult.Paused &&
                         it.pausedAfterAction in setOf("in1", "in2", "in3")
@@ -3989,10 +4052,14 @@ object KaoChangOperate {
                 pausedSupplementContinuation ||
                 durableCompletionFailed ||
                 retainParallelEvidence
-            if (retainFailureEvidence) {
+            val deferReplanRetentionLog =
+                pipelineResultForCleanup is InActionGroupPipelineResult.ReplanRequired &&
+                    actionGroupCompleted &&
+                    !durableCompletionFailed
+            if (retainFailureEvidence && !deferReplanRetentionLog) {
                 logW(LOG_ACTION_GROUP, "补肠预取流水线保留session/锁/moveStatus，等待恢复或人工确认")
             }
-            if (retainParallelEvidence) {
+            if (retainParallelEvidence && !deferReplanRetentionLog) {
                 logW(LOG_ACTION_GROUP, "补肠双 lane 失败，保留 session、资源锁和 moveStatus")
             }
             runCatching {
@@ -4010,6 +4077,7 @@ object KaoChangOperate {
         val completed = when (result) {
             is InActionGroupPipelineResult.Success -> result.completed
             is InActionGroupPipelineResult.Paused -> result.completed
+            is InActionGroupPipelineResult.ReplanRequired -> result.completed
             is InActionGroupPipelineResult.Failed -> result.completed
         }
         completed.forEach { completedTask ->
@@ -4059,7 +4127,24 @@ object KaoChangOperate {
         } else {
             null
         }
+        val safeReplanReleaseConfirmed = if (result is InActionGroupPipelineResult.ReplanRequired) {
+            if (parallelEnabled) {
+                replanExpectedRevision?.let { expectedRevision ->
+                    SupplementPipelineReplanReleasePolicy.canRelease(
+                        session = parallelSessionForCleanup,
+                        expectedSessionId = sessionId,
+                        expectedRevision = expectedRevision,
+                        durableStateSaved = !durableCompletionFailed
+                    )
+                } == true
+            } else {
+                actionGroupCompleted && !durableCompletionFailed
+            }
+        } else {
+            false
+        }
         val safeReleaseConfirmed = safePausedSession?.sessionId == sessionId ||
+            safeReplanReleaseConfirmed ||
             (parallelSessionForCleanup?.sessionId == sessionId &&
                 (result is InActionGroupPipelineResult.Success || safeParallelSupplyDegrade))
         val retainParallelEvidence = SupplementPipelineFailureRetentionPolicy.shouldRetain(
@@ -4067,7 +4152,9 @@ object KaoChangOperate {
             outcome = effectiveOutcome,
             safeReleaseConfirmed = safeReleaseConfirmed
         )
-        if ((result is InActionGroupPipelineResult.Success || safeParallelSupplyDegrade) &&
+        if ((result is InActionGroupPipelineResult.Success ||
+                (result is InActionGroupPipelineResult.ReplanRequired && safeReplanReleaseConfirmed) ||
+                safeParallelSupplyDegrade) &&
             !durableCompletionFailed &&
             !retainParallelEvidence
         ) {
@@ -4134,6 +4221,7 @@ object KaoChangOperate {
                     "补肠已暂停并保留续作会话：session=${pausedSupplementSessionStore.load()?.sessionId}，" +
                         "action=${pausedSupplementSessionStore.load()?.resumeAfterAction}"
                 )
+                pausedCleanupSucceeded = true
             }.onFailure { error ->
                 enterActionGroupMaintenance(
                     "补肠预取暂停完成目标收口后释放机械状态失败，保留续作证据：${error.message}"
@@ -4144,6 +4232,31 @@ object KaoChangOperate {
         when (result) {
             is InActionGroupPipelineResult.Success -> {
                 logD(LOG_SUPPLEMENT, "补肠预取流水线结束：successCount=$completedCount，targetCount=${plannedMoves.size}")
+            }
+            is InActionGroupPipelineResult.ReplanRequired -> {
+                if (safePausedSession != null && pausedCleanupSucceeded) {
+                    logI(
+                        LOG_SUPPLEMENT,
+                        "补肠预取备用箱完成后订单优先，保留暂停session，moveStatus/锁已释放：" +
+                            "successCount=$completedCount，targetCount=${plannedMoves.size}，reason=${result.reason}"
+                    )
+                } else if (safeReplanReleaseConfirmed && !durableCompletionFailed) {
+                    logI(
+                        LOG_SUPPLEMENT,
+                        "补肠预取备用箱完成后已安全收口，剩余目标等待按最新库存重规划：" +
+                            "successCount=$completedCount，targetCount=${plannedMoves.size}，reason=${result.reason}"
+                    )
+                } else {
+                    logW(
+                        LOG_ACTION_GROUP,
+                        "补肠预取备用箱完成后未通过安全收口，保留session/锁/moveStatus：" +
+                            "expectedRevision=$replanExpectedRevision，actualRevision=${parallelSessionForCleanup?.revision}，" +
+                            "phase=${parallelSessionForCleanup?.phase}，barrier=${parallelSessionForCleanup?.barrierState}，" +
+                            "pendingOrder=${parallelSessionForCleanup?.pendingOrderNo}，" +
+                            "hasPrefetch=${parallelSessionForCleanup?.prefetchLane != null}，" +
+                            "durableFailed=$durableCompletionFailed，reason=${result.reason}"
+                    )
+                }
             }
             is InActionGroupPipelineResult.Paused -> {
                 OrderProcessingStageBridge.publish(OrderProcessingStage.SUPPLEMENT_PAUSED)
@@ -6390,6 +6503,19 @@ object KaoChangOperate {
             logD(LOG_HEAT, "开始保温：temperature=${config.keepWarmTemperature}")
             logD(LOG_HEAT, "当前加热温度配置：temperature=${config.heatingTemperature}")
             setAreaTargetTemperature(area, config.keepWarmTemperature, "keepWarm")
+        }
+    }
+
+    internal fun keepWarmForMaturityCloseout(area: Int): VMModbusHelper.ModbusOperationResult {
+        return withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            if (isNormalPositiveTemperatureWriteBlocked(config)) {
+                return@withFaultHeatTransitionLock VMModbusHelper.ModbusOperationResult(
+                    status = VMModbusHelper.ModbusOperationStatus.DEVICE_FAILURE,
+                    message = "设备处于整机故障停热或维护状态，拒绝成熟收口保温写入"
+                )
+            }
+            setAreaTargetTemperature(area, config.keepWarmTemperature, "maturityCloseout")
         }
     }
 

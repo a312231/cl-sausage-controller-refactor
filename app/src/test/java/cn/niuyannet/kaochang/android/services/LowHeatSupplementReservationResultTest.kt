@@ -27,7 +27,8 @@ class LowHeatSupplementReservationResultTest {
             groupName = "13~15",
             selectedFrontPositions = frontPans,
             neededTastes = listOf("B", "B", "B"),
-            listBox = boxes
+            listBox = boxes,
+            isBoxAvailable = { true }
         )
 
         assertTrue(message.contains("无同口味可用库存"))
@@ -53,7 +54,8 @@ class LowHeatSupplementReservationResultTest {
             groupName = "13~15",
             selectedFrontPositions = frontPans,
             neededTastes = listOf("B", "B", "B"),
-            listBox = boxes
+            listBox = boxes,
+            isBoxAvailable = { true }
         )
 
         assertTrue(message.contains("缺失口味=B"))
@@ -179,7 +181,8 @@ class LowHeatSupplementReservationResultTest {
         val plan = LowCurrentTrafficMode.planLowHeatSupplementTargets(
             selectedFrontPositions = frontPans,
             supplementPositions = supplementPans,
-            listBox = boxes
+            listBox = boxes,
+            isBoxAvailable = { true }
         )
 
         assertEquals(listOf(1, 2, 3), plan.frontPans.map { it.positionSn })
@@ -205,7 +208,8 @@ class LowHeatSupplementReservationResultTest {
         val plan = LowCurrentTrafficMode.planLowHeatSupplementTargets(
             selectedFrontPositions = frontPans,
             supplementPositions = supplementPans,
-            listBox = boxes
+            listBox = boxes,
+            isBoxAvailable = { true }
         )
 
         assertEquals(listOf(1), plan.frontPans.map { it.positionSn })
@@ -214,6 +218,26 @@ class LowHeatSupplementReservationResultTest {
         assertEquals("B", supplementPans[0].taste.tasteCode)
         assertNull(supplementPans[1].taste)
         assertNull(supplementPans[2].taste)
+    }
+
+    @Test
+    fun maturedPartialInitialization_shouldPlanThreeLowHeatReturnsAndLeaveNinthGapForNextBatch() {
+        val emptyFront = (6..9).map { frontPan(it, "A") }
+        val supplementPans = (13..15).map { targetPan(it, hasSausage = false) }
+        val boxes = listOf(box(positionSn = 15, tasteCode = "A", num = 4))
+
+        assertEquals(1, LowCurrentTrafficMode.lowConcurrencyIntestinalSupplementation(4, 3, 3))
+        val plan = LowCurrentTrafficMode.planLowHeatSupplementTargets(
+            selectedFrontPositions = emptyFront.take(3),
+            supplementPositions = supplementPans,
+            listBox = boxes,
+            isBoxAvailable = { true }
+        )
+
+        assertEquals(listOf(13, 14, 15), plan.targets.map { it.kaoPan.positionSn })
+        assertEquals(listOf(6, 7, 8), plan.targets.map { it.returnPositionSn })
+        assertEquals(3, LowCurrentTrafficMode.lowConcurrencyIntestinalSupplementation(1, 3, 3))
+        assertTrue("9号单个空位不足三根，不应立即开下一批", emptyFront.last().positionSn == 9)
     }
 
     @Test

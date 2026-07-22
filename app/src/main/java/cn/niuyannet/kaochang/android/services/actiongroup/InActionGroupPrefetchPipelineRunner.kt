@@ -38,6 +38,11 @@ sealed class InActionGroupPipelineResult {
         val pausedAfterAction: String? = null
     ) : InActionGroupPipelineResult()
 
+    data class ReplanRequired(
+        val completed: List<CompletedInActionGroupPipelineTask>,
+        val reason: String
+    ) : InActionGroupPipelineResult()
+
     data class Failed(
         val completed: List<CompletedInActionGroupPipelineTask>,
         val task: InActionGroupPipelineTask?,
@@ -305,7 +310,11 @@ class InActionGroupPrefetchPipelineRunner(
                         "remainingCount=${tasks.size - index - 1}，" +
                         "reason=${pauseReasonAfterIn7 ?: "已在 in6 下发时登记暂停"}"
                 )
-                return@supervisorScope InActionGroupPipelineResult.Paused(completed, "in7")
+                return@supervisorScope if (fallbackPauseReason != null) {
+                    InActionGroupPipelineResult.ReplanRequired(completed, fallbackPauseReason)
+                } else {
+                    InActionGroupPipelineResult.Paused(completed, "in7")
+                }
             }
 
             val next = nextPrefetch ?: if (index + 1 < tasks.size) {

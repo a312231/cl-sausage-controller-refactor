@@ -59,6 +59,44 @@ internal object MaturedZoneKeepWarmSettler {
         }
     }
 
+    fun settleMaturedZoneOne(
+        pans: List<KaoPan>,
+        config: AppConfigBean,
+        nowMs: Long,
+        applyKeepWarm: (area: Int) -> Boolean
+    ): Settlement? {
+        if (config.pendingDiscardPositions.isNotEmpty()) return null
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) return null
+        val bakingPans = pans.filter { it.positionSn in 1..9 && it.isHasSausage && it.startTime > 0L }
+        if (bakingPans.isEmpty() || !bakingPans.all { isMatured(it, config, nowMs) }) return null
+        if (!applyKeepWarm(1)) return null
+        settlePansAsKeepWarm(bakingPans, config, nowMs)
+        return Settlement(area = 1, positions = bakingPans.map { it.positionSn })
+    }
+
+    fun settlePreparedZoneOne(
+        pans: List<KaoPan>,
+        config: AppConfigBean,
+        nowMs: Long,
+        preparedPositions: List<Int>,
+        applyKeepWarm: (area: Int) -> Boolean
+    ): Settlement? {
+        if (config.pendingDiscardPositions.isNotEmpty()) return null
+        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) return null
+        val normalizedPrepared = preparedPositions.filter { it in 1..9 }.distinct().sorted()
+        if (normalizedPrepared.isEmpty()) return null
+        val occupiedFront = pans.filter { it.positionSn in 1..9 && it.isHasSausage }
+        if (occupiedFront.map { it.positionSn }.sorted() != normalizedPrepared) return null
+        if (occupiedFront.any {
+                it.status != 1 || it.startTime <= 0L || it.holdingTime > 0L
+            }
+        ) return null
+
+        if (!applyKeepWarm(1)) return null
+        settlePansAsKeepWarm(occupiedFront, config, nowMs)
+        return Settlement(area = 1, positions = normalizedPrepared)
+    }
+
     private fun settleZone(
         area: Int,
         positions: IntRange,
@@ -86,6 +124,18 @@ internal object MaturedZoneKeepWarmSettler {
             area = area,
             positions = bakingPans.map { it.positionSn }
         )
+    }
+
+    private fun settlePansAsKeepWarm(
+        pans: List<KaoPan>,
+        config: AppConfigBean,
+        nowMs: Long
+    ) {
+        pans.forEach { pan ->
+            pan.startTime = 0L
+            pan.holdingTime = nowMs
+            pan.status = maturedKeepWarmStatus(pan.positionSn, config)
+        }
     }
 
     private fun isMatured(

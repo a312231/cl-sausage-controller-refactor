@@ -44,6 +44,9 @@ data class SupplementBatchIntent(
     var failureMessage: String? = null,
     var failureAtMs: Long = 0L,
     var requiresManualConfirm: Boolean = false,
+    var maturityCloseoutPreparedAtMs: Long = 0L,
+    var maturityCloseoutMaturedPositions: MutableList<Int> = mutableListOf(),
+    var maturityCloseoutRemainingPositions: MutableList<Int> = mutableListOf(),
     var createdAtMs: Long = 0L,
     var updatedAtMs: Long = 0L
 ) {
@@ -450,6 +453,60 @@ class SupplementBatchIntentRepository(
                     "type=${typeText(active.type)}"
             )
         }
+    }
+
+    fun prepareLowInitializationMaturityCloseout(
+        batchId: String,
+        maturedPositions: List<Int>,
+        remainingPositions: List<Int>
+    ): Boolean {
+        val active = store.load() ?: return false
+        val normalizedMatured = maturedPositions.filter { it in 1..9 }.distinct().sorted()
+        val normalizedRemaining = remainingPositions.filter { it in 1..9 }.distinct().sorted()
+        val activeCompleted = active.targets.filter { it.completed }.map { it.positionSn }.distinct().sorted()
+        val activeRemaining = active.remainingTargets().map { it.positionSn }.distinct().sorted()
+        if (active.batchId != batchId ||
+            active.type != SupplementBatchType.LOW_INITIALIZATION_1_9 ||
+            normalizedMatured.isEmpty() ||
+            normalizedRemaining.isEmpty() ||
+            normalizedMatured != activeCompleted ||
+            normalizedRemaining != activeRemaining
+        ) {
+            return false
+        }
+        active.maturityCloseoutPreparedAtMs = clock()
+        active.maturityCloseoutMaturedPositions = normalizedMatured.toMutableList()
+        active.maturityCloseoutRemainingPositions = normalizedRemaining.toMutableList()
+        active.updatedAtMs = clock()
+        saveDurableOrThrow(active)
+        return true
+    }
+
+    fun clearPreparedLowInitializationMaturityCloseout(
+        batchId: String,
+        maturedPositions: List<Int>,
+        remainingPositions: List<Int>,
+        reason: String
+    ): Boolean {
+        val active = store.load() ?: return false
+        val normalizedMatured = maturedPositions.distinct().sorted()
+        val normalizedRemaining = remainingPositions.distinct().sorted()
+        val activeCompleted = active.targets.filter { it.completed }.map { it.positionSn }.distinct().sorted()
+        val activeRemaining = active.remainingTargets().map { it.positionSn }.distinct().sorted()
+        if (active.batchId != batchId ||
+            active.type != SupplementBatchType.LOW_INITIALIZATION_1_9 ||
+            active.maturityCloseoutPreparedAtMs <= 0L ||
+            active.maturityCloseoutMaturedPositions.distinct().sorted() != normalizedMatured ||
+            active.maturityCloseoutRemainingPositions.distinct().sorted() != normalizedRemaining ||
+            activeCompleted != normalizedMatured ||
+            activeRemaining != normalizedRemaining
+        ) return false
+        clearDurableOrThrow()
+        infoLogger(
+            "【补肠批次恢复】已按批次清除补肠意图：reason=$reason，batchId=${active.batchId}，" +
+                "type=${typeText(active.type)}"
+        )
+        return true
     }
 
     fun clearPendingTargetsRetainingCompletedHeatReturnBindings(reason: String): Boolean {

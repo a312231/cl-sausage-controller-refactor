@@ -724,6 +724,42 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun prepareLowInitializationMaturityCloseout_shouldPersistStageAndClearOnlyMatchingBatch() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            (1..9).map { target(it, "A") },
+            typeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
+        )!!
+        (1..5).forEach { repository.markCompleted(intent.batchId, it) }
+
+        assertTrue(repository.prepareLowInitializationMaturityCloseout(
+            intent.batchId,
+            (1..5).toList(),
+            (6..9).toList()
+        ))
+        assertTrue(store.intent!!.maturityCloseoutPreparedAtMs > 0L)
+        assertEquals((1..5).toList(), store.intent!!.maturityCloseoutMaturedPositions)
+        assertEquals((6..9).toList(), store.intent!!.maturityCloseoutRemainingPositions)
+        assertFalse(repository.prepareLowInitializationMaturityCloseout(
+            intent.batchId,
+            (1..5).toList(),
+            listOf(7, 8, 9)
+        ))
+        assertFalse(repository.clearPreparedLowInitializationMaturityCloseout(
+            "other-batch", (1..5).toList(), (6..9).toList(), "测试旧批次竞争"
+        ))
+        assertTrue(store.intent != null)
+        assertFalse(repository.clearPreparedLowInitializationMaturityCloseout(
+            intent.batchId, (1..4).toList(), (6..9).toList(), "测试成熟集合竞争"
+        ))
+        assertTrue(repository.clearPreparedLowInitializationMaturityCloseout(
+            intent.batchId, (1..5).toList(), (6..9).toList(), "测试残缺初始化收口"
+        ))
+        assertNull(store.intent)
+    }
+
+    @Test
     fun loadActive_shouldDurablyMigrateLegacyTargetWithoutUsingContainerBatchId() {
         val store = MemorySupplementBatchIntentStore().apply {
             intent = SupplementBatchIntent(

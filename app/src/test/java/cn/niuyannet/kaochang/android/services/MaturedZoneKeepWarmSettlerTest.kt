@@ -35,6 +35,67 @@ class MaturedZoneKeepWarmSettlerTest {
     }
 
     @Test
+    fun settlePreparedZoneOne_shouldSettleExactPersistedPositionsWithoutRecheckingChangedBakingTime() {
+        val nowMs = 10_000L
+        val pans = pans(*(1..5).map {
+            bakingPan(positionSn = it, startTime = 1_000L, bakingTime = 50_000L)
+        }.toTypedArray())
+        val appliedAreas = mutableListOf<Int>()
+
+        val result = MaturedZoneKeepWarmSettler.settlePreparedZoneOne(
+            pans = pans,
+            config = config(),
+            nowMs = nowMs,
+            preparedPositions = (1..5).toList()
+        ) {
+            appliedAreas += it
+            true
+        }
+
+        assertEquals(listOf(1), appliedAreas)
+        assertEquals((1..5).toList(), result?.positions)
+        assertTrue((1..5).all { position -> pans.first { it.positionSn == position }.status == 2 })
+    }
+
+    @Test
+    fun settlePreparedZoneOne_shouldRejectChangedOccupiedPositionsOrNonBakingState() {
+        val changedPositions = pans(
+            *(1..5).map { maturedBakingPan(it) }.toTypedArray(),
+            maturedBakingPan(6)
+        )
+        val invalidState = pans(*(1..5).map { maturedBakingPan(it) }.toTypedArray()).also { list ->
+            list.first { it.positionSn == 3 }.status = 0
+        }
+
+        assertEquals(null, MaturedZoneKeepWarmSettler.settlePreparedZoneOne(
+            changedPositions, config(), 10_000L, (1..5).toList()
+        ) { true })
+        assertEquals(null, MaturedZoneKeepWarmSettler.settlePreparedZoneOne(
+            invalidState, config(), 10_000L, (1..5).toList()
+        ) { true })
+    }
+
+    @Test
+    fun settlePreparedZoneOne_shouldLeavePansUnchangedWhenKeepWarmWriteFails() {
+        val pans = pans(*(1..5).map { maturedBakingPan(it) }.toTypedArray())
+
+        val result = MaturedZoneKeepWarmSettler.settlePreparedZoneOne(
+            pans = pans,
+            config = config(),
+            nowMs = 10_000L,
+            preparedPositions = (1..5).toList()
+        ) { false }
+
+        assertEquals(null, result)
+        (1..5).forEach { position ->
+            val pan = pans.first { it.positionSn == position }
+            assertEquals(1, pan.status)
+            assertEquals(1L, pan.startTime)
+            assertEquals(0L, pan.holdingTime)
+        }
+    }
+
+    @Test
     fun settleMaturedZones_shouldNotSettleZoneOneWhenSamePhysicalZoneHasUnmaturedPan() {
         val nowMs = 10_000L
         val pans = pans(

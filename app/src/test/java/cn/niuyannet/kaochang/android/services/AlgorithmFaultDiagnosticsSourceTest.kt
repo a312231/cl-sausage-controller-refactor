@@ -66,6 +66,52 @@ class AlgorithmFaultDiagnosticsSourceTest {
     }
 
     @Test
+    fun pollKaoPanStatus_shouldCloseMaturedLowInitializationBeforeRecoveryGateReturn() {
+        val source = algorithmSourceText()
+        val pollStart = source.indexOf("private suspend fun pollKaoPanStatus()")
+        val pollEnd = source.indexOf("private fun settleMaturedZonesBeforeDispatch", pollStart)
+            .let { if (it >= 0) it else source.length }
+        val pollBlock = source.substring(pollStart, pollEnd)
+
+        val recoverySnapshot = pollBlock.indexOf("val actionGroupRecoveryBlocked =")
+        val refreshCall = pollBlock.indexOf("refreshActiveBakingTimeBeforeMaturityCheck(", recoverySnapshot)
+        val closeoutCall = pollBlock.indexOf("prepareLowInitializationMaturityCloseout(", refreshCall)
+        val settleCall = pollBlock.indexOf("settleMaturedLowFrontBeforeRecoveryReturn(", closeoutCall)
+        val durableSave = pollBlock.indexOf("saveKaoPanListDurable(", settleCall)
+        val clearIntent = pollBlock.indexOf("completeLowInitializationMaturityCloseout(", durableSave)
+        val sellableUpload = pollBlock.indexOf("uploadIfSellableStateChanged(", clearIntent)
+        val recoveryReturn = pollBlock.indexOf("动作恢复尚未收口，跳过本轮机械调度", clearIntent)
+
+        assertTrue("必须先取得动作恢复门禁快照", recoverySnapshot >= 0)
+        assertTrue("恢复门禁早退前必须回刷动态 bakingTime", recoverySnapshot < refreshCall)
+        assertTrue("必须先确认旧 6~9 初始化目标可安全关闭", refreshCall < closeoutCall)
+        assertTrue("确认可收口后才能把成熟 1~5 转保温", closeoutCall < settleCall)
+        assertTrue("成熟盘状态必须先耐久保存", settleCall < durableSave)
+        assertTrue("盘状态耐久后才能按证据条件清除旧 intent", durableSave < clearIntent)
+        assertTrue("本地收口完成后才尝试上报可售变化", clearIntent < sellableUpload)
+        assertTrue("intent 收口完成后才允许恢复门禁早退", clearIntent < recoveryReturn)
+        assertTrue(
+            "只有本轮确认低并发残缺初始化可收口，才能绕过恢复门禁执行一区成熟收口",
+            pollBlock.contains("closeout != null")
+        )
+        assertTrue(
+            "成熟收口任一步耐久失败都必须保持恢复门禁并允许主循环继续",
+            pollBlock.contains("runCatching {") &&
+                pollBlock.contains("低并发残缺初始化成熟收口失败，保持恢复门禁")
+        )
+        val settlementStart = source.indexOf("private fun settleMaturedLowFrontBeforeRecoveryReturn(")
+        val settlementEnd = source.indexOf("private fun normalizeSupplementSourceKeepWarmBeforeEarlyReturns", settlementStart)
+        val settlementBlock = source.substring(settlementStart, settlementEnd)
+        assertTrue(
+            "成熟收口必须检查专用保温写入结果，失败时不得提交盘状态",
+            settlementBlock.contains("keepWarmForMaturityCloseout(area)") &&
+                settlementBlock.contains("result.isSuccess") &&
+                !settlementBlock.contains("KaoChangOperate.stopHeating(area)") &&
+                !settlementBlock.contains("KaoChangOperate.keepWarm(area)")
+        )
+    }
+
+    @Test
     fun pollKaoPanStatus_shouldNormalizeSupplementSourcesBeforeEarlyReturns() {
         val source = algorithmSourceText()
         val pollStart = source.indexOf("private suspend fun pollKaoPanStatus()")
