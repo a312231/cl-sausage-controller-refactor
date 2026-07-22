@@ -12,6 +12,7 @@ import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.databinding.ItemKaopanBoxBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
+import cn.niuyannet.kaochang.android.services.BoxAutoTakeRecoveryPolicy
 import java.util.Random
 
 class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) : 
@@ -59,7 +60,7 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                 } ?: Color.GRAY
                 
                 // 计算颜色的亮度来决定文字颜色
-                val textColor = if (bgColor is Int && bgColor > 0x1000000) {
+                val textColor = if (bgColor > 0x1000000) {
                     // 如果是直接的颜色值
                     val brightness = (Color.red(bgColor) * 299 +
                                    Color.green(bgColor) * 587 +
@@ -74,6 +75,11 @@ class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) :
                 
                 // 设置烤肠数量和视觉效果
                 tvNum.text = "${kaoPanBox.num}"
+                val autoTakeUnavailable = BoxAutoTakeRecoveryPolicy.isAutoTakeUnavailable(kaoPanBox)
+                tvAutoTakeStatus.text = BoxAutoTakeRecoveryPolicy.statusLabel(kaoPanBox)
+                tvAutoTakeDetail.text = BoxAutoTakeRecoveryPolicy.statusDetail(kaoPanBox)
+                tvAutoTakeStatus.visibility = if (autoTakeUnavailable) android.view.View.VISIBLE else android.view.View.GONE
+                tvAutoTakeDetail.visibility = if (autoTakeUnavailable) android.view.View.VISIBLE else android.view.View.GONE
                 
                 // 根据加满状态设置不同样式
                 val boxFullCapacity = AppConfig.getBoxRefillTargetNum()

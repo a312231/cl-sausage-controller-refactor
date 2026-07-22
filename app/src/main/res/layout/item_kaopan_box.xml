@@ -56,6 +56,30 @@
             android:textSize="24sp"
             android:textStyle="bold" />
 
+        <TextView
+            android:id="@+id/tv_auto_take_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#FFF3E0"
+            android:gravity="center"
+            android:padding="4dp"
+            android:text="不可自动取用"
+            android:textColor="#E65100"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tv_auto_take_detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="取肠失败"
+            android:textColor="#E65100"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
         <!-- 加满按钮 -->
         <!-- <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_refill"

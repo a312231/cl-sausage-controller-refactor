@@ -36,6 +36,18 @@
             android:text="加满"
             android:textSize="14sp"
             app:cornerRadius="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_restore_auto_take"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginLeft="40dp"
+            android:layout_marginTop="16dp"
+            android:layout_marginRight="40dp"
+            android:text="恢复自动取肠"
+            android:textSize="14sp"
+            app:cornerRadius="4dp" />
+
         <!-- 一键清空烤箱-->
 
         <!-- 搬运到烤盘位置 -->

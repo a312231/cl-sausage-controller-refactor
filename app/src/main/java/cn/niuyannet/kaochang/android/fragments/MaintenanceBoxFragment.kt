@@ -24,6 +24,7 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.services.BoxAutoTakeRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.BoxRefillEligibilityPolicy
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
@@ -100,6 +101,114 @@ class MaintenanceBoxFragment : Fragment() {
         }
         binding.btnClearAllBoxes.setOnClickListener {
             clearAllOvenBoxes()
+        }
+        binding.btnRestoreAutoTake.setOnClickListener {
+            restoreSelectedBoxesAutoTake()
+        }
+    }
+
+    @SuppressLint("NotifyDataSetChanged")
+    private fun restoreSelectedBoxesAutoTake() {
+        val config = AppConfig.getAppConfig()
+        if (config.moveStatus != 0) {
+            AdminOperationLogger.w(
+                action = "恢复自动取肠",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=机械动作未空闲，moveStatus=${config.moveStatus}"
+            )
+            ToastUtils.showShort("当前机械动作中，请动作结束后再恢复自动取肠")
+            return
+        }
+
+        val boxes = KaoPanHelper.getKaoPanBoxList()
+        val snapshots = boxes.map { box ->
+            BoxClearSnapshot(
+                box = box,
+                productId = box.productId,
+                tasteCode = box.tasteCode,
+                tasteName = box.tasteName,
+                checkStatus = box.checkStatus,
+                num = box.num,
+                cmdStatusTake = box.cmdStatusTake
+            )
+        }
+        val result = BoxAutoTakeRecoveryPolicy.restoreAutoTakeForSelected(boxes)
+        if (result.recoveredBoxNos.isEmpty()) {
+            AdminOperationLogger.w(
+                action = "恢复自动取肠",
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=未选择不可自动取用烤肠箱"
+            )
+            ToastUtils.showShort(result.message)
+            return
+        }
+
+        val targetText = result.recoveredBoxNos.joinToString("、") { "${it}号" }
+        AdminOperationLogger.i(
+            action = "恢复自动取肠",
+            page = AdminOperationLogger.PAGE_BOX,
+            result = AdminOperationLogger.RESULT_START,
+            detail = "烤肠箱位=$targetText，仅清除取肠失败状态，不修改库存和口味"
+        )
+        showLoadingExt("恢复中...")
+        NetApi.updateStock(JSON.toJSONString(boxes)) { code, content ->
+            dismissLoadingExt()
+            if (code == 0) {
+                val json = JSON.parseObject(content)
+                if (ApiResponseCompat.isSuccessful(json)) {
+                    try {
+                        KaoPanHelper.saveKaoPanBoxListDurable(boxes)
+                    } catch (e: Exception) {
+                        restoreClearSnapshots(snapshots)
+                        AdminOperationLogger.w(
+                            action = "恢复自动取肠",
+                            page = AdminOperationLogger.PAGE_BOX,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "烤肠箱位=$targetText，本地库存耐久保存失败：${e.message}"
+                        )
+                        ToastUtils.showShort("服务器已接收恢复，但本机库存保存失败，请重试同步")
+                        return@updateStock
+                    }
+                    val changedStocks = boxes.filter { result.recoveredBoxNos.contains(it.positionSn) }
+                    PanPhysicalStateDeltaReporter.reportStocksChanged(
+                        changedStocks = changedStocks,
+                        reason = "maintenance_box_restore_auto_take:boxes=$targetText",
+                        source = "maintenance_box_restore_auto_take"
+                    )
+                    LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
+                        result.recoveredBoxNos,
+                        "恢复自动取肠成功"
+                    )
+                    kaoPanBoxAdapter.notifyDataSetChanged()
+                    AdminOperationLogger.i(
+                        action = "恢复自动取肠",
+                        page = AdminOperationLogger.PAGE_BOX,
+                        result = AdminOperationLogger.RESULT_DONE,
+                        detail = "烤肠箱位=$targetText"
+                    )
+                    ToastUtils.showShort(result.message)
+                } else {
+                    AdminOperationLogger.w(
+                        action = "恢复自动取肠",
+                        page = AdminOperationLogger.PAGE_BOX,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "烤肠箱位=$targetText，失败原因=${ApiResponseCompat.messageText(json, ApiResponseCompat.codeText(json))}"
+                    )
+                    restoreClearSnapshots(snapshots)
+                    ToastUtils.showShort(ApiResponseCompat.messageText(json, "恢复失败"))
+                }
+            } else {
+                AdminOperationLogger.w(
+                    action = "恢复自动取肠",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "烤肠箱位=$targetText，失败原因=接口请求失败"
+                )
+                restoreClearSnapshots(snapshots)
+                ToastUtils.showShort("恢复失败")
+            }
         }
     }
 
