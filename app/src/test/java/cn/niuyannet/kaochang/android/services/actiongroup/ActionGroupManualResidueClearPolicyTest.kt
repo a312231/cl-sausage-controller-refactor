@@ -45,16 +45,29 @@ class ActionGroupManualResidueClearPolicyTest {
     }
 
     @Test
-    fun evaluate_shouldRejectWhenAnyResultRegisterIsNotIdle() {
+    fun evaluate_shouldAllowWhenResultRegisterHasTerminalErrorResidue() {
         val decision = ActionGroupManualResidueClearPolicy.evaluate(
             evidence(
                 session = session(ActionGroupSessionType.IN_SUPPLEMENT),
-                resultValues = idleResults() + ("in3" to AtomicActionCodes.COMPLETED)
+                resultValues = idleResults() + ("in1" to AtomicActionCodes.IN1_Y_RESET_FAILED)
+            )
+        )
+
+        assertEquals(true, decision.canShowManualClear)
+        assertEquals("允许人工确认清理补肠动作组本地残留", decision.reason)
+    }
+
+    @Test
+    fun evaluate_shouldRejectWhenAnyResultRegisterIsRunning() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluate(
+            evidence(
+                session = session(ActionGroupSessionType.IN_SUPPLEMENT),
+                resultValues = idleResults() + ("in3" to AtomicActionCodes.RUNNING)
             )
         )
 
         assertEquals(false, decision.canShowManualClear)
-        assertEquals("300/400动作组结果寄存器仍存在非空闲值：in3=0x0002（完成）", decision.reason)
+        assertEquals("300/400动作组结果寄存器仍存在执行中值：in3=0x0001（执行中）", decision.reason)
     }
 
     @Test
@@ -72,17 +85,31 @@ class ActionGroupManualResidueClearPolicyTest {
     }
 
     @Test
-    fun evaluate_shouldRejectWhenMoveStatusIsNotIdle() {
+    fun evaluate_shouldAllowSupplementRecoveryMoveStatusWithTerminalErrorResidue() {
         val decision = ActionGroupManualResidueClearPolicy.evaluate(
             evidence(
                 moveStatus = 1,
+                session = session(ActionGroupSessionType.IN_SUPPLEMENT),
+                resultValues = idleResults() + ("in1" to AtomicActionCodes.IN1_Y_RESET_FAILED)
+            )
+        )
+
+        assertEquals(true, decision.canShowManualClear)
+        assertEquals("允许人工确认清理补肠动作组本地残留", decision.reason)
+    }
+
+    @Test
+    fun evaluate_shouldRejectWhenMoveStatusIsNotSupplementRecoveryState() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluate(
+            evidence(
+                moveStatus = 2,
                 session = session(ActionGroupSessionType.IN_SUPPLEMENT),
                 resultValues = idleResults()
             )
         )
 
         assertEquals(false, decision.canShowManualClear)
-        assertEquals("moveStatus（机械动作状态）=1（非0=上位机机械动作未空闲）", decision.reason)
+        assertEquals("moveStatus（机械动作状态）=2（非补肠恢复态，禁止人工清理）", decision.reason)
     }
 
     @Test

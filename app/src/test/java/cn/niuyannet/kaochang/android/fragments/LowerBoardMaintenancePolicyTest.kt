@@ -81,6 +81,19 @@ class LowerBoardMaintenancePolicyTest {
     }
 
     @Test
+    fun canRunMaintenance_shouldAllowTerminalActionErrorResidueWhenLocalMoveStatusIsIdle() {
+        val decision = LowerBoardMaintenancePolicy.canRunMaintenance(
+            moveStatus = 0,
+            status201 = 0,
+            moveResult203 = 0,
+            atomicResultValues = mapOf(311 to 0x00EF, 421 to 0)
+        )
+
+        assertTrue(decision.allowed)
+        assertEquals("允许执行", decision.reason)
+    }
+
+    @Test
     fun canRunEmergencyReset_shouldBypassIdleGate() {
         val decision = LowerBoardMaintenancePolicy.canRunEmergencyReset()
 

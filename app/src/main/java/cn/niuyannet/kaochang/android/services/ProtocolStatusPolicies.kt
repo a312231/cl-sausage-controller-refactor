@@ -198,8 +198,8 @@ object ManualSupplementPrefetchRecoveryPolicy {
                 rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器快照不完整")
             snapshots.any { snapshot -> snapshot.resultStates.any { it.value == null } } ->
                 rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器存在读取失败")
-            snapshots.any { snapshot -> snapshot.resultStates.any { it.value != AtomicActionCodes.IDLE } } ->
-                rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器连续读数存在非空闲值")
+            snapshots.any { snapshot -> snapshot.resultStates.any { it.value == AtomicActionCodes.RUNNING } } ->
+                rejectManualSupplementPrefetchRecovery("300/400动作组结果寄存器连续读数存在执行中值")
             else -> ManualSupplementPrefetchRecoveryDecision(
                 canRecover = true,
                 reason = "同批次双 lane 失败动作已由人工确认且下位机连续空闲"

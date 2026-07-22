@@ -46,8 +46,8 @@ object ActionGroupManualResidueClearPolicy {
         val session = evidence.session
         return when {
             !evidence.modbusConnected -> reject("Modbus 未连接，不能人工清理动作组残留")
-            evidence.moveStatus != 0 -> reject(
-                "moveStatus（机械动作状态）=${evidence.moveStatus}（非0=上位机机械动作未空闲）"
+            evidence.moveStatus !in 0..1 -> reject(
+                "moveStatus（机械动作状态）=${evidence.moveStatus}（非补肠恢复态，禁止人工清理）"
             )
             evidence.legacyActionStatus201 != 0 -> reject(
                 "201（旧动作状态寄存器）=${evidence.legacyActionStatus201 ?: "读取失败"}（非0=旧协议动作未空闲）"
@@ -59,9 +59,9 @@ object ActionGroupManualResidueClearPolicy {
             evidence.resultStates.any { it.value == null } -> reject(
                 "300/400动作组结果寄存器存在读取失败：${evidence.resultStates.first { it.value == null }.desc()}"
             )
-            evidence.resultStates.any { it.value != AtomicActionCodes.IDLE } -> reject(
-                "300/400动作组结果寄存器仍存在非空闲值：" +
-                    evidence.resultStates.first { it.value != AtomicActionCodes.IDLE }.desc()
+            evidence.resultStates.any { it.value == AtomicActionCodes.RUNNING } -> reject(
+                "300/400动作组结果寄存器仍存在执行中值：" +
+                    evidence.resultStates.first { it.value == AtomicActionCodes.RUNNING }.desc()
             )
             else -> ActionGroupManualResidueClearDecision(
                 canShowManualClear = true,

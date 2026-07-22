@@ -78,7 +78,7 @@ class ManualSupplementPrefetchRecoveryPolicyTest {
     }
 
     @Test
-    fun evaluate_shouldRejectNonIdleActionRegister() {
+    fun evaluate_shouldAllowTerminalActionErrorResidueAfterTwoIdleSnapshots() {
         val decision = ManualSupplementPrefetchRecoveryPolicy.evaluate(
             pendingBatchId = "batch-1",
             failedTargetPanNo = 13,
@@ -86,11 +86,26 @@ class ManualSupplementPrefetchRecoveryPolicyTest {
             session = session(),
             hasPausedSupplementSession = false,
             hasPanMoveJournal = false,
-            snapshots = listOf(idleSnapshot(), idleSnapshot("in1" to AtomicActionCodes.COMPLETED))
+            snapshots = listOf(idleSnapshot(), idleSnapshot("in1" to AtomicActionCodes.IN1_Y_RESET_FAILED))
+        )
+
+        assertTrue(decision.canRecover)
+    }
+
+    @Test
+    fun evaluate_shouldRejectRunningActionRegister() {
+        val decision = ManualSupplementPrefetchRecoveryPolicy.evaluate(
+            pendingBatchId = "batch-1",
+            failedTargetPanNo = 13,
+            failedActionName = "in1",
+            session = session(),
+            hasPausedSupplementSession = false,
+            hasPanMoveJournal = false,
+            snapshots = listOf(idleSnapshot(), idleSnapshot("in1" to AtomicActionCodes.RUNNING))
         )
 
         assertFalse(decision.canRecover)
-        assertTrue(decision.reason.contains("非空闲"))
+        assertTrue(decision.reason.contains("执行中"))
     }
 
     @Test
