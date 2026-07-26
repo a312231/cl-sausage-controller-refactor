@@ -24,11 +24,11 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.net.StockPhysicalProjectionSerializer
 import cn.niuyannet.kaochang.android.services.BoxAutoTakeRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.BoxRefillEligibilityPolicy
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
-import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -55,16 +55,6 @@ class MaintenanceBoxFragment : Fragment() {
         const val BOX_GRID_SPAN_COUNT = 11
         const val REFILL_CATALOG_REFRESH_TIMEOUT_MS = 3_000L
     }
-
-    private data class BoxClearSnapshot(
-        val box: KaoPanBox,
-        val productId: String?,
-        val tasteCode: String?,
-        val tasteName: String?,
-        val checkStatus: Boolean?,
-        val num: Int,
-        val cmdStatusTake: Int
-    )
 
     private var _binding: FragmentMaintenanceBoxBinding? = null
     private val binding get() = _binding!!
@@ -121,18 +111,7 @@ class MaintenanceBoxFragment : Fragment() {
             return
         }
 
-        val boxes = KaoPanHelper.getKaoPanBoxList()
-        val snapshots = boxes.map { box ->
-            BoxClearSnapshot(
-                box = box,
-                productId = box.productId,
-                tasteCode = box.tasteCode,
-                tasteName = box.tasteName,
-                checkStatus = box.checkStatus,
-                num = box.num,
-                cmdStatusTake = box.cmdStatusTake
-            )
-        }
+        val boxes = copyBoxes(KaoPanHelper.getKaoPanBoxList())
         val result = BoxAutoTakeRecoveryPolicy.restoreAutoTakeForSelected(boxes)
         if (result.recoveredBoxNos.isEmpty()) {
             AdminOperationLogger.w(
@@ -153,63 +132,28 @@ class MaintenanceBoxFragment : Fragment() {
             detail = "烤肠箱位=$targetText，仅清除取肠失败状态，不修改库存和口味"
         )
         showLoadingExt("恢复中...")
-        NetApi.updateStock(JSON.toJSONString(boxes)) { code, content ->
-            dismissLoadingExt()
-            if (code == 0) {
-                val json = JSON.parseObject(content)
-                if (ApiResponseCompat.isSuccessful(json)) {
-                    try {
-                        KaoPanHelper.saveKaoPanBoxListDurable(boxes)
-                    } catch (e: Exception) {
-                        restoreClearSnapshots(snapshots)
-                        AdminOperationLogger.w(
-                            action = "恢复自动取肠",
-                            page = AdminOperationLogger.PAGE_BOX,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = "烤肠箱位=$targetText，本地库存耐久保存失败：${e.message}"
-                        )
-                        ToastUtils.showShort("服务器已接收恢复，但本机库存保存失败，请重试同步")
-                        return@updateStock
-                    }
-                    val changedStocks = boxes.filter { result.recoveredBoxNos.contains(it.positionSn) }
-                    PanPhysicalStateDeltaReporter.reportStocksChanged(
-                        changedStocks = changedStocks,
-                        reason = "maintenance_box_restore_auto_take:boxes=$targetText",
-                        source = "maintenance_box_restore_auto_take"
-                    )
-                    LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
-                        result.recoveredBoxNos,
-                        "恢复自动取肠成功"
-                    )
-                    kaoPanBoxAdapter.notifyDataSetChanged()
-                    AdminOperationLogger.i(
-                        action = "恢复自动取肠",
-                        page = AdminOperationLogger.PAGE_BOX,
-                        result = AdminOperationLogger.RESULT_DONE,
-                        detail = "烤肠箱位=$targetText"
-                    )
-                    ToastUtils.showShort(result.message)
-                } else {
-                    AdminOperationLogger.w(
-                        action = "恢复自动取肠",
-                        page = AdminOperationLogger.PAGE_BOX,
-                        result = AdminOperationLogger.RESULT_FAIL,
-                        detail = "烤肠箱位=$targetText，失败原因=${ApiResponseCompat.messageText(json, ApiResponseCompat.codeText(json))}"
-                    )
-                    restoreClearSnapshots(snapshots)
-                    ToastUtils.showShort(ApiResponseCompat.messageText(json, "恢复失败"))
-                }
-            } else {
-                AdminOperationLogger.w(
+        confirmTakeStatusChanges(
+            boxes = boxes.filter { result.recoveredBoxNos.contains(it.positionSn) },
+            onSuccess = {
+                dismissLoadingExt()
+                LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
+                    result.recoveredBoxNos,
+                    "恢复自动取肠成功"
+                )
+                kaoPanBoxAdapter.notifyDataSetChanged()
+                AdminOperationLogger.i(
                     action = "恢复自动取肠",
                     page = AdminOperationLogger.PAGE_BOX,
-                    result = AdminOperationLogger.RESULT_FAIL,
-                    detail = "烤肠箱位=$targetText，失败原因=接口请求失败"
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = "烤肠箱位=$targetText"
                 )
-                restoreClearSnapshots(snapshots)
-                ToastUtils.showShort("恢复失败")
+                ToastUtils.showShort(result.message)
+            },
+            onFailure = {
+                dismissLoadingExt()
+                ToastUtils.showShort("自动取肠状态尚未确认，请重试")
             }
-        }
+        )
     }
 
     /**
@@ -412,18 +356,10 @@ class MaintenanceBoxFragment : Fragment() {
             result = AdminOperationLogger.RESULT_START,
             detail = "烤肠箱位=$targetText"
         )
-        val snapshots = targetBoxes.map { box ->
-            BoxClearSnapshot(
-                box = box,
-                productId = box.productId,
-                tasteCode = box.tasteCode,
-                tasteName = box.tasteName,
-                checkStatus = box.checkStatus,
-                num = box.num,
-                cmdStatusTake = box.cmdStatusTake
-            )
-        }
-        for (box in targetBoxes) {
+        val targetNos = targetBoxes.map { it.positionSn }.toSet()
+        val proposedBoxes = copyBoxes(KaoPanHelper.getKaoPanBoxList())
+        val proposedTargets = proposedBoxes.filter { it.positionSn in targetNos }
+        for (box in proposedTargets) {
             box.productId = null
             box.tasteCode = null
             box.tasteName = null
@@ -432,29 +368,32 @@ class MaintenanceBoxFragment : Fragment() {
             box.cmdStatusTake = 0
         }
         showLoadingExt("设置中...")
-        NetApi.clearStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
+        NetApi.clearStock(StockPhysicalProjectionSerializer.serialize(proposedBoxes)) { code, content ->
             dismissLoadingExt()
             if (code == 0) {
                 val json = JSON.parseObject(content)
                 if (ApiResponseCompat.isSuccessful(json)) {
-                    KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())
-                    PanPhysicalStateDeltaReporter.reportStocksChanged(
-                        changedStocks = targetBoxes,
-                        reason = "maintenance_box_clear:boxes=$targetText",
-                        source = "maintenance_box_clear"
+                    val currentBoxes = KaoPanHelper.getKaoPanBoxList()
+                    StockPhysicalProjectionSerializer.applyInventoryFields(currentBoxes, proposedBoxes, targetNos)
+                    KaoPanHelper.saveKaoPanBoxListDurable(currentBoxes)
+                    confirmTakeStatusChanges(
+                        boxes = proposedTargets,
+                        onSuccess = {
+                            LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
+                                targetBoxes.map { it.positionSn },
+                                "$actionName 成功"
+                            )
+                            kaoPanBoxAdapter.notifyDataSetChanged()
+                            AdminOperationLogger.i(
+                                action = actionName,
+                                page = AdminOperationLogger.PAGE_BOX,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "烤肠箱位=$targetText"
+                            )
+                            ToastUtils.showShort(successMessage)
+                        },
+                        onFailure = { ToastUtils.showShort("库存已清空，自动取肠状态尚未确认，请重试") }
                     )
-                    LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
-                        targetBoxes.map { it.positionSn },
-                        "$actionName 成功"
-                    )
-                    kaoPanBoxAdapter.notifyDataSetChanged()
-                    AdminOperationLogger.i(
-                        action = actionName,
-                        page = AdminOperationLogger.PAGE_BOX,
-                        result = AdminOperationLogger.RESULT_DONE,
-                        detail = "烤肠箱位=$targetText"
-                    )
-                    ToastUtils.showShort(successMessage)
                 } else {
                     AdminOperationLogger.w(
                         action = actionName,
@@ -462,7 +401,6 @@ class MaintenanceBoxFragment : Fragment() {
                         result = AdminOperationLogger.RESULT_FAIL,
                         detail = "烤肠箱位=$targetText，失败原因=${ApiResponseCompat.messageText(json, ApiResponseCompat.codeText(json))}"
                     )
-                    restoreClearSnapshots(snapshots)
                     ToastUtils.showShort(ApiResponseCompat.messageText(json, "设置失败"))
                 }
             } else {
@@ -472,23 +410,41 @@ class MaintenanceBoxFragment : Fragment() {
                     result = AdminOperationLogger.RESULT_FAIL,
                     detail = "烤肠箱位=$targetText，失败原因=接口请求失败"
                 )
-                restoreClearSnapshots(snapshots)
-                ToastUtils.showShort("设置失败")
+                refreshAfterUnknownStockWrite("清空烤肠箱状态未知")
             }
         }
     }
 
-    @SuppressLint("NotifyDataSetChanged")
-    private fun restoreClearSnapshots(snapshots: List<BoxClearSnapshot>) {
-        for (snapshot in snapshots) {
-            snapshot.box.productId = snapshot.productId
-            snapshot.box.tasteCode = snapshot.tasteCode
-            snapshot.box.tasteName = snapshot.tasteName
-            snapshot.box.checkStatus = snapshot.checkStatus
-            snapshot.box.num = snapshot.num
-            snapshot.box.cmdStatusTake = snapshot.cmdStatusTake
+    private fun confirmTakeStatusChanges(
+        boxes: List<KaoPanBox>,
+        index: Int = 0,
+        onSuccess: () -> Unit,
+        onFailure: () -> Unit
+    ) {
+        if (index >= boxes.size) {
+            onSuccess()
+            return
         }
-        kaoPanBoxAdapter.notifyDataSetChanged()
+        DataManagementAPI.updateTakeStatus(boxes[index]) { confirmed, _ ->
+            if (confirmed) {
+                confirmTakeStatusChanges(boxes, index + 1, onSuccess, onFailure)
+            } else {
+                DataManagementAPI.refreshStockData(logPrefix = "人工箱位状态确认") { success, _ ->
+                    if (success) kaoPanBoxAdapter.notifyDataSetChanged()
+                    onFailure()
+                }
+            }
+        }
+    }
+
+    private fun copyBoxes(boxes: List<KaoPanBox>): MutableList<KaoPanBox> =
+        JSON.parseArray(JSON.toJSONString(boxes), KaoPanBox::class.java)
+
+    private fun refreshAfterUnknownStockWrite(logPrefix: String) {
+        DataManagementAPI.refreshStockData(logPrefix = logPrefix) { success, _ ->
+            if (success) kaoPanBoxAdapter.notifyDataSetChanged()
+            ToastUtils.showShort(if (success) "已重新读取后台状态" else "网络状态未知，请稍后重新同步")
+        }
     }
 
     /**
@@ -731,18 +687,10 @@ class MaintenanceBoxFragment : Fragment() {
                     "加满目标库存=$boxRefillTargetNum"
             )
 
-            val snapshots = selectedBoxes.map { box ->
-                BoxClearSnapshot(
-                    box = box,
-                    productId = box.productId,
-                    tasteCode = box.tasteCode,
-                    tasteName = box.tasteName,
-                    checkStatus = box.checkStatus,
-                    num = box.num,
-                    cmdStatusTake = box.cmdStatusTake
-                )
-            }
-            for (box in selectedBoxes) {
+            val selectedNos = selectedBoxes.map { it.positionSn }.toSet()
+            val proposedBoxes = copyBoxes(KaoPanHelper.getKaoPanBoxList())
+            val proposedSelectedBoxes = proposedBoxes.filter { it.positionSn in selectedNos }
+            for (box in proposedSelectedBoxes) {
                 box.productId = selectedTaste.productId.toString()
                 box.tasteCode = selectedTaste.tasteCode
                 box.tasteName = "${selectedTaste.productName}(${selectedTaste.tasteName})"
@@ -752,15 +700,20 @@ class MaintenanceBoxFragment : Fragment() {
             }
 
             showLoadingExt("设置中...")
-            NetApi.updateStock(JSON.toJSONString(KaoPanHelper.getKaoPanBoxList())) { code, content ->
+            NetApi.updateStock(StockPhysicalProjectionSerializer.serialize(proposedBoxes)) { code, content ->
                 dismissLoadingExt()
                 if (code == 0) {
                     val json = JSON.parseObject(content)
                     if (ApiResponseCompat.isSuccessful(json)) {
                         try {
-                            KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
+                            val currentBoxes = KaoPanHelper.getKaoPanBoxList()
+                            StockPhysicalProjectionSerializer.applyInventoryFields(
+                                currentBoxes,
+                                proposedBoxes,
+                                proposedSelectedBoxes.map { it.positionSn }.toSet()
+                            )
+                            KaoPanHelper.saveKaoPanBoxListDurable(currentBoxes)
                         } catch (e: Exception) {
-                            restoreClearSnapshots(snapshots)
                             AdminOperationLogger.w(
                                 action = "加满烤肠箱",
                                 page = AdminOperationLogger.PAGE_BOX,
@@ -770,25 +723,26 @@ class MaintenanceBoxFragment : Fragment() {
                             ToastUtils.showShort("服务器已接收补货，但本机库存保存失败，请保持维护并重试同步")
                             return@updateStock
                         }
-                        PanPhysicalStateDeltaReporter.reportStocksChanged(
-                            changedStocks = selectedBoxes,
-                            reason = "maintenance_box_refill:boxes=${boxPositionListText(selectedBoxes)}",
-                            source = "maintenance_box_refill"
+                        confirmTakeStatusChanges(
+                            boxes = proposedSelectedBoxes,
+                            onSuccess = {
+                                LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
+                                    proposedSelectedBoxes.map { it.positionSn },
+                                    "加满烤肠箱成功"
+                                )
+                                kaoPanBoxAdapter.notifyDataSetChanged()
+                                AdminOperationLogger.i(
+                                    action = "加满烤肠箱",
+                                    page = AdminOperationLogger.PAGE_BOX,
+                                    result = AdminOperationLogger.RESULT_DONE,
+                                    detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
+                                        "加满目标库存=$boxRefillTargetNum"
+                                )
+                                ToastUtils.showShort("已成功加满选中的烤肠箱")
+                                dialog.dismiss()
+                            },
+                            onFailure = { ToastUtils.showShort("库存已同步，自动取肠状态尚未确认，请重试") }
                         )
-                        LowerPlatformRuntimeStateReporter.markBoxesRecoveredAfterManualMaintenance(
-                            selectedBoxes.map { it.positionSn },
-                            "加满烤肠箱成功"
-                        )
-                        kaoPanBoxAdapter.notifyDataSetChanged()
-                        AdminOperationLogger.i(
-                            action = "加满烤肠箱",
-                            page = AdminOperationLogger.PAGE_BOX,
-                            result = AdminOperationLogger.RESULT_DONE,
-                            detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
-                                "加满目标库存=$boxRefillTargetNum"
-                        )
-                        ToastUtils.showShort("已成功加满选中的烤肠箱")
-                        dialog.dismiss()
                     } else {
                         AdminOperationLogger.w(
                             action = "加满烤肠箱",
@@ -797,7 +751,6 @@ class MaintenanceBoxFragment : Fragment() {
                             detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
                                 "失败原因=${ApiResponseCompat.messageText(json, ApiResponseCompat.codeText(json))}"
                         )
-                        restoreClearSnapshots(snapshots)
                         ToastUtils.showShort(ApiResponseCompat.messageText(json, "设置失败"))
                     }
                 } else {
@@ -808,8 +761,7 @@ class MaintenanceBoxFragment : Fragment() {
                         detail = "烤肠箱位=${boxPositionListText(selectedBoxes)}，口味=${selectedTaste.productName}(${selectedTaste.tasteName})，" +
                             "失败原因=接口请求失败"
                     )
-                    restoreClearSnapshots(snapshots)
-                    ToastUtils.showShort("添加失败")
+                    refreshAfterUnknownStockWrite("加满烤肠箱状态未知")
                 }
             }
         }

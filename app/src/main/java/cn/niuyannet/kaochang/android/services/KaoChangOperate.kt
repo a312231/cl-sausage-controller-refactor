@@ -2172,14 +2172,14 @@ object KaoChangOperate {
                 when (reconcileDecision) {
                     RecoveredSupplementStatePolicy.Decision.ALREADY_APPLIED -> {
                         pan.cmdStatusMove = 0
-                        box.cmdStatusTake = 0
+                        clearOrdinaryBoxTakeStatus(box)
                         reportStock = false
                         reportPan = false
                     }
                     RecoveredSupplementStatePolicy.Decision.CORRECT_BOX_ONLY -> {
                         box.num = session.expectedStockAfter!!
                         pan.cmdStatusMove = 0
-                        box.cmdStatusTake = 0
+                        clearOrdinaryBoxTakeStatus(box)
                         reportStock = true
                         reportPan = false
                     }
@@ -2595,6 +2595,16 @@ object KaoChangOperate {
             }
             if (isInitializationBatch) {
                 val failureCode = atomicFailureCodeOrZero(moveResult.actionGroupResult)
+                if (failedResult != null &&
+                    SupplementPickFailurePolicy.isSerialIn2IrPickFailure(failedResult.actionName, failedResult.result)
+                ) {
+                    recordIrPickFailedBoxAndReport(
+                        failedBox = box,
+                        allCandidates = candidates,
+                        reason = "action_failure:initialization_in2_ir_pick:targetPan=${kaoPan.positionSn}",
+                        source = "action_failure_initialization_in2_ir_pick"
+                    )
+                }
                 return SupplementMoveResult.HardFailure(
                     reason = "初始化补肠失败，按整机维护处理：targetPan=${kaoPan.positionSn}，sourceBox=${box.positionSn}，" +
                         "action=${failedResult?.actionName ?: "in"}，" +
@@ -2606,10 +2616,9 @@ object KaoChangOperate {
                 SupplementPickFailurePolicy.isSerialIn2IrPickFailure(failedResult.actionName, failedResult.result)
             ) {
                 irPickFailedBoxNos += box.positionSn
-                val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(box, candidates)
-                KaoPanHelper.saveKaoPanBoxListDurable(KaoPanHelper.getKaoPanBoxList())
-                reportIrPickFailedStocksDelta(
-                    failedBoxes = listOf(box),
+                val markResult = recordIrPickFailedBoxAndReport(
+                    failedBox = box,
+                    allCandidates = candidates,
                     reason = "action_failure:serial_in2_ir_pick:targetPan=${kaoPan.positionSn}:tasteCode=${tasteCode ?: "unknown"}",
                     source = "action_failure_serial_in2_ir_pick"
                 )
@@ -4638,7 +4647,7 @@ object KaoChangOperate {
             }
         } else {
             targetPan.cmdStatusMove = 0
-            sourceBox.cmdStatusTake = 0
+            clearOrdinaryBoxTakeStatus(sourceBox)
         }
         logD(
             LOG_SUPPLEMENT,
@@ -4702,16 +4711,48 @@ object KaoChangOperate {
         )
     }
 
-    private fun reportIrPickFailedStocksDelta(failedBoxes: List<KaoPanBox>, reason: String, source: String) {
-        val distinctBoxes = failedBoxes.distinctBy { it.positionSn }
-        if (distinctBoxes.isEmpty()) {
-            return
+    private fun recordIrPickFailedBoxAndReport(
+        failedBox: KaoPanBox,
+        allCandidates: List<KaoPanBox>,
+        reason: String,
+        source: String
+    ): SupplementPickFailurePolicy.IrPickFailureRecordResult {
+        return try {
+            DataManagementAPI.updateTakeStatusPrepared(
+                positionSn = failedBox.positionSn,
+                prepare = {
+                    var preparedBox: KaoPanBox? = null
+                    val result = KaoPanHelper.updateKaoPanBoxListDurable { currentBoxes ->
+                        val currentFailedBox = currentBoxes.firstOrNull {
+                            it.positionSn == failedBox.positionSn
+                        } ?: error("取肠失败箱位已不在当前箱表：box=${failedBox.positionSn}")
+                        preparedBox = currentFailedBox
+                        SupplementPickFailurePolicy.recordIrPickFailedBox(
+                            currentFailedBox,
+                            currentBoxes.filter { candidate ->
+                                allCandidates.any { it.positionSn == candidate.positionSn }
+                            }
+                        )
+                    }
+                    result to requireNotNull(preparedBox)
+                }
+            ) { confirmed, authoritative ->
+                if (!confirmed) {
+                    logW(
+                        LOG_SUPPLEMENT,
+                        "取肠失败状态CAS上报未确认：box=${failedBox.positionSn}，reason=$reason，source=$source，" +
+                            "authoritativeRevision=${authoritative?.takeStatusRevision}"
+                    )
+                }
+            }
+        } catch (error: Exception) {
+            enterActionGroupMaintenance(
+                "取肠失败状态写入或落盘失败，保留补肠恢复证据：box=${failedBox.positionSn}，" +
+                    "reason=$reason，source=$source，${error.message}",
+                preserveMoveStatus = true
+            )
+            throw error
         }
-        PanPhysicalStateDeltaReporter.reportStocksChanged(
-            changedStocks = distinctBoxes,
-            reason = "$reason:boxes=${distinctBoxes.joinToString(",") { it.positionSn.toString() }}",
-            source = source
-        )
     }
 
     private data class PlannedPipelineSupplementMove(
@@ -4805,10 +4846,9 @@ object KaoChangOperate {
     private fun recordIrPickFailureAndSave(sourceBoxNo: Int, reason: String) {
         val boxList = KaoPanHelper.getKaoPanBoxList()
         val failedBox = boxList.firstOrNull { it.positionSn == sourceBoxNo } ?: return
-        val markResult = SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
-        KaoPanHelper.saveKaoPanBoxListDurable(boxList)
-        reportIrPickFailedStocksDelta(
-            failedBoxes = listOf(failedBox),
+        val markResult = recordIrPickFailedBoxAndReport(
+            failedBox = failedBox,
+            allCandidates = boxList,
             reason = "action_failure:pipeline_in2_ir_pick:$reason",
             source = "action_failure_pipeline_in2_ir_pick"
         )
@@ -5021,6 +5061,21 @@ object KaoChangOperate {
             SupplementBatchIntentRepository.isInitializationBatch(batchType) &&
             result.actionName.startsWith("in")
         ) {
+            if (failureCode == AtomicActionCodes.IR_PICK_FAILED) {
+                val failedBoxNos = (result.failedSourceBoxNos + sourceBoxNo).filterNotNull().distinct()
+                val boxList = KaoPanHelper.getKaoPanBoxList()
+                val failedBoxes = failedBoxNos.mapNotNull { boxNo ->
+                    boxList.firstOrNull { it.positionSn == boxNo }
+                }
+                failedBoxes.forEach { failedBox ->
+                    recordIrPickFailedBoxAndReport(
+                        failedBox = failedBox,
+                        allCandidates = boxList,
+                        reason = "action_failure:pipeline_initialization_ir_pick:targetPan=$targetPanNo",
+                        source = "action_failure_pipeline_initialization_ir_pick"
+                    )
+                }
+            }
             targetPanNo?.let {
                 recordNonDemandFrontForSupplementTarget(batchId, it, "initialization_action_failure")
             }
@@ -5051,14 +5106,13 @@ object KaoChangOperate {
                     boxList.firstOrNull { it.positionSn == boxNo }
                 }
                 failedBoxes.forEach { failedBox ->
-                    SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
+                    recordIrPickFailedBoxAndReport(
+                        failedBox = failedBox,
+                        allCandidates = boxList,
+                        reason = "action_failure:pipeline_supply_degrade:targetPan=$targetPanNo:action=${result.actionName}",
+                        source = "action_failure_pipeline_supply_degrade"
+                    )
                 }
-                KaoPanHelper.saveKaoPanBoxListDurable(boxList)
-                reportIrPickFailedStocksDelta(
-                    failedBoxes = failedBoxes,
-                    reason = "action_failure:pipeline_supply_degrade:targetPan=$targetPanNo:action=${result.actionName}",
-                    source = "action_failure_pipeline_supply_degrade"
-                )
             }
             val degradeReason = SupplementPickFailurePolicy.buildSupplyDegradedReason(
                 targetPanNo = targetPanNo,
@@ -5124,14 +5178,13 @@ object KaoChangOperate {
                     boxList.firstOrNull { it.positionSn == boxNo }
                 }
                 failedBoxes.forEach { failedBox ->
-                    SupplementPickFailurePolicy.recordIrPickFailedBox(failedBox, boxList)
+                    recordIrPickFailedBoxAndReport(
+                        failedBox = failedBox,
+                        allCandidates = boxList,
+                        reason = "action_failure:pipeline_ir_pick_maintenance:targetPan=$targetPanNo:action=${result.actionName}",
+                        source = "action_failure_pipeline_ir_pick_maintenance"
+                    )
                 }
-                KaoPanHelper.saveKaoPanBoxListDurable(boxList)
-                reportIrPickFailedStocksDelta(
-                    failedBoxes = failedBoxes,
-                    reason = "action_failure:pipeline_ir_pick_maintenance:targetPan=$targetPanNo:action=${result.actionName}",
-                    source = "action_failure_pipeline_ir_pick_maintenance"
-                )
             }
             enterActionGroupMaintenance(
                 "补肠预取流水线同口味候选箱取肠均失败（0x00E5），设备进入维护等待人工确认：" +
@@ -5461,11 +5514,24 @@ object KaoChangOperate {
         } else {
             null
         }
+        val shouldRecordIrPickFailure = !moveSuccess && failureCode == AtomicActionCodes.IR_PICK_FAILED
         kaoPanBox.cmdStatusTake = when {
-            moveSuccess -> 0
-            failureCode == AtomicActionCodes.IR_PICK_FAILED -> failureCode
+            moveSuccess -> if (kaoPanBox.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
+                AtomicActionCodes.IR_PICK_FAILED
+            } else {
+                0
+            }
+            shouldRecordIrPickFailure -> kaoPanBox.cmdStatusTake
             kaoPanBox.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED -> AtomicActionCodes.IR_PICK_FAILED
             else -> failureCode
+        }
+        if (shouldRecordIrPickFailure) {
+            recordIrPickFailedBoxAndReport(
+                failedBox = kaoPanBox,
+                allCandidates = KaoPanHelper.getKaoPanBoxList(),
+                reason = "action_failure:single_in2_ir_pick:targetPan=${kaoPan.positionSn}",
+                source = "action_failure_single_in2_ir_pick"
+            )
         }
         kaoPan.cmdStatusMove = if (moveSuccess) 0 else failureCode
         logD(
@@ -5522,7 +5588,7 @@ object KaoChangOperate {
                     }
                 } else {
                     currentPan.cmdStatusMove = 0
-                    currentBox.cmdStatusTake = 0
+                    clearOrdinaryBoxTakeStatus(currentBox)
                     if (physicalStockInconsistent) {
                         enterActionGroupMaintenance(
                             "补肠动作组已落盘但来源箱扣减不可信，需人工确认盘箱状态：" +
@@ -6441,11 +6507,17 @@ object KaoChangOperate {
         kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
         kaoPan.closeTime = cfg.discardTime * 60L * 60L * 1000L
         kaoPan.cmdStatusMove = 0
-        kaoPanBox.cmdStatusTake = 0
+        clearOrdinaryBoxTakeStatus(kaoPanBox)
         if (clearPendingDiscard) {
             FaultHeatPauseManager.clearDiscardPositionAndAlertIfFinished(kaoPan.positionSn)
         }
         return cfg
+    }
+
+    private fun clearOrdinaryBoxTakeStatus(box: KaoPanBox) {
+        if (box.cmdStatusTake != AtomicActionCodes.IR_PICK_FAILED) {
+            box.cmdStatusTake = 0
+        }
     }
 
     /**

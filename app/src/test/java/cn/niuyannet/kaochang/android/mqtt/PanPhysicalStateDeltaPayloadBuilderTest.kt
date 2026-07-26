@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
@@ -59,7 +60,8 @@ class PanPhysicalStateDeltaPayloadBuilderTest {
         assertEquals("101", stockJson.getString("productId"))
         assertEquals("A", stockJson.getString("tasteCode"))
         assertEquals(208, stockJson.getIntValue("cmdValueTake"))
-        assertEquals(0, stockJson.getIntValue("cmdStatusTake"))
+        assertFalse(stockJson.containsKey("cmdStatusTake"))
+        assertFalse(stockJson.containsKey("takeStatusRevision"))
     }
 
     @Test
@@ -100,7 +102,7 @@ class PanPhysicalStateDeltaPayloadBuilderTest {
 
         assertEquals(payloadA.getString("fullStateHash"), payloadB.getString("fullStateHash"))
         assertEquals(
-            "f8f0389b27f7a67b8bf315ee8fece84a01b6458059431a420cb94030d6aea48b",
+            "daa1985554400c6f4c4b4b4d93b3f010cc02d48295e88b0be3a1e30b915e472e",
             payloadA.getString("fullStateHash")
         )
 

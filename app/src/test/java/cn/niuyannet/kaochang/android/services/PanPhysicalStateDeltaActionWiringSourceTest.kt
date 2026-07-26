@@ -270,59 +270,122 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
     }
 
     @Test
-    fun irPickFailureBoxMark_shouldPublishStockDeltaAfterFailureMarkIsSaved() {
+    fun irPickFailureBoxMark_shouldRegisterIntentBeforeFailureMarkIsSaved() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val atomicHelper = extractFunctionBody(source, "private fun recordIrPickFailedBoxAndReport(")
+        assertTrue(
+            "E5 失败标记必须通过协调器先登记显式意图",
+            atomicHelper.contains("DataManagementAPI.updateTakeStatusPrepared(")
+        )
+        assertOrder(
+            atomicHelper,
+            "prepare = {",
+            "SupplementPickFailurePolicy.recordIrPickFailedBox(",
+            "E5 失败标记必须位于显式意图 prepare 临界区"
+        )
+        assertOrder(
+            atomicHelper,
+            "KaoPanHelper.updateKaoPanBoxListDurable { currentBoxes ->",
+            "SupplementPickFailurePolicy.recordIrPickFailedBox(",
+            "E5 失败箱必须在当前箱表事务内重新解析并标记"
+        )
+        assertTrue("E5 落盘异常必须进入维护", atomicHelper.contains("enterActionGroupMaintenance("))
+        assertTrue("E5 落盘异常必须保留 moveStatus", atomicHelper.contains("preserveMoveStatus = true"))
+        assertTrue("E5 落盘异常不得继续补肠", atomicHelper.contains("throw error"))
+
         val serialBody = extractBetween(
             source,
             "private suspend fun moveSausageToKaoPanByTasteDetailed(",
             "private fun continueAfterSupplementBatchFailure"
         )
-        assertOrder(
-            serialBody,
-            "SupplementPickFailurePolicy.recordIrPickFailedBox(box, candidates)",
-            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
-            "串行 in2 失败箱必须先标记并同步保存"
-        )
-        assertOrder(
-            serialBody,
-            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
-            "reportIrPickFailedStocksDelta(",
-            "串行 in2 失败箱物理增量必须在箱状态保存后发布"
-        )
+        assertTrue("串行 in2 失败箱必须走原子 helper", serialBody.contains("recordIrPickFailedBoxAndReport("))
+        assertTrue("串行 in2 入口不得在登记 token 前直接标记", !serialBody.contains("recordIrPickFailedBox(box, candidates)"))
         assertTrue("串行 in2 失败箱必须使用专用 source", serialBody.contains("source = \"action_failure_serial_in2_ir_pick\""))
 
         val pipelineHelper = extractFunctionBody(source, "private fun recordIrPickFailureAndSave(")
-        assertOrder(
-            pipelineHelper,
-            "KaoPanHelper.saveKaoPanBoxListSync(boxList)",
-            "reportIrPickFailedStocksDelta(",
-            "预取流水线单箱 in2 失败箱物理增量必须在箱状态保存后发布"
-        )
+        assertTrue("预取流水线单箱 in2 失败箱必须走原子 helper", pipelineHelper.contains("recordIrPickFailedBoxAndReport("))
         assertTrue("预取流水线单箱 in2 失败箱必须使用专用 source", pipelineHelper.contains("source = \"action_failure_pipeline_in2_ir_pick\""))
+
+        listOf(
+            "action_failure_initialization_in2_ir_pick",
+            "action_failure_pipeline_initialization_ir_pick",
+            "action_failure_pipeline_supply_degrade",
+            "action_failure_pipeline_ir_pick_maintenance",
+            "action_failure_single_in2_ir_pick"
+        ).forEach { sourceName ->
+            assertTrue("E5 上报入口必须保留 source=$sourceName", source.contains("source = \"$sourceName\""))
+        }
     }
 
     @Test
-    fun maintenanceBoxOperations_shouldPublishStockDeltaAfterManualStockSave() {
+    fun maintenanceBoxOperations_shouldUseVersionedTakeStatusAfterInventorySave() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceBoxFragment.kt")
+        val restoreBody = extractFunctionBody(source, "private fun restoreSelectedBoxesAutoTake(")
         val refillBody = extractFunctionBody(source, "private fun showTasteSelectDialog(")
 
-        assertTrue("维护箱位页面必须引入 physical delta reporter", source.contains("PanPhysicalStateDeltaReporter"))
-        assertOrder(
-            source,
-            "KaoPanHelper.saveKaoPanBoxListSync(KaoPanHelper.getKaoPanBoxList())",
-            "PanPhysicalStateDeltaReporter.reportStocksChanged(",
-            "维护清空/加满烤肠箱必须在本地箱状态保存后发布物理增量"
-        )
-        assertTrue("维护清空箱必须使用专用 source", source.contains("source = \"maintenance_box_clear\""))
-        assertTrue("维护加满箱必须使用专用 source", source.contains("source = \"maintenance_box_refill\""))
+        assertTrue("维护箱位页面必须使用普通库存投影", source.contains("StockPhysicalProjectionSerializer"))
+        assertTrue("仅恢复自动取肠不得发送普通库存", !restoreBody.contains("NetApi.updateStock(") && !restoreBody.contains("NetApi.clearStock("))
+        assertTrue("仅恢复自动取肠必须直接逐箱确认状态", restoreBody.contains("confirmTakeStatusChanges("))
         assertOrder(
             refillBody,
-            "val snapshots = selectedBoxes.map { box ->",
-            "for (box in selectedBoxes) {",
-            "加满烤肠箱必须在改内存前记录原始快照"
+            "StockPhysicalProjectionSerializer.applyInventoryFields(",
+            "confirmTakeStatusChanges(",
+            "维护清空/加满必须先合并库存字段，再逐箱确认取肠状态"
         )
-        assertTrue("加满烤肠箱业务失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                        ToastUtils.showShort(ApiResponseCompat.messageText(json, \"设置失败\"))"))
-        assertTrue("加满烤肠箱接口失败必须恢复本地箱状态", refillBody.contains("restoreClearSnapshots(snapshots)\n                    ToastUtils.showShort(\"添加失败\")"))
+        assertTrue("取肠状态必须复用版本接口", source.contains("DataManagementAPI.updateTakeStatus"))
+        assertOrder(
+            refillBody,
+            "val proposedBoxes = copyBoxes(KaoPanHelper.getKaoPanBoxList())",
+            "for (box in proposedSelectedBoxes) {",
+            "加满烤肠箱必须先复制列表，不能提前修改全局库存"
+        )
+        assertTrue("加满烤肠箱接口未知必须回读", refillBody.contains("refreshAfterUnknownStockWrite(\"加满烤肠箱状态未知\")"))
+    }
+
+    @Test
+    fun stockRefresh_shouldConditionAutomaticPushOnUnchangedExplicitIntentGeneration() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/net/DataManagementAPI.kt")
+        val refreshBody = extractBetween(source, "fun refreshStockData(", "private fun KaoPanBox.takeStatusSnapshot(")
+
+        assertTrue(
+            "库存回读必须在箱表锁内重新观察箱级自动回推 generation",
+            refreshBody.contains("KaoPanHelper.withKaoPanBoxTableLock {") &&
+                refreshBody.contains("takeStatusIntentRegistry.observeAutomaticGeneration(")
+        )
+        assertOrder(
+            refreshBody,
+            "takeStatusIntentRegistry.observeAutomaticGeneration(",
+            "KaoPanHelper.saveKaoPanBoxListSync(remoteBoxes)",
+            "库存回读必须在 durable 提交前重新校验 generation"
+        )
+        assertTrue(
+            "库存回读必须走 generation 条件自动回推入口",
+            refreshBody.contains("updateTakeStatusAutomaticallyIfUnchanged(box, observedGeneration)")
+        )
+        assertTrue(
+            "库存回读不得通过公开入口生成比人工恢复更晚的显式 token",
+            !refreshBody.contains("updateTakeStatus(box)")
+        )
+    }
+
+    @Test
+    fun takeStatusUpdates_shouldUseCoordinatorForExplicitAndAutomaticIntents() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/net/DataManagementAPI.kt")
+        val explicitBody = extractFunctionBody(source, "fun updateTakeStatus(")
+        val automaticBody = extractFunctionBody(source, "private fun updateTakeStatusAutomaticallyIfUnchanged(")
+
+        assertTrue(
+            "显式取肠状态必须通过协调器获得单次冲突重试和统一终态清理",
+            explicitBody.contains("takeStatusUpdateCoordinator.updateExplicitly(box, onResult)")
+        )
+        assertTrue(
+            "自动回推必须通过无重试资格的协调器入口",
+            automaticBody.contains("takeStatusUpdateCoordinator.updateAutomaticallyIfUnchanged(box, observedGeneration)")
+        )
+        assertTrue(
+            "DataManagementAPI 不得绕过协调器直接发送取肠状态请求",
+            !explicitBody.contains("NetApi.updateTakeStatus(") && !automaticBody.contains("NetApi.updateTakeStatus(")
+        )
     }
 
     @Test

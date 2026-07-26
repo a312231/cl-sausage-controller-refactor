@@ -48,7 +48,9 @@ internal object SupplementPanStateWriter {
             return false
         }
         sourceBox.num = maxOf(0, sourceBox.num - 1)
-        sourceBox.cmdStatusTake = 0
+        if (sourceBox.cmdStatusTake != cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes.IR_PICK_FAILED) {
+            sourceBox.cmdStatusTake = 0
+        }
         return true
     }
 

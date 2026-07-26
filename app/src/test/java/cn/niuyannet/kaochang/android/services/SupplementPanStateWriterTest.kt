@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -43,6 +44,26 @@ class SupplementPanStateWriterTest {
         assertFalse(plannedPan.isHasSausage)
         assertFalse(currentPan.isHasSausage)
         assertEquals(0, currentPan.status)
+    }
+
+    @Test
+    fun applyPhysicalCheckpoint_shouldPreserveLatchedPickFailureOnOrdinarySuccess() {
+        val plannedPan = pan(positionSn = 4, tasteCode = "B")
+        val currentPan = pan(positionSn = 4, tasteCode = "B")
+        val plannedBox = box(positionSn = 21, stock = 6, tasteCode = "B")
+        val currentBox = box(positionSn = 21, stock = 6, tasteCode = "B").apply {
+            cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED
+        }
+
+        val applied = SupplementPanStateWriter.applySupplementPickedFromBox(
+            plannedPan = plannedPan,
+            plannedBox = plannedBox,
+            currentPans = listOf(currentPan),
+            currentBoxes = listOf(currentBox)
+        )
+
+        assertTrue(applied)
+        assertEquals(AtomicActionCodes.IR_PICK_FAILED, currentBox.cmdStatusTake)
     }
 
     @Test

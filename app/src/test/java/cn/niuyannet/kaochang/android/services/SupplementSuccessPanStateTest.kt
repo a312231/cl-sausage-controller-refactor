@@ -92,7 +92,7 @@ class SupplementSuccessPanStateTest {
         assertEquals("C", pan.taste.tasteCode)
         assertEquals(4, box.num)
         assertEquals(0, pan.cmdStatusMove)
-        assertEquals(0, box.cmdStatusTake)
+        assertEquals(0x00E5, box.cmdStatusTake)
     }
 
     @Test

@@ -33,6 +33,9 @@ public class KaoPanBox implements Serializable {
     @SerializedName("cmd_status_take")
     private int cmdStatusTake; // 命令执行状态 （无符号16位整型，0为正常，1为运动中，其余为错误码）
 
+    @SerializedName("take_status_revision")
+    private long takeStatusRevision;
+
     @SerializedName("is_check_status")
     private Boolean isCheckStatus; // 是否选中
     // 默认构造函数
@@ -44,6 +47,7 @@ public class KaoPanBox implements Serializable {
         this.tasteCode = "";
         this.cmdValueTake = 0;
         this.cmdStatusTake = 0;
+        this.takeStatusRevision = 0L;
         this.isCheckStatus=false;
     }
     // 带参数的构造函数
@@ -148,5 +152,13 @@ public class KaoPanBox implements Serializable {
     
     public void setCmdStatusTake(int cmdStatusTake) {
         this.cmdStatusTake = cmdStatusTake;
+    }
+
+    public long getTakeStatusRevision() {
+        return takeStatusRevision;
+    }
+
+    public void setTakeStatusRevision(long takeStatusRevision) {
+        this.takeStatusRevision = takeStatusRevision;
     }
 }

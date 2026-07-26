@@ -9,7 +9,6 @@ import cn.niuyannet.kaochang.android.mqtt.PanPhysicalStateBaselineStore
 import cn.niuyannet.kaochang.android.mqtt.PanPhysicalStateDeltaSequenceStore
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
-import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveKaoPanBoxList
 import cn.niuyannet.kaochang.android.model.KaoPanHelper.saveTasteList
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
@@ -17,7 +16,8 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
 import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
 import cn.niuyannet.kaochang.android.services.SnapshotProjectionHash
-import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
+import cn.niuyannet.kaochang.android.services.TakeStatusRevisionMergePolicy
+import cn.niuyannet.kaochang.android.services.TakeStatusIntentRegistry
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
@@ -32,6 +32,24 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 object DataManagementAPI {
+    private val takeStatusIntentRegistry = TakeStatusIntentRegistry()
+    private val takeStatusUpdateCoordinator = TakeStatusUpdateCoordinator(
+        intentRegistry = takeStatusIntentRegistry,
+        transport = TakeStatusUpdateTransport(NetApi::updateTakeStatus),
+        store = TakeStatusUpdateStore { authoritative ->
+            var current: KaoPanBox? = null
+            KaoPanHelper.updateKaoPanBoxListDurable { currentBoxes ->
+                current = currentBoxes.firstOrNull { it.positionSn == authoritative.positionSn }
+                current?.let { currentBox ->
+                    TakeStatusRevisionMergePolicy.applyAuthoritative(currentBox, authoritative)
+                }
+            }
+            current
+        },
+        criticalSection = object : TakeStatusCriticalSection {
+            override fun <T> run(action: () -> T): T = KaoPanHelper.withKaoPanBoxTableLock(action)
+        }
+    )
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val LOG_SYNC = "云端同步"
     private const val PRODUCT_CATALOG_REFRESH_MIN_INTERVAL_MS = 5_000L
@@ -97,6 +115,27 @@ object DataManagementAPI {
     private fun logW(message: String) = LogUtils.w("[$LOG_SYNC] $message")
     private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
     private fun logCloudSyncFile(message: String) = LogUtils.i("【$LOG_SYNC】$message")
+
+    fun updateTakeStatus(
+        box: KaoPanBox,
+        onResult: ((confirmed: Boolean, authoritative: KaoPanBox?) -> Unit)? = null
+    ) {
+        takeStatusUpdateCoordinator.updateExplicitly(box, onResult)
+    }
+
+    fun <T> updateTakeStatusPrepared(
+        positionSn: Int,
+        prepare: () -> Pair<T, KaoPanBox>,
+        onResult: ((confirmed: Boolean, authoritative: KaoPanBox?) -> Unit)? = null
+    ): T = takeStatusUpdateCoordinator.updateExplicitlyPrepared(
+        positionSn = positionSn,
+        prepare = prepare,
+        onResult = onResult
+    )
+
+    private fun updateTakeStatusAutomaticallyIfUnchanged(box: KaoPanBox, observedGeneration: Long) {
+        takeStatusUpdateCoordinator.updateAutomaticallyIfUnchanged(box, observedGeneration)
+    }
 
     private fun readRequestedInt(patch: JSONObject, field: String): Int? {
         if (!patch.containsKey(field) || patch.get(field) == null) {
@@ -848,11 +887,10 @@ object DataManagementAPI {
         onResult: ((success: Boolean, stockCount: Int) -> Unit)? = null
     ) {
         NetApi.getStockData { code, content ->
-            val kaoPanBoxList = mutableListOf<KaoPanBox>()
             if (code == 0) {
                 val json = JSON.parseObject(content)
                 if (ApiResponseCompat.isSuccessful(json)) {
-                    val localBoxByPosition = KaoPanHelper.getKaoPanBoxList().associateBy { it.positionSn }
+                    val remoteBoxes = mutableListOf<KaoPanBox>()
                     val jsonData = json.getJSONArray("data")
                     for (i in 0 until jsonData.size) {
                         val item = jsonData.getJSONObject(i)
@@ -867,15 +905,36 @@ object DataManagementAPI {
                             tasteName = item.getString("tasteName")
                             cmdValueTake = item.getIntValue("cmdValueTake")
                             cmdStatusTake = item.getIntValue("cmdStatusTake")
+                            takeStatusRevision = item.getLongValue("takeStatusRevision")
                         }
-                        if (localBoxByPosition[kaoPanBox.positionSn]?.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
-                            kaoPanBox.cmdStatusTake = AtomicActionCodes.IR_PICK_FAILED
-                        }
-                        kaoPanBoxList.add(kaoPanBox)
+                        remoteBoxes.add(kaoPanBox)
                     }
-                    saveKaoPanBoxList(kaoPanBoxList)
-                    logD("[$logPrefix] 烤肠箱库存同步完成：箱位数=${kaoPanBoxList.size}")
-                    onResult?.invoke(true, kaoPanBoxList.size)
+                    val boxesRequiringPush = KaoPanHelper.withKaoPanBoxTableLock {
+                        val localBoxByPosition = KaoPanHelper.getKaoPanBoxList().associateBy { it.positionSn }
+                        val pendingPushes = mutableListOf<Pair<KaoPanBox, Long>>()
+                        remoteBoxes.forEach { remoteBox ->
+                            val localBox = localBoxByPosition[remoteBox.positionSn]
+                            val observedGeneration = takeStatusIntentRegistry.observeAutomaticGeneration(
+                                remoteBox.positionSn
+                            )
+                            if (localBox != null && observedGeneration == null) {
+                                remoteBox.cmdStatusTake = localBox.cmdStatusTake
+                                remoteBox.takeStatusRevision = localBox.takeStatusRevision
+                            } else {
+                                val merge = TakeStatusRevisionMergePolicy.merge(localBox, remoteBox)
+                                if (merge.requiresPush && observedGeneration != null) {
+                                    pendingPushes += remoteBox.takeStatusSnapshot() to observedGeneration
+                                }
+                            }
+                        }
+                        KaoPanHelper.saveKaoPanBoxListDurable(remoteBoxes)
+                        pendingPushes
+                    }
+                    boxesRequiringPush.forEach { (box, observedGeneration) ->
+                        updateTakeStatusAutomaticallyIfUnchanged(box, observedGeneration)
+                    }
+                    logD("[$logPrefix] 烤肠箱库存同步完成：箱位数=${remoteBoxes.size}")
+                    onResult?.invoke(true, remoteBoxes.size)
                     return@getStockData
                 }
                 logE("[$logPrefix] 烤肠箱库存业务返回异常：content=$content")
@@ -885,6 +944,12 @@ object DataManagementAPI {
             }
             onResult?.invoke(false, 0)
         }
+    }
+
+    private fun KaoPanBox.takeStatusSnapshot(): KaoPanBox = KaoPanBox().also { snapshot ->
+        snapshot.positionSn = positionSn
+        snapshot.cmdStatusTake = cmdStatusTake
+        snapshot.takeStatusRevision = takeStatusRevision
     }
 
     fun refreshProductCatalog(
@@ -1135,7 +1200,7 @@ object DataManagementAPI {
             onResult?.invoke(false)
             return
         }
-        val stockPayload = JSON.toJSONString(kaoPanBoxList)
+        val stockPayload = StockPhysicalProjectionSerializer.serialize(kaoPanBoxList)
         val effectiveSnapshotHash = snapshotHash ?: SnapshotProjectionHash.hash(kaoPanList, kaoPanBoxList)
         val stockItemCount = kaoPanBoxList.size
         val physicalStockTotalCount = kaoPanBoxList.sumOf { box -> box.num }

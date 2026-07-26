@@ -289,6 +289,28 @@ object NetApi {
             })
     }
 
+    fun updateTakeStatus(box: cn.niuyannet.kaochang.android.model.bean.KaoPanBox, callback: (code: Int, content: String?) -> Unit) {
+        ensureEndpointUrlsFresh()
+        val config = AppConfig.getAppConfig()
+        val json = TakeStatusUpdatePayloadBuilder.build(
+            deviceCode = AppConfig.getDeviceId(),
+            credential = config.mqttPassword,
+            box = box
+        )
+        OkGo.post<String>(updateStock_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    callback(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    callback(1, response?.body())
+                }
+            })
+    }
+
     /**
      * 清空烤盘库存。
      */

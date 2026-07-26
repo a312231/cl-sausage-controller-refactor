@@ -116,7 +116,6 @@ object PanPhysicalStateDeltaPayloadBuilder {
             put("tasteCode", stock.tasteCode ?: "")
             put("tasteName", stock.tasteName ?: "")
             put("cmdValueTake", stock.cmdValueTake)
-            put("cmdStatusTake", stock.cmdStatusTake)
             put("isCheckStatus", stock.checkStatus ?: false)
         }
 

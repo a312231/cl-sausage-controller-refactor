@@ -54,6 +54,7 @@ class BoxAutoTakeRecoveryPolicyTest {
 
         assertEquals(listOf(13), result.recoveredBoxNos)
         assertEquals(0, failed.cmdStatusTake)
+        assertEquals(4L, failed.takeStatusRevision)
         assertEquals(8, failed.num)
         assertEquals("taste-a", failed.tasteCode)
         assertEquals("口味A", failed.tasteName)
@@ -85,5 +86,6 @@ class BoxAutoTakeRecoveryPolicyTest {
         KaoPanBox().apply {
             this.positionSn = positionSn
             this.cmdStatusTake = cmdStatusTake
+            this.takeStatusRevision = 4L
         }
 }

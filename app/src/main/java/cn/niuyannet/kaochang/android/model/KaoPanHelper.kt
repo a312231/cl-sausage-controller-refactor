@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
 import cn.niuyannet.kaochang.android.services.KaoPanAsyncSaveGeneration
 import cn.niuyannet.kaochang.android.services.KaoPanCacheInitPolicy
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
+import cn.niuyannet.kaochang.android.services.TakeStatusRevisionMergePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
@@ -18,6 +19,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.util.Locale
+
+internal class KaoPanBoxTableCommitCoordinator {
+    private val monitor = Any()
+
+    fun <T> withLock(action: () -> T): T = synchronized(monitor) { action() }
+
+    fun <T> updateDurably(
+        load: () -> MutableList<KaoPanBox>,
+        persist: (List<KaoPanBox>) -> Unit,
+        update: (MutableList<KaoPanBox>) -> T
+    ): T = synchronized(monitor) {
+        val current = load()
+        val result = update(current)
+        persist(current.toMutableList())
+        result
+    }
+}
 
 
 /**
@@ -41,6 +59,7 @@ object KaoPanHelper {
     private const val DEFAULT_BAKING_TIME_MINUTES = 40
     private const val DEFAULT_DISCARD_TIME_HOURS = 6
     private val kaoPanSaveGeneration = KaoPanAsyncSaveGeneration()
+    private val kaoPanBoxTableCommitCoordinator = KaoPanBoxTableCommitCoordinator()
     /** 默认烤制时长，40 分钟。 */
     val bakingTime = 40 * 60 * 1000L
 
@@ -261,15 +280,23 @@ object KaoPanHelper {
      * 获取烤肠箱列表
      */
     fun getKaoPanBoxList():List<KaoPanBox>{
-        if (this.kaoPanBoxList.size>0){
-            return this.kaoPanBoxList
+        return kaoPanBoxTableCommitCoordinator.withLock {
+            loadKaoPanBoxListLocked()
         }
-        val savedKaoPanBoxList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, KaoPanBox::class.java)
-        this.kaoPanBoxList = restoreKaoPanBoxList(savedKaoPanBoxList)
-        if (this.kaoPanBoxList.isEmpty()) {
+    }
+
+    private fun loadKaoPanBoxListLocked(): MutableList<KaoPanBox> {
+        if (kaoPanBoxList.isNotEmpty()) return kaoPanBoxList
+        val savedKaoPanBoxList = PreferenceUtils.getListPreference(
+            FILE_SP_URL,
+            KEY_KAO_PAN_BOX_LIST,
+            KaoPanBox::class.java
+        )
+        kaoPanBoxList = restoreKaoPanBoxList(savedKaoPanBoxList)
+        if (kaoPanBoxList.isEmpty()) {
             LogUtils.w("本地烤肠箱缓存为空，等待云端库存同步后恢复；首次安装或清空数据后可能出现")
         }
-        return this.kaoPanBoxList
+        return kaoPanBoxList
     }
     /**
      * 获取口味列表
@@ -322,16 +349,48 @@ object KaoPanHelper {
     }
 
     fun saveKaoPanBoxListSync(list: List<KaoPanBox>) {
-        kaoPanBoxList = list.toMutableList()
-        PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, kaoPanBoxList)
+        kaoPanBoxTableCommitCoordinator.withLock {
+            val mergedList = mergeCurrentTakeStatusLocked(list)
+            kaoPanBoxList = mergedList
+            PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, mergedList)
+        }
     }
 
     fun saveKaoPanBoxListDurable(list: List<KaoPanBox>) {
+        kaoPanBoxTableCommitCoordinator.withLock {
+            persistKaoPanBoxListLocked(mergeCurrentTakeStatusLocked(list))
+        }
+    }
+
+    fun <T> updateKaoPanBoxListDurable(update: (MutableList<KaoPanBox>) -> T): T {
+        return kaoPanBoxTableCommitCoordinator.updateDurably(
+            load = ::loadKaoPanBoxListLocked,
+            persist = ::persistKaoPanBoxListLocked,
+            update = update
+        )
+    }
+
+    fun <T> withKaoPanBoxTableLock(action: () -> T): T {
+        return kaoPanBoxTableCommitCoordinator.withLock(action)
+    }
+
+    private fun persistKaoPanBoxListLocked(list: List<KaoPanBox>) {
         val durableList = list.toMutableList()
         check(
             PreferenceUtils.saveListPreferenceDurable(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, durableList)
         ) { "关键烤肠箱库存落盘失败" }
         kaoPanBoxList = durableList
+    }
+
+    private fun mergeCurrentTakeStatusLocked(list: List<KaoPanBox>): MutableList<KaoPanBox> {
+        val currentByPosition = loadKaoPanBoxListLocked().associateBy { it.positionSn }
+        return list.map { incoming ->
+            val current = currentByPosition[incoming.positionSn]
+            if (current != null && current !== incoming) {
+                TakeStatusRevisionMergePolicy.merge(current, incoming)
+            }
+            incoming
+        }.toMutableList()
     }
 
 
