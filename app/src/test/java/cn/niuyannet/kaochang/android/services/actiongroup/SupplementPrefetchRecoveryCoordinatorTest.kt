@@ -21,6 +21,37 @@ class SupplementPrefetchRecoveryCoordinatorTest {
     }
 
     @Test
+    fun preparedDualLaneWithIdleRegisters_shouldRequestOwnerFencedAbandon() = runBlocking {
+        val prepared = SupplementPrefetchPipelineSession(
+            sessionId = "prepared-dual",
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above,
+            deliveryLane = SupplementPrefetchLaneCheckpoint(
+                sourceBoxNo = 17,
+                sourceBoxCandidates = listOf(17),
+                targetPanNo = 13
+            ),
+            prefetchLane = SupplementPrefetchLaneCheckpoint(
+                sourceBoxNo = 18,
+                sourceBoxCandidates = listOf(18),
+                targetPanNo = 14
+            ),
+            mechanicalClaimState = MechanicalClaimState.PREPARED,
+            mechanicalClaimRevision = 1L
+        )
+        val repository = repository(prepared)
+
+        val result = SupplementPrefetchRecoveryCoordinator(
+            RecoveryClient(),
+            repository,
+            betweenSnapshots = {}
+        ).recover()
+
+        assertTrue(result is SupplementPrefetchRecoveryResult.PreparedClaimIdle)
+        assertEquals("prepared-dual", (result as SupplementPrefetchRecoveryResult.PreparedClaimIdle).session.sessionId)
+        assertNotNull(repository.load())
+    }
+
+    @Test
     fun legalDualRunning_shouldOnlyMonitorAndRestoreRunningPhase() = runBlocking {
         val repository = repository(
             session(

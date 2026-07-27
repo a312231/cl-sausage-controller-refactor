@@ -9,26 +9,33 @@ object SupplementStartGate {
     fun evaluate(
         onlineStatus: Int,
         errorStatus: Int,
-        isEnable: Int
+        isEnable: Int,
+        faultHeatPauseActive: Int
     ): SupplementStartGateDecision {
+        val stateSummary = "onlineStatus（设备营业状态）=${onlineStatusText(onlineStatus)}，" +
+            "errorStatus（设备故障状态）=${errorStatusText(errorStatus)}，" +
+            "isEnable（烤肠算法开关）=${isEnableText(isEnable)}，" +
+            "faultHeatPauseActive（故障停热暂停）=${pauseText(faultHeatPauseActive)}"
         return when {
             onlineStatus != 1 -> SupplementStartGateDecision(
                 canStart = false,
-                reason = "补肠启动被拒绝：onlineStatus（设备营业状态）=${onlineStatusText(onlineStatus)}，" +
-                    "errorStatus（设备故障状态）=${errorStatusText(errorStatus)}，" +
-                    "isEnable（烤肠算法开关）=${isEnableText(isEnable)}"
+                reason = "补肠启动被拒绝：$stateSummary"
             )
             errorStatus != 0 -> SupplementStartGateDecision(
                 canStart = false,
-                reason = "补肠启动被拒绝：onlineStatus（设备营业状态）=${onlineStatusText(onlineStatus)}，" +
-                    "errorStatus（设备故障状态）=${errorStatusText(errorStatus)}，" +
-                    "isEnable（烤肠算法开关）=${isEnableText(isEnable)}"
+                reason = "补肠启动被拒绝：$stateSummary"
+            )
+            isEnable != 1 -> SupplementStartGateDecision(
+                canStart = false,
+                reason = "补肠启动被拒绝：$stateSummary"
+            )
+            faultHeatPauseActive != 0 -> SupplementStartGateDecision(
+                canStart = false,
+                reason = "补肠启动被拒绝：$stateSummary"
             )
             else -> SupplementStartGateDecision(
                 canStart = true,
-                reason = "允许启动补肠：onlineStatus（设备营业状态）=${onlineStatusText(onlineStatus)}，" +
-                    "errorStatus（设备故障状态）=${errorStatusText(errorStatus)}，" +
-                    "isEnable（烤肠算法开关）=${isEnableText(isEnable)}"
+                reason = "允许启动补肠：$stateSummary"
             )
         }
     }
@@ -52,6 +59,12 @@ object SupplementStartGate {
     private fun isEnableText(value: Int): String = when (value) {
         0 -> "0（关闭）"
         1 -> "1（开启）"
+        else -> "$value（未知）"
+    }
+
+    private fun pauseText(value: Int): String = when (value) {
+        0 -> "0（未暂停）"
+        1 -> "1（暂停中）"
         else -> "$value（未知）"
     }
 }

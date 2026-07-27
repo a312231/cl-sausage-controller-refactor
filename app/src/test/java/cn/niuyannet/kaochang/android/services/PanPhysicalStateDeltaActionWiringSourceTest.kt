@@ -14,6 +14,11 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
             "private fun applySupplementPhysicalTelemetry(",
             "private fun applySuccessfulSupplementMove("
         )
+        val placementCommit = extractBetween(
+            source,
+            "private fun commitSupplementPlacedOnPan(",
+            "private fun applySupplementPhysicalTelemetry("
+        )
 
         assertOrder(
             body,
@@ -25,10 +30,16 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
         assertTrue("in2 必须继续保留 HTTP 快照兜底触发点", body.contains("action_physical:in2:picked_from_box"))
 
         assertOrder(
+            placementCommit,
+            "SupplementPanStateWriter.applySupplementPlacedOnPan(",
+            "KaoPanHelper.saveKaoPanListSync(currentPans)",
+            "in7 落盘必须先更新本地烤盘再耐久保存"
+        )
+        assertOrder(
             body,
-            "KaoPanHelper.saveKaoPanListSync(KaoPanHelper.getKaoPanList())",
+            "val commit = commitSupplementPlacedOnPan(plannedPan, plannedBox)",
             "PanPhysicalStateDeltaReporter.reportPanChanged(",
-            "in7 物理增量必须在本地烤盘保存后发布"
+            "in7 物理增量必须在耐久落盘提交返回后发布"
         )
         assertTrue("in7 必须用 action_physical_in7 source", body.contains("source = \"action_physical_in7\""))
         assertTrue("in7 必须继续保留 HTTP 快照兜底触发点", body.contains("action_physical:in7:placed_on_pan"))
@@ -413,10 +424,11 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
 
         assertTrue("算法开启必须通过统一温控恢复入口", enableBody.contains("restoreHeatingStateFromCurrentPans("))
         val successCheck = applyTemperatureBody.indexOf("allWritesSucceeded")
-        val syncPause = applyTemperatureBody.indexOf("FaultHeatPauseManager.endFaultHeatPauseAndSyncIfNeeded(reason)")
-        assertTrue("按盘态恢复温度必须走故障恢复同步包装", syncPause >= 0)
-        assertTrue("必须先确认温区写入成功再结束暂停", successCheck >= 0 && successCheck < syncPause)
-        assertTrue("单区写入不能提前结束整机暂停", !setAreaBody.contains("endFaultHeatPauseAndSyncIfNeeded"))
+        val endPause = applyTemperatureBody.indexOf("FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded(reason)")
+        assertTrue("按盘态恢复温度必须提交故障暂停结束", endPause >= 0)
+        assertTrue("必须先确认温区写入成功再结束暂停", successCheck >= 0 && successCheck < endPause)
+        assertTrue("锁内温控提交不得直接发布物理增量", !applyTemperatureBody.contains("syncRecoveredPhysicalState"))
+        assertTrue("单区写入不能提前结束整机暂停", !setAreaBody.contains("endFaultHeatPauseAndAdjustIfNeeded"))
     }
 
     private fun assertOrder(source: String, before: String, after: String, message: String) {

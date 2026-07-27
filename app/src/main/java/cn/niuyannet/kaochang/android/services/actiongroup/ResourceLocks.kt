@@ -100,7 +100,9 @@ data class ActionGroupSession(
     val boxDeductionApplied: Boolean = false,
     val panPlacementApplied: Boolean = false,
     val pausedForOrder: Boolean = false,
-    val resumeAfterAction: String? = null
+    val resumeAfterAction: String? = null,
+    val mechanicalClaimState: MechanicalClaimState? = null,
+    val mechanicalClaimRevision: Long = 0L
 )
 
 enum class ActionGroupSessionType {

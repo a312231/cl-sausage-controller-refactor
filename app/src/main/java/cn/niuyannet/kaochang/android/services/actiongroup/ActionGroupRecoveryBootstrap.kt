@@ -18,6 +18,10 @@ sealed class ActionGroupRecoveryResult {
         val reason: String
     ) : ActionGroupRecoveryResult()
 
+    data class PreparedClaimAbandoned(
+        val session: ActionGroupSession
+    ) : ActionGroupRecoveryResult()
+
     data class MaintenanceRequired(
         val reason: String,
         val recoverableResidueSession: ActionGroupSession? = null
@@ -35,7 +39,12 @@ class ActionGroupRecoveryBootstrap(
     private val sessionStore: ActionGroupSessionStore,
     private val resourceLocks: ResourceLocks,
     private val logger: (String) -> Unit = {},
-    private val allowKnownIsolatedTerminalFailure: (ActionGroupSession, String, Int) -> Boolean = { _, _, _ -> false }
+    private val allowKnownIsolatedTerminalFailure: (ActionGroupSession, String, Int) -> Boolean = { _, _, _ -> false },
+    private val abandonPreparedClaim: (ActionGroupSession) -> Boolean = {
+        sessionStore.clear()
+        true
+    },
+    private val moveStatusProvider: () -> Int = { 0 }
 ) {
     suspend fun recover(): ActionGroupRecoveryResult {
         val reader = client as? AtomicActionStateReader
@@ -90,6 +99,21 @@ class ActionGroupRecoveryBootstrap(
                 val sessionValues = sessionSteps.map { step ->
                     (states.first { state -> state.spec == step.spec }.value as AtomicReadResult.Success).value
                 }
+                if (session.mechanicalClaimState == MechanicalClaimState.PREPARED) {
+                    if (sessionValues.all { it == AtomicActionCodes.IDLE }) {
+                        if (!abandonPreparedClaim(session)) {
+                            return ActionGroupRecoveryResult.MaintenanceRequired(
+                                "动作组 PREPARED 会话安全放弃失败，保持忙态：sessionId=${session.sessionId}"
+                            )
+                        }
+                        resourceLocks.release(session.sessionId)
+                        return ActionGroupRecoveryResult.PreparedClaimAbandoned(session)
+                    }
+                    return ActionGroupRecoveryResult.MaintenanceRequired(
+                        "动作组 PREPARED 会话出现非空闲寄存器，拒绝猜测命令是否下发：" +
+                            "sessionId=${session.sessionId}，states=${formatSessionStates(sessionSteps, sessionValues)}"
+                    )
+                }
                 if (sessionValues.all { it == AtomicActionCodes.COMPLETED }) {
                     resourceLocks.clear()
                     logger(
@@ -134,6 +158,11 @@ class ActionGroupRecoveryBootstrap(
                     recoverableResidueSession = session.takeIf { it.type == ActionGroupSessionType.IN_SUPPLEMENT }
                 )
             }
+            if (moveStatusProvider() == 1) {
+                return ActionGroupRecoveryResult.MaintenanceRequired(
+                    "动作组 moveStatus=1 但没有 owner，会话证据缺失，禁止自动清零"
+                )
+            }
             sessionStore.clear()
             resourceLocks.clear()
             return ActionGroupRecoveryResult.Idle
@@ -148,6 +177,12 @@ class ActionGroupRecoveryBootstrap(
             ?: return ActionGroupRecoveryResult.MaintenanceRequired(
                 "动作组恢复失败：${runningStates.first().spec.name} 正在执行，但没有本地会话，需人工确认物理位置"
             )
+        if (session.mechanicalClaimState == MechanicalClaimState.PREPARED) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组 PREPARED 会话发现执行中寄存器，拒绝猜测命令是否下发：" +
+                    "sessionId=${session.sessionId}，running=${runningStates.first().spec.name}"
+            )
+        }
         val runningActionName = runningStates.single().spec.name
         if (session.checkpointVersion > 0L &&
             !session.currentAction.isNullOrBlank() &&

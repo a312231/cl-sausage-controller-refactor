@@ -137,7 +137,7 @@ class PowerLossRecoveryGuardTest {
     }
 
     @Test
-    fun recoverPansAfterColdStart_shouldNormalizeStaleBakingHoldingTimeBeforeAdjusting() {
+    fun recoverPansAfterColdStart_shouldFailClosedAfterNormalizingFutureBakingStartTime() {
         val config = config().apply {
             lastRuntimeAliveAtMs = 2_000_000L
             pendingDiscardPositions.add(14)
@@ -159,7 +159,9 @@ class PowerLossRecoveryGuardTest {
         assertEquals(0L, stalePan.holdingTime)
         assertEquals(1, stalePan.status)
         assertEquals(listOf(14), result.normalizedPositions)
-        assertTrue(config.pendingDiscardPositions.isEmpty())
+        assertEquals(listOf(14), config.pendingDiscardPositions)
+        assertTrue(result.pauseResult.failClosed)
+        assertEquals(FaultHeatPauseManager.ALERT_CLOCK_REGRESSED, result.pauseResult.alertCode)
     }
 
     @Test

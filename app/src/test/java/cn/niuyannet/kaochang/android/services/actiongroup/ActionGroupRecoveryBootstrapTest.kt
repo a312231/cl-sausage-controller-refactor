@@ -59,6 +59,113 @@ class ActionGroupRecoveryBootstrapTest {
         assertEquals(false, session.prefetch)
         assertEquals(0L, session.checkpointVersion)
         assertNull(session.lastConfirmedStage)
+        assertNull(session.mechanicalClaimState)
+        assertEquals(0L, session.mechanicalClaimRevision)
+    }
+
+    @Test
+    fun recover_shouldAbandonPreparedClaimWhenAllRegistersAreIdle() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "prepared-in",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 3,
+            targetNo = 13,
+            mechanicalClaimState = MechanicalClaimState.PREPARED,
+            mechanicalClaimRevision = 1L
+        )
+        val store = MemorySessionStore(session)
+        var abandonedOwner: String? = null
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = FakeClient(),
+            sessionStore = store,
+            resourceLocks = ResourceLocks(),
+            abandonPreparedClaim = {
+                abandonedOwner = it.sessionId
+                store.clear()
+                true
+            }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.PreparedClaimAbandoned)
+        assertEquals("prepared-in", abandonedOwner)
+        assertNull(store.session)
+    }
+
+    @Test
+    fun recover_shouldFailClosedWhenPreparedClaimHasNonIdleRegister() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "prepared-in",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 3,
+            targetNo = 13,
+            mechanicalClaimState = MechanicalClaimState.PREPARED,
+            mechanicalClaimRevision = 1L
+        )
+
+        val result = ActionGroupRecoveryBootstrap(
+            FakeClient(states = mutableMapOf("in1" to AtomicActionCodes.RUNNING)),
+            MemorySessionStore(session),
+            ResourceLocks()
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("PREPARED"))
+    }
+
+    @Test
+    fun recover_shouldFailClosedWhenClaimedSessionHasNoRegisterEvidence() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "claimed-in",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 3,
+            targetNo = 13,
+            mechanicalClaimState = MechanicalClaimState.CLAIMED,
+            mechanicalClaimRevision = 2L
+        )
+
+        val result = ActionGroupRecoveryBootstrap(
+            FakeClient(),
+            MemorySessionStore(session),
+            ResourceLocks()
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+    }
+
+    @Test
+    fun recover_shouldKeepPreparedEvidenceWhenRegisterReadIsUncertain() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "prepared-read-failed",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 3,
+            targetNo = 13,
+            mechanicalClaimState = MechanicalClaimState.PREPARED,
+            mechanicalClaimRevision = 1L
+        )
+        val store = MemorySessionStore(session)
+
+        val result = ActionGroupRecoveryBootstrap(
+            FakeClient(failedReadAction = "in1"),
+            store,
+            ResourceLocks()
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertEquals("prepared-read-failed", store.session?.sessionId)
+    }
+
+    @Test
+    fun recover_shouldFailClosedWhenMoveIsBusyWithoutOwner() = runBlocking {
+        val result = ActionGroupRecoveryBootstrap(
+            client = FakeClient(),
+            sessionStore = MemorySessionStore(null),
+            resourceLocks = ResourceLocks(),
+            moveStatusProvider = { 1 }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("没有 owner"))
     }
 
     @Test
@@ -415,7 +522,8 @@ class ActionGroupRecoveryBootstrapTest {
 
     private class FakeClient(
         private val states: MutableMap<String, Int> = mutableMapOf(),
-        private val results: ArrayDeque<AtomicActionResult> = ArrayDeque()
+        private val results: ArrayDeque<AtomicActionResult> = ArrayDeque(),
+        private val failedReadAction: String? = null
     ) : AtomicActionClient, AtomicActionStateReader {
         val calls = mutableListOf<String>()
 
@@ -433,6 +541,9 @@ class ActionGroupRecoveryBootstrapTest {
         }
 
         override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
+            if (spec.name == failedReadAction) {
+                return AtomicReadResult.Failure("injected read failure")
+            }
             return AtomicReadResult.Success(states[spec.name] ?: AtomicActionCodes.IDLE)
         }
     }

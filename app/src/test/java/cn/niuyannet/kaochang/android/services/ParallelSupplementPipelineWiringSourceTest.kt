@@ -56,17 +56,29 @@ class ParallelSupplementPipelineWiringSourceTest {
 
     @Test
     fun parallelSession_shouldOwnLockAndMustNotWriteGenericActionGroupSession() {
-        val block = pipelineBlock(operateSource())
+        val source = operateSource()
+        val block = pipelineBlock(source)
         val sessionId = block.indexOf("val sessionId = \"in_pipeline:")
+        val preparedOwner = block.indexOf("val preparedOwnerStore = if (parallelEnabled)")
+        val claim = block.indexOf("claimPreparedSupplementMove(")
         val acquire = block.indexOf("actionGroupLocks.tryAcquire(lockMask, sessionId)")
-        val create = block.indexOf("supplementPrefetchSessionRepository.create(")
-        val generic = block.indexOf("} else {\n                actionGroupSessionStore.save(")
+        val parallelBranchEnd = block.indexOf("} else {", preparedOwner)
+        val parallelBranch = block.substring(preparedOwner, parallelBranchEnd)
+        val ownerStore = functionBlock(
+            source,
+            "private fun supplementPipelineClaimOwnerStore(",
+            "@Volatile\n    private var lastActionGroupRecoveryFailureReason"
+        )
 
         assertTrue(sessionId >= 0)
-        assertTrue(acquire > sessionId)
-        assertTrue(create > acquire)
-        assertTrue(generic > acquire)
-        assertTrue(block.contains("sessionId = sessionId"))
+        assertTrue(preparedOwner > sessionId)
+        assertTrue(claim > preparedOwner)
+        assertTrue(acquire > claim)
+        assertTrue(parallelBranch.contains("supplementPipelineClaimOwnerStore("))
+        assertTrue(!parallelBranch.contains("actionGroupSessionStore"))
+        assertTrue(ownerStore.contains("supplementPrefetchSessionRepository.create("))
+        assertTrue(ownerStore.contains("MechanicalClaimState.PREPARED"))
+        assertTrue(ownerStore.contains("markMechanicalClaimed(owner)"))
     }
 
     @Test
@@ -85,7 +97,8 @@ class ParallelSupplementPipelineWiringSourceTest {
                 .containsMatchIn(block)
         )
         assertTrue(block.contains("context.laneRole"))
-        assertTrue(block.contains("SupplementPipelineCompletionCoordinator.complete("))
+        assertTrue(block.contains("releaseMechanicalMove("))
+        assertTrue(block.contains("releaseSupplementMoveClaimIfOwned("))
     }
 
     @Test

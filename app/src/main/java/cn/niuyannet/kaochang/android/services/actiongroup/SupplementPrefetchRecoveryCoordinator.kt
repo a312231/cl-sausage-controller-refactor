@@ -8,6 +8,7 @@ sealed class SupplementPrefetchRecoveryResult {
     data object Idle : SupplementPrefetchRecoveryResult()
     data class ReadyToResume(val session: SupplementPrefetchPipelineSession) : SupplementPrefetchRecoveryResult()
     data class PausedForOrder(val session: SupplementPrefetchPipelineSession) : SupplementPrefetchRecoveryResult()
+    data class PreparedClaimIdle(val session: SupplementPrefetchPipelineSession) : SupplementPrefetchRecoveryResult()
     data class MaintenanceRequired(val reason: String) : SupplementPrefetchRecoveryResult()
 }
 
@@ -51,6 +52,17 @@ class SupplementPrefetchRecoveryCoordinator(
         val lanes = buildList {
             session.deliveryLane?.let { add(SupplementLaneRole.DELIVERY to it) }
             session.prefetchLane?.let { add(SupplementLaneRole.PREFETCH to it) }
+        }
+        if (session.mechanicalClaimState == MechanicalClaimState.PREPARED &&
+            lanes.isNotEmpty() &&
+            lanes.all { (_, lane) ->
+                lane.currentAction == null && lane.lifecycle == SupplementActionLifecycle.PREPARED
+            }
+        ) {
+            if (second.values.all { it == AtomicActionCodes.IDLE }) {
+                return SupplementPrefetchRecoveryResult.PreparedClaimIdle(session)
+            }
+            return maintenance("双 lane PREPARED owner 出现非空闲寄存器，拒绝猜测命令是否下发")
         }
         validateLaneRoles(session)?.let { return maintenance(it) }
         for ((role, lane) in lanes) {

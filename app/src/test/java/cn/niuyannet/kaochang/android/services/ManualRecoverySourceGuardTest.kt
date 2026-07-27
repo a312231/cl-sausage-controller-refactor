@@ -29,18 +29,63 @@ class ManualRecoverySourceGuardTest {
     }
 
     @Test
-    fun applyManualRecoveredState_shouldKeepHeatingStoppedUntilManualAlgorithmEnable() {
+    fun applyManualRecoveredState_shouldRestoreHeatingBeforePublishingRecoveredState() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
         val body = extractFunctionBody(source, "fun applyManualRecoveredState")
 
         assertTrue(
-            "applyManualRecoveredState 不允许调用 restoreHeatingStateFromCurrentPans 自动恢复温控",
-            !body.contains("restoreHeatingStateFromCurrentPans")
+            "applyManualRecoveredState 必须通过原子恢复入口先恢复温控再清故障",
+            body.contains("recoverFaultHeatingAndRuntimeState")
         )
         assertTrue(
-            "applyManualRecoveredState 必须调用 stopHeatingForFault 保持温控关闭",
-            body.contains("stopHeatingForFault")
+            "applyManualRecoveredState 不允许在恢复成功后再次停热",
+            !body.contains("stopHeatingForFault")
         )
+    }
+
+    @Test
+    fun algorithmPreflight_shouldBeReadOnlyAndCallbacksShouldBeGenerationFenced() {
+        val apiSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/net/DataManagementAPI.kt")
+        val preflightBody = extractFunctionBody(apiSource, "fun preflightRemoteDeviceState")
+        val fragmentSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val setupBody = extractFunctionBody(fragmentSource, "fun setupButtons")
+
+        assertTrue("算法开启预检不得合并远端配置", !preflightBody.contains("mergeRemoteConfig"))
+        assertTrue("算法开启预检不得触发运行态迁移", !preflightBody.contains("handleRemoteOnlineStatusTransition"))
+        assertTrue("维护页必须使用只读预检", setupBody.contains("preflightRemoteDeviceState"))
+        assertTrue("迟到回调必须校验操作代次", setupBody.contains("operationGate.isCurrent(operationToken)"))
+    }
+
+    @Test
+    fun algorithmDisable_shouldShareFaultHeatTransitionLock() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        val body = extractFunctionBody(source, "fun disableRoastAlgorithm")
+
+        assertTrue("关闭算法必须与开启/故障恢复共享 transition lock", body.contains("withFaultHeatTransitionLock"))
+    }
+
+    @Test
+    fun staleFaultRecoveryFinally_shouldNotResetNewerOperationState() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val body = extractFunctionBody(source, "private fun finishFaultRecoveryOperation")
+        val finishToken = body.indexOf("if (!operationGate.finish(token)) return")
+        val clearRecovery = body.indexOf("manualRecoveryInProgress.set(false)")
+        val releaseBusy = body.indexOf("status.set(true)")
+
+        assertTrue("迟到 finally 必须先通过操作代次校验", finishToken >= 0)
+        assertTrue("只有当前恢复操作才能清除恢复中标记", clearRecovery > finishToken)
+        assertTrue("只有当前恢复操作才能释放维护忙标记", releaseBusy > finishToken)
+    }
+
+    @Test
+    fun algorithmCooldown_shouldRestoreAllPreflightDisabledControls() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val body = extractFunctionBody(source, "fun startAlgorithmSwitchCooldown()")
+        val restoreCount = Regex("setFaultRecoveryConflictingControlsEnabled\\(true\\)")
+            .findAll(body)
+            .count()
+
+        assertTrue("冷却超时和正常结束都必须恢复预检阶段禁用的全部冲突控件", restoreCount == 2)
     }
 
     private fun sourceFile(path: String): String {

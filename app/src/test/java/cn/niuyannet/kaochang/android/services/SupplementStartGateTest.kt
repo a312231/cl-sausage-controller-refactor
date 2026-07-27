@@ -11,7 +11,8 @@ class SupplementStartGateTest {
         val decision = SupplementStartGate.evaluate(
             onlineStatus = 1,
             errorStatus = 0,
-            isEnable = 1
+            isEnable = 1,
+            faultHeatPauseActive = 0
         )
 
         assertTrue(decision.canStart)
@@ -23,7 +24,8 @@ class SupplementStartGateTest {
         val decision = SupplementStartGate.evaluate(
             onlineStatus = 3,
             errorStatus = 0,
-            isEnable = 1
+            isEnable = 1,
+            faultHeatPauseActive = 0
         )
 
         assertFalse(decision.canStart)
@@ -35,10 +37,37 @@ class SupplementStartGateTest {
         val decision = SupplementStartGate.evaluate(
             onlineStatus = 1,
             errorStatus = 2,
-            isEnable = 1
+            isEnable = 1,
+            faultHeatPauseActive = 0
         )
 
         assertFalse(decision.canStart)
         assertTrue(decision.reason.contains("errorStatus（设备故障状态）=2（通信/硬件级故障）"))
+    }
+
+    @Test
+    fun evaluate_shouldRejectWhenRoastingAlgorithmIsDisabled() {
+        val decision = SupplementStartGate.evaluate(
+            onlineStatus = 1,
+            errorStatus = 0,
+            isEnable = 0,
+            faultHeatPauseActive = 0
+        )
+
+        assertFalse(decision.canStart)
+        assertTrue(decision.reason.contains("isEnable（烤肠算法开关）=0（关闭）"))
+    }
+
+    @Test
+    fun evaluate_shouldRejectWhileFaultHeatPauseIsActive() {
+        val decision = SupplementStartGate.evaluate(
+            onlineStatus = 1,
+            errorStatus = 0,
+            isEnable = 1,
+            faultHeatPauseActive = 1
+        )
+
+        assertFalse(decision.canStart)
+        assertTrue(decision.reason.contains("faultHeatPauseActive（故障停热暂停）=1（暂停中）"))
     }
 }

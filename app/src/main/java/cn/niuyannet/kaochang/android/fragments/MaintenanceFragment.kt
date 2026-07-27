@@ -30,6 +30,7 @@ import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearExecutor
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
+import cn.niuyannet.kaochang.android.services.ManualFaultRecoveryResult
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
 import cn.niuyannet.kaochang.android.services.LowToHighDemandGate
@@ -69,6 +70,7 @@ class MaintenanceFragment : Fragment() {
 
     private val status = AtomicBoolean(true)
     private val manualRecoveryInProgress = AtomicBoolean(false)
+    private val operationGate = MaintenanceOperationGate()
 
     private var isAlgorithmCoolingDown = false
     private var ignoreAlgorithmSwitchChange = false
@@ -263,6 +265,29 @@ class MaintenanceFragment : Fragment() {
         binding.btnClearAll.isEnabled = enabled
         binding.btnRefillStickFull.isEnabled = enabled
         binding.btnClearWasteBucket.isEnabled = enabled
+    }
+
+    private fun setFaultRecoveryConflictingControlsEnabled(enabled: Boolean) {
+        val currentBinding = _binding ?: return
+        currentBinding.btnErroStatus.isEnabled = enabled
+        currentBinding.swKzAlgorithm.isEnabled = enabled
+        currentBinding.swInspectionMode.isEnabled = enabled
+        currentBinding.btnCz.isEnabled = enabled && resetPanCooldownJob?.isActive != true
+        currentBinding.btnClearAll.isEnabled = enabled && clearPanCooldownJob?.isActive != true
+    }
+
+    private fun finishFaultRecoveryOperation(
+        token: MaintenanceOperationToken,
+        expectedHint: String
+    ) {
+        if (!operationGate.finish(token)) return
+        manualRecoveryInProgress.set(false)
+        status.set(true)
+        val currentBinding = _binding ?: return
+        setFaultRecoveryConflictingControlsEnabled(true)
+        if (currentBinding.tvCooldownHint.text.toString() == expectedHint) {
+            currentBinding.tvCooldownHint.text = ""
+        }
     }
 
     private fun updateManualSupplementConfirmButtonVisibility() {
@@ -520,23 +545,34 @@ class MaintenanceFragment : Fragment() {
     }
 
     private suspend fun applyManualRecoveredState(
-        config: AppConfigBean,
         previousOnlineStatus: Int,
         previousErrorStatus: Int,
         previousIsEnable: Int,
         recoveredOnlineStatus: Int,
         recoveryDecision: ManualRecoveryGatePolicy.Decision
-    ) {
-        config.errorStatus = 0
-        config.errorCode = null
-        config.errorCategory = null
-        config.errorReason = null
-        config.onlineStatus = recoveredOnlineStatus
-        config.isEnable = 0
-        withContext(Dispatchers.IO) {
-            AppConfig.saveAppConfig(config)
-            KaoChangOperate.stopHeatingForFault("维护页恢复正常状态后保持算法关闭，等待现场手动开启算法")
+    ): Boolean {
+        val recoveryResult = withContext(Dispatchers.IO) {
+            KaoChangOperate.recoverFaultHeatingAndRuntimeState(
+                targetOnlineStatus = recoveredOnlineStatus,
+                reason = "维护页恢复正常状态"
+            )
         }
+        if (recoveryResult !is ManualFaultRecoveryResult.Success) {
+            val failureReason = when (recoveryResult) {
+                is ManualFaultRecoveryResult.Rejected -> recoveryResult.reason
+                is ManualFaultRecoveryResult.Failed -> recoveryResult.reason
+                is ManualFaultRecoveryResult.Success -> ""
+            }
+            ToastUtils.showLong("设备恢复未完成：$failureReason；已保持维护并停止加热")
+            AdminOperationLogger.w(
+                action = "恢复正常状态",
+                page = AdminOperationLogger.PAGE_PAN,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = "失败原因=$failureReason，恢复闸门=${recoveryDecision.reason}"
+            )
+            return false
+        }
+        val config = AppConfig.getAppConfig()
         val runtimePublishOk = withContext(Dispatchers.IO) {
             SendServerHelper.publishServiceUpdateStatus("runtime_state:manual_recovery")
         }
@@ -560,6 +596,7 @@ class MaintenanceFragment : Fragment() {
                 "烤肠算法开关=${isEnableText(previousIsEnable)}->${isEnableText(config.isEnable)}，" +
                 "恢复闸门=${recoveryDecision.reason}，后续动作=现场手动开启烤制算法"
         )
+        return true
     }
 
     private suspend fun handleManualRecoveryBlocked(
@@ -610,9 +647,15 @@ class MaintenanceFragment : Fragment() {
             ToastUtils.showShort("正在恢复设备状态，请稍候")
             return
         }
-        binding.btnErroStatus.isEnabled = false
+        if (!status.compareAndSet(true, false)) {
+            manualRecoveryInProgress.set(false)
+            ToastUtils.showShort("请等待当前维护操作完成")
+            return
+        }
+        val operationToken = operationGate.begin(MaintenanceOperationKind.FAULT_RECOVERY)
+        setFaultRecoveryConflictingControlsEnabled(false)
         binding.tvCooldownHint.text = "正在清理动作组残留并恢复设备状态"
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val cleared = withContext(Dispatchers.IO) {
                     KaoChangOperate.confirmClearActionGroupRecoveryResidue("维护页人工确认清理动作组残留")
@@ -636,7 +679,6 @@ class MaintenanceFragment : Fragment() {
                     return@launch
                 }
                 applyManualRecoveredState(
-                    config = config,
                     previousOnlineStatus = previousOnlineStatus,
                     previousErrorStatus = previousErrorStatus,
                     previousIsEnable = previousIsEnable,
@@ -644,11 +686,10 @@ class MaintenanceFragment : Fragment() {
                     recoveryDecision = recoveryDecision
                 )
             } finally {
-                manualRecoveryInProgress.set(false)
-                binding.btnErroStatus.isEnabled = true
-                if (binding.tvCooldownHint.text.toString() == "正在清理动作组残留并恢复设备状态") {
-                    binding.tvCooldownHint.text = ""
-                }
+                finishFaultRecoveryOperation(
+                    operationToken,
+                    "正在清理动作组残留并恢复设备状态"
+                )
             }
         }
     }
@@ -811,14 +852,9 @@ class MaintenanceFragment : Fragment() {
 
         binding.swKzAlgorithm.setOnCheckedChangeListener { buttonView, isChecked ->
             fun restoreSwitchControls() {
-                binding.tvCooldownHint.text = ""
-                buttonView.isEnabled = true
-                if (clearPanCooldownJob?.isActive != true) {
-                    binding.btnClearAll.isEnabled = true
-                }
-                if (resetPanCooldownJob?.isActive != true) {
-                    binding.btnCz.isEnabled = true
-                }
+                val currentBinding = _binding ?: return
+                currentBinding.tvCooldownHint.text = ""
+                setFaultRecoveryConflictingControlsEnabled(true)
             }
 
             fun startAlgorithmSwitchCooldown() {
@@ -826,7 +862,7 @@ class MaintenanceFragment : Fragment() {
                 buttonView.isEnabled = false
                 setMaintenanceButtonsEnabled(false)
                 algorithmCooldownJob?.cancel()
-                algorithmCooldownJob = lifecycleScope.launch {
+                algorithmCooldownJob = viewLifecycleOwner.lifecycleScope.launch {
                     val idleReady = waitUntilMachineIdleOrTimeout(
                         reason = "维护页切换算法后冷却等待空闲",
                         waitingText = "等待机械动作完成",
@@ -835,14 +871,8 @@ class MaintenanceFragment : Fragment() {
                     if (!idleReady) {
                         LogUtils.w("【维护操作】算法开关冷却前等待机械空闲超时，结束冷却并恢复操作控件")
                         binding.tvCooldownHint.text = ""
-                        buttonView.isEnabled = true
                         isAlgorithmCoolingDown = false
-                        if (clearPanCooldownJob?.isActive != true) {
-                            binding.btnClearAll.isEnabled = true
-                        }
-                        if (resetPanCooldownJob?.isActive != true) {
-                            binding.btnCz.isEnabled = true
-                        }
+                        setFaultRecoveryConflictingControlsEnabled(true)
                         ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
                         return@launch
                     }
@@ -854,23 +884,27 @@ class MaintenanceFragment : Fragment() {
                     }
                     binding.tvCooldownHint.text = ""
                     syncAlgorithmSwitchFromRuntimeState("算法开关冷却结束")
-                    buttonView.isEnabled = true
                     isAlgorithmCoolingDown = false
-                    if (clearPanCooldownJob?.isActive != true) {
-                        binding.btnClearAll.isEnabled = true
-                    }
-                    if (resetPanCooldownJob?.isActive != true) {
-                        binding.btnCz.isEnabled = true
-                    }
+                    setFaultRecoveryConflictingControlsEnabled(true)
                 }
             }
 
-            fun applyAlgorithmSwitch(enable: Boolean, reason: String) {
+            fun applyAlgorithmSwitch(enable: Boolean, reason: String): Boolean {
                 val beforeIsEnable = AppConfig.getAppConfig().isEnable
-                if (enable) {
+                val applied = if (enable) {
                     KaoChangAlgorithm.enableRoastAlgorithm(reason = reason)
                 } else {
                     KaoChangAlgorithm.disableRoastAlgorithm(reason = reason)
+                }
+                if (!applied) {
+                    syncAlgorithmSwitchFromRuntimeState("本地手动切换失败:$reason", forceLog = true)
+                    AdminOperationLogger.w(
+                        action = if (enable) "开启烤肠算法" else "关闭烤肠算法",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "本地运行态或温控检查未通过"
+                    )
+                    return false
                 }
                 val afterConfig = AppConfig.getAppConfig()
                 syncAlgorithmSwitchFromRuntimeState(
@@ -885,6 +919,7 @@ class MaintenanceFragment : Fragment() {
                         "设备营业状态=${onlineStatusText(afterConfig.onlineStatus)}"
                 )
                 startAlgorithmSwitchCooldown()
+                return true
             }
 
             val currentConfig = AppConfig.getAppConfig()
@@ -921,17 +956,17 @@ class MaintenanceFragment : Fragment() {
                 return@setOnCheckedChangeListener
             }
 
-            buttonView.isEnabled = false
-            setMaintenanceButtonsEnabled(false)
+            val operationToken = operationGate.begin(MaintenanceOperationKind.ALGORITHM_PREFLIGHT)
+            setFaultRecoveryConflictingControlsEnabled(false)
             binding.tvCooldownHint.text = "正在同步云端状态"
             LogUtils.i(
                 "【维护操作】手动开启烤肠算法前，先同步云端设备状态：" +
                     "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
                     "isEnable（烤肠算法开关）=${currentConfig.isEnable}"
             )
-            DataManagementAPI.refreshRemoteDeviceState(logPrefix = "维护页开启算法前同步") { result ->
+            DataManagementAPI.preflightRemoteDeviceState(logPrefix = "维护页开启算法前预检") { result ->
                 activity?.runOnUiThread {
-                    if (!isAdded || _binding == null) {
+                    if (!operationGate.isCurrent(operationToken) || !isAdded || _binding == null) {
                         return@runOnUiThread
                     }
                     val latestConfig = AppConfig.getAppConfig()
@@ -943,43 +978,50 @@ class MaintenanceFragment : Fragment() {
                             detail = "失败原因=同步云端设备状态失败，设备营业状态=${onlineStatusText(latestConfig.onlineStatus)}，" +
                                 "烤肠算法开关=${isEnableText(latestConfig.isEnable)}"
                         )
-                        syncAlgorithmSwitchFromRuntimeState("开启算法前同步失败后回滚UI", forceLog = true)
+                        syncAlgorithmSwitchFromRuntimeState("开启算法前预检失败后回滚UI", forceLog = true)
                         ToastUtils.showShort("同步云端设备状态失败，请稍后重试")
+                        operationGate.finish(operationToken)
                         restoreSwitchControls()
                         return@runOnUiThread
                     }
 
-                    if (latestConfig.onlineStatus in setOf(0, 2, 3) || latestConfig.inspectionMode == 1 || latestConfig.errorStatus != 0) {
+                    if (result.onlineStatus in setOf(0, 2, 3) || result.inspectionMode == 1 || result.errorStatus != 0) {
                         AdminOperationLogger.w(
                             action = "开启烤肠算法",
                             page = AdminOperationLogger.PAGE_PAN,
                             result = AdminOperationLogger.RESULT_REJECT,
-                            detail = "拒绝原因=设备状态不允许开启，设备营业状态=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                                "检修模式=${inspectionModeText(latestConfig.inspectionMode)}，设备故障状态=${latestConfig.errorStatus}，" +
+                            detail = "拒绝原因=云端设备状态不允许开启，设备营业状态=${onlineStatusText(result.onlineStatus)}，" +
+                                "检修模式=${inspectionModeText(result.inspectionMode)}，设备故障状态=${result.errorStatus}，" +
                                 "烤肠算法开关=${isEnableText(latestConfig.isEnable)}"
                         )
                         syncAlgorithmSwitchFromRuntimeState("开启算法前云端状态不允许后回滚UI", forceLog = true)
                         val tip = when {
-                            latestConfig.inspectionMode == 1 -> "设备当前处于检修模式，请先退出检修模式再开启算法"
-                            latestConfig.errorStatus != 0 -> "设备当前存在故障，请先恢复设备状态再开启算法"
-                            latestConfig.onlineStatus == 0 -> "后台设备状态为待投运，请先改为运营中后再开启算法"
-                            latestConfig.onlineStatus == 2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
-                            latestConfig.onlineStatus == 3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
+                            result.inspectionMode == 1 -> "设备当前处于检修模式，请先退出检修模式再开启算法"
+                            result.errorStatus != 0 -> "设备当前存在故障，请先恢复设备状态再开启算法"
+                            result.onlineStatus == 0 -> "后台设备状态为待投运，请先改为运营中后再开启算法"
+                            result.onlineStatus == 2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
+                            result.onlineStatus == 3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
                             else -> "后台设备状态不允许开启算法"
                         }
                         ToastUtils.showShort(tip)
+                        operationGate.finish(operationToken)
                         restoreSwitchControls()
                         return@runOnUiThread
                     }
 
                     LogUtils.i(
                         "【维护操作】手动开启烤肠算法前已同步到云端最新状态，允许本次开启：" +
-                            "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                            "onlineStatus（云端设备营业状态）=${onlineStatusText(result.onlineStatus)}，" +
                             "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
                             "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
                     )
                     binding.tvCooldownHint.text = ""
-                    applyAlgorithmSwitch(enable = true, reason = "维护页手动开启算法（已先同步云端状态）")
+                    val applied = applyAlgorithmSwitch(enable = true, reason = "维护页手动开启算法（已通过云端只读预检）")
+                    operationGate.finish(operationToken)
+                    if (!applied) {
+                        ToastUtils.showShort("设备当前状态或温控未通过，算法未开启")
+                        restoreSwitchControls()
+                    }
                 }
             }
         }
@@ -1347,15 +1389,21 @@ class MaintenanceFragment : Fragment() {
                 ToastUtils.showShort("正在恢复设备状态，请稍候")
                 return@setOnClickListener
             }
+            if (!status.compareAndSet(true, false)) {
+                manualRecoveryInProgress.set(false)
+                ToastUtils.showShort("请等待当前维护操作完成")
+                return@setOnClickListener
+            }
+            val operationToken = operationGate.begin(MaintenanceOperationKind.FAULT_RECOVERY)
             AdminOperationLogger.i(
                 action = "恢复正常状态",
                 page = AdminOperationLogger.PAGE_PAN,
                 result = AdminOperationLogger.RESULT_START,
                 detail = "说明=检查下位机连接并清除设备故障状态"
             )
-            binding.btnErroStatus.isEnabled = false
+            setFaultRecoveryConflictingControlsEnabled(false)
             binding.tvCooldownHint.text = "正在恢复设备状态"
-            lifecycleScope.launch {
+            viewLifecycleOwner.lifecycleScope.launch {
                 try {
                     // 下位机重新插线后，手动恢复需要主动触发一次 Modbus 候选串口探测，而不是只检查旧连接。
                     val modbusConnected = withContext(Dispatchers.IO) {
@@ -1389,7 +1437,6 @@ class MaintenanceFragment : Fragment() {
                         return@launch
                     }
                     applyManualRecoveredState(
-                        config = config,
                         previousOnlineStatus = previousOnlineStatus,
                         previousErrorStatus = previousErrorStatus,
                         previousIsEnable = previousIsEnable,
@@ -1397,12 +1444,7 @@ class MaintenanceFragment : Fragment() {
                         recoveryDecision = recoveryDecision
                     )
                 } finally {
-                    manualRecoveryInProgress.set(false)
-                    binding.btnErroStatus.isEnabled = true
-                    val currentHint = binding.tvCooldownHint.text.toString()
-                    if (currentHint == "正在检查下位机通信" || currentHint == "正在恢复设备状态") {
-                        binding.tvCooldownHint.text = ""
-                    }
+                    finishFaultRecoveryOperation(operationToken, "正在恢复设备状态")
                 }
             }
         }
@@ -1721,6 +1763,11 @@ class MaintenanceFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        operationGate.invalidateAll()
+        manualRecoveryInProgress.set(false)
+        status.set(true)
+        algorithmCooldownJob?.cancel()
+        isAlgorithmCoolingDown = false
         super.onDestroyView()
         MaintenanceUiRefreshBridge.unregister(maintenanceUiRefreshCallback)
         refreshJob?.cancel()

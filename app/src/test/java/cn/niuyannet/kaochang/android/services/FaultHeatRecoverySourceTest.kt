@@ -41,7 +41,7 @@ class FaultHeatRecoverySourceTest {
         val body = extractFunctionBody(source, "private fun applyConfiguredTemperatureByPanStateInternal")
         val writes = body.indexOf("writeResults")
         val successCheck = body.indexOf("all { it.isSuccess }")
-        val endPause = body.indexOf("endFaultHeatPauseAndSyncIfNeeded")
+        val endPause = body.indexOf("endFaultHeatPauseAndAdjustIfNeeded")
 
         assertTrue("恢复温控必须收集三个温区写入结果", writes >= 0)
         assertTrue("恢复温控必须确认所有写入成功", successCheck > writes)
@@ -71,6 +71,36 @@ class FaultHeatRecoverySourceTest {
     }
 
     @Test
+    fun configuredTemperatureRestore_shouldBlockBeforePositiveWritesWhenJournalIsUnsafe() {
+        val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val pause = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/FaultHeatPauseManager.kt")
+        val body = extractFunctionBody(operate, "private fun applyConfiguredTemperatureByPanStateInternal")
+        val preview = body.indexOf("previewFaultHeatPauseEnd")
+        val prepare = body.indexOf("prepareRecoveryJournalIfNeeded")
+        val blockedGate = body.indexOf("shouldBlockRecoveryTemperatureWrite")
+        val decisions = body.indexOf("TemperatureControlPolicy.decideZoneTemperatures")
+        val writes = body.indexOf("setAreaTargetTemperature")
+
+        assertTrue("prepare必须返回明确状态", pause.contains("RecoveryJournalPrepareResult") && pause.contains("RecoveryJournalPrepareStatus"))
+        assertTrue("preview/prepare阻断必须发生在温度决策前", preview >= 0 && prepare > preview && blockedGate > prepare && decisions > blockedGate)
+        assertTrue("blocked时必须在任何正温写入前返回false", body.substring(blockedGate, decisions).contains("return false") && writes > decisions)
+    }
+
+    @Test
+    fun configuredTemperatureRestore_shouldStopAgainAndReturnFalseWhenFinalizeFailsClosed() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "private fun applyConfiguredTemperatureByPanStateInternal")
+        val endPause = body.indexOf("endFaultHeatPauseAndAdjustIfNeeded")
+        val failClosed = body.indexOf("shouldCompensateFailedRecoveryFinalize", endPause)
+        val stopAgain = body.indexOf("stopHeatingForFault(", failClosed)
+        val returnFalse = body.indexOf("return false", stopAgain)
+
+        assertTrue("finalize结果必须检查failClosed", endPause >= 0 && failClosed > endPause)
+        assertTrue("正温写入后finalize失败必须重新停热", stopAgain > failClosed)
+        assertTrue("重新停热后必须向上层返回失败", returnFalse > stopAgain)
+    }
+
+    @Test
     fun normalTemperatureRefresh_shouldNotEndActiveFaultPause() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val normalApply = extractFunctionBody(source, "fun applyConfiguredTemperatureByPanState(")
@@ -88,7 +118,7 @@ class FaultHeatRecoverySourceTest {
         val restore = extractFunctionBody(source, "fun restoreHeatingStateFromCurrentPans(")
 
         assertTrue("故障停热必须持有统一状态锁", stop.contains("withFaultHeatTransitionLock"))
-        assertTrue("故障恢复必须持有统一状态锁", restore.contains("withFaultHeatTransitionLock"))
+        assertTrue("故障恢复必须由最外层调用方持有统一状态锁", restore.contains("Thread.holdsLock(faultHeatTransitionLock)"))
     }
 
     @Test
@@ -201,6 +231,34 @@ class FaultHeatRecoverySourceTest {
 
         assertTrue("自动恢复必须在统一锁内恢复温控", lock >= 0 && restore > lock)
         assertTrue("自动恢复必须持锁到故障状态清除完成", clearFault > restore)
+    }
+
+    @Test
+    fun recoveredPhysicalStateSync_shouldRunAfterOutermostTransitionLock() {
+        val algorithm = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val enable = extractFunctionBody(algorithm, "fun enableRoastAlgorithm")
+        val manual = extractFunctionBody(operate, "fun recoverFaultHeatingAndRuntimeState")
+        val restore = extractFunctionBody(operate, "fun restoreHeatingStateFromCurrentPans")
+
+        assertTrue(
+            "算法开启的故障恢复同步必须位于最外层 transition lock 之后",
+            enable.contains("}\n        KaoChangOperate.syncRecoveredFaultHeatPhysicalState(")
+        )
+        assertTrue(
+            "Modbus 自动恢复同步必须位于最外层 transition lock 之后",
+            algorithm.contains("}\n                            KaoChangOperate.syncRecoveredFaultHeatPhysicalState(")
+        )
+        assertTrue(
+            "人工恢复必须在 coordinator 释放 transition lock 后再同步物理状态",
+            manual.indexOf("ManualFaultRecoveryCoordinator(") in 0 until
+                manual.indexOf("syncRecoveredFaultHeatPhysicalState(")
+        )
+        assertTrue(
+            "锁内温控恢复不得直接发布 HTTP/MQTT 物理状态",
+            !restore.contains("syncRecoveredPhysicalState") &&
+                !restore.contains("endFaultHeatPauseAndSyncIfNeeded")
+        )
     }
 
     @Test

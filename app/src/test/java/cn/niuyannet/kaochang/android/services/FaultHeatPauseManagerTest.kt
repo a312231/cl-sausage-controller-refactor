@@ -31,6 +31,166 @@ class FaultHeatPauseManagerTest {
     }
 
     @Test
+    fun adjustPansForPause_shouldShiftEachPanOnlyByItsActualPauseOverlap() {
+        val config = config()
+        val beforePause = bakingPan(positionSn = 16, startTime = 90_000L)
+        val supplementedEarly = bakingPan(positionSn = 17, startTime = 200_000L)
+        val supplementedLate = bakingPan(positionSn = 18, startTime = 450_000L)
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(beforePause, supplementedEarly, supplementedLate),
+            config = config,
+            nowMs = 600_000L,
+            pauseStartedAtMs = 100_000L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertEquals(590_000L, beforePause.startTime)
+        assertEquals(600_000L, supplementedEarly.startTime)
+        assertEquals(600_000L, supplementedLate.startTime)
+        assertEquals(
+            mapOf(16 to 590_000L, 17 to 600_000L, 18 to 600_000L),
+            result.targetStartTimes
+        )
+    }
+
+    @Test
+    fun adjustPansForPause_shouldUsePerPanOverlapForFoodSafetyThreshold() {
+        val config = config()
+        val recentlySupplementedPan = bakingPan(
+            positionSn = 18,
+            startTime = 150 * 60 * 1000L
+        )
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(recentlySupplementedPan),
+            config = config,
+            nowMs = 180 * 60 * 1000L,
+            pauseStartedAtMs = 1L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertEquals(180 * 60 * 1000L, recentlySupplementedPan.startTime)
+        assertEquals(listOf(18), result.shiftedPositions)
+        assertTrue(result.pendingDiscardPositions.isEmpty())
+    }
+
+    @Test
+    fun adjustPansForPause_shouldFailClosedWhenPanStartTimeIsInFuture() {
+        val config = config()
+        val futurePan = bakingPan(positionSn = 16, startTime = 700_000L)
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(futurePan),
+            config = config,
+            nowMs = 600_000L,
+            pauseStartedAtMs = 100_000L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertTrue(result.failClosed)
+        assertEquals(700_000L, futurePan.startTime)
+        assertEquals(listOf(16), result.pendingDiscardPositions)
+        assertTrue(result.targetStartTimes.isEmpty())
+    }
+
+    @Test
+    fun adjustPansForPause_shouldFailClosedWhenClockRegressesOrPauseIsGloballyAnomalous() {
+        val clockRegressed = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(bakingPan(positionSn = 1, startTime = 50_000L)),
+            config = config(),
+            nowMs = 90_000L,
+            pauseStartedAtMs = 100_000L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+        val globallyAnomalous = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(bakingPan(positionSn = 2, startTime = 50_000L)),
+            config = config(),
+            nowMs = 5 * 60 * 60 * 1000L,
+            pauseStartedAtMs = 1L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertTrue(clockRegressed.failClosed)
+        assertEquals(FaultHeatPauseManager.ALERT_CLOCK_REGRESSED, clockRegressed.alertCode)
+        assertTrue(globallyAnomalous.failClosed)
+        assertEquals(FaultHeatPauseManager.ALERT_ANOMALY_TOO_LONG, globallyAnomalous.alertCode)
+    }
+
+    @Test
+    fun recoveryTemperatureWriteGate_shouldBlockFailedPreviewOrBlockedPreparation() {
+        val failedPreview = FaultHeatPauseManager.EndPauseResult(
+            active = true,
+            pauseDurationMs = 0L,
+            shiftedPositions = emptyList(),
+            holdingPositions = emptyList(),
+            pendingDiscardPositions = emptyList(),
+            alertCode = FaultHeatPauseManager.ALERT_RECOVERY_JOURNAL_INVALID,
+            failClosed = true
+        )
+        val ready = FaultHeatPauseManager.RecoveryJournalPrepareResult(
+            FaultHeatPauseManager.RecoveryJournalPrepareStatus.READY
+        )
+        val blocked = FaultHeatPauseManager.RecoveryJournalPrepareResult(
+            FaultHeatPauseManager.RecoveryJournalPrepareStatus.BLOCKED,
+            "journal损坏"
+        )
+
+        assertTrue(FaultHeatPauseManager.shouldBlockRecoveryTemperatureWrite(failedPreview, ready))
+        assertTrue(
+            FaultHeatPauseManager.shouldBlockRecoveryTemperatureWrite(
+                FaultHeatPauseManager.EndPauseResult.NotActive,
+                blocked
+            )
+        )
+        assertFalse(
+            FaultHeatPauseManager.shouldBlockRecoveryTemperatureWrite(
+                FaultHeatPauseManager.EndPauseResult.NotActive,
+                ready
+            )
+        )
+    }
+
+    @Test
+    fun recoveryFinalizePolicy_shouldRequireStopHeatingWhenResultFailsClosed() {
+        val failed = FaultHeatPauseManager.EndPauseResult(
+            active = true,
+            pauseDurationMs = 0L,
+            shiftedPositions = emptyList(),
+            holdingPositions = emptyList(),
+            pendingDiscardPositions = emptyList(),
+            alertCode = FaultHeatPauseManager.ALERT_RECOVERY_JOURNAL_INVALID,
+            failClosed = true
+        )
+
+        val ready = FaultHeatPauseManager.RecoveryJournalPrepareResult(
+            FaultHeatPauseManager.RecoveryJournalPrepareStatus.READY
+        )
+        val noPause = FaultHeatPauseManager.RecoveryJournalPrepareResult(
+            FaultHeatPauseManager.RecoveryJournalPrepareStatus.NO_PAUSE
+        )
+
+        assertTrue(FaultHeatPauseManager.shouldCompensateFailedRecoveryFinalize(failed, ready))
+        assertTrue(
+            FaultHeatPauseManager.shouldCompensateFailedRecoveryFinalize(
+                FaultHeatPauseManager.EndPauseResult.NotActive,
+                ready
+            )
+        )
+        assertFalse(
+            FaultHeatPauseManager.shouldCompensateFailedRecoveryFinalize(
+                FaultHeatPauseManager.EndPauseResult.NotActive,
+                noPause
+            )
+        )
+    }
+
+    @Test
     fun adjustPansForPause_shouldMarkLongPausedBakingPanPendingDiscard() {
         val config = config()
         val bakingPan = bakingPan(positionSn = 25, startTime = 10_000L)

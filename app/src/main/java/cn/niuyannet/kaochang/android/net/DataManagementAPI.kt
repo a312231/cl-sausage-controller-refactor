@@ -75,6 +75,14 @@ object DataManagementAPI {
         val restStatusSource: String
     )
 
+    data class RemoteDeviceStatePreflightResult(
+        val success: Boolean,
+        val onlineStatus: Int,
+        val inspectionMode: Int,
+        val errorStatus: Int,
+        val reason: String
+    )
+
     data class ProductCatalogRefreshResult(
         val success: Boolean,
         val catalogChanged: Boolean,
@@ -1469,6 +1477,59 @@ object DataManagementAPI {
                 )
             }
             refreshStockData(logPrefix = "$LOG_SYNC-stock-after-config")
+        }
+    }
+
+    fun preflightRemoteDeviceState(
+        logPrefix: String = "$LOG_SYNC-preflight",
+        onResult: (RemoteDeviceStatePreflightResult) -> Unit
+    ) {
+        val local = AppConfig.getAppConfig()
+        fun failed(reason: String) {
+            logE("$logPrefix 失败：$reason")
+            onResult(
+                RemoteDeviceStatePreflightResult(
+                    success = false,
+                    onlineStatus = local.onlineStatus,
+                    inspectionMode = local.inspectionMode,
+                    errorStatus = local.errorStatus,
+                    reason = reason
+                )
+            )
+        }
+
+        NetApi.getDeviceInfo(AppConfig.getDeviceId()) preflightCallback@{ code, content ->
+            if (code != 0) {
+                failed("HTTP请求失败，code=$code, content=$content")
+                return@preflightCallback
+            }
+            val json = try {
+                JSON.parseObject(content)
+            } catch (error: Exception) {
+                failed("响应解析异常")
+                return@preflightCallback
+            }
+            if (!ApiResponseCompat.isSuccessful(json)) {
+                failed("业务返回异常")
+                return@preflightCallback
+            }
+            val data = json.getJSONObject("data")
+            val onlineStatus = data?.getInteger("onlineStatus")
+            val inspectionMode = data?.getInteger("inspectionMode")
+            val errorStatus = data?.getInteger("errorStatus")
+            if (onlineStatus == null || inspectionMode == null || errorStatus == null) {
+                failed("响应缺少 onlineStatus/inspectionMode/errorStatus")
+                return@preflightCallback
+            }
+            onResult(
+                RemoteDeviceStatePreflightResult(
+                    success = true,
+                    onlineStatus = onlineStatus,
+                    inspectionMode = inspectionMode,
+                    errorStatus = errorStatus,
+                    reason = "ok"
+                )
+            )
         }
     }
 

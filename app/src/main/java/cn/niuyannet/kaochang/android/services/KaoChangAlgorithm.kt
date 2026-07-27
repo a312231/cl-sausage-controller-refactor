@@ -1346,6 +1346,7 @@ object KaoChangAlgorithm {
                             logI(LOG_COMM, "【Modbus】检测到下位机重新连接，开始稳定性观察 | port=${AppConfig.getAppConfig().modbusAddress}")
                         } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
                             var restoredOnlineStatus = config.onlineStatus
+                            var pauseEndResult: FaultHeatPauseManager.EndPauseResult? = null
                             val temperatureRestoreSucceeded = KaoChangOperate.withFaultHeatTransitionLock {
                                 if (
                                     config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL ||
@@ -1354,7 +1355,9 @@ object KaoChangAlgorithm {
                                 ) {
                                     false
                                 } else {
-                                    val restored = KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
+                                    val restoreOutcome = KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
+                                    pauseEndResult = restoreOutcome.pauseEndResult
+                                    val restored = restoreOutcome.succeeded
                                     if (restored) {
                                         restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
                                         config.errorStatus = 0
@@ -1367,6 +1370,7 @@ object KaoChangAlgorithm {
                                     restored
                                 }
                             }
+                            KaoChangOperate.syncRecoveredFaultHeatPhysicalState(pauseEndResult, "modbus恢复稳定")
                             if (!temperatureRestoreSucceeded) {
                                 logW(
                                     LOG_COMM,
@@ -1490,9 +1494,10 @@ object KaoChangAlgorithm {
     fun enableRoastAlgorithm(
         reason: String = "维护页手动开启算法",
         syncToServer: Boolean = true
-    ) {
+    ): Boolean {
         var enabledConfig: AppConfigBean? = null
         var wasRunning = false
+        var pauseEndResult: FaultHeatPauseManager.EndPauseResult? = null
         val enabled = KaoChangOperate.withFaultHeatTransitionLock {
             val config = AppConfig.getAppConfig()
             if (!canEnableAlgorithm(config)) {
@@ -1517,7 +1522,9 @@ object KaoChangAlgorithm {
                 false
             } else {
                 KaoChangOperate.actionDebug()
-                val restored = KaoChangOperate.restoreHeatingStateFromCurrentPans("算法开启后恢复温度：$reason")
+                val restoreOutcome = KaoChangOperate.restoreHeatingStateFromCurrentPans("算法开启后恢复温度：$reason")
+                pauseEndResult = restoreOutcome.pauseEndResult
+                val restored = restoreOutcome.succeeded
                 val latestConfig = AppConfig.getAppConfig()
                 if (!restored) {
                     logW(
@@ -1542,11 +1549,12 @@ object KaoChangAlgorithm {
                 }
             }
         }
+        KaoChangOperate.syncRecoveredFaultHeatPhysicalState(pauseEndResult, "算法开启后恢复温度：$reason")
         if (!enabled) {
             if (syncToServer) {
                 SendServerHelper.publishServiceUpdateStatus()
             }
-            return
+            return false
         }
         val config = requireNotNull(enabledConfig)
         // scanAndDiscard 会先做可售阻断；若机械暂忙，下一轮 pollKaoPanStatus 顶层 pending 优先扫描继续兜底。
@@ -1574,16 +1582,20 @@ object KaoChangAlgorithm {
         if (syncToServer) {
             SendServerHelper.publishServiceUpdateStatus()
         }
+        return true
     }
 
     fun disableRoastAlgorithm(
         reason: String = "维护页手动关闭算法",
         syncToServer: Boolean = true
-    ) {
-        isEnabled = false
-        val config = AppConfig.getAppConfig()
-        config.isEnable = 0
-        AppConfig.saveAppConfig(config)
+    ): Boolean {
+        val config = KaoChangOperate.withFaultHeatTransitionLock {
+            isEnabled = false
+            AppConfig.getAppConfig().also {
+                it.isEnable = 0
+                AppConfig.saveAppConfig(it)
+            }
+        }
         logD(
             LOG_ALGORITHM,
             "算法开关已关闭：reason=$reason，" +
@@ -1595,6 +1607,7 @@ object KaoChangAlgorithm {
         if (syncToServer) {
             SendServerHelper.publishServiceUpdateStatus()
         }
+        return true
     }
 
 }

@@ -107,12 +107,14 @@ class ParallelSupplementOrderEntrySourceTest {
         val orderPause = block.indexOf("supplementPrefetchSessionRepository.pauseCommittedDeliveryForPendingOrder()")
         val safePausedRead = block.indexOf("val safePausedSession = activeSafePausedSupplementSession()")
         val replanRelease = block.indexOf("val safeReplanReleaseConfirmed")
-        val completion = block.indexOf("SupplementPipelineCompletionCoordinator.complete(")
+        val completion = block.indexOf("val completionFailure = if (parallelEnabled)", replanRelease)
+        val ownerFencedRelease = block.indexOf("releaseMechanicalMove(", completion)
 
         assertTrue("订单 barrier 必须先转为安全暂停", orderPause >= 0)
         assertTrue("必须在重规划释放前重新读取安全订单暂停", orderPause < safePausedRead)
         assertTrue("订单暂停判定必须早于重规划释放判定", safePausedRead < replanRelease)
-        assertTrue("重规划与订单仲裁必须发生在最终清 session 前", replanRelease < completion)
+        assertTrue("重规划与订单仲裁必须发生在最终收口分支前", replanRelease < completion)
+        assertTrue("双 lane 最终收口必须使用 owner 条件释放", ownerFencedRelease > completion)
         assertTrue(block.contains("safePausedSession != null -> SupplementPipelineOutcome.PAUSED_FOR_ORDER"))
         assertTrue(block.contains("(result is InActionGroupPipelineResult.ReplanRequired && safeReplanReleaseConfirmed)"))
     }

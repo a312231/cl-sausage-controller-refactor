@@ -210,7 +210,9 @@ data class SupplementPrefetchPipelineSession(
     val prefetchLane: SupplementPrefetchLaneCheckpoint? = null,
     val barrierState: SupplementBarrierState = SupplementBarrierState.OPEN,
     val pendingOrderNo: String? = null,
-    val phase: SupplementPipelinePhase = SupplementPipelinePhase.RUNNING
+    val phase: SupplementPipelinePhase = SupplementPipelinePhase.RUNNING,
+    val mechanicalClaimState: MechanicalClaimState? = null,
+    val mechanicalClaimRevision: Long = 0L
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
@@ -293,6 +295,25 @@ class SupplementPrefetchSessionRepository(
         validatePersistedSession(created)
         store.save(created)
         created
+    }
+
+    fun markMechanicalClaimPrepared(sessionId: String): SupplementPrefetchPipelineSession = mutate { current ->
+        check(current.sessionId == sessionId) { "双 lane PREPARED owner 已变化" }
+        current.copy(
+            mechanicalClaimState = MechanicalClaimState.PREPARED,
+            mechanicalClaimRevision = current.mechanicalClaimRevision + 1L
+        )
+    }
+
+    fun markMechanicalClaimed(sessionId: String): SupplementPrefetchPipelineSession = mutate { current ->
+        check(current.sessionId == sessionId) { "双 lane CLAIMED owner 已变化" }
+        check(current.mechanicalClaimState == MechanicalClaimState.PREPARED) {
+            "双 lane CLAIMED 缺少 PREPARED 检查点"
+        }
+        current.copy(
+            mechanicalClaimState = MechanicalClaimState.CLAIMED,
+            mechanicalClaimRevision = current.mechanicalClaimRevision + 1L
+        )
     }
 
     fun prepareAction(

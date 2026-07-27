@@ -80,11 +80,11 @@ class SupplementPrefetchRecoveryWiringSourceTest {
         )
 
         listOf(replan, finished).forEach { block ->
-            assertTrue(block.contains("SupplementPipelineCompletionCoordinator.complete("))
-            assertTrue(block.contains("clearSession ="))
-            assertTrue(block.contains("persistIdle ="))
-            assertTrue(block.contains("publish ="))
-            assertTrue(block.contains("restoreBusy ="))
+            assertTrue(block.contains("releaseMechanicalMove("))
+            assertTrue(block.contains("expectedMoveStatus = 1"))
+            assertTrue(block.contains("idleMoveStatus = 0"))
+            assertTrue(block.contains("actionGroupLocks.release("))
+            assertTrue(block.contains("publishRuntimeStateWithHttpFallback("))
             assertTrue(block.contains("preserveMoveStatus = true"))
         }
     }

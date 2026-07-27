@@ -79,7 +79,9 @@ private fun decodeSupplementPrefetchSession(raw: String): SupplementPrefetchPipe
         prefetchLane = json.optionalObject("prefetchLane")?.toSupplementPrefetchLane(),
         barrierState = json.requiredEnum("barrierState"),
         pendingOrderNo = json.optionalString("pendingOrderNo"),
-        phase = json.requiredEnum("phase")
+        phase = json.requiredEnum("phase"),
+        mechanicalClaimState = json.optionalEnum<MechanicalClaimState>("mechanicalClaimState"),
+        mechanicalClaimRevision = json.optionalLong("mechanicalClaimRevision") ?: 0L
     )
 }
 
@@ -116,6 +118,11 @@ private fun JSONObject.requiredIntegralNumber(field: String): Long {
 private fun JSONObject.optionalInt(field: String): Int? {
     if (!containsKey(field) || this[field] == null) return null
     return requiredInt(field)
+}
+
+private fun JSONObject.optionalLong(field: String): Long? {
+    if (!containsKey(field) || this[field] == null) return null
+    return requiredLong(field)
 }
 
 private fun JSONObject.requiredString(field: String): String {
@@ -166,6 +173,9 @@ private fun JSONObject.optionalIntList(field: String): List<Int> {
 
 private inline fun <reified T : Enum<T>> JSONObject.requiredEnum(field: String): T =
     enumValueOf(requiredString(field))
+
+private inline fun <reified T : Enum<T>> JSONObject.optionalEnum(field: String): T? =
+    optionalString(field)?.let { enumValueOf<T>(it) }
 
 object SupplementPrefetchSessionValidator {
     fun isValid(session: SupplementPrefetchPipelineSession): Boolean = failureReason(session) == null

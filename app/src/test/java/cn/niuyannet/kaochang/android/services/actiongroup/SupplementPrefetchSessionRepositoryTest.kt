@@ -301,7 +301,14 @@ class SupplementPrefetchSessionRepositoryTest {
             readRaw = { raw },
             writeRawDurably = { raw = it; true }
         )
-        listOf(baseSession(), committedDeliveredPendingOrderSession()).forEach { expected ->
+        listOf(
+            baseSession(),
+            committedDeliveredPendingOrderSession(),
+            baseSession().copy(
+                mechanicalClaimState = MechanicalClaimState.CLAIMED,
+                mechanicalClaimRevision = 2L
+            )
+        ).forEach { expected ->
             store.save(expected)
             assertEquals(expected, store.load())
         }
@@ -325,6 +332,8 @@ class SupplementPrefetchSessionRepositoryTest {
         assertEquals(9, session.deliveryLane?.sourceBoxNo)
         assertEquals("in7", session.deliveryLane?.lastConfirmedStage)
         assertTrue(session.deliveryLane?.panPlacementApplied == true)
+        assertNull(session.mechanicalClaimState)
+        assertEquals(0L, session.mechanicalClaimRevision)
     }
 
     @Test
