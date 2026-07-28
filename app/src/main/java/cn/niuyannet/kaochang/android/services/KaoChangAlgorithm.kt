@@ -1500,7 +1500,7 @@ object KaoChangAlgorithm {
         var pauseEndResult: FaultHeatPauseManager.EndPauseResult? = null
         val enabled = KaoChangOperate.withFaultHeatTransitionLock {
             val config = AppConfig.getAppConfig()
-            if (!canEnableAlgorithm(config)) {
+            val enabledLocked = if (!canEnableAlgorithm(config)) {
                 logW(
                     LOG_ALGORITHM,
                     "拒绝开启烤肠算法：reason=$reason，" +
@@ -1548,6 +1548,15 @@ object KaoChangAlgorithm {
                     true
                 }
             }
+            if (!enabledLocked) {
+                isEnabled = false
+                val disabledConfig = AppConfig.getAppConfig()
+                if (disabledConfig.isEnable != 0) {
+                    disabledConfig.isEnable = 0
+                    AppConfig.saveAppConfig(disabledConfig)
+                }
+            }
+            enabledLocked
         }
         KaoChangOperate.syncRecoveredFaultHeatPhysicalState(pauseEndResult, "算法开启后恢复温度：$reason")
         if (!enabled) {

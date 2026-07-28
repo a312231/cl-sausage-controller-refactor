@@ -318,6 +318,43 @@ class FaultHeatRecoverySourceTest {
         assertTrue("启动恢复失败后必须保留重试机会", block.contains("startupHeatingStateRestored = restoreSucceeded"))
     }
 
+    @Test
+    fun longEmptyPauseRecovery_shouldClearOnlyResolvedLongPauseAlert() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/FaultHeatPauseManager.kt")
+        val body = extractFunctionBody(source, "fun endFaultHeatPauseAndAdjustIfNeeded")
+
+        assertTrue(
+            "空盘长暂停成功收口后只能清除本次已解决的 ANOMALY_TOO_LONG 告警",
+            body.contains("config.pendingDiscardPositions.isEmpty()") &&
+                body.contains("config.foodSafetyAlertCode == ALERT_ANOMALY_TOO_LONG") &&
+                body.contains("config.foodSafetyAlertCode = null") &&
+                body.contains("config.foodSafetyAlertReason = null")
+        )
+    }
+
+    @Test
+    fun failedAlgorithmEnable_shouldCloseLocalStateAndReportRejectedField() {
+        val algorithm = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        val enableBody = extractFunctionBody(algorithm, "fun enableRoastAlgorithm")
+        val transitionStart = enableBody.indexOf("withFaultHeatTransitionLock")
+        val transitionEnd = enableBody.indexOf("syncRecoveredFaultHeatPhysicalState")
+        val transition = enableBody.substring(transitionStart, transitionEnd)
+
+        assertTrue("算法开启失败必须在现有 transition lock 内关闭内存态", transition.contains("isEnabled = false"))
+        assertTrue("算法开启失败必须在现有 transition lock 内持久化 isEnable=0", transition.contains("isEnable = 0"))
+
+        val api = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/net/DataManagementAPI.kt")
+        val applyBody = extractFunctionBody(api, "fun applyRemoteRuntimeControl")
+        assertTrue(
+            "持久配置和内存态都已开启时必须幂等跳过重复恢复",
+            applyBody.contains("previousIsEnable == 1 && KaoChangAlgorithm.isEnabled")
+        )
+        assertTrue("远端控制必须接收算法开启的真实结果", applyBody.contains("algorithmEnableFailed"))
+        assertTrue("开启失败后 isEnable 不能继续出现在 appliedFields", applyBody.contains("filterNot { it == \"isEnable\" }"))
+        assertTrue("开启失败后 isEnable 必须进入 rejectedFields", applyBody.contains("listOf(\"isEnable\")"))
+        assertTrue("纯开启失败必须返回明确原因", applyBody.contains("\"algorithm_enable_failed\""))
+    }
+
     private fun sourceFile(path: String): String {
         val direct = File(path)
         if (direct.exists()) return direct.readText().replace("\r\n", "\n")

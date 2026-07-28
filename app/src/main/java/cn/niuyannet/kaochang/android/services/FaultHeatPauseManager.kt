@@ -186,6 +186,13 @@ object FaultHeatPauseManager {
             config.faultHeatPauseReason = null
             config.faultHeatPauseSource = null
             config.faultHeatRecoveryJournalJson = null
+            if (
+                config.pendingDiscardPositions.isEmpty() &&
+                config.foodSafetyAlertCode == ALERT_ANOMALY_TOO_LONG
+            ) {
+                config.foodSafetyAlertCode = null
+                config.foodSafetyAlertReason = null
+            }
             AppConfig.saveAppConfigDurable(config)
             LogUtils.w(
                 "【$LOG_TAG】结束故障停热暂停：" +
@@ -684,9 +691,10 @@ object FaultHeatPauseManager {
         val holdingPositions = mutableListOf<Int>()
         val pendingPositions = mutableListOf<Int>()
         val targetStartTimes = linkedMapOf<Int, Long>()
+        val hasAnySausage = TemperatureControlPolicy.hasAnySausageInPhysicalPans(pans)
         val globalAlertCode = when {
             nowMs < pauseStartedAtMs -> ALERT_CLOCK_REGRESSED
-            pauseDurationMs > normalizedFaultPauseAnomalyMs(config) -> ALERT_ANOMALY_TOO_LONG
+            hasAnySausage && pauseDurationMs > normalizedFaultPauseAnomalyMs(config) -> ALERT_ANOMALY_TOO_LONG
             else -> null
         }
         val hasFutureBakingStart = pans.any { isBakingPan(it) && it.startTime > nowMs }

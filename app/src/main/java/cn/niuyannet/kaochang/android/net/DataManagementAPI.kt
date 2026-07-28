@@ -637,6 +637,7 @@ object DataManagementAPI {
             )
         }
 
+        var algorithmEnableFailed = false
         if (config.onlineStatus == 3) {
             KaoChangAlgorithm.disableRoastAlgorithm(
                 reason = "远端MQTT运行时控制要求维护中(source=$source, operator=${operator.ifBlank { "unknown" }})",
@@ -644,10 +645,16 @@ object DataManagementAPI {
             )
         } else if (patchResult.appliedFields.contains("isEnable")) {
             when (config.isEnable) {
-                1 -> KaoChangAlgorithm.enableRoastAlgorithm(
-                    reason = "远端MQTT运行时控制开启算法(source=$source, operator=${operator.ifBlank { "unknown" }})",
-                    syncToServer = false
-                )
+                1 -> {
+                    if (previousIsEnable == 1 && KaoChangAlgorithm.isEnabled) {
+                        algorithmEnableFailed = false
+                    } else {
+                        algorithmEnableFailed = !KaoChangAlgorithm.enableRoastAlgorithm(
+                            reason = "远端MQTT运行时控制开启算法(source=$source, operator=${operator.ifBlank { "unknown" }})",
+                            syncToServer = false
+                        )
+                    }
+                }
                 else -> KaoChangAlgorithm.disableRoastAlgorithm(
                     reason = "远端MQTT运行时控制关闭算法(source=$source, operator=${operator.ifBlank { "unknown" }})",
                     syncToServer = false
@@ -688,13 +695,26 @@ object DataManagementAPI {
                 previousBakingTime != currentConfig.bakingTime ||
                 patchResult.temperatureChanged
 
-        val rejectedFields = patchResult.rejectedFields + patchResult.unknownFields
-        val reason = if (patchResult.isPartial) "partial" else "applied"
+        val appliedFields = if (algorithmEnableFailed) {
+            patchResult.appliedFields.filterNot { it == "isEnable" }
+        } else {
+            patchResult.appliedFields
+        }
+        val rejectedFields = (
+            patchResult.rejectedFields + patchResult.unknownFields +
+                if (algorithmEnableFailed) listOf("isEnable") else emptyList()
+            ).distinct()
+        val applied = appliedFields.isNotEmpty()
+        val reason = when {
+            algorithmEnableFailed && !applied -> "algorithm_enable_failed"
+            algorithmEnableFailed || patchResult.isPartial -> "partial"
+            else -> "applied"
+        }
         logD(
             "远端运行时控制已应用：" +
                 "source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
                 "configVersion（配置版本）=${incomingConfigVersion ?: "null"}->${currentConfig.configVersion}，" +
-                "reason=$reason，appliedFields=${patchResult.appliedFields.joinToString(",")}，" +
+                "reason=$reason，appliedFields=${appliedFields.joinToString(",")}，" +
                 "rejectedFields=${rejectedFields.joinToString(",")}，normalizedFields=${patchResult.normalizedFields}，" +
                 "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
                 "supplyStatus（补货状态）=${formatDiffValue("supplyStatus", previousSupplyStatus)}->${formatDiffValue("supplyStatus", currentConfig.supplyStatus)}，" +
@@ -708,7 +728,7 @@ object DataManagementAPI {
         )
         return RuntimeControlApplyResult(
             controlSeq = controlSeq,
-            applied = true,
+            applied = applied,
             changed = changed,
             reason = reason,
             onlineStatus = currentConfig.onlineStatus,
@@ -718,7 +738,7 @@ object DataManagementAPI {
             isEnable = currentConfig.isEnable,
             restStatusSource = currentConfig.restStatusSource,
             configVersion = currentConfig.configVersion,
-            appliedFields = patchResult.appliedFields,
+            appliedFields = appliedFields,
             rejectedFields = rejectedFields,
             normalizedFields = patchResult.normalizedFields
         )

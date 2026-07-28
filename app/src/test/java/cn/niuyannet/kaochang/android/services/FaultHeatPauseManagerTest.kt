@@ -123,6 +123,73 @@ class FaultHeatPauseManagerTest {
     }
 
     @Test
+    fun adjustPansForPause_shouldAllowLongPauseWhenAllPhysicalPansAreEmpty() {
+        val emptyPans = (1..33).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+            }
+        }
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = emptyPans,
+            config = config(),
+            nowMs = 5 * 60 * 60 * 1000L,
+            pauseStartedAtMs = 1L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertFalse(result.failClosed)
+        assertEquals(null, result.alertCode)
+        assertTrue(result.pendingDiscardPositions.isEmpty())
+    }
+
+    @Test
+    fun adjustPansForPause_shouldKeepLongPauseBlockedWhenSausageTimingIsMissing() {
+        val panWithSausage = KaoPan().apply {
+            positionSn = 1
+            isHasSausage = true
+            startTime = 0L
+            holdingTime = 0L
+        }
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(panWithSausage),
+            config = config(),
+            nowMs = 5 * 60 * 60 * 1000L,
+            pauseStartedAtMs = 1L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertTrue(result.failClosed)
+        assertEquals(FaultHeatPauseManager.ALERT_ANOMALY_TOO_LONG, result.alertCode)
+    }
+
+    @Test
+    fun adjustPansForPause_shouldKeepClockRegressionBlockedWhenAllPhysicalPansAreEmpty() {
+        val emptyPans = (1..33).map { position ->
+            KaoPan().apply {
+                positionSn = position
+                isHasSausage = false
+            }
+        }
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = emptyPans,
+            config = config(),
+            nowMs = 90_000L,
+            pauseStartedAtMs = 100_000L,
+            reason = "unit-test",
+            emitLogs = false
+        )
+
+        assertTrue(result.failClosed)
+        assertEquals(FaultHeatPauseManager.ALERT_CLOCK_REGRESSED, result.alertCode)
+    }
+
+    @Test
     fun recoveryTemperatureWriteGate_shouldBlockFailedPreviewOrBlockedPreparation() {
         val failedPreview = FaultHeatPauseManager.EndPauseResult(
             active = true,
