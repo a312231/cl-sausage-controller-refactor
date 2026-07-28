@@ -11,6 +11,7 @@ import com.lzy.okgo.OkGo
 import com.lzy.okgo.callback.StringCallback
 import com.lzy.okgo.model.Response
 import com.lzy.okgo.request.base.Request
+import java.io.File
 
 /**
  * 上位机与云端的 HTTP 接口封装。
@@ -48,6 +49,8 @@ object NetApi {
     var consumableState_url = "$API_URL_START/consumable/state"
     var checkUpdate_url = "$API_URL_START/checkUpdate"
     var reportVersion_url = "$API_URL_START/reportVersion"
+    var logPackageStatus_url = "$API_URL_START/logPackage/status"
+    var logPackageUpload_url = "$API_URL_START/logPackage/upload"
 
     // 广告与设备信息
     var ads_url = "$API_URL_START/ads"
@@ -79,6 +82,8 @@ object NetApi {
         consumableState_url = "$API_URL_START/consumable/state"
         checkUpdate_url = "$API_URL_START/checkUpdate"
         reportVersion_url = "$API_URL_START/reportVersion"
+        logPackageStatus_url = "$API_URL_START/logPackage/status"
+        logPackageUpload_url = "$API_URL_START/logPackage/upload"
         ads_url = "$API_URL_START/ads"
         getDeviceInfo_url = "$API_URL_START/getDeviceInfo"
         if (oldBaseUrl != API_URL_START) {
@@ -756,5 +761,70 @@ object NetApi {
                     callback(1, response?.body())
                 }
             })
+    }
+
+    fun reportLogPackageStatus(
+        requestId: String,
+        deviceCode: String,
+        uploadToken: String,
+        status: String,
+        errorMessage: String?
+    ) {
+        ensureEndpointUrlsFresh()
+        OkGo.post<String>(logPackageStatus_url)
+            .params("requestId", requestId)
+            .params("deviceCode", deviceCode)
+            .params("uploadToken", uploadToken)
+            .params("status", status)
+            .params("errorMessage", errorMessage ?: "")
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    if (!isSuccessBody(response?.body())) {
+                        LogUtils.w("【远程日志】状态上报被服务端拒绝：requestId=$requestId, status=$status")
+                    }
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.w("【远程日志】状态上报失败：requestId=$requestId, status=$status, error=${response?.exception?.message}")
+                }
+            })
+    }
+
+    fun uploadLogPackage(
+        requestId: String,
+        deviceCode: String,
+        uploadToken: String,
+        sha256: String,
+        file: File,
+        callback: (success: Boolean, message: String?) -> Unit
+    ) {
+        ensureEndpointUrlsFresh()
+        OkGo.post<String>(logPackageUpload_url)
+            .headers("X-Log-Request-Id", requestId)
+            .headers("X-Log-Device-Code", deviceCode)
+            .headers("X-Log-Upload-Token", uploadToken)
+            .headers("X-Log-Sha256", sha256)
+            .upFile(file)
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    val success = isSuccessBody(response?.body())
+                    callback(success, if (success) null else response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    callback(false, response?.exception?.message ?: response?.body())
+                }
+            })
+    }
+
+    private fun isSuccessBody(body: String?): Boolean {
+        if (body.isNullOrBlank()) return false
+        return try {
+            JSON.parseObject(body).getIntValue("code") == 200
+        } catch (_: Exception) {
+            false
+        }
     }
 }

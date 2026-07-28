@@ -3,6 +3,7 @@
 import android.os.Handler
 import android.os.Looper
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.log.DeviceLogPackageManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
@@ -421,6 +422,9 @@ object VMMqttHelper : VMMqtt() {
                         if (consumeActionGroupTelemetryAckIfNeeded(bean)) {
                             return
                         }
+                        if (consumeDeviceLogPackageRequestIfNeeded(bean)) {
+                            return
+                        }
                         LogUtils.d(
                             "【MQTT业务】${summarizeInboundMessage(bean.action, payload)}，" +
                                 "generation=$generation，topic=$topic"
@@ -463,6 +467,13 @@ object VMMqttHelper : VMMqtt() {
         
         // 最后执行父类的全量订阅（真正下发 callback）
         super.bindCallbackAndSubscribe(client, generation, callback)
+    }
+
+    private fun consumeDeviceLogPackageRequestIfNeeded(topicMessage: TopicMessage): Boolean {
+        if (topicMessage.action != MqttProtocol.ACTION_SERVICE_STATE) return false
+        val content = JSON.parseObject(topicMessage.content ?: "{}")
+        if (content.getString("messageType").orEmpty() != MqttProtocol.TYPE_DEVICE_LOG_PACKAGE_REQUEST) return false
+        return DeviceLogPackageManager.handle(content)
     }
 
     /**

@@ -12,6 +12,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 object LogUtils {
     private const val TAG = "KaoChang"
@@ -215,6 +217,17 @@ object LogUtils {
         return logDir.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".log") }
             ?.maxByOrNull { it.lastModified() }
+    }
+
+    fun flushPendingWrites(timeoutMs: Long): Boolean {
+        val barrier = CountDownLatch(1)
+        logExecutor.execute { barrier.countDown() }
+        return try {
+            barrier.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
     }
 
     fun clearAllLogs(context: Context) {
