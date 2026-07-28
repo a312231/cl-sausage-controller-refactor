@@ -7381,26 +7381,31 @@ object KaoChangOperate {
                 AppConfig.saveAppConfigDurable(config)
             }
         }
+        val recoverySafetyGuard = {
+            val config = AppConfig.getAppConfig()
+            targetOnlineStatus in 0..2 &&
+                VMModbusHelper.connectStatus() &&
+                config.moveStatus == 0 &&
+                !isActionGroupRecoveryBlocked()
+        }
         val result = ManualFaultRecoveryCoordinator(faultHeatTransitionLock, stateStore).recover(
             targetOnlineStatus = targetOnlineStatus,
-            canRecover = {
+            initialCondition = {
                 val config = AppConfig.getAppConfig()
-                targetOnlineStatus in 0..2 &&
-                    VMModbusHelper.connectStatus() &&
-                    config.moveStatus == 0 &&
-                    !isActionGroupRecoveryBlocked() &&
+                recoverySafetyGuard() &&
                     (
                         config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL ||
                             config.onlineStatus == 3 ||
                             FaultHeatPauseManager.shouldSkipBakingCompletion(config)
                         )
             },
+            commitGuard = recoverySafetyGuard,
             forceAlgorithmDisabled = {
                 KaoChangAlgorithm.isEnabled = false
                 AppConfig.getAppConfig().isEnable = 0
             },
             restoreHeating = {
-                restoreHeatingStateFromCurrentPans(reason).also { outcome ->
+                restoreHeatingStateFromCurrentPansLocked(reason).also { outcome ->
                     pauseEndResult = outcome.pauseEndResult
                 }.succeeded
             },
@@ -7412,7 +7417,7 @@ object KaoChangOperate {
         return result
     }
 
-    internal fun restoreHeatingStateFromCurrentPans(reason: String): FaultHeatingRestoreOutcome {
+    internal fun restoreHeatingStateFromCurrentPansLocked(reason: String): FaultHeatingRestoreOutcome {
         check(Thread.holdsLock(faultHeatTransitionLock)) {
             "故障温控恢复必须由最外层调用方持有 transition lock"
         }
@@ -7424,6 +7429,24 @@ object KaoChangOperate {
             onFaultPauseEnded = { pauseEndResult = it }
         )
         return FaultHeatingRestoreOutcome(succeeded, pauseEndResult)
+    }
+
+    fun restoreHeatingStateFromCurrentPansSafely(
+        reason: String,
+        canRestore: () -> Boolean
+    ): Boolean {
+        var pauseEndResult: FaultHeatPauseManager.EndPauseResult? = null
+        val succeeded = withFaultHeatTransitionLock {
+            if (!canRestore()) {
+                false
+            } else {
+                restoreHeatingStateFromCurrentPansLocked(reason).also { outcome ->
+                    pauseEndResult = outcome.pauseEndResult
+                }.succeeded
+            }
+        }
+        syncRecoveredFaultHeatPhysicalState(pauseEndResult, reason)
+        return succeeded
     }
 
     internal fun syncRecoveredFaultHeatPhysicalState(
@@ -7638,11 +7661,39 @@ object KaoChangOperate {
         val previousOnlineStatus = config.onlineStatus
         val previousIsEnable = config.isEnable
         val previousRestStatusSource = config.restStatusSource
-        config.onlineStatus = 1
-        config.isEnable = 1
-        config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
-        AppConfig.saveAppConfig(config)
-        KaoChangAlgorithm.isEnabled = true
+        var pauseEndResult: FaultHeatPauseManager.EndPauseResult? = null
+        val restored = withFaultHeatTransitionLock {
+            val latestConfig = AppConfig.getAppConfig()
+            if (
+                latestConfig.errorStatus != 0 ||
+                latestConfig.onlineStatus != 2 ||
+                AppConfig.normalizeRestStatusSource(latestConfig.restStatusSource) !=
+                AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
+            ) {
+                false
+            } else {
+                val restoreOutcome = restoreHeatingStateFromCurrentPansLocked("营业时间开始自动恢复")
+                pauseEndResult = restoreOutcome.pauseEndResult
+                if (!restoreOutcome.succeeded) {
+                    false
+                } else {
+                    latestConfig.onlineStatus = 1
+                    latestConfig.isEnable = 1
+                    latestConfig.restStatusSource = AppConfigBean.REST_SOURCE_NONE
+                    AppConfig.saveAppConfig(latestConfig)
+                    KaoChangAlgorithm.isEnabled = true
+                    true
+                }
+            }
+        }
+        syncRecoveredFaultHeatPhysicalState(pauseEndResult, "营业时间开始自动恢复")
+        if (!restored) {
+            logW(
+                LOG_DEVICE,
+                "营业开始自动恢复未完成：温控恢复失败或运行态已变化，保持算法关闭，source=$source"
+            )
+            return
+        }
         HomeUiRefreshBridge.requestRefresh("business_start:rest_to_operating")
         logI(
             LOG_DEVICE,
@@ -7651,7 +7702,6 @@ object KaoChangOperate {
                 "isEnable=$previousIsEnable(0=关闭, 1=开启)->${config.isEnable}(1=开启)，" +
                 "restStatusSource（休息中来源）=${restStatusSourceDesc(previousRestStatusSource)}->${restStatusSourceDesc(config.restStatusSource)}"
         )
-        restoreHeatingStateFromCurrentPans("营业时间开始自动恢复")
         SendServerHelper.publishServiceUpdateStatus()
     }
 

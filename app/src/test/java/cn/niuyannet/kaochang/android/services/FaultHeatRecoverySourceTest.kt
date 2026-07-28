@@ -27,7 +27,7 @@ class FaultHeatRecoverySourceTest {
         val recoveryEnd = (recoveryStart + 5_000).coerceAtMost(source.length)
         val recovery = source.substring(recoveryStart, recoveryEnd)
 
-        val restoreResult = recovery.indexOf("restoreHeatingStateFromCurrentPans(")
+        val restoreResult = recovery.indexOf("restoreHeatingStateFromCurrentPansLocked(")
         val restoreGuard = recovery.indexOf("if (restored)")
         val clearFault = recovery.indexOf("config.errorStatus = 0")
         assertTrue("自动恢复必须先尝试恢复温控", restoreResult >= 0)
@@ -104,7 +104,7 @@ class FaultHeatRecoverySourceTest {
     fun normalTemperatureRefresh_shouldNotEndActiveFaultPause() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val normalApply = extractFunctionBody(source, "fun applyConfiguredTemperatureByPanState(")
-        val restore = extractFunctionBody(source, "fun restoreHeatingStateFromCurrentPans(")
+        val restore = extractFunctionBody(source, "fun restoreHeatingStateFromCurrentPansLocked(")
 
         assertTrue("普通温度刷新遇到故障暂停必须拒绝写温", normalApply.contains("shouldSkipBakingCompletion"))
         assertTrue("普通温度刷新不能结束故障暂停", !normalApply.contains("finishFaultPause = true"))
@@ -115,7 +115,7 @@ class FaultHeatRecoverySourceTest {
     fun faultStopAndRecovery_shouldShareTransitionLock() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val stop = extractFunctionBody(source, "fun stopHeatingForFault(")
-        val restore = extractFunctionBody(source, "fun restoreHeatingStateFromCurrentPans(")
+        val restore = extractFunctionBody(source, "fun restoreHeatingStateFromCurrentPansLocked(")
 
         assertTrue("故障停热必须持有统一状态锁", stop.contains("withFaultHeatTransitionLock"))
         assertTrue("故障恢复必须由最外层调用方持有统一状态锁", restore.contains("Thread.holdsLock(faultHeatTransitionLock)"))
@@ -210,7 +210,7 @@ class FaultHeatRecoverySourceTest {
     fun manualEnable_shouldRestoreTemperatureBeforeOpeningDispatch() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
         val body = extractFunctionBody(source, "fun enableRoastAlgorithm")
-        val restore = body.indexOf("restoreHeatingStateFromCurrentPans(")
+        val restore = body.indexOf("restoreHeatingStateFromCurrentPansLocked(")
         val enable = body.indexOf("isEnabled = true")
         val discardScan = body.indexOf("OverKeepWarmDiscardScanner.scanAndDiscard")
 
@@ -226,7 +226,7 @@ class FaultHeatRecoverySourceTest {
         val recoveryEnd = (recoveryStart + 6_000).coerceAtMost(source.length)
         val recovery = source.substring(recoveryStart, recoveryEnd)
         val lock = recovery.indexOf("withFaultHeatTransitionLock")
-        val restore = recovery.indexOf("restoreHeatingStateFromCurrentPans(")
+        val restore = recovery.indexOf("restoreHeatingStateFromCurrentPansLocked(")
         val clearFault = recovery.indexOf("config.errorStatus = 0")
 
         assertTrue("自动恢复必须在统一锁内恢复温控", lock >= 0 && restore > lock)
@@ -259,6 +259,51 @@ class FaultHeatRecoverySourceTest {
             !restore.contains("syncRecoveredPhysicalState") &&
                 !restore.contains("endFaultHeatPauseAndSyncIfNeeded")
         )
+    }
+
+    @Test
+    fun remoteMaintenanceExit_shouldUseLockOwningHeatingRecoveryEntrypoint() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/net/DataManagementAPI.kt")
+        val body = extractFunctionBody(source, "fun handleRemoteOnlineStatusTransition(")
+        val operate = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val safeRestore = extractFunctionBody(operate, "fun restoreHeatingStateFromCurrentPansSafely(")
+        val lock = safeRestore.indexOf("withFaultHeatTransitionLock")
+        val guard = safeRestore.indexOf("canRestore()")
+        val restore = safeRestore.indexOf("restoreHeatingStateFromCurrentPansLocked(")
+
+        assertTrue(
+            "远端离开维护态的异步入口必须调用自带 transition lock 和恢复后同步的安全入口",
+            body.contains("restoreHeatingStateFromCurrentPansSafely(") &&
+                !body.contains("restoreHeatingStateFromCurrentPansLocked(")
+        )
+        assertTrue(
+            "迟到的远端恢复任务必须在同一把 transition lock 内重新检查资格后才能写温",
+            lock >= 0 && guard > lock && restore > guard
+        )
+        assertTrue(
+            "远端恢复的锁内复查必须覆盖连接、算法内存态、耐久开关和当前运行态",
+            body.contains("canRestore =") &&
+                body.contains("VMModbusHelper.connectStatus()") &&
+                body.contains("KaoChangAlgorithm.isEnabled") &&
+                body.contains("AppConfig.getAlgorithmEnableFlag() == 1") &&
+                body.contains("canEnableAlgorithm(latestConfig)")
+        )
+    }
+
+    @Test
+    fun businessStart_shouldConfirmHeatingBeforePublishingEnabledRuntimeState() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "fun startBusinessHours(")
+        val lock = body.indexOf("withFaultHeatTransitionLock")
+        val restore = body.indexOf("restoreHeatingStateFromCurrentPansLocked(")
+        val successGuard = body.indexOf("if (!restoreOutcome.succeeded)")
+        val publishOperating = body.indexOf("latestConfig.onlineStatus = 1")
+        val publishEnabled = body.indexOf("latestConfig.isEnable = 1")
+
+        assertTrue("营业开始的温控恢复必须持有统一 transition lock", lock >= 0 && restore > lock)
+        assertTrue("营业开始必须检查温控恢复结果", successGuard > restore)
+        assertTrue("只有温控恢复成功后才能切到运营中", publishOperating > successGuard)
+        assertTrue("只有温控恢复成功后才能开启算法", publishEnabled > successGuard)
     }
 
     @Test

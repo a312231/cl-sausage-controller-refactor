@@ -31,12 +31,13 @@ class ManualFaultRecoveryCoordinator(
 ) {
     fun recover(
         targetOnlineStatus: Int,
-        canRecover: () -> Boolean,
+        initialCondition: () -> Boolean,
+        commitGuard: () -> Boolean,
         forceAlgorithmDisabled: () -> Unit,
         restoreHeating: () -> Boolean,
         stopHeating: () -> Unit
     ): ManualFaultRecoveryResult = synchronized(transitionLock) {
-        if (!canRecover()) {
+        if (!initialCondition()) {
             return@synchronized ManualFaultRecoveryResult.Rejected("恢复提交前运行态已变化")
         }
         val previous = stateStore.snapshot()
@@ -51,7 +52,7 @@ class ManualFaultRecoveryCoordinator(
             restoreFaultAndStop(previous, stopHeating)
             return@synchronized ManualFaultRecoveryResult.Failed("温控恢复未全部成功")
         }
-        if (!canRecover()) {
+        if (!commitGuard()) {
             restoreFaultAndStop(previous, stopHeating)
             return@synchronized ManualFaultRecoveryResult.Rejected("温控恢复后运行态已变化")
         }

@@ -14,7 +14,8 @@ class ManualFaultRecoveryCoordinatorTest {
 
         val result = coordinator.recover(
             targetOnlineStatus = 1,
-            canRecover = { true },
+            initialCondition = { true },
+            commitGuard = { true },
             forceAlgorithmDisabled = { events += "algorithm-off" },
             restoreHeating = {
                 events += "heating-restored"
@@ -41,7 +42,8 @@ class ManualFaultRecoveryCoordinatorTest {
 
         val result = coordinator.recover(
             targetOnlineStatus = 1,
-            canRecover = { true },
+            initialCondition = { true },
+            commitGuard = { true },
             forceAlgorithmDisabled = { events += "algorithm-off" },
             restoreHeating = {
                 events += "heating-failed"
@@ -68,7 +70,8 @@ class ManualFaultRecoveryCoordinatorTest {
 
         val result = coordinator.recover(
             targetOnlineStatus = 1,
-            canRecover = { true },
+            initialCondition = { true },
+            commitGuard = { true },
             forceAlgorithmDisabled = { events += "algorithm-off" },
             restoreHeating = {
                 events += "heating-restored"
@@ -102,7 +105,8 @@ class ManualFaultRecoveryCoordinatorTest {
 
         val result = coordinator.recover(
             targetOnlineStatus = 1,
-            canRecover = { ++checks == 1 },
+            initialCondition = { ++checks == 1 },
+            commitGuard = { ++checks == 1 },
             forceAlgorithmDisabled = { events += "algorithm-off" },
             restoreHeating = {
                 events += "heating-restored"
@@ -118,6 +122,33 @@ class ManualFaultRecoveryCoordinatorTest {
         )
         assertEquals(1, store.state.errorStatus)
         assertEquals(3, store.state.onlineStatus)
+    }
+
+    @Test
+    fun recover_shouldCommitWhenRecoveryMarkerClearsButSafetyGuardStillPasses() {
+        val events = mutableListOf<String>()
+        val store = FakeStateStore(events)
+        val coordinator = ManualFaultRecoveryCoordinator(Any(), store)
+        var recoveryMarkerActive = true
+
+        val result = coordinator.recover(
+            targetOnlineStatus = 1,
+            initialCondition = { recoveryMarkerActive },
+            commitGuard = { true },
+            forceAlgorithmDisabled = { events += "algorithm-off" },
+            restoreHeating = {
+                events += "heating-restored"
+                recoveryMarkerActive = false
+                true
+            },
+            stopHeating = { events += "heating-stopped" }
+        )
+
+        assertTrue(result is ManualFaultRecoveryResult.Success)
+        assertEquals(
+            listOf("algorithm-off", "heating-restored", "state-recovered"),
+            events
+        )
     }
 
     private class FakeStateStore(

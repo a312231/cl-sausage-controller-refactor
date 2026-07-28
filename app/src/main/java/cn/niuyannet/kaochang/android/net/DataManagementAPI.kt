@@ -438,7 +438,16 @@ object DataManagementAPI {
                 return
             }
             helperScope.launch {
-                KaoChangOperate.restoreHeatingStateFromCurrentPans("远端配置切回非维护状态且算法已开启")
+                KaoChangOperate.restoreHeatingStateFromCurrentPansSafely(
+                    reason = "远端配置切回非维护状态且算法已开启",
+                    canRestore = {
+                        val latestConfig = AppConfig.getAppConfig()
+                        VMModbusHelper.connectStatus() &&
+                            KaoChangAlgorithm.isEnabled &&
+                            AppConfig.getAlgorithmEnableFlag() == 1 &&
+                            canEnableAlgorithm(latestConfig)
+                    }
+                )
             }
         }
     }

@@ -1355,7 +1355,7 @@ object KaoChangAlgorithm {
                                 ) {
                                     false
                                 } else {
-                                    val restoreOutcome = KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
+                                    val restoreOutcome = KaoChangOperate.restoreHeatingStateFromCurrentPansLocked("modbus恢复稳定")
                                     pauseEndResult = restoreOutcome.pauseEndResult
                                     val restored = restoreOutcome.succeeded
                                     if (restored) {
@@ -1522,7 +1522,7 @@ object KaoChangAlgorithm {
                 false
             } else {
                 KaoChangOperate.actionDebug()
-                val restoreOutcome = KaoChangOperate.restoreHeatingStateFromCurrentPans("算法开启后恢复温度：$reason")
+                val restoreOutcome = KaoChangOperate.restoreHeatingStateFromCurrentPansLocked("算法开启后恢复温度：$reason")
                 pauseEndResult = restoreOutcome.pauseEndResult
                 val restored = restoreOutcome.succeeded
                 val latestConfig = AppConfig.getAppConfig()

@@ -422,7 +422,7 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
         val applyTemperatureBody = extractFunctionBody(operate, "private fun applyConfiguredTemperatureByPanStateInternal(")
         val setAreaBody = extractFunctionBody(operate, "private fun setAreaTargetTemperature(")
 
-        assertTrue("算法开启必须通过统一温控恢复入口", enableBody.contains("restoreHeatingStateFromCurrentPans("))
+        assertTrue("算法开启必须通过持锁温控恢复入口", enableBody.contains("restoreHeatingStateFromCurrentPansLocked("))
         val successCheck = applyTemperatureBody.indexOf("allWritesSucceeded")
         val endPause = applyTemperatureBody.indexOf("FaultHeatPauseManager.endFaultHeatPauseAndAdjustIfNeeded(reason)")
         assertTrue("按盘态恢复温度必须提交故障暂停结束", endPause >= 0)
