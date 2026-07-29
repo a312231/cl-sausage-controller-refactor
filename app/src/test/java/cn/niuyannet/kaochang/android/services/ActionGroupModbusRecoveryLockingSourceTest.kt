@@ -171,6 +171,33 @@ class ActionGroupModbusRecoveryLockingSourceTest {
         )
     }
 
+    @Test
+    fun modbusAutoRecovery_shouldStopCurrentCycleWhenActionGroupRecoveryFails() {
+        val source = algorithmSourceText()
+        val recoveryCall = source.indexOf(
+            "val recovered = KaoChangOperate.recoverActionGroupStateAfterModbusReady(\"Modbus 已连接/重连后的动作组恢复检查\")"
+        )
+        assertTrue("必须存在 Modbus 重连后的动作组恢复检查", recoveryCall >= 0)
+        val failureStart = source.indexOf("if (!recovered) {", recoveryCall)
+        assertTrue("必须处理动作组恢复失败", failureStart > recoveryCall)
+        val failureEnd = source.indexOf("\n                    }", failureStart)
+            .let { if (it >= 0) it else source.length }
+        val failureBlock = source.substring(failureStart, failureEnd)
+
+        assertTrue(
+            "动作组恢复失败必须取消 Modbus 自动恢复标记",
+            failureBlock.contains("modbusReportedUnavailable = false")
+        )
+        assertTrue(
+            "动作组恢复失败必须结束重连稳定性观察",
+            failureBlock.contains("modbusReconnectSinceMs = null")
+        )
+        assertTrue(
+            "动作组恢复失败必须结束本轮监控，不能继续自动清故障",
+            failureBlock.contains("continue")
+        )
+    }
+
     private fun assertEntry(
         source: String,
         ensureActionName: String,

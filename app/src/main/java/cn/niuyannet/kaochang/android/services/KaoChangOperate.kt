@@ -2276,7 +2276,19 @@ object KaoChangOperate {
             return false
         }
         val evidence = buildActionGroupRecoveryResidueEvidence(reason)
-        val decision = ActionGroupManualResidueClearPolicy.evaluate(evidence)
+        val decision = if (evidence.session == null) {
+            delay(500L)
+            val secondEvidence = buildActionGroupRecoveryResidueEvidence("$reason：第二次空闲确认")
+            if (hasBlockingSupplementPrefetchEvidence()) {
+                logW(LOG_ACTION_GROUP, "第二次空闲确认时发现双 lane 会话，拒绝人工清理孤儿机械忙态：reason=$reason")
+                return false
+            }
+            ActionGroupManualResidueClearPolicy.evaluateOrphanBusyStateSnapshots(
+                listOf(evidence, secondEvidence)
+            )
+        } else {
+            ActionGroupManualResidueClearPolicy.evaluate(evidence)
+        }
         if (!decision.canShowManualClear) {
             logW(LOG_ACTION_GROUP, "拒绝人工确认清理动作组残留：reason=$reason，拒绝原因=${decision.reason}，evidence=${evidence.summary()}")
             return false

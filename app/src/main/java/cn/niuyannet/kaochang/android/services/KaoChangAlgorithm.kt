@@ -1325,7 +1325,11 @@ object KaoChangAlgorithm {
                         actionGroupRecoveredAfterModbusConnect = true
                         val recovered = KaoChangOperate.recoverActionGroupStateAfterModbusReady("Modbus 已连接/重连后的动作组恢复检查")
                         if (!recovered) {
+                            modbusReportedUnavailable = false
+                            modbusReconnectSinceMs = null
                             logW(LOG_COMM, "300/400 动作组恢复检查未通过，已保持或切入维护态，等待人工确认")
+                            delay(MODBUS_MONITOR_INTERVAL_MS)
+                            continue
                         }
                     }
 

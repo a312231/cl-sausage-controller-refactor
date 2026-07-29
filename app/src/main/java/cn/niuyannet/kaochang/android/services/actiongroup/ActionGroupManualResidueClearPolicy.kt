@@ -52,7 +52,18 @@ object ActionGroupManualResidueClearPolicy {
             evidence.legacyActionStatus201 != 0 -> reject(
                 "201（旧动作状态寄存器）=${evidence.legacyActionStatus201 ?: "读取失败"}（非0=旧协议动作未空闲）"
             )
-            session == null -> reject("本地没有动作组残留会话")
+            session == null && evidence.moveStatus != 1 -> reject("本地没有动作组残留会话")
+            session == null && evidence.resultStates.any { it.value == null } -> reject(
+                "300/400动作组结果寄存器存在读取失败：${evidence.resultStates.first { it.value == null }.desc()}"
+            )
+            session == null && evidence.resultStates.any { it.value != AtomicActionCodes.IDLE } -> reject(
+                "无会话孤儿机械忙态要求全部300/400动作组结果寄存器为0：" +
+                    evidence.resultStates.first { it.value != AtomicActionCodes.IDLE }.desc()
+            )
+            session == null -> ActionGroupManualResidueClearDecision(
+                canShowManualClear = true,
+                reason = "允许人工确认清理无会话孤儿机械忙态"
+            )
             session.type != ActionGroupSessionType.IN_SUPPLEMENT -> reject(
                 "仅允许 IN_SUPPLEMENT（补肠动作组）残留会话走人工确认清理"
             )
@@ -68,6 +79,27 @@ object ActionGroupManualResidueClearPolicy {
                 reason = "允许人工确认清理补肠动作组本地残留"
             )
         }
+    }
+
+    fun evaluateOrphanBusyStateSnapshots(
+        snapshots: List<ActionGroupRecoveryResidueEvidence>
+    ): ActionGroupManualResidueClearDecision {
+        if (snapshots.size != 2) {
+            return reject("必须连续读取两次动作组空闲证据，实际=${snapshots.size}次")
+        }
+        snapshots.forEachIndexed { index, evidence ->
+            if (evidence.session != null) {
+                return reject("第${index + 1}次动作组空闲证据出现本地动作组会话")
+            }
+            val decision = evaluate(evidence)
+            if (!decision.canShowManualClear) {
+                return reject("第${index + 1}次动作组空闲证据未通过：${decision.reason}")
+            }
+        }
+        return ActionGroupManualResidueClearDecision(
+            canShowManualClear = true,
+            reason = "连续两次确认无会话孤儿机械忙态已空闲"
+        )
     }
 
     private fun reject(reason: String): ActionGroupManualResidueClearDecision =

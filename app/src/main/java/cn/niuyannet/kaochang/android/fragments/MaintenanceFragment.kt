@@ -633,17 +633,22 @@ class MaintenanceFragment : Fragment() {
     private fun showConfirmClearActionGroupResidueDialog(evidence: ActionGroupRecoveryResidueEvidence) {
         val session = evidence.session
         val message = buildString {
-            append("检测到上位机存在补肠动作组本地残留，但下位机 300/400 结果寄存器均为空闲。\n\n")
-            append("仅在现场已确认下位机复位完成、机械臂/升降台/夹爪空闲、烤盘和肠箱实物状态已核对、售卖口无卡肠时继续。\n\n")
+            if (session == null) {
+                append("检测到上位机没有动作组会话，但仍残留 moveStatus=1；下位机 201 和 300/400 寄存器当前均为空闲。\n\n")
+                append("是否已人工取走中途烤肠，并核对肠箱、滚筒、升降台和烤盘状态？确认后将连续两次复查下位机寄存器，再清理本地孤儿机械忙态。\n\n")
+            } else {
+                append("检测到上位机存在补肠动作组本地残留，但下位机 300/400 结果寄存器均为空闲。\n\n")
+                append("仅在现场已确认下位机复位完成、机械臂/升降台/夹爪空闲、烤盘和肠箱实物状态已核对、售卖口无卡肠时继续。\n\n")
+            }
             append("sessionId=${session?.sessionId ?: "无"}\n")
             append("type=${session?.type ?: "无"}\n")
             append("sourceNo=${session?.sourceNo ?: "无"}，targetNo=${session?.targetNo ?: "无"}")
         }
         AlertDialog.Builder(requireContext())
-            .setTitle("确认清理本地动作组残留")
+            .setTitle(if (session == null) "确认清理孤儿机械忙态" else "确认清理本地动作组残留")
             .setMessage(message)
             .setNegativeButton("取消", null)
-            .setPositiveButton("确认清理本地动作组残留") { _, _ ->
+            .setPositiveButton(if (session == null) "已核对并继续恢复" else "确认清理本地动作组残留") { _, _ ->
                 retryManualRecoveryAfterClearingActionGroupResidue()
             }
             .show()

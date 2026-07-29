@@ -130,6 +130,7 @@ class ActionGroupManualResidueClearPolicyTest {
     fun evaluate_shouldRejectWhenSessionMissing() {
         val decision = ActionGroupManualResidueClearPolicy.evaluate(
             evidence(
+                moveStatus = 0,
                 session = null,
                 resultValues = idleResults()
             )
@@ -137,6 +138,100 @@ class ActionGroupManualResidueClearPolicyTest {
 
         assertEquals(false, decision.canShowManualClear)
         assertEquals("本地没有动作组残留会话", decision.reason)
+    }
+
+    @Test
+    fun evaluate_shouldAllowOrphanBusyStateWhenAllRegistersAreIdle() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluate(
+            evidence(
+                moveStatus = 1,
+                session = null,
+                resultValues = idleResults()
+            )
+        )
+
+        assertEquals(true, decision.canShowManualClear)
+        assertEquals("允许人工确认清理无会话孤儿机械忙态", decision.reason)
+    }
+
+    @Test
+    fun evaluate_shouldRejectOrphanBusyStateWhenResultHasTerminalErrorResidue() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluate(
+            evidence(
+                moveStatus = 1,
+                session = null,
+                resultValues = idleResults() + ("in1" to AtomicActionCodes.IN1_Y_RESET_FAILED)
+            )
+        )
+
+        assertEquals(false, decision.canShowManualClear)
+        assertEquals(
+            "无会话孤儿机械忙态要求全部300/400动作组结果寄存器为0：in1=0x00EF（当前值）",
+            decision.reason
+        )
+    }
+
+    @Test
+    fun evaluateOrphanBusyStateSnapshots_shouldAllowTwoConsecutiveIdleSnapshots() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluateOrphanBusyStateSnapshots(
+            listOf(
+                evidence(moveStatus = 1, session = null, resultValues = idleResults()),
+                evidence(moveStatus = 1, session = null, resultValues = idleResults())
+            )
+        )
+
+        assertEquals(true, decision.canShowManualClear)
+        assertEquals("连续两次确认无会话孤儿机械忙态已空闲", decision.reason)
+    }
+
+    @Test
+    fun evaluateOrphanBusyStateSnapshots_shouldRejectWhenSnapshotCountIsNotTwo() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluateOrphanBusyStateSnapshots(
+            listOf(evidence(moveStatus = 1, session = null, resultValues = idleResults()))
+        )
+
+        assertEquals(false, decision.canShowManualClear)
+        assertEquals("必须连续读取两次动作组空闲证据，实际=1次", decision.reason)
+    }
+
+    @Test
+    fun evaluateOrphanBusyStateSnapshots_shouldRejectWhenSecondSnapshotChanges() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluateOrphanBusyStateSnapshots(
+            listOf(
+                evidence(moveStatus = 1, session = null, resultValues = idleResults()),
+                evidence(
+                    moveStatus = 1,
+                    session = null,
+                    resultValues = idleResults() + ("in4" to AtomicActionCodes.RUNNING)
+                )
+            )
+        )
+
+        assertEquals(false, decision.canShowManualClear)
+        assertEquals(
+            "第2次动作组空闲证据未通过：无会话孤儿机械忙态要求全部300/400动作组结果寄存器为0：in4=0x0001（执行中）",
+            decision.reason
+        )
+    }
+
+    @Test
+    fun evaluateOrphanBusyStateSnapshots_shouldRejectWhenRegisterReadFails() {
+        val decision = ActionGroupManualResidueClearPolicy.evaluateOrphanBusyStateSnapshots(
+            listOf(
+                evidence(moveStatus = 1, session = null, resultValues = idleResults()),
+                evidence(
+                    moveStatus = 1,
+                    session = null,
+                    resultValues = idleResults() + ("out2" to null)
+                )
+            )
+        )
+
+        assertEquals(false, decision.canShowManualClear)
+        assertEquals(
+            "第2次动作组空闲证据未通过：300/400动作组结果寄存器存在读取失败：out2=读取失败（未知原因）",
+            decision.reason
+        )
     }
 
     private fun session(type: ActionGroupSessionType): ActionGroupSession =
