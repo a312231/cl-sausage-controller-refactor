@@ -1,11 +1,13 @@
 package cn.niuyannet.kaochang.android.services
 
+import android.os.SystemClock
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 import com.alibaba.fastjson.JSON
 import java.util.LinkedHashSet
 import java.util.UUID
@@ -17,6 +19,8 @@ import java.util.UUID
  * 保温时间按 wall-clock（自然时间）继续计算，过保则进入待丢弃。
  */
 object FaultHeatPauseManager {
+    private const val ACTIVE_PAUSE_SUMMARY_INTERVAL_MS = 30L * 60 * 1000
+    private val activePauseLogGate = RepeatedLogGate(ACTIVE_PAUSE_SUMMARY_INTERVAL_MS)
     const val ALERT_CLOCK_REGRESSED = "CLOCK_REGRESSED"
     const val ALERT_ANOMALY_TOO_LONG = "ANOMALY_TOO_LONG"
     const val ALERT_BAKING_PAUSE_ABORT = "BAKING_PAUSE_ABORT"
@@ -115,10 +119,15 @@ object FaultHeatPauseManager {
         synchronized(mutex) {
             val config = AppConfig.getAppConfig()
             if (config.faultHeatPauseActive == 1 && config.faultHeatPauseStartedAtMs > 0L) {
-                LogUtils.i(
-                    "【$LOG_TAG】故障停热暂停已存在，不重复覆盖开始时间：" +
-                        "source=$source，reason=$reason，startedAt=${config.faultHeatPauseStartedAtMs}"
-                )
+                val state = activePauseState(config.faultHeatPauseStartedAtMs, source, reason)
+                val decision = activePauseLogGate.evaluate(state, SystemClock.elapsedRealtime())
+                if (decision != null) {
+                    LogUtils.i(
+                        "【$LOG_TAG】故障停热持续中：source=$source，reason=$reason，" +
+                            "startedAt=${config.faultHeatPauseStartedAtMs}，" +
+                            "suppressedCount=${decision.suppressedCount}"
+                    )
+                }
                 return
             }
             config.faultHeatPauseActive = 1
@@ -126,6 +135,10 @@ object FaultHeatPauseManager {
             config.faultHeatPauseReason = reason
             config.faultHeatPauseSource = source
             AppConfig.saveAppConfigDurable(config)
+            activePauseLogGate.markInitial(
+                activePauseState(config.faultHeatPauseStartedAtMs, source, reason),
+                SystemClock.elapsedRealtime()
+            )
             LogUtils.w(
                 "【$LOG_TAG】开始故障停热暂停：" +
                     "source=$source，reason=$reason，startedAt=${config.faultHeatPauseStartedAtMs}，" +
@@ -136,6 +149,9 @@ object FaultHeatPauseManager {
             )
         }
     }
+
+    private fun activePauseState(startedAtMs: Long, source: String, reason: String): String =
+        "$startedAtMs|$source|$reason"
 
     fun endFaultHeatPauseAndAdjustIfNeeded(reason: String): EndPauseResult {
         synchronized(mutex) {

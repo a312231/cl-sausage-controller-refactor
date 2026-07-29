@@ -4,15 +4,28 @@ import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 /**
  * 将本地关键 App 日志实时上报到云端设备日志表。
  *
- * MQTT 不在线或发布失败时直接丢弃云端副本，本地 .log 文件仍由 LogUtils 保留。
+ * MQTT 不在线或发布队列拒绝时，W/E 会进入有界本地补传队列。
  */
 object AppLogCloudReporter {
     private const val TAG = "AppLogCloudReporter"
     private const val TOPIC_BY_DEVICE = "/cl/devices/{device_id}/service"
+    private const val DRAIN_BATCH_SIZE = 20
+    private const val DRAIN_RETRY_DELAY_MS = 1_000L
+    private val outbox by lazy { CriticalLogOutbox(CriticalLogPreferenceStorage) }
+    private val drainScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val drainInProgress = AtomicBoolean(false)
     private val CLOUD_NOISE_KEYWORDS = listOf(
         "设备快照投影未变化，跳过HTTP同步",
         "【动作组通信】启动前读取",
@@ -56,10 +69,63 @@ object AppLogCloudReporter {
         if (!shouldReportToCloud(level, content)) {
             return false
         }
-        val client = VMMqttHelper.mqttClient
-        if (client?.isConnected != true) {
-            return false
+        val published = publishEntry(level, tag, content, reportedAt)
+        if (!published) {
+            val saved = persistCriticalIfNeeded(level, tag, content, reportedAt)
+            if (saved && VMMqttHelper.mqttClient?.isConnected == true) {
+                onMqttConnected()
+            }
         }
+        return published
+    }
+
+    fun onMqttConnected() {
+        if (!drainInProgress.compareAndSet(false, true)) return
+        drainScope.launch {
+            try {
+                while (VMMqttHelper.mqttClient?.isConnected == true) {
+                    val batch = outbox.peekBatch(System.currentTimeMillis(), DRAIN_BATCH_SIZE)
+                    if (batch.isEmpty()) return@launch
+                    for (entry in batch) {
+                        while (VMMqttHelper.mqttClient?.isConnected == true) {
+                            if (publishEntry(entry.level, entry.tag, entry.content, entry.reportedAt)) {
+                                outbox.remove(entry.id, System.currentTimeMillis())
+                                break
+                            }
+                            delay(DRAIN_RETRY_DELAY_MS)
+                        }
+                        if (VMMqttHelper.mqttClient?.isConnected != true) return@launch
+                    }
+                    yield()
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Critical log outbox drain failed: ${e.message}")
+                if (VMMqttHelper.mqttClient?.isConnected == true) {
+                    delay(DRAIN_RETRY_DELAY_MS)
+                }
+            } finally {
+                drainInProgress.set(false)
+                if (VMMqttHelper.mqttClient?.isConnected == true &&
+                    outbox.peekBatch(System.currentTimeMillis(), 1).isNotEmpty()
+                ) {
+                    onMqttConnected()
+                }
+            }
+        }
+    }
+
+    fun buildPayloadForTest(level: String, tag: String, content: String, reportedAt: Long): JSONObject {
+        return buildPayload(level, tag, content, reportedAt)
+    }
+
+    fun shouldReportToCloudForTest(level: String, content: String): Boolean = shouldReportToCloud(level, content)
+
+    fun cloudPriorityForTest(level: String, content: String): MqttPublishPriority = cloudPriority(level, content)
+
+    fun cloudCoalesceKeyForTest(level: String, content: String): String? = cloudCoalesceKey(level, content)
+
+    private fun publishEntry(level: String, tag: String, content: String, reportedAt: Long): Boolean {
+        if (VMMqttHelper.mqttClient?.isConnected != true) return false
         return try {
             val payload = buildPayload(level, tag, content, reportedAt)
             val topicMessage = TopicMessage().apply {
@@ -76,20 +142,41 @@ object AppLogCloudReporter {
                 logLifecycle = false
             )
         } catch (e: Throwable) {
-            Log.w(TAG, "App log cloud report dropped: ${e.message}")
+            Log.w(TAG, "App log cloud report failed: ${e.message}")
             false
         }
     }
 
-    fun buildPayloadForTest(level: String, tag: String, content: String, reportedAt: Long): JSONObject {
-        return buildPayload(level, tag, content, reportedAt)
+    private fun persistCriticalIfNeeded(
+        level: String,
+        tag: String,
+        content: String,
+        reportedAt: Long
+    ): Boolean {
+        val normalizedLevel = level.trim().uppercase()
+        if (normalizedLevel != "W" && normalizedLevel != "E") return false
+        val nowMs = System.currentTimeMillis()
+        return try {
+            val saved = outbox.enqueue(
+                CriticalLogEntry(
+                    id = UUID.randomUUID().toString(),
+                    level = normalizedLevel,
+                    tag = tag.ifBlank { "KaoChang" },
+                    content = content,
+                    reportedAt = reportedAt,
+                    enqueuedAt = nowMs
+                ),
+                nowMs
+            )
+            if (!saved) {
+                Log.w(TAG, "Critical log exceeds bounded outbox capacity")
+            }
+            saved
+        } catch (e: Throwable) {
+            Log.w(TAG, "Critical log outbox persist failed: ${e.message}")
+            false
+        }
     }
-
-    fun shouldReportToCloudForTest(level: String, content: String): Boolean = shouldReportToCloud(level, content)
-
-    fun cloudPriorityForTest(level: String, content: String): MqttPublishPriority = cloudPriority(level, content)
-
-    fun cloudCoalesceKeyForTest(level: String, content: String): String? = cloudCoalesceKey(level, content)
 
     private fun buildPayload(level: String, tag: String, content: String, reportedAt: Long): JSONObject {
         val normalizedLevel = level.ifBlank { "D" }

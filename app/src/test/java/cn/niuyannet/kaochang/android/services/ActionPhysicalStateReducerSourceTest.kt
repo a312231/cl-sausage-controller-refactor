@@ -68,6 +68,21 @@ class ActionPhysicalStateReducerSourceTest {
     }
 
     @Test
+    fun supplementCompletionLog_shouldExplainStockWasAlreadyDeductedAtIn2() {
+        val source = sourceText()
+        val functionStart = source.indexOf("private fun applySuccessfulSupplementMove(")
+        assertTrue("必须存在补肠成功收口函数", functionStart >= 0)
+        val functionEnd = source.indexOf("private fun reportSupplementCompletionPhysicalDeltaIfNeeded(", functionStart)
+            .let { if (it >= 0) it else source.length }
+        val block = source.substring(functionStart, functionEnd)
+
+        assertTrue(
+            "in2 已扣箱时日志必须说明当前值不是二次扣减前后值",
+            block.contains("库存已在in2阶段扣减，当前库存=\${sourceBox.num}")
+        )
+    }
+
+    @Test
     fun singleSupplement_shouldNotReportSuccessWhenPhysicalStockIsInconsistent() {
         val source = sourceText()
         val functionStart = source.indexOf("private suspend fun moveSausageToKaoPanDetailed(")

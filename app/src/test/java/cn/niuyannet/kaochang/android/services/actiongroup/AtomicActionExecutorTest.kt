@@ -1008,6 +1008,12 @@ class AtomicActionExecutorTest {
         val executor = AtomicActionExecutor(
             gateway = gateway,
             logger = { logs += it },
+            telemetryContext = ActionGroupTelemetryContext(
+                sessionId = "session-log-1",
+                boxNo = 17,
+                panNo = 2,
+                orderId = "order-log-1"
+            ),
             diagnosisSnapshotProvider = { testSnapshot() },
             modbusServerAddress = 7
         )
@@ -1041,10 +1047,30 @@ class AtomicActionExecutorTest {
         )
         val communicationLogs = logs.filter { it.contains("【动作组通信】") }
         assertTrue(communicationLogs.isNotEmpty())
+        assertTrue(communicationLogs.all { it.contains("sessionId=session-log-1") })
+        assertTrue(communicationLogs.all { it.contains("panNo=2") })
+        assertTrue(communicationLogs.all { it.contains("boxNo=17") })
+        assertTrue(communicationLogs.all { it.contains("orderId=order-log-1") })
         assertFalse(communicationLogs.any { it.contains("串口地址=") })
         assertFalse(communicationLogs.any { it.contains("波特率=") })
         assertFalse(communicationLogs.any { it.contains("从站地址=") })
         assertFalse(communicationLogs.any { it.contains("连接状态=") })
+    }
+
+    @Test
+    fun execute_shouldKeepCompleteFailureDiagnosisForRemoteLogPackage() = runBlocking {
+        val failureDetail = "通信异常-" + "x".repeat(500) + "-END"
+        val executor = AtomicActionExecutor(
+            gateway = FakeGateway(writeResult = AtomicIoResult.Failure(failureDetail)),
+            logger = {}
+        )
+
+        val result = executor.execute(AtomicActions.in1, infoValue = 17)
+
+        assertTrue(result is AtomicActionResult.ModbusError)
+        val message = (result as AtomicActionResult.ModbusError).message
+        assertTrue(message.length > 300)
+        assertTrue(message.endsWith("-END"))
     }
 
     @Test

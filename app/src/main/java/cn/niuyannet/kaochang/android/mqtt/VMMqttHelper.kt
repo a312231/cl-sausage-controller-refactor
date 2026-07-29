@@ -466,7 +466,12 @@ object VMMqttHelper : VMMqtt() {
         })
         
         // 最后执行父类的全量订阅（真正下发 callback）
-        super.bindCallbackAndSubscribe(client, generation, callback)
+        super.bindCallbackAndSubscribe(client, generation) { subscribed ->
+            if (subscribed && generation == connectionGeneration) {
+                AppLogCloudReporter.onMqttConnected()
+            }
+            callback(subscribed)
+        }
     }
 
     private fun consumeDeviceLogPackageRequestIfNeeded(topicMessage: TopicMessage): Boolean {

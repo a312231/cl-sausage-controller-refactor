@@ -5,6 +5,7 @@ import android.R as AndroidR
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -50,6 +51,7 @@ import cn.niuyannet.kaochang.android.updates.AppUpdateManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
+import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 import com.blankj.utilcode.util.ToastUtils
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import kotlinx.coroutines.Dispatchers
@@ -454,7 +456,8 @@ class MaintenanceFragment : Fragment() {
 
     private suspend fun tryRecoverIdleMoveStatus(
         reason: String,
-        allowSupplementPrefetchAbandon: Boolean = false
+        allowSupplementPrefetchAbandon: Boolean = false,
+        blockedLogGate: RepeatedLogGate
     ): Boolean {
         val config = AppConfig.getAppConfig()
         if (config.moveStatus == 0 && !allowSupplementPrefetchAbandon) {
@@ -494,12 +497,16 @@ class MaintenanceFragment : Fragment() {
             )
             return true
         }
-        LogUtils.w(
-            "【维护操作】跳过本地机械状态自动收口：" +
-                "reason=$reason，moveStatus（机械动作状态）=${config.moveStatus}，" +
-                "status201连续读数=$statusReadings，actionGroupIdle=$actionGroupIdle，" +
-                "actionGroup=${KaoChangOperate.actionGroupRuntimeSnapshotForLog()}"
-        )
+        val runtimeSnapshot = KaoChangOperate.actionGroupRuntimeSnapshotForLog()
+        val blockedState = "${config.moveStatus}|$statusReadings|$actionGroupIdle|$runtimeSnapshot"
+        if (blockedLogGate.evaluate(blockedState, System.currentTimeMillis()) != null) {
+            LogUtils.w(
+                "【维护操作】跳过本地机械状态自动收口：" +
+                    "reason=$reason，moveStatus（机械动作状态）=${config.moveStatus}，" +
+                    "status201连续读数=$statusReadings，actionGroupIdle=$actionGroupIdle，" +
+                    "actionGroup=$runtimeSnapshot"
+            )
+        }
         return false
     }
 
@@ -715,13 +722,17 @@ class MaintenanceFragment : Fragment() {
         timeoutMs: Long = MANUAL_ACTION_IDLE_TIMEOUT_MS,
         allowSupplementPrefetchAbandon: Boolean = false
     ): Boolean {
+        val blockedLogGate = RepeatedLogGate(summaryIntervalMs = null)
+        val waitStartedAtMs = SystemClock.elapsedRealtime()
+        var observedBlocked = false
         val result = withTimeoutOrNull(timeoutMs) {
             while (
                 AppConfig.getAppConfig().moveStatus != 0 ||
                 !KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
             ) {
+                observedBlocked = true
                 update?.invoke(waitingText)
-                if (tryRecoverIdleMoveStatus(reason, allowSupplementPrefetchAbandon)) {
+                if (tryRecoverIdleMoveStatus(reason, allowSupplementPrefetchAbandon, blockedLogGate)) {
                     if (KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()) {
                         break
                     }
@@ -730,9 +741,19 @@ class MaintenanceFragment : Fragment() {
             }
             true
         }
-        return result == true &&
+        val idleReady = result == true &&
             AppConfig.getAppConfig().moveStatus == 0 &&
             KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
+        if (idleReady && observedBlocked) {
+            val config = AppConfig.getAppConfig()
+            LogUtils.i(
+                "【维护操作】等待机械空闲已结束：reason=$reason，" +
+                    "waitedMs=${SystemClock.elapsedRealtime() - waitStartedAtMs}，" +
+                    "moveStatus（机械动作状态）=${config.moveStatus}，" +
+                    "actionGroup=${KaoChangOperate.actionGroupRuntimeSnapshotForLog()}"
+            )
+        }
+        return idleReady
     }
 
     private fun startCountdown(

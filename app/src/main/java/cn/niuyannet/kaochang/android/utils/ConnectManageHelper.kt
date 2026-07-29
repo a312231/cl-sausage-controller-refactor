@@ -30,7 +30,7 @@ object ConnectManageHelper {
                 
                 // 【新增巡检】如果发现 MQTT 没连上，主动触发一次辅助重连
                 if (!VMMqttHelper.connectStatus()) {
-                    LogUtils.w("【MQTT巡检】定时巡检发现连接已断开，正在尝试发起兜底重连...")
+                    LogUtils.d("【MQTT巡检】定时巡检发现连接已断开，正在尝试发起兜底重连...")
                     VMMqttHelper.triggerManualReconnect("30秒巡检兜底")
                 }
 

@@ -82,10 +82,11 @@ class VMModbusHelperDiagnosisTest {
     }
 
     @Test
-    fun diagnosisText_shouldTruncateTo300CharactersWithEllipsis() {
+    fun diagnosisText_shouldKeepCompleteFailureDetailsForRemoteLogPackage() {
+        val failureTail = "-ROOT-CAUSE-END"
         val result = ModbusOperationResult(
             status = ModbusOperationStatus.UNKNOWN_ERROR,
-            message = "x".repeat(500)
+            message = "x".repeat(500) + failureTail
         )
 
         val text = VMModbusHelper.formatOperationDiagnosis(
@@ -99,8 +100,8 @@ class VMModbusHelperDiagnosisTest {
             baudRate = 115200
         )
 
-        assertEquals(300, text.length)
-        assertTrue(text.endsWith("..."))
+        assertTrue(text.length > 300)
+        assertTrue(text.endsWith(failureTail))
     }
 
     @Test

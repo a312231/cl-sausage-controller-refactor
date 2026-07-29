@@ -1,9 +1,11 @@
 package cn.niuyannet.kaochang.android.modbus
 
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 import com.invertor.modbus.Modbus
 import com.invertor.modbus.ModbusMaster
 import com.invertor.modbus.ModbusMasterFactory
@@ -119,9 +121,10 @@ object VMModbusHelper {
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lunXunJob: Job? = null
     private const val RECENT_RECONNECT_RESULT_REUSE_MS = 2_000L
+    private const val RECONNECT_FAILURE_SUMMARY_INTERVAL_MS = 30L * 60 * 1000
+    private val reconnectFailureLogGate = RepeatedLogGate(RECONNECT_FAILURE_SUMMARY_INTERVAL_MS)
     private var lastReconnectFinishedAtMs = 0L
     private var lastReconnectStatus = false
-    private const val MAX_OPERATION_DIAGNOSIS_LENGTH = 300
 
     private fun buildSerialParameters(devicePath: String, baudRate: Int): SerialParameters {
         return SerialParameters().apply {
@@ -224,8 +227,13 @@ object VMModbusHelper {
                 lastError = e
             }
         }
-        LogUtils.w("串口已打开，但未收到有效的下位机响应：${lastError?.message}")
+        LogUtils.d("串口已打开，但未收到有效的下位机响应：${lastError?.message}")
         return false
+    }
+
+    private fun logReconnectFailure(state: String, message: String) {
+        val decision = reconnectFailureLogGate.evaluate(state, SystemClock.elapsedRealtime()) ?: return
+        LogUtils.e("$message，suppressedCount=${decision.suppressedCount}")
     }
 
     private fun hasModbusResponse(master: ModbusMaster): Boolean {
@@ -241,6 +249,7 @@ object VMModbusHelper {
 
         try {
             if (connectStatus()) {
+                reconnectFailureLogGate.reset()
                 lastReconnectFinishedAtMs = System.currentTimeMillis()
                 lastReconnectStatus = true
                 callback.invoke(true)
@@ -266,7 +275,8 @@ object VMModbusHelper {
             val boardProfile = resolveBoardSerialProfile()
             val boardFingerprint = buildBoardFingerprint()
             if (candidatePorts.isEmpty()) {
-                LogUtils.e("没有找到可用的 Modbus 串口候选，当前配置=${appConfigBean.modbusAddress}")
+                val failure = "没有找到可用的 Modbus 串口候选，当前配置=${appConfigBean.modbusAddress}"
+                logReconnectFailure(failure, failure)
                 disconnectModbusMaster()
                 lastReconnectFinishedAtMs = System.currentTimeMillis()
                 lastReconnectStatus = false
@@ -302,12 +312,13 @@ object VMModbusHelper {
                     } else {
                         ""
                     }
-                    LogUtils.w("串口探测失败：${probeResult.summary()}$busyHint")
+                    LogUtils.d("串口探测失败：${probeResult.summary()}$busyHint")
                     continue
                 }
 
                 val master = probeResult.master!!
                 modbusMaster = master
+                reconnectFailureLogGate.reset()
 
                 if (appConfigBean.modbusAddress != devicePath) {
                     LogUtils.i("【Modbus】自动探测到可用串口：${appConfigBean.modbusAddress} -> $devicePath，已更新配置")
@@ -323,11 +334,10 @@ object VMModbusHelper {
                 return
             }
 
-            LogUtils.e(
-                "所有 Modbus 串口探测均失败：当前配置=${appConfigBean.modbusAddress}，" +
-                    "candidates=${candidatePorts.joinToString()}，" +
-                    "probeResults=${probeResults.joinToString("；")}"
-            )
+            val failure = "所有 Modbus 串口探测均失败：当前配置=${appConfigBean.modbusAddress}，" +
+                "candidates=${candidatePorts.joinToString()}，" +
+                "probeResults=${probeResults.joinToString("；")}"
+            logReconnectFailure(failure, failure)
             disconnectModbusMaster()
             lastReconnectFinishedAtMs = System.currentTimeMillis()
             lastReconnectStatus = false
@@ -497,19 +507,11 @@ object VMModbusHelper {
         parts += "波特率=$baudRate"
         parts += "异常类型=${result.exceptionClassName ?: "无"}"
         parts += "异常信息=${firstNonBlank(result.exceptionMessage, result.message, "无")}"
-        return truncateOperationDiagnosis(parts.joinToString("，"))
+        return parts.joinToString("，")
     }
 
     private fun firstNonBlank(vararg values: String?): String {
         return values.firstOrNull { !it.isNullOrBlank() } ?: ""
-    }
-
-    private fun truncateOperationDiagnosis(text: String): String {
-        return if (text.length <= MAX_OPERATION_DIAGNOSIS_LENGTH) {
-            text
-        } else {
-            text.take(MAX_OPERATION_DIAGNOSIS_LENGTH - 3) + "..."
-        }
     }
 
     fun readCoils(serverAddress: Int, startAddress: Int): Boolean {

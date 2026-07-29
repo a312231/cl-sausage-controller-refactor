@@ -847,15 +847,7 @@ class AtomicActionExecutor(
             parts += "从站地址=$modbusServerAddress"
         }
         parts += extraParts
-        return truncateDiagnosis(parts.joinToString("，"))
-    }
-
-    private fun truncateDiagnosis(text: String): String {
-        return if (text.length <= MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH) {
-            text
-        } else {
-            text.take(MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH - 3) + "..."
-        }
+        return parts.joinToString("，")
     }
 
     private fun formatElapsedSeconds(elapsedMs: Long): String {
@@ -990,6 +982,10 @@ class AtomicActionExecutor(
     ): String {
         return listOf(
             "【动作组通信】$title",
+            "sessionId=${telemetryContext.sessionId ?: "无"}",
+            "panNo=${telemetryContext.panNo ?: "无"}",
+            "boxNo=${telemetryContext.boxNo ?: "无"}",
+            "orderId=${telemetryContext.orderId ?: "无"}",
             "动作=${spec.name}",
             "动作说明=${spec.description.substringAfter('：', spec.description)}"
         ).plus(parts)
@@ -1018,7 +1014,6 @@ class AtomicActionExecutor(
         private const val RUNNING_PROGRESS_LOG_INTERVAL_MS = 5_000L
         private const val STARTUP_CONFIRM_TIMEOUT_MS = 3_000L
         private const val COMMAND_PENDING_CONFIRM_TIMEOUT_MS = 40_000L
-        private const val MAX_ACTION_FAILURE_DIAGNOSIS_LENGTH = 300
         private const val IDLE_AFTER_RUNNING_CONFIRM_THRESHOLD = 2
         const val ACTION_EVENT_PHASE_STARTED = "started"
         const val ACTION_EVENT_PHASE_RUNNING_CONFIRMED = "running_confirmed"

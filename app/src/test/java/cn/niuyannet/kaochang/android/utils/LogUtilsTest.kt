@@ -51,6 +51,12 @@ class LogUtilsTest {
     }
 
     @Test
+    fun shouldWriteToFileForTest_shouldKeepWarningsAndErrorsWithoutAllowlistKeywords() {
+        assertTrue(LogUtils.shouldWriteToFileForTest("W", "普通警告但不包含日志白名单关键词"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("E", "普通错误但不包含日志白名单关键词"))
+    }
+
+    @Test
     fun shouldWriteToFileForTest_shouldFilterHighFrequencyHomepageEstimateDebugLogs() {
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "【MQTT展示态】已上报首页展示态：available=1174380"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "【MQTT业务】收到首页展示态回执：action=2（设备状态同步）"))
@@ -60,7 +66,7 @@ class LogUtilsTest {
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "[300/400动作组] 轮询原子动作：action=out1，resultRegister=411，resultCode=0x0001，elapsedMs=686"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "[300/400动作组] 准备下发原子动作：sessionId=out:1，action=out1"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "[300/400动作组] 原子动作完成：sessionId=in_pipeline:1，action=in1，success=true"))
-        assertFalse(LogUtils.shouldWriteToFileForTest("W", "串口探测失败：device=/dev/ttyS2, error=Port not found"))
+        assertTrue(LogUtils.shouldWriteToFileForTest("W", "串口探测失败：device=/dev/ttyS2, error=Port not found"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "【Modbus】复用刚完成的重连结果，避免连续重复完整串口探测：status=false"))
     }
 }

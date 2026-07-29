@@ -4975,15 +4975,20 @@ object KaoChangOperate {
             targetPan.cmdStatusMove = 0
             clearOrdinaryBoxTakeStatus(sourceBox)
         }
+        val stockLog = if (boxAlreadyDeducted) {
+            "库存已在in2阶段扣减，当前库存=${sourceBox.num}"
+        } else {
+            "箱库存=$boxStockBefore->${sourceBox.num}"
+        }
         logD(
             LOG_SUPPLEMENT,
             "补肠完成：来源烤肠箱=${sourceBox.positionSn}，目标烤盘=${targetPan.positionSn}，口味=$sausageName，" +
-                "箱库存=$boxStockBefore->${sourceBox.num}，panStatus=${targetPan.status}，startTime=${targetPan.startTime}，" +
+                "$stockLog，panStatus=${targetPan.status}，startTime=${targetPan.startTime}，" +
                 "boxAlreadyDeducted=$boxAlreadyDeducted，panAlreadyPlaced=$panAlreadyPlaced"
         )
         LogUtils.i(
             "【补肠】烤盘${targetPan.positionSn} 补肠完成：来源烤肠箱=${sourceBox.positionSn}，" +
-                "口味=$sausageName，烤盘开始烤制计时，箱库存=$boxStockBefore->${sourceBox.num}"
+                "口味=$sausageName，烤盘开始烤制计时，$stockLog"
         )
         val panApplied = targetPan.isHasSausage && targetPan.status == 1
         val boxDeducted = boxAlreadyDeducted || (boxStockBefore > 0 && sourceBox.num == boxStockBefore - 1)

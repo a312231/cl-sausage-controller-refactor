@@ -197,11 +197,14 @@ object LogUtils {
 
     @Suppress("UNUSED_PARAMETER")
     private fun shouldWriteToFile(level: String, msg: String, tr: Throwable?): Boolean {
-        if (FILE_LOG_NOISE_KEYWORDS.any { keyword -> msg.contains(keyword) }) {
-            return false
-        }
         if (tr != null) {
             return true
+        }
+        if (level == "W" || level == "E") {
+            return true
+        }
+        if (FILE_LOG_NOISE_KEYWORDS.any { keyword -> msg.contains(keyword) }) {
+            return false
         }
         return FILE_LOG_KEYWORDS.any { keyword -> msg.contains(keyword) }
     }
