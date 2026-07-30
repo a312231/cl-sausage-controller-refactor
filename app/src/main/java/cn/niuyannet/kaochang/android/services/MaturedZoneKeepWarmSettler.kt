@@ -28,15 +28,19 @@ internal object MaturedZoneKeepWarmSettler {
             return emptyList()
         }
 
-        val zones = if (config.modeType == 2 && config.transitionMode == 1) {
-            listOf(
+        val zones = when {
+            config.modeType == 2 && config.transitionMode == 0 -> listOf(
+                1 to (1..9),
+                2 to (10..21),
+                3 to (25..33)
+            )
+            config.modeType == 2 && config.transitionMode == 1 -> listOf(
                 1 to (1..9),
                 2 to (13..18),
                 2 to (19..21),
                 3 to (25..33)
             )
-        } else {
-            physicalZones
+            else -> physicalZones
         }
 
         val appliedPhysicalAreas = mutableSetOf<Int>()

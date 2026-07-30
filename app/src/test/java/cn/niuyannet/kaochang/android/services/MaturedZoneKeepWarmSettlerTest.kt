@@ -164,6 +164,80 @@ class MaturedZoneKeepWarmSettlerTest {
     }
 
     @Test
+    fun settleMaturedZones_shouldSettleTenToTwentyOneTogetherInStableHighMode() {
+        val nowMs = 10_000L
+        val config = config().apply {
+            modeType = 2
+            transitionMode = 0
+        }
+        val pans = pans(*(10..21).map { maturedBakingPan(it) }.toTypedArray())
+        val appliedAreas = mutableListOf<Int>()
+
+        val result = MaturedZoneKeepWarmSettler.settleMaturedZones(pans, config, nowMs) {
+            appliedAreas += it
+        }
+
+        assertEquals(listOf(2), appliedAreas)
+        assertEquals(listOf(2), result.map { it.area })
+        assertEquals((10..21).toList(), result.single().positions)
+        (10..21).forEach { position ->
+            val pan = pans.first { it.positionSn == position }
+            assertEquals(0L, pan.startTime)
+            assertEquals(nowMs, pan.holdingTime)
+            assertEquals(2, pan.status)
+        }
+    }
+
+    @Test
+    fun settleMaturedZones_shouldKeepTenToTwentyOneBakingUntilTwentyOneMaturesInStableHighMode() {
+        val nowMs = 10_000L
+        val config = config().apply {
+            modeType = 2
+            transitionMode = 0
+        }
+        val pans = pans(
+            *(10..20).map { maturedBakingPan(it) }.toTypedArray(),
+            unmaturedBakingPan(21)
+        )
+        val appliedAreas = mutableListOf<Int>()
+
+        val result = MaturedZoneKeepWarmSettler.settleMaturedZones(pans, config, nowMs) {
+            appliedAreas += it
+        }
+
+        assertTrue(result.isEmpty())
+        assertTrue(appliedAreas.isEmpty())
+        (10..21).forEach { position ->
+            val pan = pans.first { it.positionSn == position }
+            assertEquals(1, pan.status)
+            assertTrue(pan.startTime > 0L)
+            assertEquals(0L, pan.holdingTime)
+        }
+    }
+
+    @Test
+    fun settleMaturedZones_shouldSettleTenToTwentyOneInStableHighModeEvenIfMachineBusy() {
+        val nowMs = 10_000L
+        val config = config().apply {
+            modeType = 2
+            transitionMode = 0
+            moveStatus = 2
+        }
+        val pans = pans(*(10..21).map { maturedBakingPan(it) }.toTypedArray())
+        val appliedAreas = mutableListOf<Int>()
+
+        val result = MaturedZoneKeepWarmSettler.settleMaturedZones(pans, config, nowMs) {
+            appliedAreas += it
+        }
+
+        assertEquals(listOf(2), appliedAreas)
+        assertEquals((10..21).toList(), result.single().positions)
+        assertTrue((10..21).all { position ->
+            pans.first { it.positionSn == position }.status == 2
+        })
+    }
+
+    @Test
     fun settleMaturedZones_shouldNotSettleZoneTwoWhenNineteenIsStillBaking() {
         val nowMs = 10_000L
         val pans = pans(
