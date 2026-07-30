@@ -22,6 +22,7 @@ enum class SupplementBarrierState {
 enum class SupplementPipelinePhase {
     RUNNING,
     PAUSED_FOR_ORDER,
+    PAUSED_FOR_RUNTIME,
     RECOVERING,
     MAINTENANCE_REQUIRED,
     COMPLETED
@@ -654,6 +655,39 @@ class SupplementPrefetchSessionRepository(
 
     fun markMaintenanceRequired(): SupplementPrefetchPipelineSession = mutate { current ->
         current.copy(phase = SupplementPipelinePhase.MAINTENANCE_REQUIRED)
+    }
+
+    fun pauseForRuntimeRecovery(sessionId: String): SupplementPrefetchPipelineSession = mutate { current ->
+        check(current.sessionId == sessionId) { "双 lane runtime pause owner 已变化" }
+        check(current.barrierState == SupplementBarrierState.OPEN && current.pendingOrderNo == null) {
+            "双 lane runtime pause 需要已释放订单 barrier"
+        }
+        check(current.phase in setOf(
+            SupplementPipelinePhase.RUNNING,
+            SupplementPipelinePhase.RECOVERING,
+            SupplementPipelinePhase.PAUSED_FOR_RUNTIME
+        )) { "当前阶段禁止转 runtime pause：phase=${current.phase}" }
+        if (current.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME &&
+            current.mechanicalClaimState == null
+        ) {
+            return@mutate current
+        }
+        current.copy(
+            phase = SupplementPipelinePhase.PAUSED_FOR_RUNTIME,
+            mechanicalClaimState = null,
+            mechanicalClaimRevision = current.mechanicalClaimRevision + 1L
+        )
+    }
+
+    fun resumeFromRuntimeRecovery(sessionId: String): SupplementPrefetchPipelineSession = mutate { current ->
+        check(current.sessionId == sessionId) { "双 lane runtime resume owner 已变化" }
+        check(current.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME) {
+            "当前阶段不是 runtime pause：phase=${current.phase}"
+        }
+        check(current.barrierState == SupplementBarrierState.OPEN && current.pendingOrderNo == null) {
+            "双 lane runtime resume 需要已释放订单 barrier"
+        }
+        current.copy(phase = SupplementPipelinePhase.RUNNING)
     }
 
     private fun advanceLifecycle(

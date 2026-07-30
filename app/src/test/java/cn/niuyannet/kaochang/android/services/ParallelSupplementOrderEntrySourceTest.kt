@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,6 +26,23 @@ class ParallelSupplementOrderEntrySourceTest {
 
         assertFalse(order.contains("AppConfig.getAppConfig().moveStatus = 0"))
         assertTrue(order.contains("KaoChangOperate.clearOrderMoveStatusIfRecoverySafe("))
+    }
+
+    @Test
+    fun parallelResume_shouldAcceptOrderMoveStatusOnlyAtDedicatedHandoff() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("private suspend fun resumePreparedParallelSupplementOnce")
+        val end = operate.indexOf("private fun hasPausedSupplementSession", start)
+        val block = operate.substring(start, end)
+
+        assertTrue(block.contains("allowedMoveStatuses = setOf(0, 1, 2)"))
+        assertEquals(1, Regex("allowedMoveStatuses = setOf\\(0, 1, 2\\)").findAll(operate).count())
+        assertTrue(block.contains("allowedMoveStatuses = setOf(0)"))
+
+        val recoveryStart = operate.indexOf("suspend fun recoverActionGroupStateAfterModbusReady")
+        val recoveryEnd = operate.indexOf("private fun recoverPanMoveJournalAfterModbusReady", recoveryStart)
+        val recovery = operate.substring(recoveryStart, recoveryEnd)
+        assertTrue(recovery.contains("handleParallelSupplementResumePreparation("))
     }
 
     @Test

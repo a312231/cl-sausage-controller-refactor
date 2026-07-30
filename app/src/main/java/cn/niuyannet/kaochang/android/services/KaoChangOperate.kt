@@ -64,6 +64,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrde
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrderPauseSafety
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchLaneCheckpoint
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPipelinePhase
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchRecoveryCoordinator
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchRecoveryResult
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchResumePlanner
@@ -473,6 +474,121 @@ object KaoChangOperate {
         }
     }
 
+    fun isParallelSupplementPausedForRuntimeRecovery(): Boolean {
+        return when (val read = readSupplementPrefetchEvidence()) {
+            is DurableEvidenceReadResult.Valid -> read.value.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME &&
+                read.value.barrierState == SupplementBarrierState.OPEN &&
+                read.value.pendingOrderNo == null &&
+                read.value.mechanicalClaimState == null &&
+                actionGroupRecoveryVerified &&
+                actionGroupSessionStore.load() == null &&
+                panMoveJournalStore.load() == null &&
+                actionGroupLocks.isIdle()
+            else -> false
+        }
+    }
+
+    private fun parallelSupplementRuntimeAvailable(): Boolean {
+        val config = AppConfig.getAppConfig()
+        return config.onlineStatus == 1 &&
+            config.errorStatus == 0 &&
+            config.inspectionMode == 0 &&
+            config.supplyStatus == 0 &&
+            config.isEnable == 1 &&
+            VMModbusHelper.connectStatus()
+    }
+
+    private fun deferParallelSupplementForRuntimeRecovery(
+        plan: SupplementPrefetchResumePlan,
+        reason: String
+    ): Boolean {
+        var deferredSessionId: String? = null
+        val deferred = withFaultHeatTransitionLock {
+            val session = activeSupplementPrefetchSessionOrNull("双 lane 延迟续作")
+                ?: return@withFaultHeatTransitionLock false
+            val lane = session.deliveryLane
+            if (session.sessionId != plan.sessionId ||
+                lane?.sourceBoxNo != plan.sourceBoxNo ||
+                lane.targetPanNo != plan.targetPanNo ||
+                lane.lastConfirmedStage != plan.resumeAfterAction
+            ) {
+                enterActionGroupMaintenance("双 lane 延迟续作计划与会话不一致：plan=$plan")
+                return@withFaultHeatTransitionLock false
+            }
+            if (session.mechanicalClaimState == null && session.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME) {
+                markActionGroupRecoveryVerified("双 lane 已验证但等待运行态续作：" + reason)
+                deferredSessionId = session.sessionId
+                return@withFaultHeatTransitionLock true
+            }
+            val currentMoveStatus = AppConfig.getAppConfig().moveStatus
+            if (currentMoveStatus !in setOf(0, 1, 2)) {
+                enterActionGroupMaintenance(
+                    "双 lane 延迟续作发现未知 moveStatus，保留会话：moveStatus=" + currentMoveStatus +
+                        "，reason=" + reason,
+                    preserveMoveStatus = true
+                )
+                return@withFaultHeatTransitionLock false
+            }
+            var moveStatusCleared = false
+            runCatching {
+                if (currentMoveStatus != 0) {
+                    mechanicalMoveStatusStore.saveDurable(0)
+                    moveStatusCleared = true
+                }
+                supplementPrefetchSessionRepository.pauseForRuntimeRecovery(session.sessionId)
+                actionGroupLocks.release(session.sessionId)
+                markActionGroupRecoveryVerified("双 lane 已验证但等待运行态续作：" + reason)
+                deferredSessionId = session.sessionId
+            }.fold(
+                onSuccess = { true },
+                onFailure = { error ->
+                    if (moveStatusCleared) {
+                        runCatching { mechanicalMoveStatusStore.saveDurable(currentMoveStatus) }
+                    }
+                    enterActionGroupMaintenance(
+                        "双 lane 转运行态延迟续作失败，保留会话：reason=" + reason +
+                            "，error=" + error.message,
+                        preserveMoveStatus = true
+                    )
+                    false
+                }
+            )
+        }
+        if (deferred) {
+            publishRuntimeStateWithHttpFallback("双 lane 等待运行态续作")
+            logI(
+                LOG_SUPPLEMENT,
+                "双 lane 已转为运行态延迟续作：session=" + deferredSessionId + "，reason=" + reason
+            )
+        }
+        return deferred
+    }
+
+    suspend fun resumeParallelSupplementForRuntimeRecovery(reason: String): Boolean {
+        if (!isParallelSupplementPausedForRuntimeRecovery()) return true
+        if (!parallelSupplementRuntimeAvailable()) return false
+        val session = activeSupplementPrefetchSessionOrNull("双 lane 运行态恢复") ?: return false
+        val acquired = withFaultHeatTransitionLock {
+            actionGroupLocks.tryAcquire(session.resourceMask, session.sessionId)
+        }
+        if (!acquired) return false
+        val preparation = runCatching {
+            SupplementPrefetchResumePlanner.prepareRecovered(supplementPrefetchSessionRepository)
+        }.getOrElse { error ->
+            actionGroupLocks.release(session.sessionId)
+            enterActionGroupMaintenance(
+                "双 lane 运行态恢复检查失败：reason=" + reason + "，error=" + error.message
+            )
+            return false
+        }
+        if (preparation !is SupplementPrefetchResumePreparation.Ready) {
+            actionGroupLocks.release(session.sessionId)
+            enterActionGroupMaintenance("双 lane 运行态恢复计划不可执行：reason=" + reason + "，preparation=$preparation")
+            return false
+        }
+        return handleParallelSupplementResumePreparation(preparation, reason, lockAlreadyOwned = true)
+    }
+
     private fun supplementPipelineOutcome(
         result: InActionGroupPipelineResult?
     ): SupplementPipelineOutcome = when (result) {
@@ -527,7 +643,12 @@ object KaoChangOperate {
             if (preparation !is SupplementPrefetchResumePreparation.Unsafe) {
                 SupplementPauseController.clearOrderPause(orderNo)
             }
-            return handleParallelSupplementResumePreparation(preparation, reason, lockAlreadyOwned = true)
+            return handleParallelSupplementResumePreparation(
+                preparation,
+                reason,
+                lockAlreadyOwned = true,
+                allowRuntimeDefer = true
+            )
         }
         SupplementPauseController.clearOrderPause(orderNo)
         return resumePausedSupplementAfterOrder(reason)
@@ -553,7 +674,8 @@ object KaoChangOperate {
     private suspend fun handleParallelSupplementResumePreparation(
         preparation: SupplementPrefetchResumePreparation,
         reason: String,
-        lockAlreadyOwned: Boolean
+        lockAlreadyOwned: Boolean,
+        allowRuntimeDefer: Boolean = false
     ): Boolean = when (preparation) {
         SupplementPrefetchResumePreparation.NoSession -> true
         is SupplementPrefetchResumePreparation.Unsafe -> {
@@ -588,24 +710,32 @@ object KaoChangOperate {
                 }
             )
         }
-        is SupplementPrefetchResumePreparation.Ready -> resumePreparedParallelSupplement(
-            preparation.plan,
-            reason,
-            lockAlreadyOwned
-        )
+        is SupplementPrefetchResumePreparation.Ready -> {
+            if (!parallelSupplementRuntimeAvailable() && allowRuntimeDefer) {
+                deferParallelSupplementForRuntimeRecovery(preparation.plan, reason)
+            } else {
+                resumePreparedParallelSupplement(
+                    preparation.plan,
+                    reason,
+                    lockAlreadyOwned,
+                    allowRuntimeDefer
+                )
+            }
+        }
     }
 
     private suspend fun resumePreparedParallelSupplement(
         plan: SupplementPrefetchResumePlan,
         reason: String,
-        lockAlreadyOwned: Boolean
+        lockAlreadyOwned: Boolean,
+        allowRuntimeDefer: Boolean
     ): Boolean {
         if (!supplementResumeSingleFlight.tryEnter()) {
             logW(LOG_SUPPLEMENT, "双 lane 续作已有执行中的尝试，拒绝重复下发：sessionId=${plan.sessionId}，reason=$reason")
             return false
         }
         return try {
-            resumePreparedParallelSupplementOnce(plan, reason, lockAlreadyOwned)
+            resumePreparedParallelSupplementOnce(plan, reason, lockAlreadyOwned, allowRuntimeDefer)
         } finally {
             supplementResumeSingleFlight.exit()
         }
@@ -614,41 +744,97 @@ object KaoChangOperate {
     private suspend fun resumePreparedParallelSupplementOnce(
         plan: SupplementPrefetchResumePlan,
         reason: String,
-        lockAlreadyOwned: Boolean
+        lockAlreadyOwned: Boolean,
+        allowRuntimeDefer: Boolean
     ): Boolean {
-        val session = activeSupplementPrefetchSessionOrNull("双 lane 续作执行前") ?: return false
+        var lockOwnedByResume = lockAlreadyOwned
+        fun releaseResumeLock() {
+            if (lockOwnedByResume) {
+                actionGroupLocks.release(plan.sessionId)
+                lockOwnedByResume = false
+            }
+        }
+
+        val session = activeSupplementPrefetchSessionOrNull("双 lane 续作执行前") ?: run {
+            releaseResumeLock()
+            return false
+        }
         val lane = session.deliveryLane
         if (session.sessionId != plan.sessionId || lane?.sourceBoxNo != plan.sourceBoxNo ||
             lane.targetPanNo != plan.targetPanNo || lane.lastConfirmedStage != plan.resumeAfterAction
         ) {
             enterActionGroupMaintenance("双 lane 续作计划与持久化会话不一致：plan=$plan")
+            releaseResumeLock()
             return false
         }
         val runtime = AppConfig.getAppConfig()
         if (runtime.onlineStatus != 1 || runtime.errorStatus != 0 || runtime.inspectionMode != 0 ||
             runtime.supplyStatus != 0 || runtime.isEnable != 1 || !VMModbusHelper.connectStatus()
         ) {
-            logW(LOG_SUPPLEMENT, "双 lane 续作运行态门禁拒绝下发，保留会话和锁：reason=$reason")
+            logW(LOG_SUPPLEMENT, "双 lane 续作运行态门禁拒绝下发，保留会话并释放本次资源锁：reason=$reason")
+            if (allowRuntimeDefer) {
+                return deferParallelSupplementForRuntimeRecovery(plan, reason)
+            }
+            releaseResumeLock()
             return false
         }
-        if (!lockAlreadyOwned && !actionGroupLocks.tryAcquire(plan.resourceMask, plan.sessionId)) {
-            return false
+        if (!lockOwnedByResume) {
+            if (!actionGroupLocks.tryAcquire(plan.resourceMask, plan.sessionId)) {
+                return false
+            }
+            lockOwnedByResume = true
         }
         val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == plan.targetPanNo }
         val box = KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == plan.sourceBoxNo }
         if (pan == null || box == null) {
             enterActionGroupMaintenance("双 lane 续作找不到目标盘或来源箱：plan=$plan")
+            releaseResumeLock()
             return false
         }
-        if (!claimMechanicalMove(
+        val runtimePaused = session.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME
+        var resumedFromRuntimePause = false
+        val claimed = if (!runtimePaused) {
+            claimMechanicalMove(
                 stage = "双 lane 续作下发前",
                 owner = plan.sessionId,
                 ownerStore = supplementPipelineClaimOwnerStore(),
-                allowedMoveStatuses = setOf(0, 1),
+                // 2 仅用于已完成订单向匹配双 lane 会话交还机械控制权。
+                allowedMoveStatuses = setOf(0, 1, 2),
                 claimedMoveStatus = 1,
                 requireSupplementGate = true
             )
-        ) {
+        } else {
+            withFaultHeatTransitionLock {
+                if (!parallelSupplementRuntimeAvailable()) {
+                    false
+                } else {
+                    runCatching {
+                        supplementPrefetchSessionRepository.resumeFromRuntimeRecovery(plan.sessionId)
+                        resumedFromRuntimePause = true
+                        val result = claimMechanicalMove(
+                            stage = "双 lane 运行态恢复续作下发前",
+                            owner = plan.sessionId,
+                            ownerStore = supplementPipelineClaimOwnerStore(),
+                            allowedMoveStatuses = setOf(0),
+                            claimedMoveStatus = 1,
+                            requireSupplementGate = true
+                        )
+                        if (!result) {
+                            supplementPrefetchSessionRepository.pauseForRuntimeRecovery(plan.sessionId)
+                        }
+                        result
+                    }.getOrElse { error ->
+                        if (resumedFromRuntimePause) {
+                            runCatching { supplementPrefetchSessionRepository.pauseForRuntimeRecovery(plan.sessionId) }
+                        }
+                        logW(LOG_SUPPLEMENT, "双 lane 运行态恢复认领失败：reason=$reason，error=${error.message}")
+                        false
+                    }
+                }
+            }
+        }
+        if (!claimed) {
+            releaseResumeLock()
             return false
         }
 
@@ -788,14 +974,15 @@ object KaoChangOperate {
             enterActionGroupMaintenance("双 lane 续作失败，保留会话和锁：reason=$reason，result=$result")
             return false
         }
-        return finishParallelSupplementResume(plan, pan, box, reason)
+        return finishParallelSupplementResume(plan, pan, box, reason, allowRuntimeDefer)
     }
 
     private suspend fun finishParallelSupplementResume(
         plan: SupplementPrefetchResumePlan,
         pan: KaoPan,
         box: KaoPanBox,
-        reason: String
+        reason: String,
+        allowRuntimeDefer: Boolean
     ): Boolean {
         val session = supplementPrefetchSessionRepository.load()
             ?: return false
@@ -827,7 +1014,8 @@ object KaoChangOperate {
                 return resumePreparedParallelSupplementOnce(
                     next.plan,
                     "$reason：当前根完成后续作预取根",
-                    lockAlreadyOwned = true
+                    lockAlreadyOwned = true,
+                    allowRuntimeDefer = allowRuntimeDefer
                 )
             }
             val latest = requireNotNull(supplementPrefetchSessionRepository.load())
@@ -1960,7 +2148,8 @@ object KaoChangOperate {
                     handleParallelSupplementResumePreparation(
                         preparation,
                         "双 lane 启动恢复：$reason",
-                        lockAlreadyOwned = true
+                        lockAlreadyOwned = true,
+                        allowRuntimeDefer = true
                     )
                 }
                 is SupplementPrefetchRecoveryResult.MaintenanceRequired -> {
@@ -7403,7 +7592,7 @@ object KaoChangOperate {
             targetOnlineStatus in 0..2 &&
                 VMModbusHelper.connectStatus() &&
                 config.moveStatus == 0 &&
-                !isActionGroupRecoveryBlocked()
+                (!isActionGroupRecoveryBlocked() || isParallelSupplementPausedForRuntimeRecovery())
         }
         val result = ManualFaultRecoveryCoordinator(faultHeatTransitionLock, stateStore).recover(
             targetOnlineStatus = targetOnlineStatus,

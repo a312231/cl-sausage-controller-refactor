@@ -217,7 +217,10 @@ object SupplementPrefetchSessionValidator {
         }
         return when (session.barrierState) {
             SupplementBarrierState.OPEN ->
-                if (session.phase == SupplementPipelinePhase.RUNNING) null else "OPEN barrier 只能处于 RUNNING"
+                if (session.phase == SupplementPipelinePhase.RUNNING ||
+                    (session.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME &&
+                        session.mechanicalClaimState == null)
+                ) null else "OPEN barrier 阶段非法"
             SupplementBarrierState.ORDER_WON ->
                 if (session.phase == SupplementPipelinePhase.PAUSED_FOR_ORDER) null
                 else "ORDER_WON 只能处于 PAUSED_FOR_ORDER"

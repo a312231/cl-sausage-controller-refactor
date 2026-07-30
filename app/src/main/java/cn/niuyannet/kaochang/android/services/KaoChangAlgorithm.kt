@@ -804,6 +804,12 @@ object KaoChangAlgorithm {
             logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
             return
         }
+        if (KaoChangOperate.isParallelSupplementPausedForRuntimeRecovery() &&
+            !KaoChangOperate.resumeParallelSupplementForRuntimeRecovery("算法轮询优先恢复双 lane")
+        ) {
+            logD(LOG_ALGORITHM, "双 lane 运行态延迟续作未完成，跳过本轮其他机械调度")
+            return
+        }
         val actionGroupRecoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
         if (actionGroupRecoveryBlocked) {
             refreshActiveBakingTimeBeforeMaturityCheck(config, kaoPanList)
@@ -1521,7 +1527,9 @@ object KaoChangAlgorithm {
                         "reason=$reason，onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}"
                 )
                 false
-            } else if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
+            } else if (KaoChangOperate.isActionGroupRecoveryBlocked() &&
+                !KaoChangOperate.isParallelSupplementPausedForRuntimeRecovery()
+            ) {
                 logW(LOG_ALGORITHM, "拒绝开启烤肠算法：动作恢复尚未收口，reason=$reason")
                 false
             } else {

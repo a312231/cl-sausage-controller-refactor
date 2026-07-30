@@ -135,6 +135,29 @@ class SupplementPrefetchSessionRepositoryTest {
     }
 
     @Test
+    fun runtimeRecoveryPause_shouldClearClaimKeepCheckpointAndAdvanceRevision() {
+        val repository = SupplementPrefetchSessionRepository(MemoryStore())
+        val created = repository.create(
+            baseSession().copy(
+                deliveryLane = lane(13, "in2", SupplementActionLifecycle.TERMINAL_CONFIRMED)
+                    .copy(boxDeductionApplied = true),
+                mechanicalClaimState = MechanicalClaimState.CLAIMED,
+                mechanicalClaimRevision = 2L
+            )
+        )
+
+        val paused = repository::class.java
+            .getMethod("pauseForRuntimeRecovery", String::class.java)
+            .invoke(repository, created.sessionId) as SupplementPrefetchPipelineSession
+
+        assertEquals("PAUSED_FOR_RUNTIME", paused.phase.name)
+        assertNull(paused.mechanicalClaimState)
+        assertEquals(created.revision + 1L, paused.revision)
+        assertEquals(created.deliveryLane, paused.deliveryLane)
+        assertEquals(created.prefetchLane, paused.prefetchLane)
+    }
+
+    @Test
     fun candidateSwitch_shouldResetOnlyFailedIn2EvidenceAndKeepTarget() {
         val repository = SupplementPrefetchSessionRepository(MemoryStore())
         repository.create(baseSession().copy(
