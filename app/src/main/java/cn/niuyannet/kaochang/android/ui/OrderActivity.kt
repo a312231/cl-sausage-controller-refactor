@@ -2,7 +2,6 @@ package cn.niuyannet.kaochang.android.ui
 
 import android.Manifest
 import android.os.Bundle
-import android.os.CountDownTimer
 import android.view.LayoutInflater
 import android.widget.TextView
 import android.widget.Toast
@@ -55,8 +54,6 @@ abstract class OrderActivity: BaseSauceDetection() {
     )
 
     private var processingDialog: MaterialDialog? = null
-    private var completedDialog: MaterialDialog? = null
-    private var countDownTimer: CountDownTimer? = null
     private val processingStageListener: (OrderProcessingStage) -> Unit = { updateOrderProcessingStage(it) }
 
     private fun orderEventStatusText(status: Int): String = when (status) {
@@ -102,12 +99,6 @@ abstract class OrderActivity: BaseSauceDetection() {
             cancelOnTouchOutside(false)
         }
         
-        // 初始化完成对话框
-        completedDialog = MaterialDialog(this).apply {
-            customView(view = LayoutInflater.from(context).inflate(R.layout.dialog_completed, null))
-            cancelable(false)
-            cancelOnTouchOutside(false)
-        }
         OrderProcessingStageBridge.register(processingStageListener)
     }
 
@@ -141,34 +132,6 @@ abstract class OrderActivity: BaseSauceDetection() {
         processingDialog?.dismiss()
     }
     
-    /**
-     * 显示烤肠已出对话框，5 秒后自动关闭
-     */
-     fun showCompletedDialog() {
-        completedDialog?.show()
-        
-        // 开始倒计时
-        countDownTimer?.cancel()
-        countDownTimer = object : CountDownTimer(5000, 1000) {
-            override fun onTick(millisUntilFinished: Long) {
-                val seconds = millisUntilFinished / 1000
-                completedDialog?.view?.findViewById<TextView>(R.id.tv_countdown)?.text = 
-                    "${seconds}秒后自动关闭"
-            }
-            
-            override fun onFinish() {
-                hideCompletedDialog()
-            }
-        }.start()
-    }
-    
-    /**
-     * 隐藏烤肠已出对话框
-     */
-     fun hideCompletedDialog() {
-        countDownTimer?.cancel()
-        completedDialog?.dismiss()
-    }
     override fun onResume() {
         super.onResume()
         LogUtils.d("【订单流转】订单页重新进入前台")
@@ -190,9 +153,7 @@ abstract class OrderActivity: BaseSauceDetection() {
     override fun onDestroy() {
         super.onDestroy()
         // 娓呯悊璧勬簮
-        countDownTimer?.cancel()
         processingDialog?.dismiss()
-        completedDialog?.dismiss()
         OrderProcessingStageBridge.unregister(processingStageListener)
 
 //        if (SauceDetectionUitls.cameraProvider != null) {
@@ -337,9 +298,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     // 订单结束后立即同步烤盘状态和库存到云端，保证扫码端看到实时数据。
                     DataManagementAPI.uploadDataToServer()
                     hideProcessingDialog()
-                    if (orderCompleted) {
-                        showCompletedDialog()
-                    } else {
+                    if (!orderCompleted) {
                         Toast.makeText(this@OrderActivity, "订单未完成，请联系维护人员", Toast.LENGTH_LONG).show()
                     }
                     // 订单结束后刷新首页二维码、状态文案和预计时间。
