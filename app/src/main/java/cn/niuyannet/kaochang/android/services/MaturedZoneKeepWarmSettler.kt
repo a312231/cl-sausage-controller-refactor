@@ -29,7 +29,8 @@ internal object MaturedZoneKeepWarmSettler {
         }
 
         val zones = when {
-            config.modeType == 2 && config.transitionMode == 0 -> listOf(
+            config.modeType == 2 &&
+                (config.transitionMode == 0 || config.transitionMode == 2) -> listOf(
                 1 to (1..9),
                 2 to (10..21),
                 3 to (25..33)

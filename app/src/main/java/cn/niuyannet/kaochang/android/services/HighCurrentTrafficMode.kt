@@ -747,8 +747,6 @@ object HighCurrentTrafficMode {
             )
             beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
         }
-        KaoChangOperate.keepWarm(2)
-        LogUtils.i(TAG, "【并发切换】低转高过渡：$groupName 旧补热区已烤熟，2区硬件保温等待搬回 1~9；本地不标可售")
         sourcePans.forEach { sourcePan ->
             if (sourcePan.status != KaoPan.STATUS_WAITING_RETURN_KEEP_WARM || sourcePan.startTime > 0L) {
                 sourcePan.startTime = 0L
@@ -757,6 +755,9 @@ object HighCurrentTrafficMode {
                 }
                 sourcePan.status = KaoPan.STATUS_WAITING_RETURN_KEEP_WARM
             }
+        }
+        if (!KaoChangOperate.applyConfiguredTemperatureByPanState("低转高过渡${groupName}旧补热区回搬前温控重算")) {
+            LogUtils.w(TAG, "【加热控制】低转高过渡 $groupName 旧补热区回搬前温控重算失败，继续尝试回搬成熟烤肠")
         }
         val frontPans = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         var movedAny = false
@@ -784,7 +785,7 @@ object HighCurrentTrafficMode {
                 } else {
                     LogUtils.w(
                         TAG,
-                        "【并发切换】低转高过渡：$groupName 旧补热区已熟但暂未找到 1~9 既定回补空位，保持2区硬件保温等待，" +
+                        "【并发切换】低转高过渡：$groupName 旧补热区已熟但暂未找到 1~9 既定回补空位，保持等待回搬，二区按13~21整体盘面温控，" +
                             "sourcePan=${kaoPan.positionSn}，tasteCode=$tasteCode，sourceStartTime=${kaoPan.startTime}"
                     )
                 }

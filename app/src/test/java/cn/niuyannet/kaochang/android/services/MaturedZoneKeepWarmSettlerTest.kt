@@ -189,6 +189,37 @@ class MaturedZoneKeepWarmSettlerTest {
     }
 
     @Test
+    fun settleMaturedZones_shouldSettleTenToTwentyOneTogetherDuringHighToLow() {
+        val nowMs = 10_000L
+        val config = config().apply {
+            modeType = 2
+            transitionMode = 2
+        }
+        val pans = pans(
+            maturedBakingPan(10),
+            maturedBakingPan(11),
+            maturedBakingPan(12),
+            sellableKeepWarmPan(20),
+            sellableKeepWarmPan(21)
+        )
+        val appliedAreas = mutableListOf<Int>()
+
+        val result = MaturedZoneKeepWarmSettler.settleMaturedZones(pans, config, nowMs) {
+            appliedAreas += it
+        }
+
+        assertEquals(listOf(2), appliedAreas)
+        assertEquals(listOf(2), result.map { it.area })
+        assertEquals(listOf(10, 11, 12), result.single().positions)
+        (10..12).forEach { position ->
+            val pan = pans.first { it.positionSn == position }
+            assertEquals(0L, pan.startTime)
+            assertEquals(nowMs, pan.holdingTime)
+            assertEquals(2, pan.status)
+        }
+    }
+
+    @Test
     fun settleMaturedZones_shouldKeepTenToTwentyOneBakingUntilTwentyOneMaturesInStableHighMode() {
         val nowMs = 10_000L
         val config = config().apply {
@@ -409,6 +440,15 @@ class MaturedZoneKeepWarmSettlerTest {
 
     private fun unmaturedBakingPan(positionSn: Int): KaoPan =
         bakingPan(positionSn = positionSn, startTime = 7_000L, bakingTime = 8_000L)
+
+    private fun sellableKeepWarmPan(positionSn: Int): KaoPan =
+        KaoPan().apply {
+            this.positionSn = positionSn
+            this.isHasSausage = true
+            this.status = 2
+            this.startTime = 0L
+            this.holdingTime = 9_000L
+        }
 
     private fun bakingPan(
         positionSn: Int,

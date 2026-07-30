@@ -53,6 +53,26 @@ class HighCurrentTrafficModeSourceTest {
     }
 
     @Test
+    fun lowToHighOldLowHeatReturn_shouldRecalculatePhysicalZoneAfterMaturedStateUpdate() {
+        val source = sourceText()
+        val functionBlock = functionBlock(
+            source,
+            "private suspend fun moveFinishedOldLowHeatGroupToFront(",
+            "/**\n     * 高并发 -> 低并发过渡"
+        )
+
+        val stateUpdate = functionBlock.indexOf("sourcePans.forEach { sourcePan ->")
+        val temperatureRefresh = functionBlock.indexOf("applyConfiguredTemperatureByPanState(", stateUpdate)
+        val moveDispatch = functionBlock.indexOf("sourcePans.forEach { kaoPan ->", temperatureRefresh)
+
+        assertTrue("旧补热小组必须先更新为成熟等待回搬状态", stateUpdate >= 0)
+        assertTrue("成熟状态更新后必须按整个物理温区重算温控", temperatureRefresh > stateUpdate)
+        assertTrue("温控重算必须发生在开始逐根回搬之前", moveDispatch > temperatureRefresh)
+        assertFalse("不能因单个逻辑小组成熟就直接把整个二区切到保温", functionBlock.contains("KaoChangOperate.keepWarm(2)"))
+        assertFalse("等待回搬日志不能误报整个二区正在保温", functionBlock.contains("保持2区硬件保温等待"))
+    }
+
+    @Test
     fun highToLowTransition_shouldPreserveManualHighHeatBatchIntentForTenMinuteWindow() {
         val source = sourceText()
         val functionStart = source.indexOf("private suspend fun highTrafficModeTransition(")
