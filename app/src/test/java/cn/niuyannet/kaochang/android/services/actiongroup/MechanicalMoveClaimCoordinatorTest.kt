@@ -135,6 +135,20 @@ class MechanicalMoveClaimCoordinatorTest {
         assertEquals(1, moves.status)
     }
 
+    @Test
+    fun claim_shouldKeepPreparedOwnerWhenClaimedSaveAndMoveRollbackBothFail() {
+        val owners = FakeOwnerStore(failMarkClaimed = true)
+        val moves = FakeMoveStore(0, failOnSaveStatus = 0)
+        val coordinator = coordinator(owners, moves)
+
+        val result = coordinator.claim("in-1", setOf(0), 1)
+
+        assertTrue(result is MechanicalMoveClaimResult.Failed)
+        assertEquals("in-1", owners.owner)
+        assertEquals(MechanicalClaimState.PREPARED, owners.state)
+        assertEquals(1, moves.status)
+    }
+
     private fun coordinator(
         owners: FakeOwnerStore,
         moves: FakeMoveStore

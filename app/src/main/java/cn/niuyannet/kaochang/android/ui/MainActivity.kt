@@ -220,10 +220,18 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             return@runOnUiThread
                         }
                         logIncomingOrder(orderMessage)
-                        val moveStatus = AppConfig.getAppConfig().moveStatus
-                        val onlineStatus = AppConfig.getAppConfig().onlineStatus
+                        val config = AppConfig.getAppConfig()
+                        val moveStatus = config.moveStatus
+                        val onlineStatus = config.onlineStatus
                         val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
-                        if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(moveStatus, onlineStatus, actionGroupBusy)) {
+                        if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                                moveStatus = moveStatus,
+                                onlineStatus = onlineStatus,
+                                actionGroupBusy = actionGroupBusy,
+                                errorStatus = config.errorStatus,
+                                inspectionMode = config.inspectionMode
+                            )
+                        ) {
                             logBusyOrderRejected(orderNo, moveStatus, onlineStatus, actionGroupBusy)
                             OrderStateManager.recordBusyIgnored(orderNo)
                             reportBusyRejectedOrderFailure(orderMessage, orderNo, moveStatus, onlineStatus, actionGroupBusy)

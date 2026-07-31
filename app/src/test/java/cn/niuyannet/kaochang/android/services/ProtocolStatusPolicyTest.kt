@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProtocolStatusPolicyTest {
@@ -168,6 +169,7 @@ class ProtocolStatusPolicyTest {
 
     @Test
     fun selfCleanNoOp_shouldBeRecognizedByStableMessage() {
+        assertTrue(FourFSelfCleanNoOpPolicy.shouldSkipSequenceBeforeStateMutation())
         assertEquals(true, FourFSelfCleanNoOpPolicy.isNoOp("4f_self_clean_no_op"))
         assertEquals(false, FourFSelfCleanNoOpPolicy.isNoOp("201=2"))
     }

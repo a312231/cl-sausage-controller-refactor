@@ -58,4 +58,16 @@ class StockPhysicalProjectionSerializerTest {
         assertEquals(AtomicActionCodes.IR_PICK_FAILED, current.cmdStatusTake)
         assertEquals(10L, current.takeStatusRevision)
     }
+
+    @Test
+    fun projectForTargets_shouldExcludeUnselectedBoxesFromInventoryWrite() {
+        val boxes = listOf(
+            KaoPanBox().apply { positionSn = 1; num = 7 },
+            KaoPanBox().apply { positionSn = 2; num = 9 }
+        )
+
+        val projected = StockPhysicalProjectionSerializer.projectForTargets(boxes, setOf(2))
+
+        assertEquals(listOf(2), projected.map { it.positionSn })
+    }
 }

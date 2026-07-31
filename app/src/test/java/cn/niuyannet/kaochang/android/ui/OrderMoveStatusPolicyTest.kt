@@ -71,6 +71,33 @@ class OrderMoveStatusPolicyTest {
     }
 
     @Test
+    fun incomingOrder_shouldRejectWhenNotOperatingOrInFaultOrInspection() {
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = 0,
+                onlineStatus = 3,
+                actionGroupBusy = false
+            )
+        )
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = 0,
+                onlineStatus = 1,
+                actionGroupBusy = false,
+                errorStatus = 2
+            )
+        )
+        assertFalse(
+            OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                moveStatus = 0,
+                onlineStatus = 1,
+                actionGroupBusy = false,
+                inspectionMode = 1
+            )
+        )
+    }
+
+    @Test
     fun incomingOrder_shouldAcceptIdleOrWaitableSafeCloseoutStates() {
         assertTrue(
             OrderMoveStatusPolicy.canAcceptIncomingOrder(

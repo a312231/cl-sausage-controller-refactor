@@ -14,9 +14,11 @@ internal object OrderMoveStatusPolicy {
     fun canAcceptIncomingOrder(
         moveStatus: Int,
         onlineStatus: Int,
-        actionGroupBusy: Boolean
+        actionGroupBusy: Boolean,
+        errorStatus: Int = 0,
+        inspectionMode: Int = 0
     ): Boolean {
-        if (onlineStatus == 4) {
+        if (onlineStatus != 1 || errorStatus != 0 || inspectionMode != 0) {
             return false
         }
         if (moveStatus == MOVE_STATUS_IDLE) {

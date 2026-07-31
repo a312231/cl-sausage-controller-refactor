@@ -88,9 +88,19 @@ class MechanicalMoveClaimCoordinator(
             ownerStore.saveClaimed(owner)
             MechanicalMoveClaimResult.Claimed
         } catch (error: Throwable) {
+            if (beforeMoveStatus != claimedMoveStatus) {
+                try {
+                    moveStore.saveDurable(beforeMoveStatus)
+                } catch (rollbackError: Throwable) {
+                    return@synchronized MechanicalMoveClaimResult.Failed(
+                        "CLAIMED owner 落盘失败且 moveStatus 回滚失败，保留 PREPARED owner",
+                        rollbackError
+                    )
+                }
+            }
             val ownerCleared = runCatching { ownerStore.clearIfOwner(owner) }.getOrDefault(false)
-            if (ownerCleared && beforeMoveStatus != claimedMoveStatus) {
-                runCatching { moveStore.saveDurable(beforeMoveStatus) }
+            if (!ownerCleared && beforeMoveStatus != claimedMoveStatus) {
+                runCatching { moveStore.saveDurable(claimedMoveStatus) }
             }
             MechanicalMoveClaimResult.Failed("CLAIMED owner 落盘失败", error)
         }

@@ -349,6 +349,20 @@ class MaintenanceBoxFragment : Fragment() {
         actionName: String,
         successMessage: String
     ) {
+        val operationDecision = MaintenanceBoxOperationPolicy.evaluate(
+            isEnable = AppConfig.getAppConfig().isEnable,
+            moveStatus = AppConfig.getAppConfig().moveStatus
+        )
+        if (!operationDecision.allowed) {
+            AdminOperationLogger.w(
+                action = actionName,
+                page = AdminOperationLogger.PAGE_BOX,
+                result = AdminOperationLogger.RESULT_REJECT,
+                detail = "拒绝原因=${operationDecision.reason}"
+            )
+            ToastUtils.showShort(operationDecision.reason)
+            return
+        }
         val targetText = boxPositionListText(targetBoxes)
         AdminOperationLogger.i(
             action = actionName,
@@ -368,7 +382,11 @@ class MaintenanceBoxFragment : Fragment() {
             box.cmdStatusTake = 0
         }
         showLoadingExt("设置中...")
-        NetApi.clearStock(StockPhysicalProjectionSerializer.serialize(proposedBoxes)) { code, content ->
+        NetApi.clearStock(
+            StockPhysicalProjectionSerializer.serialize(
+                StockPhysicalProjectionSerializer.projectForTargets(proposedBoxes, targetNos)
+            )
+        ) { code, content ->
             dismissLoadingExt()
             if (code == 0) {
                 val json = JSON.parseObject(content)
@@ -663,6 +681,20 @@ class MaintenanceBoxFragment : Fragment() {
 
         btnConfirm.setOnClickListener {
             resetAdminIdleTimer("加满烤肠箱口味弹窗确认")
+            val operationDecision = MaintenanceBoxOperationPolicy.evaluate(
+                isEnable = AppConfig.getAppConfig().isEnable,
+                moveStatus = AppConfig.getAppConfig().moveStatus
+            )
+            if (!operationDecision.allowed) {
+                AdminOperationLogger.w(
+                    action = "加满烤肠箱",
+                    page = AdminOperationLogger.PAGE_BOX,
+                    result = AdminOperationLogger.RESULT_REJECT,
+                    detail = "拒绝原因=${operationDecision.reason}"
+                )
+                ToastUtils.showShort(operationDecision.reason)
+                return@setOnClickListener
+            }
             val selectedId = radioGroup.checkedRadioButtonId
             val selectedView = radioGroup.findViewById<RadioButton>(selectedId)
             val selectedIndex = radioGroup.indexOfChild(selectedView)
@@ -700,7 +732,11 @@ class MaintenanceBoxFragment : Fragment() {
             }
 
             showLoadingExt("设置中...")
-            NetApi.updateStock(StockPhysicalProjectionSerializer.serialize(proposedBoxes)) { code, content ->
+            NetApi.updateStock(
+                StockPhysicalProjectionSerializer.serialize(
+                    StockPhysicalProjectionSerializer.projectForTargets(proposedBoxes, selectedNos)
+                )
+            ) { code, content ->
                 dismissLoadingExt()
                 if (code == 0) {
                     val json = JSON.parseObject(content)

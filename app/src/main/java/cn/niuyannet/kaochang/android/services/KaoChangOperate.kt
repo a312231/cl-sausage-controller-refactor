@@ -221,6 +221,88 @@ object KaoChangOperate {
         }
     }
 
+    private val discardJournalStore = SharedPreferenceDiscardJournalStore()
+
+    private fun discardClaimOwnerStore(
+        preparedJournal: DiscardJournal? = null
+    ): MechanicalClaimOwnerStore = object : MechanicalClaimOwnerStore {
+        override fun snapshot(): MechanicalClaimOwnerSnapshot? = discardJournalStore.load()?.let { journal ->
+            MechanicalClaimOwnerSnapshot(
+                owner = journal.owner,
+                state = journal.mechanicalClaimState,
+                revision = journal.mechanicalClaimRevision
+            )
+        }
+
+        override fun savePrepared(owner: String) {
+            val current = discardJournalStore.load()
+            val base = current ?: requireNotNull(preparedJournal) { "缺少丢弃 PREPARED journal" }
+            check(base.owner == owner) { "丢弃 PREPARED owner 不匹配" }
+            check(discardJournalStore.saveDurable(
+                base.copy(
+                    mechanicalClaimState = MechanicalClaimState.PREPARED,
+                    mechanicalClaimRevision = maxOf(1L, base.mechanicalClaimRevision + 1L)
+                )
+            )) { "丢弃 PREPARED owner 落盘失败" }
+        }
+
+        override fun saveClaimed(owner: String) {
+            val current = requireNotNull(discardJournalStore.load()) { "丢弃 CLAIMED journal 不存在" }
+            check(current.owner == owner) { "丢弃 CLAIMED owner 已变化" }
+            check(discardJournalStore.saveDurable(
+                current.copy(
+                    mechanicalClaimState = MechanicalClaimState.CLAIMED,
+                    mechanicalClaimRevision = current.mechanicalClaimRevision + 1L
+                )
+            )) { "丢弃 CLAIMED owner 落盘失败" }
+        }
+
+        override fun clearIfOwner(owner: String): Boolean {
+            if (discardJournalStore.load()?.owner != owner) return false
+            return discardJournalStore.clearDurable()
+        }
+    }
+
+    private fun panMoveClaimOwnerStore(
+        preparedJournal: PanMoveJournal? = null
+    ): MechanicalClaimOwnerStore = object : MechanicalClaimOwnerStore {
+        override fun snapshot(): MechanicalClaimOwnerSnapshot? = panMoveJournalStore.load()?.let { journal ->
+            MechanicalClaimOwnerSnapshot(
+                owner = journal.moveId,
+                state = journal.mechanicalClaimState,
+                revision = journal.mechanicalClaimRevision
+            )
+        }
+
+        override fun savePrepared(owner: String) {
+            val current = panMoveJournalStore.load()
+            val base = current ?: requireNotNull(preparedJournal) { "缺少搬盘 PREPARED journal" }
+            check(base.moveId == owner) { "搬盘 PREPARED owner 不匹配" }
+            check(panMoveJournalStore.saveDurable(
+                base.copy(
+                    mechanicalClaimState = MechanicalClaimState.PREPARED,
+                    mechanicalClaimRevision = maxOf(1L, base.mechanicalClaimRevision + 1L)
+                )
+            )) { "搬盘 PREPARED owner 落盘失败" }
+        }
+
+        override fun saveClaimed(owner: String) {
+            val current = requireNotNull(panMoveJournalStore.load()) { "搬盘 CLAIMED journal 不存在" }
+            check(current.moveId == owner) { "搬盘 CLAIMED owner 已变化" }
+            check(panMoveJournalStore.saveDurable(
+                current.copy(
+                    mechanicalClaimState = MechanicalClaimState.CLAIMED,
+                    mechanicalClaimRevision = current.mechanicalClaimRevision + 1L
+                )
+            )) { "搬盘 CLAIMED owner 落盘失败" }
+        }
+
+        override fun clearIfOwner(owner: String): Boolean {
+            if (panMoveJournalStore.load()?.moveId != owner) return false
+            return panMoveJournalStore.clearDurable()
+        }
+    }
+
     private fun actionGroupClaimOwnerStore(
         preparedSession: ActionGroupSession? = null
     ): MechanicalClaimOwnerStore = object : MechanicalClaimOwnerStore {
@@ -340,6 +422,7 @@ object KaoChangOperate {
     fun isActionGroupIdleForMoveStatusRecovery(): Boolean {
         return actionGroupSessionStore.load() == null &&
             panMoveJournalStore.load() == null &&
+            discardJournalStore.load() == null &&
             !hasBlockingSupplementPrefetchEvidence() &&
             actionGroupLocks.isIdle()
     }
@@ -348,6 +431,10 @@ object KaoChangOperate {
         statusReadings: List<Int>,
         reason: String
     ): Boolean {
+        if (discardJournalStore.load() != null) {
+            logW(LOG_ACTION_GROUP, "丢弃 journal 存在，拒绝人工清理补肠残留：reason=$reason")
+            return false
+        }
         val session = when (val read = readSupplementPrefetchEvidence()) {
             DurableEvidenceReadResult.Absent -> return false
             is DurableEvidenceReadResult.Valid -> read.value
@@ -1213,8 +1300,10 @@ object KaoChangOperate {
     fun actionGroupRuntimeSnapshotForLog(): String {
         val session = actionGroupSessionStore.load()
         val pausedSupplement = pausedSupplementSessionStore.load()
+        val discardJournal = discardJournalStore.load()
         return "session=${session?.sessionId ?: "无"}，" +
             "pausedSupplement=${pausedSupplement?.sessionId ?: "无"}/${pausedSupplement?.resumeAfterAction ?: "无"}，" +
+            "discard=${discardJournal?.owner ?: "无"}/${discardJournal?.checkpoint ?: "无"}，" +
             "resourceLocks=${actionGroupLocks.snapshot()}"
     }
 
@@ -2020,7 +2109,9 @@ object KaoChangOperate {
             )
             return true
         }
-        val hasPendingSession = actionGroupSessionStore.load() != null || panMoveJournalStore.load() != null
+        val hasPendingSession = actionGroupSessionStore.load() != null ||
+            panMoveJournalStore.load() != null ||
+            discardJournalStore.load() != null
         val resourceLocksIdle = actionGroupLocks.isIdle()
         val decision = ActionGroupOrderRecoveryGatePolicy.evaluate(
             modbusConnected = modbusConnected,
@@ -2057,6 +2148,14 @@ object KaoChangOperate {
             lastActionGroupRecoveryFailureReason = detail
             invalidateActionGroupRecoveryVerification(detail)
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
+            return false
+        }
+        discardJournalStore.load()?.let { journal ->
+            enterActionGroupMaintenance(
+                "发现未收口丢弃 journal，物理结果未知，拒绝进入通用动作组恢复：" +
+                    "owner=${journal.owner}，pan=${journal.positionSn}，checkpoint=${journal.checkpoint}",
+                preserveMoveStatus = true
+            )
             return false
         }
         val doubleLaneSession = when (val read = readSupplementPrefetchEvidence()) {
@@ -2460,6 +2559,10 @@ object KaoChangOperate {
     }
 
     suspend fun confirmClearActionGroupRecoveryResidue(reason: String): Boolean {
+        if (discardJournalStore.load() != null) {
+            logW(LOG_ACTION_GROUP, "丢弃 journal 存在，拒绝人工清理通用动作组残留：reason=$reason")
+            return false
+        }
         if (hasBlockingSupplementPrefetchEvidence()) {
             logW(LOG_ACTION_GROUP, "双 lane 会话存在，拒绝人工清理通用动作组残留：reason=$reason")
             return false
@@ -2816,6 +2919,26 @@ object KaoChangOperate {
         busyDuringClean: Boolean = false
     ): SelfCleanSequenceResult {
         val uniquePositions = positionSnList.distinct().sorted()
+        if (FourFSelfCleanNoOpPolicy.shouldSkipSequenceBeforeStateMutation()) {
+            val command = if (includeSellPlatform) {
+                self_clean_sell_platform_command
+            } else {
+                uniquePositions.firstOrNull()?.let(::buildSelfCleanCommand) ?: -1
+            }
+            val targetLabel = if (includeSellPlatform) "出肠台" else "烤盘${uniquePositions.firstOrNull() ?: ""}"
+            return SelfCleanSequenceResult(
+                success = false,
+                reports = listOf(
+                    SelfCleanExecutionReport(
+                        success = false,
+                        command = command,
+                        targetLabel = targetLabel,
+                        status201 = -1,
+                        message = FourFSelfCleanNoOpPolicy.message
+                    )
+                )
+            )
+        }
         val config = AppConfig.getAppConfig()
         if (AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
                 lowerPlatformStatus = config.lowerPlatformStatus,
@@ -6388,13 +6511,6 @@ object KaoChangOperate {
             )
             return false
         }
-        if (panMoveJournalStore.load() != null) {
-            enterActionGroupMaintenance(
-                "存在未收口搬盘 journal，拒绝启动新搬盘：source=$sourcePosition，target=$targetPosition"
-            )
-            return false
-        }
-
         if (requireAutoDispatchGate) {
             val config = AppConfig.getAppConfig()
             val dispatchDecision = AutoMechanicalDispatchPolicy.evaluate(
@@ -6416,7 +6532,95 @@ object KaoChangOperate {
 
         val owner = "$ownerPrefix:$sourcePosition->$targetPosition:${System.currentTimeMillis()}"
         val lockMask = ResourceMask.lift or ResourceMask.above
+        val returnBinding = supplementBatchIntentRepository.loadActive()
+                ?.retainedCompletedHeatReturnTargets()
+                ?.firstOrNull { target ->
+                    target.positionSn == sourcePosition && target.returnPositionSn == targetPosition
+                }
+        var journal = PanMoveJournal(
+            moveId = owner,
+            sourcePositionSn = sourcePosition,
+            targetPositionSn = targetPosition,
+            originBatchId = returnBinding?.originBatchId,
+            originBatchType = returnBinding?.originBatchType,
+            targetHoldingTime = targetHoldingTime,
+            checkpoint = PanMoveCheckpoint.PREPARED,
+            createdAtMs = System.currentTimeMillis()
+        )
+        val claimResult = synchronized(faultHeatTransitionLock) {
+            if (panMoveJournalStore.load() != null) {
+                return@synchronized MechanicalMoveClaimResult.Rejected(
+                    "存在未收口搬盘 journal，拒绝启动新搬盘：source=$sourcePosition，target=$targetPosition"
+                )
+            }
+            if (!panMoveJournalStore.saveDurable(journal)) {
+                return@synchronized MechanicalMoveClaimResult.Failed(
+                    "搬盘 PREPARED journal 落盘失败"
+                )
+            }
+            mechanicalMoveClaimCoordinator(
+                panMoveClaimOwnerStore(journal)
+            ).claim(
+                owner = owner,
+                allowedMoveStatuses = setOf(0),
+                claimedMoveStatus = 3
+            ) {
+                val config = AppConfig.getAppConfig()
+                if (requireAutoDispatchGate) {
+                    AutoMechanicalDispatchPolicy.evaluate(
+                        onlineStatus = config.onlineStatus,
+                        errorStatus = config.errorStatus,
+                        inspectionMode = config.inspectionMode,
+                        moveStatus = config.moveStatus,
+                        lowerPlatformStatus = config.lowerPlatformStatus,
+                        lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
+                    ).canStart
+                } else {
+                    config.onlineStatus != 4
+                }
+            }
+        }
+        if (claimResult !is MechanicalMoveClaimResult.Claimed) {
+            if (claimResult is MechanicalMoveClaimResult.Rejected) {
+                val cleared = withFaultHeatTransitionLock {
+                    if (panMoveJournalStore.load()?.moveId == owner) {
+                        panMoveJournalStore.clearDurable()
+                    } else {
+                        true
+                    }
+                }
+                if (!cleared) {
+                    enterActionGroupMaintenance(
+                        "搬盘认领被拒且 PREPARED journal 无法清理：$sourcePosition->$targetPosition，" +
+                            "保留 journal 与 moveStatus=3",
+                        preserveMoveStatus = true
+                    )
+                }
+            } else {
+                enterActionGroupMaintenance(
+                    "搬盘机械认领落盘失败：$sourcePosition->$targetPosition，保留 journal 与 moveStatus=3",
+                    preserveMoveStatus = true
+                )
+            }
+            logW(LOG_PAN_MOVE, "搬盘机械认领失败：source=$sourcePosition，target=$targetPosition，result=$claimResult")
+            return false
+        }
+        journal = panMoveJournalStore.load() ?: journal
+
         if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
+            val released = releaseMechanicalMove(
+                "搬盘资源忙",
+                owner,
+                panMoveClaimOwnerStore(),
+                expectedMoveStatus = 3,
+                idleMoveStatus = 0
+            )
+            if (!released) {
+                enterActionGroupMaintenance(
+                    "搬盘资源忙且 owner/moveStatus 回滚失败：$sourcePosition->$targetPosition",
+                    preserveMoveStatus = true
+                )
+            }
             logW(
                 LOG_PAN_MOVE,
                 "烤盘搬移资源忙，跳过本轮搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，" +
@@ -6426,38 +6630,6 @@ object KaoChangOperate {
         }
 
         try {
-            var appState = AppConfig.getAppConfig().moveStatus
-            while (appState != 0) {
-                delay(PanMove203Policy.waitOtherActionDelayMs)
-                appState = AppConfig.getAppConfig().moveStatus
-                logD(LOG_PAN_MOVE, "烤盘搬移前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
-            }
-            val returnBinding = supplementBatchIntentRepository.loadActive()
-                ?.retainedCompletedHeatReturnTargets()
-                ?.firstOrNull { target ->
-                    target.positionSn == sourcePosition && target.returnPositionSn == targetPosition
-                }
-            var journal = PanMoveJournal(
-                moveId = owner,
-                sourcePositionSn = sourcePosition,
-                targetPositionSn = targetPosition,
-                originBatchId = returnBinding?.originBatchId,
-                originBatchType = returnBinding?.originBatchType,
-                targetHoldingTime = targetHoldingTime,
-                checkpoint = PanMoveCheckpoint.PREPARED,
-                createdAtMs = System.currentTimeMillis()
-            )
-            if (!panMoveJournalStore.saveDurable(journal)) {
-                enterActionGroupMaintenance("搬盘 PREPARED journal 落盘失败：$sourcePosition->$targetPosition")
-                return false
-            }
-            AppConfig.getAppConfig().moveStatus = 3
-            try {
-                AppConfig.saveAppConfigDurable(AppConfig.getAppConfig())
-            } catch (e: Exception) {
-                enterActionGroupMaintenance("搬盘 moveStatus=3 落盘失败：$sourcePosition->$targetPosition，${e.message}")
-                return false
-            }
             LogUtils.i(
                 "【搬盘】开始搬移：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=$operationReason"
             )
@@ -6468,10 +6640,13 @@ object KaoChangOperate {
             )
 
             if (!ensureModbusReady("烤盘${sourcePosition}到烤盘${targetPosition}搬移")) {
-                if (panMoveJournalStore.clearDurable()) {
-                    AppConfig.getAppConfig().moveStatus = 0
-                    AppConfig.saveAppConfigDurable(AppConfig.getAppConfig())
-                }
+                releaseMechanicalMove(
+                    "搬盘下位机通信断开",
+                    owner,
+                    panMoveClaimOwnerStore(),
+                    expectedMoveStatus = 3,
+                    idleMoveStatus = 0
+                )
                 logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=下位机通信断开")
                 markDeviceErrorAndUpload(FaultCode.MODBUS_COMM_DROP,
                     "烤盘${sourcePosition}到烤盘${targetPosition}搬移前下位机通信断开，设备进入维护中")
@@ -6570,9 +6745,15 @@ object KaoChangOperate {
                         )
                     ) { "搬盘完成但精确回搬 binding 未找到" }
                 }
-                AppConfig.getAppConfig().moveStatus = 0
-                AppConfig.saveAppConfigDurable(AppConfig.getAppConfig())
-                check(panMoveJournalStore.clearDurable()) { "搬盘 journal 清理落盘失败" }
+                check(
+                    releaseMechanicalMove(
+                        "搬盘完成",
+                        owner,
+                        panMoveClaimOwnerStore(),
+                        expectedMoveStatus = 3,
+                        idleMoveStatus = 0
+                    )
+                ) { "搬盘 journal/moveStatus 收口失败" }
             } catch (e: Exception) {
                 enterActionGroupMaintenance(
                     "搬盘物理完成后的耐久收口失败：$sourcePosition->$targetPosition，${e.message}"
@@ -7138,32 +7319,76 @@ object KaoChangOperate {
         source: String = "过保到期",
         detail: String? = null
     ) :Boolean {
-
-        var appState = AppConfig.getAppConfig().moveStatus
-        // 运动状态 为0是说明机械臂闲置
-        while (appState!=0) {
-            delay(2000)
-            appState = AppConfig.getAppConfig().moveStatus
-            logD(LOG_ACTION, "丢弃烤肠等待售卖完成：state=$appState")
+        val owner = "discard:${kaoPan.positionSn}:${System.currentTimeMillis()}"
+        val discardJournal = DiscardJournal(
+            owner = owner,
+            positionSn = kaoPan.positionSn,
+            checkpoint = DiscardCheckpoint.PREPARED,
+            createdAtMs = System.currentTimeMillis()
+        )
+        if (!claimMechanicalMove(
+                stage = "过保丢弃下发前",
+                owner = owner,
+                ownerStore = discardClaimOwnerStore(discardJournal),
+                allowedMoveStatuses = setOf(0),
+                claimedMoveStatus = 4,
+                requireSupplementGate = false
+            )
+        ) {
+            return false
         }
-        // 机械臂状态改为搬运
-        AppConfig.getAppConfig().moveStatus = 4
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
+        var commandAttempted = false
         val tasteLabel = getPanTasteLabel(kaoPan)
         val sourceDetail = detail?.takeIf { it.isNotBlank() } ?: "未补充详细原因"
         LogUtils.i(
             "【丢弃流程】开始丢弃：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail"
         )
 
-        val result = executeActionWithRetry(
-            actionName = "烤盘${kaoPan.positionSn}${source}丢弃",
-            maxBusyRetry = 0,
-            runningPollDelayMs = 2000L,
-            runningTimeoutMs = 120_000L,
-            requireRunningBeforeIdleSuccess = true
-        ) {
-            writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
+        val result = try {
+            executeActionWithRetry(
+                actionName = "烤盘${kaoPan.positionSn}${source}丢弃",
+                maxBusyRetry = 0,
+                runningPollDelayMs = 2000L,
+                runningTimeoutMs = 120_000L,
+                requireRunningBeforeIdleSuccess = true
+            ) {
+                val currentJournal = requireNotNull(discardJournalStore.load()) { "丢弃 journal 不存在" }
+                if (!discardJournalStore.saveDurable(
+                        currentJournal.copy(checkpoint = DiscardCheckpoint.COMMAND_ISSUED)
+                    )
+                ) {
+                    return@executeActionWithRetry VMModbusHelper.ModbusOperationResult(
+                        status = VMModbusHelper.ModbusOperationStatus.PROTOCOL_ERROR,
+                        message = "丢弃 COMMAND_ISSUED journal 落盘失败"
+                    )
+                }
+                commandAttempted = true
+                writeSingleRegister2(action_address,kaoPan.cmdValueDiscard)
+            }
+        } catch (cancelled: CancellationException) {
+            val journalOwned = discardJournalStore.load()?.owner == owner
+            if (commandAttempted && journalOwned) {
+                enterActionGroupMaintenance(
+                    "过保丢弃命令已尝试但流程被取消，保留 owner/journal 与 moveStatus=4：pan=${kaoPan.positionSn}",
+                    preserveMoveStatus = true
+                )
+            } else if (!commandAttempted) {
+                val released = releaseMechanicalMove(
+                    "过保丢弃下发前取消",
+                    owner,
+                    discardClaimOwnerStore(),
+                    expectedMoveStatus = 4,
+                    idleMoveStatus = 0
+                )
+                if (!released) {
+                    enterActionGroupMaintenance(
+                        "过保丢弃下发前取消且 owner/moveStatus 回滚失败：pan=${kaoPan.positionSn}",
+                        preserveMoveStatus = true
+                    )
+                }
+            }
+            throw cancelled
         }
         if(result != ActionExecutionResult.SUCCESS){
             LogUtils.e(
@@ -7203,8 +7428,28 @@ object KaoChangOperate {
                 source = "discardSausage_success"
             )
         }
-        AppConfig.getAppConfig().moveStatus = 0
-        AppConfig.saveAppConfig(AppConfig.getAppConfig())
+        if (result == ActionExecutionResult.SUCCESS || !commandAttempted) {
+            if (!releaseMechanicalMove(
+                    "过保丢弃完成",
+                    owner,
+                    discardClaimOwnerStore(),
+                    expectedMoveStatus = 4,
+                    idleMoveStatus = 0
+                )
+            ) {
+                enterActionGroupMaintenance(
+                    "过保丢弃完成但 owner/moveStatus 收口失败",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+        } else {
+            enterActionGroupMaintenance(
+                "过保丢弃结果未知，保留 owner/journal 与 moveStatus=4：pan=${kaoPan.positionSn}，result=$result",
+                preserveMoveStatus = true
+            )
+            return false
+        }
         if (result != ActionExecutionResult.SUCCESS) {
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())

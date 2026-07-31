@@ -56,6 +56,8 @@ object TestPagePanMoveCommandPolicy {
 object FourFSelfCleanNoOpPolicy {
     const val message = "4f_self_clean_no_op"
 
+    fun shouldSkipSequenceBeforeStateMutation(): Boolean = true
+
     fun isNoOp(value: String?): Boolean {
         return value == message
     }

@@ -4,6 +4,9 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import com.alibaba.fastjson.JSON
 
 object StockPhysicalProjectionSerializer {
+    fun projectForTargets(boxes: List<KaoPanBox>, targetPositions: Set<Int>): List<KaoPanBox> =
+        boxes.filter { it.positionSn in targetPositions }
+
     fun serialize(stocks: List<KaoPanBox>): String {
         val projection = JSON.parseArray(JSON.toJSONString(stocks))
         projection.forEach { value ->

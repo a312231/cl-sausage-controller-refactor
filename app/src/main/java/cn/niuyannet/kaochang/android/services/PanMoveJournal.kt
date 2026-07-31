@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalClaimState
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
 
@@ -19,7 +20,9 @@ data class PanMoveJournal(
     val originBatchType: SupplementBatchType? = null,
     val targetHoldingTime: Long? = null,
     val checkpoint: PanMoveCheckpoint,
-    val createdAtMs: Long
+    val createdAtMs: Long,
+    val mechanicalClaimState: MechanicalClaimState? = null,
+    val mechanicalClaimRevision: Long = 0L
 )
 
 interface PanMoveJournalStore {
@@ -36,17 +39,23 @@ class SharedPreferencePanMoveJournalStore(
         .getStringPreference(file, key, null)
         ?.takeIf { it.isNotBlank() }
         ?.let { raw ->
-            runCatching { JSON.parseObject(raw, PanMoveJournal::class.java) }
-                .getOrElse {
-                    PanMoveJournal(
-                        moveId = "corrupt-journal",
-                        sourcePositionSn = 0,
-                        targetPositionSn = 0,
-                        checkpoint = PanMoveCheckpoint.COMMAND_INTENT,
-                        createdAtMs = 0L
-                    )
-                }
+            val parsed = runCatching { JSON.parseObject(raw, PanMoveJournal::class.java) }.getOrNull()
+            parsed?.takeIf(::isValid) ?: corruptJournal()
         }
+
+    private fun isValid(journal: PanMoveJournal): Boolean =
+        journal.moveId.isNotBlank() &&
+            journal.sourcePositionSn > 0 &&
+            journal.targetPositionSn > 0 &&
+            runCatching { journal.checkpoint.name }.isSuccess
+
+    private fun corruptJournal() = PanMoveJournal(
+        moveId = "corrupt-journal",
+        sourcePositionSn = 0,
+        targetPositionSn = 0,
+        checkpoint = PanMoveCheckpoint.COMMAND_INTENT,
+        createdAtMs = 0L
+    )
 
     override fun saveDurable(journal: PanMoveJournal): Boolean =
         PreferenceUtils.saveStringPreferenceDurable(file, key, JSON.toJSONString(journal))

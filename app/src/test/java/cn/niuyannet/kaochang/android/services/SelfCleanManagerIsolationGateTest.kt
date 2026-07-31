@@ -40,6 +40,22 @@ class SelfCleanManagerIsolationGateTest {
         )
     }
 
+    @Test
+    fun runPanSelfCleanSequence_shouldReturnBeforeWaitingWhenFourFIsNoOp() {
+        val source = kaoChangOperateSourceText()
+        val start = source.indexOf("suspend fun runPanSelfCleanSequence(")
+        val wait = source.indexOf("while (moveStatus != 0)", start)
+        val writeBusy = source.indexOf("runtimeConfig.moveStatus = 5", start)
+        val noOp = source.indexOf(
+            "FourFSelfCleanNoOpPolicy.shouldSkipSequenceBeforeStateMutation()",
+            start
+        )
+
+        assertTrue(noOp >= 0)
+        assertTrue(noOp < wait)
+        assertTrue(noOp < writeBusy)
+    }
+
     private fun kaoChangOperateSourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"),
