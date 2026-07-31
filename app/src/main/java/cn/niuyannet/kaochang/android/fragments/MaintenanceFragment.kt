@@ -32,6 +32,7 @@ import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.ManualFaultRecoveryResult
+import cn.niuyannet.kaochang.android.services.ManualRecoveryCloudConfirmationPolicy
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
 import cn.niuyannet.kaochang.android.services.LowToHighDemandGate
@@ -59,8 +60,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MaintenanceFragment : Fragment() {
@@ -570,7 +573,15 @@ class MaintenanceFragment : Fragment() {
                 is ManualFaultRecoveryResult.Failed -> recoveryResult.reason
                 is ManualFaultRecoveryResult.Success -> ""
             }
-            ToastUtils.showLong("设备恢复未完成：$failureReason；已保持维护并停止加热")
+            val failureDetail = if (
+                recoveryResult is ManualFaultRecoveryResult.Rejected &&
+                failureReason == "恢复提交前运行态已变化"
+            ) {
+                "未重复执行温控恢复，请重新检查当前状态"
+            } else {
+                "已回退故障状态并停止加热"
+            }
+            ToastUtils.showLong("设备恢复未完成：$failureReason；$failureDetail")
             AdminOperationLogger.w(
                 action = "恢复正常状态",
                 page = AdminOperationLogger.PAGE_PAN,
@@ -580,18 +591,20 @@ class MaintenanceFragment : Fragment() {
             return false
         }
         val config = AppConfig.getAppConfig()
-        val runtimePublishOk = withContext(Dispatchers.IO) {
-            SendServerHelper.publishServiceUpdateStatus("runtime_state:manual_recovery")
-        }
-        if (!runtimePublishOk) {
-            LogUtils.w(
-                "【维护操作】恢复正常状态 MQTT 发送队列拒绝，回退 HTTP 补偿：" +
-                    "onlineStatus（设备营业状态）=${onlineStatusText(config.onlineStatus)}，" +
-                    "errorStatus（设备故障状态）=${config.errorStatus}"
+        val cloudDecision = confirmManualRecoveryInCloud(recoveredOnlineStatus)
+        if (!cloudDecision.confirmed) {
+            ToastUtils.showLong(
+                "本机恢复已完成，但后台未确认恢复：${cloudDecision.reason}；" +
+                    "烤制算法保持关闭，请再次点击恢复正常状态"
             )
-            withContext(Dispatchers.IO) {
-                DataManagementAPI.uploadDeviceInfo(source = "runtime_state:manual_recovery")
-            }
+            AdminOperationLogger.w(
+                action = "恢复正常状态",
+                page = AdminOperationLogger.PAGE_PAN,
+                result = AdminOperationLogger.RESULT_FAIL,
+                detail = "本机恢复完成但云端确认失败，原因=${cloudDecision.reason}，" +
+                    "设备营业状态=${onlineStatusText(config.onlineStatus)}，设备故障状态=${config.errorStatus}"
+            )
+            return false
         }
         ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
         AdminOperationLogger.w(
@@ -604,6 +617,60 @@ class MaintenanceFragment : Fragment() {
                 "恢复闸门=${recoveryDecision.reason}，后续动作=现场手动开启烤制算法"
         )
         return true
+    }
+
+    private fun needsLocalFaultRecovery(config: AppConfigBean): Boolean =
+        config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL ||
+            config.onlineStatus == 3 ||
+            FaultHeatPauseManager.shouldSkipBakingCompletion(config)
+
+    private suspend fun confirmManualRecoveryInCloud(
+        targetOnlineStatus: Int
+    ): ManualRecoveryCloudConfirmationPolicy.Decision {
+        val ack = suspendCancellableCoroutine<SendServerHelper.RuntimeStateServerAck> { continuation ->
+            val ackListener = SendServerHelper.createRuntimeStateAckListener { result ->
+                if (continuation.isActive) {
+                    continuation.resume(result)
+                }
+            }
+            continuation.invokeOnCancellation {
+                SendServerHelper.cancelRuntimeStateAckListener(ackListener)
+            }
+            val queued = SendServerHelper.publishServiceUpdateStatus(
+                source = "runtime_state:manual_recovery",
+                forceNewSeq = true,
+                ackListener = ackListener
+            )
+            if (!queued && continuation.isActive) {
+                continuation.resume(
+                    SendServerHelper.RuntimeStateServerAck(
+                        runtimeSeq = -1L,
+                        received = false,
+                        applied = false,
+                        reason = "publish_failed",
+                        onlineStatus = AppConfig.getAppConfig().onlineStatus,
+                        errorStatus = AppConfig.getAppConfig().errorStatus
+                    )
+                )
+            }
+        }
+        val currentConfig = AppConfig.getAppConfig()
+        val localStateStillRecovered = ManualRecoveryCloudConfirmationPolicy.canRetryCloudOnly(
+            onlineStatus = currentConfig.onlineStatus,
+            targetOnlineStatus = targetOnlineStatus,
+            errorStatus = currentConfig.errorStatus,
+            moveStatus = currentConfig.moveStatus,
+            isEnable = currentConfig.isEnable,
+            faultPauseActive = FaultHeatPauseManager.shouldSkipBakingCompletion(currentConfig)
+        )
+        return ManualRecoveryCloudConfirmationPolicy.evaluate(
+            targetOnlineStatus = targetOnlineStatus,
+            ackReceived = ack.received,
+            ackApplied = ack.applied,
+            remoteOnlineStatus = ack.onlineStatus,
+            remoteErrorStatus = ack.errorStatus,
+            localStateStillRecovered = localStateStillRecovered
+        )
     }
 
     private suspend fun handleManualRecoveryBlocked(
@@ -1431,6 +1498,54 @@ class MaintenanceFragment : Fragment() {
             binding.tvCooldownHint.text = "正在恢复设备状态"
             viewLifecycleOwner.lifecycleScope.launch {
                 try {
+                    val initialConfig = AppConfig.getAppConfig()
+                    val initialRecoveredOnlineStatus = resolveManualRecoveredOnlineStatus(initialConfig)
+                    if (!needsLocalFaultRecovery(initialConfig)) {
+                        val canRetryCloudOnly = ManualRecoveryCloudConfirmationPolicy.canRetryCloudOnly(
+                            onlineStatus = initialConfig.onlineStatus,
+                            targetOnlineStatus = initialRecoveredOnlineStatus,
+                            errorStatus = initialConfig.errorStatus,
+                            moveStatus = initialConfig.moveStatus,
+                            isEnable = initialConfig.isEnable,
+                            faultPauseActive = FaultHeatPauseManager.shouldSkipBakingCompletion(initialConfig)
+                        )
+                        if (!canRetryCloudOnly) {
+                            ToastUtils.showShort("设备当前无待恢复故障")
+                            AdminOperationLogger.w(
+                                action = "恢复正常状态",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_REJECT,
+                                detail = "拒绝原因=设备当前不处于本机已恢复、云端待确认状态，" +
+                                    "设备营业状态=${onlineStatusText(initialConfig.onlineStatus)}，" +
+                                    "机械动作状态=${initialConfig.moveStatus}，" +
+                                    "烤肠算法开关=${isEnableText(initialConfig.isEnable)}"
+                            )
+                            return@launch
+                        }
+                        val cloudDecision = confirmManualRecoveryInCloud(initialRecoveredOnlineStatus)
+                        if (cloudDecision.confirmed) {
+                            ToastUtils.showLong("本机与后台均已恢复正常状态；请现场确认后手动开启烤制算法")
+                            AdminOperationLogger.w(
+                                action = "恢复正常状态",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "本机状态已正常，仅补交云端恢复确认成功，" +
+                                    "设备营业状态=${onlineStatusText(initialConfig.onlineStatus)}，" +
+                                    "设备故障状态=${initialConfig.errorStatus}"
+                            )
+                        } else {
+                            ToastUtils.showLong(
+                                "本机状态已正常，但后台恢复仍未完成：${cloudDecision.reason}；请稍后重试"
+                            )
+                            AdminOperationLogger.w(
+                                action = "恢复正常状态",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "本机状态已正常，云端补交恢复确认失败，原因=${cloudDecision.reason}"
+                            )
+                        }
+                        return@launch
+                    }
                     // 下位机重新插线后，手动恢复需要主动触发一次 Modbus 候选串口探测，而不是只检查旧连接。
                     val modbusConnected = withContext(Dispatchers.IO) {
                         MaintenanceModbusRecoveryConnector.ensureConnected()

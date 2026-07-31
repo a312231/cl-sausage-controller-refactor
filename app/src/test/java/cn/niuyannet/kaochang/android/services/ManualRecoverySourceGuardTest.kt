@@ -44,6 +44,52 @@ class ManualRecoverySourceGuardTest {
     }
 
     @Test
+    fun maintenanceRecovery_shouldConfirmCloudBeforeShowingSuccess() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val applyBody = extractFunctionBody(source, "fun applyManualRecoveredState")
+        val confirmIndex = applyBody.indexOf("confirmManualRecoveryInCloud")
+        val successIndex = applyBody.indexOf("设备已恢复正常状态")
+
+        assertTrue("本地恢复后必须确认云端恢复状态", confirmIndex >= 0)
+        assertTrue("只有云端确认后才能提示设备恢复成功", successIndex > confirmIndex)
+    }
+
+    @Test
+    fun maintenanceRecovery_shouldAllowCloudOnlyRetryWhenLocalStateAlreadyRecovered() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val clickBody = extractFunctionBody(source, "binding.btnErroStatus.setOnClickListener")
+        val localDecisionIndex = clickBody.indexOf("needsLocalFaultRecovery")
+        val cloudRetryIndex = clickBody.indexOf("confirmManualRecoveryInCloud")
+        val modbusIndex = clickBody.indexOf("MaintenanceModbusRecoveryConnector.ensureConnected")
+
+        assertTrue("恢复入口必须先判断是否仍需本地硬件恢复", localDecisionIndex >= 0)
+        assertTrue("本机已恢复时必须支持仅补交云端恢复确认", cloudRetryIndex > localDecisionIndex)
+        assertTrue("仅补交云端恢复必须发生在 Modbus 检查之前", cloudRetryIndex < modbusIndex)
+    }
+
+    @Test
+    fun manualRecoveryCloudConfirmation_shouldUseFreshRuntimeAckWithoutHttpOverwrite() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val body = extractFunctionBody(source, "fun confirmManualRecoveryInCloud")
+
+        assertTrue("人工恢复必须强制分配新 runtimeSeq", body.contains("forceNewSeq = true"))
+        assertTrue("人工恢复必须等待对应 runtime_state_ack", body.contains("ackListener ="))
+        assertTrue("页面销毁时必须注销人工恢复 ACK 等待", body.contains("invokeOnCancellation"))
+        assertTrue("人工恢复确认不得用 HTTP 旧正常态覆盖新故障", !body.contains("uploadDeviceInfo"))
+        assertTrue("人工恢复确认不得依赖额外 HTTP 读取", !body.contains("preflightRemoteDeviceState"))
+    }
+
+    @Test
+    fun manualRecoveryAckTimeout_shouldBeIndependentFromSharedRuntimePendingState() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
+        val body = extractFunctionBody(source, "fun scheduleRuntimeStateAckCallbackTimeout")
+
+        assertTrue("人工恢复 ACK 必须使用独立固定超时", body.contains("runtimeStateAckCallbackRegistry.timeout"))
+        assertTrue("人工恢复 ACK 超时不得依赖共享 pending", !body.contains("pendingRuntimeStateAcks"))
+        assertTrue("人工恢复 ACK 超时不得依赖全局最新 ACK", !body.contains("lastAckedRuntimeStateSeq"))
+    }
+
+    @Test
     fun algorithmPreflight_shouldBeReadOnlyAndCallbacksShouldBeGenerationFenced() {
         val apiSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/net/DataManagementAPI.kt")
         val preflightBody = extractFunctionBody(apiSource, "fun preflightRemoteDeviceState")

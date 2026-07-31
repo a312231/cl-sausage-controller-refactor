@@ -60,6 +60,16 @@ object VMMqttHelper : VMMqtt() {
         val errorStatus = content.getIntValue("errorStatus")
         val ackTs = content.getLongValue("ackTs")
         val ackResult = SendServerHelper.markRuntimeStateAcked(runtimeSeq)
+        SendServerHelper.notifyRuntimeStateAck(
+            SendServerHelper.RuntimeStateServerAck(
+                runtimeSeq = runtimeSeq,
+                received = true,
+                applied = applied,
+                reason = reason,
+                onlineStatus = onlineStatus,
+                errorStatus = errorStatus
+            )
+        )
         val payloadLength = (topicMessage.content ?: "").length
         LogUtils.d(
             "【MQTT业务】收到运行时状态回执：" +

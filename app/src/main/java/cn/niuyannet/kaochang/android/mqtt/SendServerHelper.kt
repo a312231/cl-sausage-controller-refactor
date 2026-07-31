@@ -32,6 +32,7 @@ object SendServerHelper {
     private val runtimeStateSeq = AtomicLong(System.currentTimeMillis())
     private val runtimeStateAckHandler = Handler(Looper.getMainLooper())
     private val pendingRuntimeStateAcks = ConcurrentHashMap<Long, RuntimeStatePublishSnapshot>()
+    private val runtimeStateAckCallbackRegistry = RuntimeStateAckCallbackRegistry()
     private val runtimeStateHttpFallbackFired = ConcurrentHashMap<Long, Boolean>()
     private val availableStateSeq = AtomicLong(System.currentTimeMillis())
     private val availableStateAckHandler = Handler(Looper.getMainLooper())
@@ -107,6 +108,15 @@ object SendServerHelper {
         val freshAck: Boolean,
         val snapshot: RuntimeStatePublishSnapshot?,
         val ackLatencyMs: Long?
+    )
+
+    data class RuntimeStateServerAck(
+        val runtimeSeq: Long,
+        val received: Boolean,
+        val applied: Boolean,
+        val reason: String,
+        val onlineStatus: Int,
+        val errorStatus: Int
     )
 
     data class AvailableStateAckPayload(
@@ -223,13 +233,15 @@ object SendServerHelper {
      */
     fun publishServiceUpdateStatus(
         source: String = "runtime_state:auto",
-        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot? = null
+        lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot? = null,
+        forceNewSeq: Boolean = false,
+        ackListener: RuntimeStateAckCallbackRegistry.Listener? = null
     ): Boolean {
         val config = AppConfig.getAppConfig()
         val frozenLowerPlatform = lowerPlatformSnapshot ?: LowerPlatformEpisodeReducer.snapshot(config)
         val now = System.currentTimeMillis()
         val stateSignature = buildRuntimeStateSignature(config, frozenLowerPlatform)
-        val (seq, reusedSeq) = resolveRuntimeStateSeq(stateSignature)
+        val (seq, reusedSeq) = resolveRuntimeStateSeq(stateSignature, forceNewSeq)
         val payload = RuntimeStatePayloadBuilder.build(
             deviceCode = AppConfig.getDeviceId(),
             runtimeSeq = seq,
@@ -238,6 +250,18 @@ object SendServerHelper {
             reportedAt = now,
             lowerPlatformSnapshot = frozenLowerPlatform
         )
+        if (ackListener != null) {
+            val registered = runtimeStateAckCallbackRegistry.register(
+                runtimeSeq = seq,
+                onlineStatus = config.onlineStatus,
+                errorStatus = config.errorStatus,
+                listener = ackListener
+            )
+            if (!registered) {
+                return false
+            }
+            scheduleRuntimeStateAckCallbackTimeout(seq)
+        }
         val ok = VMMqttHelper.publishService(
             TopicMessage().apply {
                 action = MqttProtocol.ACTION_SERVICE_STATE
@@ -280,6 +304,9 @@ object SendServerHelper {
                 LogUtils.i("【云端同步】设备状态已进入 MQTT 发送队列：${onlineStatusLabel(config.onlineStatus)}")
             }
         } else {
+            if (ackListener != null) {
+                runtimeStateAckCallbackRegistry.cancel(ackListener)
+            }
             LogUtils.w(
                 "【云端同步】设备状态进入 MQTT 发送队列失败：状态=${onlineStatusLabel(config.onlineStatus)}，将等待下一次重试"
             )
@@ -650,6 +677,12 @@ object SendServerHelper {
         }, RUNTIME_STATE_ACK_TIMEOUT_MS)
     }
 
+    private fun scheduleRuntimeStateAckCallbackTimeout(runtimeSeq: Long) {
+        runtimeStateAckHandler.postDelayed({
+            runtimeStateAckCallbackRegistry.timeout(runtimeSeq)
+        }, RUNTIME_STATE_ACK_TIMEOUT_MS)
+    }
+
     private fun triggerRuntimeStateHttpFallbackIfNeeded(snapshot: RuntimeStatePublishSnapshot) {
         if (runtimeStateHttpFallbackFired.putIfAbsent(snapshot.runtimeSeq, true) != null) {
             return
@@ -996,6 +1029,18 @@ object SendServerHelper {
         )
     }
 
+    fun notifyRuntimeStateAck(ack: RuntimeStateServerAck) {
+        runtimeStateAckCallbackRegistry.complete(ack.runtimeSeq, ack)
+    }
+
+    fun createRuntimeStateAckListener(
+        callback: (RuntimeStateServerAck) -> Unit
+    ): RuntimeStateAckCallbackRegistry.Listener = runtimeStateAckCallbackRegistry.createListener(callback)
+
+    fun cancelRuntimeStateAckListener(listener: RuntimeStateAckCallbackRegistry.Listener) {
+        runtimeStateAckCallbackRegistry.cancel(listener)
+    }
+
     private fun buildRuntimeStateSignature(
         config: AppConfigBean,
         lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot
@@ -1003,9 +1048,12 @@ object SendServerHelper {
         return RuntimeStateSignatureBuilder.build(config, lowerPlatformSnapshot)
     }
 
-    private fun resolveRuntimeStateSeq(stateSignature: String): Pair<Long, Boolean> {
+    private fun resolveRuntimeStateSeq(
+        stateSignature: String,
+        forceNewSeq: Boolean
+    ): Pair<Long, Boolean> {
         synchronized(pendingRuntimeStateAcks) {
-            if (activeRuntimeStateSeq > 0L && stateSignature == activeRuntimeStateSignature) {
+            if (!forceNewSeq && activeRuntimeStateSeq > 0L && stateSignature == activeRuntimeStateSignature) {
                 return activeRuntimeStateSeq to true
             }
             val nextSeq = runtimeStateSeq.incrementAndGet()
