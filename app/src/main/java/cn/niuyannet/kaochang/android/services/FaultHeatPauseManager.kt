@@ -601,12 +601,23 @@ object FaultHeatPauseManager {
         synchronized(mutex) {
             val config = AppConfig.getAppConfig()
             if (config.pendingDiscardPositions.remove(positionSn)) {
+                val previousPendingPositions = config.pendingDiscardPositions.toMutableList().apply { add(positionSn) }
+                val previousAlertCode = config.foodSafetyAlertCode
+                val previousAlertReason = config.foodSafetyAlertReason
                 normalizePendingDiscardPositions(config)
                 if (config.pendingDiscardPositions.isEmpty()) {
                     config.foodSafetyAlertCode = null
                     config.foodSafetyAlertReason = null
                 }
-                AppConfig.saveAppConfigDurable(config)
+                try {
+                    AppConfig.saveAppConfigDurable(config)
+                } catch (error: Throwable) {
+                    config.pendingDiscardPositions.clear()
+                    config.pendingDiscardPositions.addAll(previousPendingPositions.sorted())
+                    config.foodSafetyAlertCode = previousAlertCode
+                    config.foodSafetyAlertReason = previousAlertReason
+                    throw error
+                }
                 LogUtils.i(
                     "【$LOG_TAG】已清除待丢弃烤盘位：positionSn=$positionSn，" +
                         "remaining=${config.pendingDiscardPositions}"

@@ -27,6 +27,9 @@ import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import cn.niuyannet.kaochang.android.services.KaoPanUiReservationStateBuilder
 import cn.niuyannet.kaochang.android.services.MaintenanceModbusRecoveryConnector
 import cn.niuyannet.kaochang.android.services.BusinessTimeWindowHelper
+import cn.niuyannet.kaochang.android.services.DiscardCheckpoint
+import cn.niuyannet.kaochang.android.services.DiscardJournal
+import cn.niuyannet.kaochang.android.services.DiscardPhysicalResult
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearExecutor
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
@@ -380,8 +383,37 @@ class MaintenanceFragment : Fragment() {
         binding.tvOnlineStatus.setTextColor(
             ContextCompat.getColor(requireContext(), runtimeStatusColor(display.onlineLevel))
         )
-        binding.btnErroStatus.text = display.recoveryButtonText
+        binding.btnErroStatus.text = if (KaoChangOperate.pendingDiscardJournalForRecovery() != null) {
+            "核对丢弃残留"
+        } else {
+            display.recoveryButtonText
+        }
     }
+
+    private suspend fun confirmDiscardPhysicalResult(journal: DiscardJournal): DiscardPhysicalResult? =
+        suspendCancellableCoroutine { continuation ->
+            val dialog = AlertDialog.Builder(requireContext())
+                .setTitle("核对工位 ${journal.positionSn} 的丢弃结果")
+                .setMessage(
+                    "丢弃命令已经尝试下发，但上位机没有收到确定结果。请现场查看工位和机械位置后选择。\n\n" +
+                        "不要只根据页面数据或 201=0 判断。"
+                )
+                .setPositiveButton("工位已空，确认已丢弃") { _, _ ->
+                    if (continuation.isActive) continuation.resume(DiscardPhysicalResult.DISCARDED)
+                }
+                .setNegativeButton("烤肠仍在，确认未丢弃") { _, _ ->
+                    if (continuation.isActive) continuation.resume(DiscardPhysicalResult.NOT_DISCARDED)
+                }
+                .setNeutralButton("取消") { _, _ ->
+                    if (continuation.isActive) continuation.resume(null)
+                }
+                .setOnCancelListener {
+                    if (continuation.isActive) continuation.resume(null)
+                }
+                .create()
+            continuation.invokeOnCancellation { dialog.dismiss() }
+            dialog.show()
+        }
 
     private fun runtimeStatusColor(level: MaintenanceRuntimeStatusDisplayPolicy.Level): Int =
         when (level) {
@@ -1570,6 +1602,47 @@ class MaintenanceFragment : Fragment() {
             binding.tvCooldownHint.text = "正在恢复设备状态"
             viewLifecycleOwner.lifecycleScope.launch {
                 try {
+                    val discardJournal = KaoChangOperate.pendingDiscardJournalForRecovery()
+                    if (discardJournal != null) {
+                        val physicalResult = when {
+                            discardJournal.checkpoint == DiscardCheckpoint.PREPARED -> null
+                            discardJournal.confirmedPhysicalResult != null -> discardJournal.confirmedPhysicalResult
+                            else -> confirmDiscardPhysicalResult(discardJournal)
+                        }
+                        if (
+                            discardJournal.checkpoint == DiscardCheckpoint.COMMAND_ISSUED &&
+                            physicalResult == null
+                        ) {
+                            ToastUtils.showLong("已取消核对，丢弃残留和维护态保持不变")
+                            return@launch
+                        }
+                        val closeout = withContext(Dispatchers.IO) {
+                            KaoChangOperate.confirmDiscardJournalRecovery(
+                                physicalResult = physicalResult,
+                                reason = "维护页现场核对丢弃结果"
+                            )
+                        }
+                        if (closeout.ok) {
+                            refreshKaoPanGrid()
+                            updateRuntimeStatusUi()
+                            ToastUtils.showLong("${closeout.reason}；设备仍保持维护，请再次点击恢复正常状态")
+                            AdminOperationLogger.w(
+                                action = "核对丢弃残留",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_DONE,
+                                detail = "工位=${closeout.positionSn}，烤盘数据清空=${if (closeout.panCleared) "是" else "否"}"
+                            )
+                        } else {
+                            ToastUtils.showLong("丢弃残留未收口：${closeout.reason}；设备继续保持维护")
+                            AdminOperationLogger.w(
+                                action = "核对丢弃残留",
+                                page = AdminOperationLogger.PAGE_PAN,
+                                result = AdminOperationLogger.RESULT_FAIL,
+                                detail = "工位=${closeout.positionSn}，原因=${closeout.reason}"
+                            )
+                        }
+                        return@launch
+                    }
                     val initialConfig = AppConfig.getAppConfig()
                     val initialRecoveredOnlineStatus = resolveManualRecoveredOnlineStatus(initialConfig)
                     if (!needsLocalFaultRecovery(initialConfig)) {

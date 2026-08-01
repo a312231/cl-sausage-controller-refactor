@@ -515,7 +515,193 @@ object KaoChangOperate {
         !actionGroupRecoveryVerified ||
             actionGroupSessionStore.load() != null ||
             panMoveJournalStore.load() != null ||
+            discardJournalStore.load() != null ||
             hasBlockingSupplementPrefetchEvidence()
+
+    fun pendingDiscardJournalForRecovery(): DiscardJournal? = discardJournalStore.load()
+
+    data class DiscardJournalRecoveryResult(
+        val ok: Boolean,
+        val reason: String,
+        val positionSn: Int? = null,
+        val panCleared: Boolean = false
+    )
+
+    suspend fun confirmDiscardJournalRecovery(
+        physicalResult: DiscardPhysicalResult?,
+        reason: String
+    ): DiscardJournalRecoveryResult {
+        val initialJournal = discardJournalStore.load()
+            ?: return DiscardJournalRecoveryResult(false, "没有待收口的丢弃记录")
+        if (!VMModbusHelper.connectStatus()) {
+            return DiscardJournalRecoveryResult(false, "下位机串口未连接", initialJournal.positionSn)
+        }
+        val firstStatus = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        delay(500L)
+        val secondStatus = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
+        val status201Readings = listOf(firstStatus, secondStatus)
+        val reader = createAtomicActionClient() as? AtomicActionStateReader
+            ?: return DiscardJournalRecoveryResult(false, "动作组结果读取器不可用", initialJournal.positionSn)
+        val actionGroupResultStates = mutableListOf<Int>()
+        for (spec in ActionGroupRecoveryBootstrap.allSpecs) {
+            when (val result = reader.readResult(spec)) {
+                is AtomicReadResult.Success -> actionGroupResultStates += result.value
+                is AtomicReadResult.Failure -> return DiscardJournalRecoveryResult(
+                    false,
+                    "读取 ${spec.name} 结果寄存器 ${spec.resultRegister} 失败：${result.message}",
+                    initialJournal.positionSn
+                )
+            }
+        }
+        val confirmedResult = initialJournal.confirmedPhysicalResult ?: physicalResult
+        if (
+            initialJournal.confirmedPhysicalResult != null &&
+            physicalResult != null &&
+            initialJournal.confirmedPhysicalResult != physicalResult
+        ) {
+            return DiscardJournalRecoveryResult(false, "现场确认结果与已保存结果不一致", initialJournal.positionSn)
+        }
+        val initialConfig = AppConfig.getAppConfig()
+        val resolvedSource = DiscardJournalRecoveryPolicy.resolveSource(
+            initialJournal,
+            initialConfig.pendingDiscardPositions.toSet()
+        )
+        val decision = DiscardJournalRecoveryPolicy.evaluate(
+            journal = initialJournal,
+            onlineStatus = initialConfig.onlineStatus,
+            isEnable = initialConfig.isEnable,
+            moveStatus = initialConfig.moveStatus,
+            status201Readings = status201Readings,
+            actionGroupResultStates = actionGroupResultStates,
+            physicalResult = confirmedResult
+        )
+        if (!decision.canClose) {
+            return DiscardJournalRecoveryResult(false, decision.reason, initialJournal.positionSn)
+        }
+        val wasteConsumableEvent = if (decision.clearPan) {
+            initialJournal.wasteConsumableEvent ?: ConsumableEventPayloadBuilder.nextEvent(
+                consumableType = "WASTE",
+                eventType = "WASTE_DISCARD_EXPIRED",
+                deltaValue = 1L,
+                source = "discard_journal_manual_closeout",
+                detail = "pan=${initialJournal.positionSn}, source=${initialJournal.source ?: "unknown"}"
+            )
+        } else {
+            initialJournal.wasteConsumableEvent
+        }
+        val committedJournal = initialJournal.copy(
+            confirmedPhysicalResult = confirmedResult,
+            source = resolvedSource,
+            wasteConsumableEvent = wasteConsumableEvent
+        )
+        if (committedJournal != initialJournal) {
+            val latest = discardJournalStore.load()
+            if (latest != initialJournal) {
+                return DiscardJournalRecoveryResult(false, "丢弃记录已变化，请重新核对", initialJournal.positionSn)
+            }
+            if (!discardJournalStore.saveDurable(committedJournal)) {
+                return DiscardJournalRecoveryResult(false, "丢弃恢复记录落盘失败", initialJournal.positionSn)
+            }
+        }
+        if (decision.clearPan) {
+            val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == initialJournal.positionSn }
+                ?: return DiscardJournalRecoveryResult(false, "找不到目标烤盘位", initialJournal.positionSn)
+            val previousCmdStatusTake = pan.cmdStatusTake
+            val previousHasSausage = pan.isHasSausage
+            val previousHasGrilling = pan.isHasGrilling
+            val previousHoldingTime = pan.holdingTime
+            val previousStartTime = pan.startTime
+            val previousStatus = pan.status
+            val previousCmdStatusDiscard = pan.cmdStatusDiscard
+            applySuccessfulTakePanState(pan)
+            pan.cmdStatusDiscard = 0
+            try {
+                KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+            } catch (error: Throwable) {
+                pan.cmdStatusTake = previousCmdStatusTake
+                pan.isHasSausage = previousHasSausage
+                pan.isHasGrilling = previousHasGrilling
+                pan.holdingTime = previousHoldingTime
+                pan.startTime = previousStartTime
+                pan.status = previousStatus
+                pan.cmdStatusDiscard = previousCmdStatusDiscard
+                return DiscardJournalRecoveryResult(
+                    false,
+                    "目标烤盘状态耐久收口失败：${error.message ?: error.javaClass.simpleName}",
+                    initialJournal.positionSn
+                )
+            }
+            try {
+                clearReturnBindingForSourceIfAny(initialJournal.positionSn)
+            } catch (error: Throwable) {
+                return DiscardJournalRecoveryResult(
+                    false,
+                    "目标烤盘回搬绑定收口失败：${error.message ?: error.javaClass.simpleName}",
+                    initialJournal.positionSn
+                )
+            }
+            try {
+                handleSuccessfulDiscardDemandGate(
+                    initialJournal.positionSn,
+                    resolvedSource.orEmpty()
+                )
+                FaultHeatPauseManager.clearDiscardPositionStateAndAlertIfFinished(initialJournal.positionSn)
+                SendServerHelper.publishConsumableEvent(requireNotNull(wasteConsumableEvent))
+            } catch (error: Throwable) {
+                return DiscardJournalRecoveryResult(
+                    false,
+                    "丢弃业务状态耐久收口失败：${error.message ?: error.javaClass.simpleName}",
+                    initialJournal.positionSn
+                )
+            }
+        }
+        if (
+            initialJournal.checkpoint == DiscardCheckpoint.COMMAND_ISSUED &&
+            confirmedResult == DiscardPhysicalResult.NOT_DISCARDED
+        ) {
+            val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == initialJournal.positionSn }
+                ?: return DiscardJournalRecoveryResult(false, "找不到目标烤盘位", initialJournal.positionSn)
+            val previousCmdStatusDiscard = pan.cmdStatusDiscard
+            pan.cmdStatusDiscard = 0
+            try {
+                KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+            } catch (error: Throwable) {
+                pan.cmdStatusDiscard = previousCmdStatusDiscard
+                return DiscardJournalRecoveryResult(
+                    false,
+                    "确认未丢弃后的烤盘状态耐久收口失败：${error.message ?: error.javaClass.simpleName}",
+                    initialJournal.positionSn
+                )
+            }
+        }
+        if (!releaseMechanicalMove(
+                "人工确认丢弃残留",
+                initialJournal.owner,
+                discardClaimOwnerStore(),
+                expectedMoveStatus = 4,
+                idleMoveStatus = 0
+            )
+        ) {
+            return DiscardJournalRecoveryResult(false, "丢弃 owner/moveStatus 条件释放失败", initialJournal.positionSn)
+        }
+        if (decision.clearPan) {
+            FaultHeatPauseManager.publishDiscardPositionCleared(initialJournal.positionSn)
+        }
+        PanPhysicalStateDeltaReporter.reportPansChanged(
+            changedPans = KaoPanHelper.getKaoPanList(),
+            reason = "discard_journal_manual_closeout:pan=${initialJournal.positionSn}",
+            source = "discard_journal_manual_closeout"
+        )
+        lastActionGroupRecoveryFailureReason = null
+        actionGroupRecoveryVerified = false
+        logW(
+            LOG_ACTION_GROUP,
+            "人工确认丢弃残留已安全收口：reason=$reason，pan=${initialJournal.positionSn}，" +
+                "checkpoint=${initialJournal.checkpoint}，physicalResult=${confirmedResult ?: "命令未下发"}，" +
+                "status201=$status201Readings，actionGroupResults=$actionGroupResultStates"
+        )
+        return DiscardJournalRecoveryResult(true, "丢弃残留已收口", initialJournal.positionSn, decision.clearPan)
+    }
 
     private fun readSupplementPrefetchEvidence(): DurableEvidenceReadResult<SupplementPrefetchPipelineSession> =
         runCatching { supplementPrefetchSessionStore.read() }
@@ -7320,11 +7506,22 @@ object KaoChangOperate {
         detail: String? = null
     ) :Boolean {
         val owner = "discard:${kaoPan.positionSn}:${System.currentTimeMillis()}"
+        val tasteLabel = getPanTasteLabel(kaoPan)
+        val wasteConsumableEvent = ConsumableEventPayloadBuilder.nextEvent(
+            consumableType = "WASTE",
+            eventType = "WASTE_DISCARD_EXPIRED",
+            deltaValue = 1L,
+            source = "discardSausage_success",
+            detail = "source=$source, pan=${kaoPan.positionSn}, taste=$tasteLabel"
+        )
         val discardJournal = DiscardJournal(
             owner = owner,
             positionSn = kaoPan.positionSn,
             checkpoint = DiscardCheckpoint.PREPARED,
-            createdAtMs = System.currentTimeMillis()
+            createdAtMs = System.currentTimeMillis(),
+            source = source,
+            tasteLabel = tasteLabel,
+            wasteConsumableEvent = wasteConsumableEvent
         )
         if (!claimMechanicalMove(
                 stage = "过保丢弃下发前",
@@ -7339,7 +7536,6 @@ object KaoChangOperate {
         }
 
         var commandAttempted = false
-        val tasteLabel = getPanTasteLabel(kaoPan)
         val sourceDetail = detail?.takeIf { it.isNotBlank() } ?: "未补充详细原因"
         LogUtils.i(
             "【丢弃流程】开始丢弃：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail"
@@ -7404,15 +7600,7 @@ object KaoChangOperate {
         }
         if (result==ActionExecutionResult.SUCCESS){
             applySuccessfulTakePanState(kaoPan)
-            SendServerHelper.publishConsumableEvent(
-                ConsumableEventPayloadBuilder.nextEvent(
-                    consumableType = "WASTE",
-                    eventType = "WASTE_DISCARD_EXPIRED",
-                    deltaValue = 1L,
-                    source = "discardSausage_success",
-                    detail = "source=$source, pan=${kaoPan.positionSn}, taste=$tasteLabel"
-                )
-            )
+            SendServerHelper.publishConsumableEvent(wasteConsumableEvent)
             handleSuccessfulDiscardDemandGate(kaoPan.positionSn, source)
             FaultHeatPauseManager.clearDiscardPositionAndAlertIfFinished(kaoPan.positionSn)
             LogUtils.i(
@@ -8018,13 +8206,13 @@ object KaoChangOperate {
         val oldModeType = config.modeType
         val oldTransitionMode = config.transitionMode
         val result = LowToHighDemandGate.markExpiredDiscardAndFoldToLow(config, positionSn)
-        if (!result.changedModeState && !result.blockedFrontPositionsChanged) {
-            return
-        }
         if (config.transitionMode == 2) {
             clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation("过保丢弃进入高转低/残留消化，停止25~33未完成补肠意图")
         }
-        AppConfig.saveAppConfig(config)
+        AppConfig.saveAppConfigDurable(config)
+        if (!result.changedModeState && !result.blockedFrontPositionsChanged) {
+            return
+        }
         LogUtils.w(
             "【并发切换诊断】过保丢弃触发残留消化/低并发收口：source=KaoChangOperate.handleSuccessfulDiscardDemandGate，烤盘=$positionSn，" +
                 "modeType（并发模式）=${modeTypeDesc(oldModeType)}->${modeTypeDesc(config.modeType)}，" +
