@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
@@ -84,6 +85,10 @@ class MaintenanceFragment : Fragment() {
     private var clearPanCooldownJob: Job? = null
     private var resetPanCooldownJob: Job? = null
     private var algorithmSwitchFallbackTickCount = 0
+    private var remoteRuntimeStatusRefreshTickCount = 0
+    private var remoteRuntimeStatusRefreshInFlight = false
+    private var cloudRuntimeStatusState: MaintenanceRuntimeStatusDisplayPolicy.CloudState =
+        MaintenanceRuntimeStatusDisplayPolicy.CloudState.Loading
     private val maintenanceUiRefreshCallback: (String) -> Unit = { reason ->
         activity?.runOnUiThread {
             if (!isAdded || _binding == null) {
@@ -97,12 +102,14 @@ class MaintenanceFragment : Fragment() {
                 reason = "远端事件驱动同步:$reason",
                 forceLog = true
             )
+            refreshRemoteRuntimeStatusForDisplay("远端事件驱动同步:$reason")
         }
     }
 
     companion object {
         private const val MAINTENANCE_ACTION_COOLDOWN_SECONDS = 15
         private const val ALGORITHM_SWITCH_FALLBACK_SYNC_INTERVAL_SECONDS = 5
+        private const val REMOTE_RUNTIME_STATUS_REFRESH_INTERVAL_SECONDS = 10
         private const val MANUAL_ACTION_IDLE_TIMEOUT_MS = 15_000L
     }
 
@@ -218,6 +225,11 @@ class MaintenanceFragment : Fragment() {
         setupGrid()
         setupButtons()
         refreshConsumableState()
+        cloudRuntimeStatusState = MaintenanceRuntimeStatusDisplayPolicy.CloudState.Loading
+        remoteRuntimeStatusRefreshInFlight = false
+        remoteRuntimeStatusRefreshTickCount = 0
+        updateRuntimeStatusUi()
+        refreshRemoteRuntimeStatusForDisplay("维护页初始化")
         syncAlgorithmSwitchFromRuntimeState("维护页初始化", forceLog = true)
         syncInspectionSwitchFromRuntimeState("维护页初始化", forceLog = true)
         updateManualSupplementConfirmButtonVisibility()
@@ -340,6 +352,66 @@ class MaintenanceFragment : Fragment() {
             else -> "确认续补安全"
         }
         binding.btnRebindOrphanReturns.visibility = if (hasOrphanSources) View.VISIBLE else View.GONE
+    }
+
+    private fun updateRuntimeStatusUi() {
+        val config = AppConfig.getAppConfig()
+        val canRetryCloudOnly = ManualRecoveryCloudConfirmationPolicy.canRetryCloudOnly(
+            onlineStatus = config.onlineStatus,
+            targetOnlineStatus = resolveManualRecoveredOnlineStatus(config),
+            errorStatus = config.errorStatus,
+            moveStatus = config.moveStatus,
+            isEnable = config.isEnable,
+            faultPauseActive = FaultHeatPauseManager.shouldSkipBakingCompletion(config)
+        )
+        val display = MaintenanceRuntimeStatusDisplayPolicy.build(
+            localOnlineStatus = config.onlineStatus,
+            localErrorStatus = config.errorStatus,
+            cloudState = cloudRuntimeStatusState,
+            needsLocalRecovery = needsLocalFaultRecovery(config),
+            canRetryCloudOnly = canRetryCloudOnly
+        )
+
+        binding.tvErroStatus.text = display.faultText
+        binding.tvErroStatus.setTextColor(
+            ContextCompat.getColor(requireContext(), runtimeStatusColor(display.faultLevel))
+        )
+        binding.tvOnlineStatus.text = display.onlineText
+        binding.tvOnlineStatus.setTextColor(
+            ContextCompat.getColor(requireContext(), runtimeStatusColor(display.onlineLevel))
+        )
+        binding.btnErroStatus.text = display.recoveryButtonText
+    }
+
+    private fun runtimeStatusColor(level: MaintenanceRuntimeStatusDisplayPolicy.Level): Int =
+        when (level) {
+            MaintenanceRuntimeStatusDisplayPolicy.Level.NORMAL -> AndroidR.color.holo_green_dark
+            MaintenanceRuntimeStatusDisplayPolicy.Level.WARNING -> AndroidR.color.holo_orange_dark
+            MaintenanceRuntimeStatusDisplayPolicy.Level.ERROR -> AndroidR.color.holo_red_dark
+        }
+
+    private fun refreshRemoteRuntimeStatusForDisplay(reason: String) {
+        if (remoteRuntimeStatusRefreshInFlight) return
+        remoteRuntimeStatusRefreshInFlight = true
+        DataManagementAPI.preflightRemoteDeviceState(
+            logPrefix = "维护页状态展示:$reason"
+        ) { result ->
+            activity?.runOnUiThread {
+                remoteRuntimeStatusRefreshInFlight = false
+                if (!isAdded || _binding == null) {
+                    return@runOnUiThread
+                }
+                cloudRuntimeStatusState = if (result.success) {
+                    MaintenanceRuntimeStatusDisplayPolicy.CloudState.Available(
+                        onlineStatus = result.onlineStatus,
+                        errorStatus = result.errorStatus
+                    )
+                } else {
+                    MaintenanceRuntimeStatusDisplayPolicy.CloudState.Unavailable
+                }
+                updateRuntimeStatusUi()
+            }
+        }
     }
 
     private fun setConsumableManualButtonsEnabled(enabled: Boolean) {
@@ -1874,6 +1946,7 @@ class MaintenanceFragment : Fragment() {
     private fun startRefreshTimer() {
         refreshJob?.cancel()
         algorithmSwitchFallbackTickCount = 0
+        remoteRuntimeStatusRefreshTickCount = 0
         refreshJob = lifecycleScope.launch {
             flow {
                 while (true) {
@@ -1889,16 +1962,13 @@ class MaintenanceFragment : Fragment() {
                     syncInspectionSwitchFromRuntimeState("5秒低频兜底同步")
                 }
                 updateLowerPlatformUi()
-                binding.tvAppUpdateStatus.text = "更新：${AppUpdateManager.lastStatusText()}"
-                binding.tvErroStatus.apply {
-                    val isNormal = AppConfig.getAppConfig().errorStatus == 0
-                    text = if (isNormal) "状态：正常" else "状态：错误"
-                    setTextColor(
-                        resources.getColor(
-                            if (isNormal) AndroidR.color.holo_green_dark else AndroidR.color.holo_red_dark
-                        )
-                    )
+                updateRuntimeStatusUi()
+                remoteRuntimeStatusRefreshTickCount++
+                if (remoteRuntimeStatusRefreshTickCount >= REMOTE_RUNTIME_STATUS_REFRESH_INTERVAL_SECONDS) {
+                    remoteRuntimeStatusRefreshTickCount = 0
+                    refreshRemoteRuntimeStatusForDisplay("10秒定时刷新")
                 }
+                binding.tvAppUpdateStatus.text = "更新：${AppUpdateManager.lastStatusText()}"
             }
         }
     }
