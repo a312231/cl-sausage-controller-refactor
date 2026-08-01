@@ -48,10 +48,15 @@ internal object HighHeatSupplementResumePlanner {
         listBox: List<KaoPanBox>,
         requestedCount: Int = 9,
         excludedReturnPositions: Set<Int> = emptySet(),
-        committedFutureReturnPositions: List<Int> = emptyList()
+        committedFutureReturnPositions: List<Int> = emptyList(),
+        committedReturnTasteByPosition: Map<Int, String> = emptyMap()
     ): List<ResumeTarget> {
         val currentReturnPans = frontPans
-            .filter { !it.isHasSausage && it.positionSn !in excludedReturnPositions }
+            .filter {
+                !it.isHasSausage &&
+                    it.positionSn !in excludedReturnPositions &&
+                    it.positionSn !in committedReturnTasteByPosition
+            }
             .sortedBy { it.positionSn }
             .take(requestedCount)
         val currentReturnPositions = currentReturnPans.map { it.positionSn }.toSet()
@@ -60,7 +65,8 @@ internal object HighHeatSupplementResumePlanner {
                 .filter {
                     it in 1..21 &&
                         it !in excludedReturnPositions &&
-                        it !in currentReturnPositions
+                        it !in currentReturnPositions &&
+                        it !in committedReturnTasteByPosition
                 }
                 .distinct()
                 .take(requestedCount - currentReturnPans.size)
@@ -85,39 +91,57 @@ internal object HighHeatSupplementResumePlanner {
             return emptyList()
         }
 
-        val reservedTasteCodes = returnPans
-            .map { pan ->
-                if (pan.positionSn in futureReturnPositions) {
-                    null
-                } else {
-                    pan.taste?.tasteCode?.takeIf { code -> code.isNotBlank() }
+        val occupiedTasteByPosition = frontPans
+            .filter { it.positionSn !in futureReturnPositions && it.isHasSausage }
+            .mapNotNull { pan ->
+                val tasteCode = committedReturnTasteByPosition[pan.positionSn]
+                    ?: pan.taste?.tasteCode?.takeIf { it.isNotBlank() }
+                tasteCode?.let { pan.positionSn to it }
+            }
+            .toMap()
+            .toMutableMap()
+            .apply {
+                committedReturnTasteByPosition.forEach { (positionSn, tasteCode) ->
+                    if (positionSn in 1..21 && positionSn !in futureReturnPositions && tasteCode.isNotBlank()) {
+                        put(positionSn, tasteCode)
+                    }
                 }
             }
-        val stockRatioTasteCodes = expandTasteAllocation(
-            KaoPanHelper.computeHighKaoPamRatio(listBox, targetPans.size)
+        val tastePlan = SupplementTasteMixPlanner.plan(
+            frontCapacity = 21,
+            targetCountByTaste = KaoPanHelper.computeHighKaoPamRatio(listBox, 21),
+            availableStockByTaste = buildAvailableStockByTaste(listBox),
+            occupiedTasteByPosition = occupiedTasteByPosition,
+            assignablePositions = returnPans.take(targetPans.size).map { it.positionSn }
         )
-        val remainingStockByTaste = buildAvailableStockByTaste(listBox)
+        val assignmentByPosition = tastePlan.assignments.associateBy { it.positionSn }
 
-        return targetPans.mapIndexedNotNull { index, targetPan ->
-            val returnPan = returnPans.getOrNull(index)
-            val preferredTasteCode = reservedTasteCodes.getOrNull(index)
-                ?: stockRatioTasteCodes.getOrNull(index)
-                ?: stockRatioTasteCodes.firstOrNull()
-            val tasteCode = selectTasteWithRemainingStock(
-                preferredTasteCode = preferredTasteCode,
-                remainingStockByTaste = remainingStockByTaste
-            )
+        val targets = targetPans.mapIndexedNotNull { index, targetPan ->
+            val returnPan = returnPans.getOrNull(index) ?: return@mapIndexedNotNull null
+            val tasteCode = assignmentByPosition[returnPan.positionSn]?.tasteCode
                 ?: return@mapIndexedNotNull null
-            remainingStockByTaste[tasteCode] = (remainingStockByTaste[tasteCode] ?: 0) - 1
-            if (returnPan != null &&
-                returnPan.positionSn !in futureReturnPositions &&
+            if (returnPan.positionSn !in futureReturnPositions &&
                 returnPan.taste?.tasteCode != tasteCode
             ) {
                 returnPan.taste = Taste(tasteCode)
             }
             targetPan.taste = Taste(tasteCode)
-            ResumeTarget(targetPan, tasteCode, returnPan?.positionSn)
+            ResumeTarget(targetPan, tasteCode, returnPan.positionSn)
         }
+        if (targets.size == requestedCount) {
+            val assignmentText = tastePlan.assignments.joinToString(",") {
+                "${it.positionSn}:${it.tasteCode}"
+            }
+            runCatching {
+                cn.niuyannet.kaochang.android.utils.LogUtils.i(
+                    "【高并发补肠】新批次口味规划：target=${tastePlan.targetCountByTaste}，" +
+                        "occupied=${tastePlan.occupiedCountByTaste}，" +
+                        "assignments=$assignmentText，" +
+                        "stockLimited=${tastePlan.stockLimited}"
+                )
+            }
+        }
+        return targets
     }
 
     fun planResumeTargets(
@@ -265,12 +289,6 @@ internal object HighHeatSupplementResumePlanner {
         return reservedFrontPans.getOrNull(offset)
     }
 
-    private fun expandTasteAllocation(allocation: Map<String, Int>): List<String> {
-        return allocation.flatMap { (tasteCode, count) ->
-            List(count.coerceAtLeast(0)) { tasteCode }
-        }
-    }
-
     private fun buildAvailableStockByTaste(listBox: List<KaoPanBox>): MutableMap<String, Int> {
         return listBox
             .filter {
@@ -282,22 +300,6 @@ internal object HighHeatSupplementResumePlanner {
             .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
             .filterValues { it > 0 }
             .toMutableMap()
-    }
-
-    private fun selectTasteWithRemainingStock(
-        preferredTasteCode: String?,
-        remainingStockByTaste: Map<String, Int>
-    ): String? {
-        val preferred = preferredTasteCode?.takeIf { it.isNotBlank() }
-        if (preferred != null && (remainingStockByTaste[preferred] ?: 0) > 0) {
-            return preferred
-        }
-        return remainingStockByTaste
-            .filterValues { it > 0 }
-            .entries
-            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-            .firstOrNull()
-            ?.key
     }
 
     private fun isKeepWarmReady(

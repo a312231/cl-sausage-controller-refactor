@@ -526,7 +526,11 @@ object HighCurrentTrafficMode {
                 supplementGroup = list25_33,
                 listBox = listBox,
                 excludedReturnPositions = protectedOldLowHeatReturnPositions,
-                committedFutureReturnPositions = committedOldLowHeatSourcePositions.toList()
+                committedFutureReturnPositions = committedOldLowHeatSourcePositions.toList(),
+                committedReturnTasteByPosition = SupplementTasteMixPlanner.committedReturnTasteByPosition(
+                    activeIntent,
+                    1..21
+                )
             )
             val availableStockByTaste = listBox
                 .filter { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
@@ -1065,10 +1069,15 @@ object HighCurrentTrafficMode {
         val emptyPositions = list1_21.filter { !it.isHasSausage }
         val emptyPositions25_33 = list25_33.filter { !it.isHasSausage }
         if (emptyPositions.size >= 9 && emptyPositions25_33.size >= 9) {
+            val committedReturnTasteByPosition = SupplementTasteMixPlanner.committedReturnTasteByPosition(
+                KaoChangOperate.completedHeatReturnIntentForUi(),
+                1..21
+            )
             val plannedTargets = HighHeatSupplementResumePlanner.planInitialTargets(
                 frontPans = list1_21,
                 supplementGroup = list25_33,
-                listBox = listBox
+                listBox = listBox,
+                committedReturnTasteByPosition = committedReturnTasteByPosition
             )
             if (!HighHeatSupplementResumePlanner.isCompleteInitialPlan(plannedTargets)) {
                 LogUtils.w(

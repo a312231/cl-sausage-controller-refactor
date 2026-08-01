@@ -653,14 +653,24 @@ object LowCurrentTrafficMode {
         }
 
         TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
-        val emptyPositions = list1_9.filter { !it.isHasSausage && !it.isHasGrilling }
+        val committedReturnTasteByPosition = SupplementTasteMixPlanner.committedReturnTasteByPosition(
+            KaoChangOperate.completedHeatReturnIntentForUi(),
+            1..9
+        )
+        val emptyPositions = list1_9.filter {
+            !it.isHasSausage &&
+                !it.isHasGrilling &&
+                it.positionSn !in committedReturnTasteByPosition
+        }
         val emptyPositions13_15 = list13_15.filter { !it.isHasSausage }
         if (emptyPositions.size >= pNum && emptyPositions13_15.size >= pNum) {
             val selectedFrontPositions = emptyPositions.take(pNum)
             val plan = planLowHeatSupplementTargets(
                 selectedFrontPositions = selectedFrontPositions,
                 supplementPositions = emptyPositions13_15.take(pNum),
-                listBox = listBox
+                listBox = listBox,
+                allFrontPans = list1_9,
+                committedReturnTasteByPosition = committedReturnTasteByPosition
             )
             if (plan.targets.isEmpty()) {
                 LogUtils.w(
@@ -709,14 +719,24 @@ object LowCurrentTrafficMode {
         }
 
         TrafficModeHelper.fillMissingTasteReservations(list1_9, listBox)
-        val emptyPositions = list1_9.filter { !it.isHasSausage && !it.isHasGrilling }
+        val committedReturnTasteByPosition = SupplementTasteMixPlanner.committedReturnTasteByPosition(
+            KaoChangOperate.completedHeatReturnIntentForUi(),
+            1..9
+        )
+        val emptyPositions = list1_9.filter {
+            !it.isHasSausage &&
+                !it.isHasGrilling &&
+                it.positionSn !in committedReturnTasteByPosition
+        }
         val emptyPositions16_18 = list16_18.filter { !it.isHasSausage }
         if (emptyPositions.size >= pNum && emptyPositions16_18.size >= pNum) {
             val selectedFrontPositions = emptyPositions.take(pNum)
             val plan = planLowHeatSupplementTargets(
                 selectedFrontPositions = selectedFrontPositions,
                 supplementPositions = emptyPositions16_18.take(pNum),
-                listBox = listBox
+                listBox = listBox,
+                allFrontPans = list1_9,
+                committedReturnTasteByPosition = committedReturnTasteByPosition
             )
             if (plan.targets.isEmpty()) {
                 LogUtils.w(
@@ -884,10 +904,37 @@ object LowCurrentTrafficMode {
         selectedFrontPositions: List<KaoPan>,
         supplementPositions: List<KaoPan>,
         listBox: List<KaoPanBox>,
+        allFrontPans: List<KaoPan> = selectedFrontPositions,
+        committedReturnTasteByPosition: Map<Int, String> = emptyMap(),
         isBoxAvailable: (KaoPanBox) -> Boolean = KaoPanHelper::isSupplyBoxAvailableForAutoSupplement
     ): LowHeatSupplementPlan {
         val maxCount = minOf(selectedFrontPositions.size, supplementPositions.size)
-        val remainingStockByTaste = buildAvailableStockByTaste(listBox, isBoxAvailable)
+        val availableStockByTaste = buildAvailableStockByTaste(listBox, isBoxAvailable)
+        val occupiedTasteByPosition = allFrontPans
+            .filter { it.isHasSausage || it.isHasGrilling }
+            .mapNotNull { pan ->
+                val tasteCode = committedReturnTasteByPosition[pan.positionSn]
+                    ?: pan.taste?.tasteCode?.takeIf { it.isNotBlank() }
+                tasteCode?.let { pan.positionSn to it }
+            }
+            .toMap()
+            .toMutableMap()
+            .apply {
+                committedReturnTasteByPosition.forEach { (positionSn, tasteCode) ->
+                    if (positionSn in 1..9 && tasteCode.isNotBlank()) {
+                        put(positionSn, tasteCode)
+                    }
+                }
+            }
+        val targetCountByTaste = KaoPanHelper.computeKaoPamRatio(listBox, 9)
+        val tastePlan = SupplementTasteMixPlanner.plan(
+            frontCapacity = 9,
+            targetCountByTaste = targetCountByTaste,
+            availableStockByTaste = availableStockByTaste,
+            occupiedTasteByPosition = occupiedTasteByPosition,
+            assignablePositions = selectedFrontPositions.take(maxCount).map { it.positionSn }
+        )
+        val assignmentByPosition = tastePlan.assignments.associateBy { it.positionSn }
         val plannedFrontPans = mutableListOf<KaoPan>()
         val targets = mutableListOf<KaoChangOperate.SupplementTarget>()
         supplementPositions.take(maxCount).forEach { targetPan ->
@@ -898,12 +945,7 @@ object LowCurrentTrafficMode {
         for (index in 0 until maxCount) {
             val frontPan = selectedFrontPositions[index]
             val targetPan = supplementPositions[index]
-            val preferredTasteCode = frontPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
-            val tasteCode = selectTasteWithRemainingStock(
-                preferredTasteCode = preferredTasteCode,
-                remainingStockByTaste = remainingStockByTaste
-            ) ?: break
-            remainingStockByTaste[tasteCode] = (remainingStockByTaste[tasteCode] ?: 0) - 1
+            val tasteCode = assignmentByPosition[frontPan.positionSn]?.tasteCode ?: break
             if (frontPan.taste?.tasteCode != tasteCode) {
                 frontPan.taste = Taste(tasteCode)
             }
@@ -914,6 +956,20 @@ object LowCurrentTrafficMode {
                 tasteCode,
                 returnPositionSn = frontPan.positionSn
             )
+        }
+        if (targets.isNotEmpty()) {
+            val assignmentText = tastePlan.assignments.joinToString(",") {
+                "${it.positionSn}:${it.tasteCode}"
+            }
+            runCatching {
+                LogUtils.i(
+                    TAG,
+                    "【低并发补肠】新批次口味规划：target=${tastePlan.targetCountByTaste}，" +
+                        "occupied=${tastePlan.occupiedCountByTaste}，" +
+                        "assignments=$assignmentText，" +
+                        "stockLimited=${tastePlan.stockLimited}"
+                )
+            }
         }
         return LowHeatSupplementPlan(plannedFrontPans, targets)
     }
@@ -932,22 +988,6 @@ object LowCurrentTrafficMode {
             .mapValues { (_, boxes) -> boxes.sumOf { it.num } }
             .filterValues { it > 0 }
             .toMutableMap()
-    }
-
-    private fun selectTasteWithRemainingStock(
-        preferredTasteCode: String?,
-        remainingStockByTaste: Map<String, Int>
-    ): String? {
-        val preferred = preferredTasteCode?.takeIf { it.isNotBlank() }
-        if (preferred != null && (remainingStockByTaste[preferred] ?: 0) > 0) {
-            return preferred
-        }
-        return remainingStockByTaste
-            .filterValues { it > 0 }
-            .entries
-            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-            .firstOrNull()
-            ?.key
     }
 
     internal fun applyLowHeatSupplementReservationResult(

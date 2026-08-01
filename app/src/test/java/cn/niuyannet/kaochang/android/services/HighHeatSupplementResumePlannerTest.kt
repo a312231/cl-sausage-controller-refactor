@@ -196,7 +196,7 @@ class HighHeatSupplementResumePlannerTest {
     @Test
     fun planInitialTargets_shouldOnlyRequestContiguousTargetsCoveredByCurrentStock() {
         val front = (1..21).map { position ->
-            frontPan(position, "B", reserved = position in 1..7).apply {
+            frontPan(position, "B", reserved = false).apply {
                 isHasSausage = position !in 1..7
             }
         }
@@ -224,7 +224,7 @@ class HighHeatSupplementResumePlannerTest {
         val emptyFrontTastes = listOf("A", "A", "B", "B", "B", "A", "A", "A", "A")
         val front = (1..21).map { position ->
             val tasteCode = emptyFrontTastes.getOrNull(position - 1) ?: "A"
-            frontPan(position, tasteCode, reserved = position in 1..9).apply {
+            frontPan(position, tasteCode, reserved = false).apply {
                 isHasSausage = position !in 1..9
             }
         }
@@ -241,7 +241,7 @@ class HighHeatSupplementResumePlannerTest {
         )
 
         assertEquals((25..33).toList(), result.map { it.positionSn })
-        assertEquals(listOf("A", "A", "B", "A", "A", "A", "A", "A", "A"), result.map { it.tasteCode })
+        assertEquals(listOf("B", "A", "A", "A", "A", "A", "A", "A", "A"), result.map { it.tasteCode })
         assertEquals((1..9).toList(), result.map { it.returnPositionSn })
         assertEquals("A", front.first { it.positionSn == 4 }.taste.tasteCode)
         assertEquals("A", front.first { it.positionSn == 5 }.taste.tasteCode)
@@ -252,7 +252,7 @@ class HighHeatSupplementResumePlannerTest {
     @Test
     fun planInitialTargets_shouldExcludeProtectedOldLowHeatReturnPositions() {
         val front = (1..21).map { position ->
-            frontPan(position, "B", reserved = position in 1..9).apply {
+            frontPan(position, "B", reserved = false).apply {
                 isHasSausage = position !in 1..9
             }
         }
@@ -278,7 +278,7 @@ class HighHeatSupplementResumePlannerTest {
     fun planInitialTargets_shouldUseCommittedOldLowHeatSourcePositionsAsFutureReturnSlots() {
         val availableNow = setOf(7, 8, 10, 11, 12, 19, 20, 21)
         val front = (1..21).map { position ->
-            frontPan(position, "B", reserved = position in 1..9).apply {
+            frontPan(position, "B", reserved = false).apply {
                 isHasSausage = position !in availableNow
             }
         }
@@ -301,7 +301,7 @@ class HighHeatSupplementResumePlannerTest {
     @Test
     fun planInitialTargets_shouldKeepDefaultHighHeatPlanningWhenNoReturnPositionsAreExcluded() {
         val front = (1..21).map { position ->
-            frontPan(position, "B", reserved = position in 1..9).apply {
+            frontPan(position, "B", reserved = false).apply {
                 isHasSausage = position !in 1..9
             }
         }
@@ -316,6 +316,82 @@ class HighHeatSupplementResumePlannerTest {
 
         assertEquals((25..33).toList(), result.map { it.positionSn })
         assertEquals((1..9).toList(), result.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun planInitialTargets_shouldConvergeAcrossTwentyOneFrontPositionsWithoutChangingReturnSlots() {
+        val front = (1..21).map { position ->
+            frontPan(position, "A", reserved = false).apply {
+                isHasSausage = position in 1..12
+            }
+        }
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(
+            box(positionSn = 18, tasteCode = "A", num = 20),
+            box(positionSn = 17, tasteCode = "F", num = 10)
+        )
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals((13..21).toList(), result.map { it.returnPositionSn })
+        assertEquals(mapOf("A" to 2, "F" to 7), result.groupingBy { it.tasteCode }.eachCount())
+    }
+
+    @Test
+    fun planInitialTargets_shouldNotRewriteActiveReservedReturnPosition() {
+        val front = (1..21).map { position ->
+            frontPan(position, "A", reserved = position == 13).apply {
+                isHasSausage = position in 1..11
+            }
+        }
+        front.first { it.positionSn == 13 }.taste = Taste("F")
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(
+            box(positionSn = 18, tasteCode = "A", num = 20),
+            box(positionSn = 17, tasteCode = "F", num = 10)
+        )
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes,
+            committedReturnTasteByPosition = mapOf(13 to "F")
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals(listOf(12) + (14..21).toList(), result.map { it.returnPositionSn })
+        assertEquals("F", front.first { it.positionSn == 13 }.taste.tasteCode)
+        assertTrue(front.first { it.positionSn == 13 }.isHasGrilling)
+    }
+
+    @Test
+    fun planInitialTargets_shouldReuseGhostReservedPositionWithoutDurableCommitment() {
+        val front = (1..21).map { position ->
+            frontPan(position, "A", reserved = position == 13).apply {
+                isHasSausage = position in 1..12
+            }
+        }
+        front.first { it.positionSn == 13 }.taste = Taste("F")
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(
+            box(positionSn = 18, tasteCode = "A", num = 20),
+            box(positionSn = 17, tasteCode = "F", num = 10)
+        )
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals((13..21).toList(), result.map { it.returnPositionSn })
+        assertEquals(9, result.size)
     }
 
     @Test

@@ -187,10 +187,41 @@ class LowHeatSupplementReservationResultTest {
 
         assertEquals(listOf(1, 2, 3), plan.frontPans.map { it.positionSn })
         assertEquals(listOf(13, 14, 15), plan.targets.map { it.kaoPan.positionSn })
-        assertEquals(listOf("B", "A", "A"), plan.targets.map { it.tasteCode })
+        assertEquals(listOf("A", "B", "A"), plan.targets.map { it.tasteCode })
         assertEquals(listOf(1, 2, 3), plan.targets.map { it.returnPositionSn })
-        assertEquals("A", frontPans[1].taste.tasteCode)
-        assertEquals("A", supplementPans[1].taste.tasteCode)
+        assertEquals("B", frontPans[1].taste.tasteCode)
+        assertEquals("B", supplementPans[1].taste.tasteCode)
+    }
+
+    @Test
+    fun planTargets_shouldUseFrontOccupancyAndDeduplicateDurableReturnCommitments() {
+        val allFrontPans = (1..9).map { position ->
+            frontPan(position, "A").apply {
+                isHasSausage = position in 1..4
+                isHasGrilling = position == 5
+                if (position == 5) taste = Taste("F")
+            }
+        }
+        val selectedFrontPans = allFrontPans.filter { it.positionSn in 7..9 }
+        val supplementPans = (13..15).map { targetPan(it, hasSausage = false) }
+        val boxes = listOf(
+            box(positionSn = 19, tasteCode = "A", num = 20),
+            box(positionSn = 18, tasteCode = "F", num = 10)
+        )
+
+        val plan = LowCurrentTrafficMode.planLowHeatSupplementTargets(
+            selectedFrontPositions = selectedFrontPans,
+            supplementPositions = supplementPans,
+            listBox = boxes,
+            allFrontPans = allFrontPans,
+            committedReturnTasteByPosition = mapOf(5 to "F", 6 to "F"),
+            isBoxAvailable = { true }
+        )
+
+        assertEquals(mapOf("A" to 2, "F" to 1), plan.targets.groupingBy { it.tasteCode }.eachCount())
+        assertEquals("F", allFrontPans.first { it.positionSn == 5 }.taste.tasteCode)
+        assertEquals("A", allFrontPans.first { it.positionSn == 6 }.taste.tasteCode)
+        assertEquals(listOf(7, 8, 9), plan.targets.map { it.returnPositionSn })
     }
 
     @Test
