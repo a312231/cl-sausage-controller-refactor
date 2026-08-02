@@ -177,8 +177,6 @@ abstract class OrderActivity: BaseSauceDetection() {
                 OrderProcessingStage.WAITING
             }
         )
-        cn.niuyannet.kaochang.android.services.SelfCleanManager.beginOrderTracking(safeOrderNo)
-
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
 
@@ -270,7 +268,6 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                 }
                 orderCompleted = orderCompleted && deliveredTotal == totalCount
-                cn.niuyannet.kaochang.android.services.SelfCleanManager.finishOrderTracking(orderNo, orderCompleted)
                 if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
                 // 当前订单动作结束后，本地动作状态恢复为空闲；如果本单没有拿到出餐控制权，
@@ -305,7 +302,6 @@ abstract class OrderActivity: BaseSauceDetection() {
                     setDataToView()
                 }
             } finally {
-                cn.niuyannet.kaochang.android.services.SelfCleanManager.clearOrderTrackingIfMatches(safeOrderNo)
                 KaoChangOperate.clearSupplementPauseAndResume(
                     safeOrderNo,
                     "订单完成后恢复暂停补肠"

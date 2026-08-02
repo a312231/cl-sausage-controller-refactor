@@ -18,7 +18,6 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.NetApi
-import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import com.alibaba.fastjson.JSON
@@ -1100,7 +1099,6 @@ object AppUpdateManager {
                 onlineStatus = config.onlineStatus,
                 hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
                 hasRecentBusyOrder = OrderStateManager.hasRecentBusyOrder(BUSY_ORDER_WINDOW_MS),
-                hasOrderTracking = SelfCleanManager.hasOrderTracking(),
                 mqttPendingCount = VMMqttHelper.pendingPublishCount(),
                 pendingRuntimeAckCount = SendServerHelper.pendingRuntimeAckCount(),
                 pendingAvailableAckCount = SendServerHelper.pendingAvailableAckCount()

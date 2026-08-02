@@ -19,8 +19,7 @@ object ManualPanMovePolicy {
         val errorCode: String?,
         val errorReason: String?,
         val inspectionMode: Int,
-        val hasProcessingOrder: Boolean,
-        val hasOrderTracking: Boolean
+        val hasProcessingOrder: Boolean
     )
 
     data class ReadinessDecision(
@@ -43,7 +42,6 @@ object ManualPanMovePolicy {
             state.moveStatus != 0 -> rejected("机械动作状态不是空闲：moveStatus=${state.moveStatus}")
             state.onlineStatus == 4 -> rejected("设备正在出餐：onlineStatus=4")
             state.hasProcessingOrder -> rejected("存在处理中的订单")
-            state.hasOrderTracking -> rejected("订单自清洁跟踪未结束")
             isPanMoveFault(state.errorCode) -> rejected(
                 "当前故障为搬盘机构故障，禁止手动搬盘：errorCode=${state.errorCode}"
             )

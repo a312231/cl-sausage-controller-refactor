@@ -361,10 +361,6 @@ object HighCurrentTrafficMode {
                 if (schedulingEnabled) {
                     checkSwitchToLow(list, boxSupplyAvailable)
                 }
-                if (schedulingEnabled) {
-                    SelfCleanManager.maybeRunZone3SelfClean(list)
-                }
-
                 // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
@@ -1116,9 +1112,6 @@ object HighCurrentTrafficMode {
                     )
                 }
             }
-            repeat(movedCount) {
-                SelfCleanManager.markZone3Dirty()
-            }
             return movedCount
         }
         return 0
@@ -1166,9 +1159,6 @@ object HighCurrentTrafficMode {
                 now = System.currentTimeMillis(),
                 reason = reason
             )
-            repeat(movedCount) {
-                SelfCleanManager.markZone3Dirty()
-            }
             LogUtils.i(
                 TAG,
                 "【高并发补肠】25~33 未完成批次续补完成：movedCount=$movedCount，lastFillPitTime=$lastFillPitTime"
@@ -1272,7 +1262,6 @@ object HighCurrentTrafficMode {
             if (returnCleared) {
                 KaoChangOperate.stopHeating(3)
                 clearPitCountAfterBatch("25~33 补热区回补完成")
-                SelfCleanManager.markZone3CleanPendingIfNeeded(list)
                 KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
                     types = setOf(SupplementBatchType.HIGH_HEAT_25_33),
                     sourcePositionsWithSausage = list25_33.filter { it.isHasSausage }.map { it.positionSn }.toSet(),
@@ -1448,7 +1437,6 @@ object HighCurrentTrafficMode {
         if (HighHeatSupplementResumePlanner.isReturnCleared(list25_33)) {
             KaoChangOperate.stopHeating(3)
             clearPitCountAfterBatch("25~33 残缺补热批次回补完成")
-            SelfCleanManager.markZone3CleanPendingIfNeeded(list)
             KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
                 types = setOf(SupplementBatchType.HIGH_HEAT_25_33),
                 sourcePositionsWithSausage = list25_33.filter { it.isHasSausage }.map { it.positionSn }.toSet(),

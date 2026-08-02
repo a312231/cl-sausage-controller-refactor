@@ -86,8 +86,7 @@ class ManualPanPositionDataClearPolicyTest {
             ManualPanPositionDataClearPolicy.State(
                 moveStatus = 2,
                 onlineStatus = 1,
-                hasProcessingOrder = false,
-                hasOrderTracking = false
+                hasProcessingOrder = false
             )
         )
 
@@ -113,16 +112,6 @@ class ManualPanPositionDataClearPolicyTest {
 
         assertFalse(decision.ok)
         assertEquals("存在处理中的订单", decision.reason)
-    }
-
-    @Test
-    fun checkReadiness_shouldRejectOrderTracking() {
-        val decision = ManualPanPositionDataClearPolicy.checkReadiness(
-            clearState(hasOrderTracking = true)
-        )
-
-        assertFalse(decision.ok)
-        assertEquals("订单自清洁跟踪未结束", decision.reason)
     }
 
     @Test
@@ -180,14 +169,12 @@ class ManualPanPositionDataClearPolicyTest {
     private fun clearState(
         moveStatus: Int = 0,
         onlineStatus: Int = 1,
-        hasProcessingOrder: Boolean = false,
-        hasOrderTracking: Boolean = false
+        hasProcessingOrder: Boolean = false
     ): ManualPanPositionDataClearPolicy.State {
         return ManualPanPositionDataClearPolicy.State(
             moveStatus = moveStatus,
             onlineStatus = onlineStatus,
-            hasProcessingOrder = hasProcessingOrder,
-            hasOrderTracking = hasOrderTracking
+            hasProcessingOrder = hasProcessingOrder
         )
     }
 

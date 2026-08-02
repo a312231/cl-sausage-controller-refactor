@@ -44,7 +44,6 @@ import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnCoordinator
 import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnPlanner
 import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.services.SupplementBatchType
-import cn.niuyannet.kaochang.android.services.SelfCleanManager
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
@@ -1997,8 +1996,7 @@ class MaintenanceFragment : Fragment() {
             ManualPanPositionDataClearPolicy.State(
                 moveStatus = if (ignoreMoveStatus) 0 else config.moveStatus,
                 onlineStatus = config.onlineStatus,
-                hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
-                hasOrderTracking = SelfCleanManager.hasOrderTracking()
+                hasProcessingOrder = OrderStateManager.hasProcessingOrder()
             )
         )
     }

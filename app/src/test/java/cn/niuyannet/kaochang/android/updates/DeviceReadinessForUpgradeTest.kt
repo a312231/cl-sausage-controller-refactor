@@ -15,7 +15,6 @@ class DeviceReadinessForUpgradeTest {
                 onlineStatus = 1,
                 hasProcessingOrder = false,
                 hasRecentBusyOrder = false,
-                hasOrderTracking = false,
                 mqttPendingCount = 0,
                 pendingRuntimeAckCount = 0,
                 pendingAvailableAckCount = 0
@@ -34,7 +33,6 @@ class DeviceReadinessForUpgradeTest {
                 onlineStatus = 4,
                 hasProcessingOrder = true,
                 hasRecentBusyOrder = true,
-                hasOrderTracking = true,
                 mqttPendingCount = 2,
                 pendingRuntimeAckCount = 1,
                 pendingAvailableAckCount = 1
@@ -78,14 +76,10 @@ class DeviceReadinessForUpgradeTest {
     }
 
     @Test
-    fun check_shouldStillBlockMinimalGateWhenMachineMovingOrOrderTrackingActive() {
+    fun check_shouldStillBlockMinimalGateWhenMachineMoving() {
         val moving = DeviceReadinessForUpgrade.check(clearState(moveStatus = 2), minimalGate = true)
         assertFalse(moving.ok)
         assertEquals("机械动作状态不是空闲：moveStatus（机械动作状态）=2", moving.blockedBy)
-
-        val tracking = DeviceReadinessForUpgrade.check(clearState(hasOrderTracking = true), minimalGate = true)
-        assertFalse(tracking.ok)
-        assertEquals("订单自清洁跟踪未结束", tracking.blockedBy)
     }
 
     private fun clearState(
@@ -93,7 +87,6 @@ class DeviceReadinessForUpgradeTest {
         onlineStatus: Int = 1,
         hasProcessingOrder: Boolean = false,
         hasRecentBusyOrder: Boolean = false,
-        hasOrderTracking: Boolean = false,
         mqttPendingCount: Int = 0,
         pendingRuntimeAckCount: Int = 0,
         pendingAvailableAckCount: Int = 0
@@ -103,7 +96,6 @@ class DeviceReadinessForUpgradeTest {
             onlineStatus = onlineStatus,
             hasProcessingOrder = hasProcessingOrder,
             hasRecentBusyOrder = hasRecentBusyOrder,
-            hasOrderTracking = hasOrderTracking,
             mqttPendingCount = mqttPendingCount,
             pendingRuntimeAckCount = pendingRuntimeAckCount,
             pendingAvailableAckCount = pendingAvailableAckCount

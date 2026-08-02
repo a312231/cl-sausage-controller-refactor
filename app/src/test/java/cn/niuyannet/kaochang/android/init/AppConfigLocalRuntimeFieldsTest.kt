@@ -24,10 +24,7 @@ class AppConfigLocalRuntimeFieldsTest {
             "lowerPlatformGeneration",
             "lowerPlatformAggregateVersion",
             "lowerPlatformEpisodes",
-            "supplementEnabled",
-            "zone3Dirty",
-            "zone3CleanPending",
-            "zone3CleanSuppressedFor4F"
+            "supplementEnabled"
         )
 
         localOnlyFields.forEach { field ->
@@ -111,9 +108,6 @@ class AppConfigLocalRuntimeFieldsTest {
             foodSafetyAlertCode = "BAKING_PAUSE_ABORT"
             foodSafetyAlertReason = "烤制停热超阈值"
             lastRuntimeAliveAtMs = 123_000L
-            zone3Dirty = 1
-            zone3CleanPending = 0
-            zone3CleanSuppressedFor4F = 1
             faultBakingPauseAbortMs = 2 * 60 * 60 * 1000L
         }
         val remote = JSONObject().apply {
@@ -129,9 +123,6 @@ class AppConfigLocalRuntimeFieldsTest {
             put("foodSafetyAlertCode", null)
             put("foodSafetyAlertReason", null)
             put("lastRuntimeAliveAtMs", 0L)
-            put("zone3Dirty", 0)
-            put("zone3CleanPending", 1)
-            put("zone3CleanSuppressedFor4F", 0)
             put("faultBakingPauseAbortMs", 60_000L)
         }
 
@@ -145,9 +136,6 @@ class AppConfigLocalRuntimeFieldsTest {
         assertEquals("BAKING_PAUSE_ABORT", config.foodSafetyAlertCode)
         assertEquals("烤制停热超阈值", config.foodSafetyAlertReason)
         assertEquals(123_000L, config.lastRuntimeAliveAtMs)
-        assertEquals(1, config.zone3Dirty)
-        assertEquals(0, config.zone3CleanPending)
-        assertEquals(1, config.zone3CleanSuppressedFor4F)
         assertEquals(60_000L, config.faultBakingPauseAbortMs)
     }
 

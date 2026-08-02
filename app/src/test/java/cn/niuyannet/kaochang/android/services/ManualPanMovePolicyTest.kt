@@ -103,14 +103,6 @@ class ManualPanMovePolicyTest {
     }
 
     @Test
-    fun checkReadiness_shouldRejectOrderTracking() {
-        val decision = ManualPanMovePolicy.checkReadiness(state(hasOrderTracking = true))
-
-        assertFalse(decision.ok)
-        assertEquals("订单自清洁跟踪未结束", decision.reason)
-    }
-
-    @Test
     fun checkReadiness_shouldRequireConfirmationForGenericFault() {
         val decision = ManualPanMovePolicy.checkReadiness(
             state(
@@ -183,8 +175,7 @@ class ManualPanMovePolicyTest {
         errorCode: String? = null,
         errorReason: String? = null,
         inspectionMode: Int = AppConfigBean.INSPECTION_MODE_NORMAL,
-        hasProcessingOrder: Boolean = false,
-        hasOrderTracking: Boolean = false
+        hasProcessingOrder: Boolean = false
     ): ManualPanMovePolicy.State {
         return ManualPanMovePolicy.State(
             sourcePan = sourcePan,
@@ -199,8 +190,7 @@ class ManualPanMovePolicyTest {
             errorCode = errorCode,
             errorReason = errorReason,
             inspectionMode = inspectionMode,
-            hasProcessingOrder = hasProcessingOrder,
-            hasOrderTracking = hasOrderTracking
+            hasProcessingOrder = hasProcessingOrder
         )
     }
 

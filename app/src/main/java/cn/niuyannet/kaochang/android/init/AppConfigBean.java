@@ -205,10 +205,6 @@ public class AppConfigBean implements Serializable {
     // 远程关闭动作组时，若当前动作未收口则暂存为待关闭：0=无，1=会话结束后关闭
     public int pendingDisableActionGroupV2 = 0;
 
-    public int zone3Dirty = 0;
-    public int zone3CleanPending = 0;
-    public int zone3CleanSuppressedFor4F = 0;
-
     public static class LowerPlatformEpisodeBean implements Serializable {
         private static final long serialVersionUID = 1L;
 

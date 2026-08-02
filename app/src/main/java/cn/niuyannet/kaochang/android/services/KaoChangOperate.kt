@@ -3020,9 +3020,6 @@ object KaoChangOperate {
         config.errorCategory = FaultCode.SELF_CLEAN_FAILED.category.display
         config.errorReason = "自清洁失败：target=$targetLabel，result=${actionExecutionResultDesc(result)}"
         config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
-        config.zone3Dirty = 0
-        config.zone3CleanPending = 0
-        config.zone3CleanSuppressedFor4F = 0
         AppConfig.saveAppConfig(config)
         publishRuntimeStateWithHttpFallback("自清洁失败，进入维护中")
         HomeUiRefreshBridge.requestRefresh("self_clean:failed")
@@ -3126,6 +3123,23 @@ object KaoChangOperate {
             )
         }
         val config = AppConfig.getAppConfig()
+        if (!SelfCleanStartPolicy.canStart(
+                onlineStatus = config.onlineStatus,
+                moveStatus = config.moveStatus,
+                orderPending = SupplementPauseController.shouldPauseForOrder(),
+                errorStatus = config.errorStatus,
+                inspectionMode = config.inspectionMode
+            )
+        ) {
+            val report = SelfCleanExecutionReport(false, -1, "自清洁前置检查", -1, "business_or_order_or_busy")
+            logW(
+                LOG_SELF_CLEAN,
+                "跳过自清洁：正常营业/订单待出餐/机械非空闲/故障或检修，source=$source，" +
+                    "onlineStatus=${config.onlineStatus}，moveStatus=${config.moveStatus}，" +
+                    "orderPending=${SupplementPauseController.shouldPauseForOrder()}"
+            )
+            return SelfCleanSequenceResult(false, listOf(report))
+        }
         if (AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
                 lowerPlatformStatus = config.lowerPlatformStatus,
                 lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
@@ -7365,7 +7379,6 @@ object KaoChangOperate {
                         "takeResult=$takeResult，orderContext=$orderContext"
                 )
             }
-            SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             applySuccessfulTakePanState(kaoPan)
             armPostSellSupplementGuard("out5 已完成关门回零/出餐收尾")
@@ -8387,56 +8400,7 @@ object KaoChangOperate {
         SendServerHelper.publishServiceUpdateStatus()
         //执行丢弃操作
         try {
-            val businessCloseResidualCount = KaoPanHelper.getKaoPanList().count { it.isHasSausage }
             KaoChangAlgorithm.resetKaoPan()
-            val selfCleanResult = runPanSelfCleanSequence(
-                positionSnList = (1..33).toList(),
-                includeSellPlatform = true,
-                source = "营业结束全量自清洁"
-            )
-            if (!selfCleanResult.success) {
-                val failedReport = selfCleanResult.reports.lastOrNull()
-                if (selfCleanResult.reports.any { FourFSelfCleanNoOpPolicy.isNoOp(it.message) }) {
-                    config.zone3CleanPending = 0
-                    if (config.zone3Dirty == 1) {
-                        config.zone3CleanSuppressedFor4F = 1
-                    }
-                    AppConfig.saveAppConfig(config)
-                    logI(
-                        LOG_SELF_CLEAN,
-                        "营业结束全量自清洁未执行：4F 当前为 no-op，不会真实机械清洁；" +
-                            "onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}，" +
-                            "zone3Dirty=${config.zone3Dirty}，zone3CleanPending=${config.zone3CleanPending}，" +
-                            "zone3CleanSuppressedFor4F=${config.zone3CleanSuppressedFor4F}"
-                    )
-                    return
-                }
-                logE(
-                    LOG_SELF_CLEAN,
-                    "营业结束全量自清洁失败：target=${failedReport?.targetLabel ?: "unknown"}，" +
-                        "command=${failedReport?.command ?: -1}，message=${failedReport?.message ?: "unknown"}"
-                )
-                return
-            }
-            config.zone3Dirty = 0
-            config.zone3CleanPending = 0
-            config.zone3CleanSuppressedFor4F = 0
-            AppConfig.saveAppConfig(config)
-            if (ConsumableEventPayloadBuilder.shouldReportBusinessCloseWaste(businessCloseResidualCount, selfCleanResult.success)) {
-                SendServerHelper.publishConsumableEvent(
-                    ConsumableEventPayloadBuilder.nextEvent(
-                        consumableType = "WASTE",
-                        eventType = "WASTE_DISCARD_BUSINESS_CLOSE",
-                        deltaValue = businessCloseResidualCount.toLong(),
-                        source = "business_close_self_clean_success",
-                        detail = "residualCount=$businessCloseResidualCount"
-                    )
-                )
-            }
-            logI(
-                LOG_SELF_CLEAN,
-                "营业结束全量自清洁完成：onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}"
-            )
         } catch (e: Exception) {
             // 营业结束时若重置烤盘失败，不应抛未实现异常导致崩溃；
             // 这里降级为维护中并上报，等待人工排查。

@@ -50,10 +50,7 @@ object AppConfig {
         "lowerPlatformGeneration",
         "lowerPlatformAggregateVersion",
         "lowerPlatformEpisodes",
-        "supplementEnabled",
-        "zone3Dirty",
-        "zone3CleanPending",
-        "zone3CleanSuppressedFor4F"
+        "supplementEnabled"
     )
     private var appConfigBean: AppConfigBean? = null
 

@@ -140,7 +140,6 @@ class TestFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         registerAdminTextInputs(view)
         setupActionControlListeners()
-        setupSelfCleanListeners()
         setupTemperatureControlListeners()
         setupSystemInfoListeners()
         setupParamTuningListeners()
@@ -984,119 +983,6 @@ class TestFragment : Fragment() {
             is AtomicActionResult.Failed -> "FAILED（${AtomicActionExecutor.formatCode(result.errorCode)}：${result.message}）"
             is AtomicActionResult.ModbusError -> "MODBUS_ERROR（${result.message}）"
             is AtomicActionResult.Timeout -> "TIMEOUT（${result.message}）"
-        }
-    }
-
-    private fun setupSelfCleanListeners() {
-        binding.btnRunPanSelfClean.setOnClickListener {
-            val text = binding.etSelfCleanPosition.text?.toString()?.trim().orEmpty()
-            if (text.isEmpty()) {
-                showToast("请输入 1~33 号烤盘位")
-                return@setOnClickListener
-            }
-            val positionSn = text.toIntOrNull()
-            if (positionSn == null || positionSn !in 1..33) {
-                showToast("烤盘位必须在 1~33 之间")
-                return@setOnClickListener
-            }
-            lifecycleScope.launch {
-                val adminBusy = beginAdminBusy("测试下位机烤盘自清洁")
-                binding.tvSelfCleanResult.text = "4F 当前自清洁为 no-op，不会真实机械清洁；准备记录烤盘 ${positionSn} 手动触发结果..."
-                val source = "测试下位机页面手动触发"
-                try {
-                    AdminOperationLogger.i(
-                        action = "执行烤盘自清洁",
-                        page = AdminOperationLogger.PAGE_TEST,
-                        result = AdminOperationLogger.RESULT_START,
-                        detail = "烤盘位=$positionSn"
-                    )
-                    val startedAtMs = System.currentTimeMillis()
-                    val report = withContext(Dispatchers.IO) {
-                        KaoChangOperate.cleanPanPosition(
-                            positionSn = positionSn,
-                            source = source,
-                            busyDuringClean = true
-                        )
-                    }
-                    binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
-                    logTestSelfCleanFinished(report, startedAtMs)
-                } finally {
-                    endAdminBusy(adminBusy)
-                }
-            }
-        }
-
-        binding.btnRunSellPlatformSelfClean.setOnClickListener {
-            lifecycleScope.launch {
-                val adminBusy = beginAdminBusy("测试下位机出肠台自清洁")
-                binding.tvSelfCleanResult.text = "4F 当前自清洁为 no-op，不会真实机械清洁；准备记录出肠台手动触发结果..."
-                val source = "测试下位机页面手动触发"
-                try {
-                    AdminOperationLogger.i(
-                        action = "执行出肠台自清洁",
-                        page = AdminOperationLogger.PAGE_TEST,
-                        result = AdminOperationLogger.RESULT_START,
-                        detail = "目标=出肠台"
-                    )
-                    val startedAtMs = System.currentTimeMillis()
-                    val report = withContext(Dispatchers.IO) {
-                        KaoChangOperate.cleanSellPlatform(
-                            source = source,
-                            busyDuringClean = true
-                        )
-                    }
-                    binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
-                    logTestSelfCleanFinished(report, startedAtMs)
-                } finally {
-                    endAdminBusy(adminBusy)
-                }
-            }
-        }
-    }
-
-    private fun logTestSelfCleanFinished(
-        report: KaoChangOperate.SelfCleanExecutionReport,
-        startedAtMs: Long
-    ) {
-        val elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
-        val actionName = if (report.targetLabel == "出肠台") "执行出肠台自清洁" else "执行烤盘自清洁"
-        val logDetail =
-            "目标=${report.targetLabel}，下位机自清洁指令=${report.command}，" +
-                "动作状态寄存器201=${formatSelfCleanStatus201(report.status201)}，" +
-                "结果消息=${report.message}，耗时=${elapsedMs}ms"
-        if (report.success) {
-            AdminOperationLogger.i(
-                action = actionName,
-                page = AdminOperationLogger.PAGE_TEST,
-                result = AdminOperationLogger.RESULT_DONE,
-                detail = logDetail
-            )
-        } else {
-            AdminOperationLogger.w(
-                action = actionName,
-                page = AdminOperationLogger.PAGE_TEST,
-                result = AdminOperationLogger.RESULT_FAIL,
-                detail = logDetail
-            )
-        }
-    }
-
-    private fun buildSelfCleanReportText(report: KaoChangOperate.SelfCleanExecutionReport): String {
-        val status201Text = formatSelfCleanStatus201(report.status201)
-        return "目标=${report.targetLabel}\n" +
-            "提示：4F 当前自清洁为 no-op，不会真实机械清洁\n" +
-            "command（下位机自清洁指令）=${report.command}\n" +
-            "status201（动作状态寄存器）=$status201Text\n" +
-            "success=${report.success}\n" +
-            "message=${report.message}"
-    }
-
-    private fun formatSelfCleanStatus201(status201: Int): String {
-        return when (status201) {
-            0 -> "0（空闲/完成）"
-            1 -> "1（执行中超时）"
-            2 -> "2（设备忙）"
-            else -> "$status201（通信失败/未知）"
         }
     }
 

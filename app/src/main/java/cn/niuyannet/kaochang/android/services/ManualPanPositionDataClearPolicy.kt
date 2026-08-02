@@ -7,8 +7,7 @@ object ManualPanPositionDataClearPolicy {
     data class State(
         val moveStatus: Int,
         val onlineStatus: Int,
-        val hasProcessingOrder: Boolean,
-        val hasOrderTracking: Boolean
+        val hasProcessingOrder: Boolean
     )
 
     data class ReadinessDecision(
@@ -63,10 +62,6 @@ object ManualPanPositionDataClearPolicy {
             state.hasProcessingOrder -> ReadinessDecision(
                 ok = false,
                 reason = "存在处理中的订单"
-            )
-            state.hasOrderTracking -> ReadinessDecision(
-                ok = false,
-                reason = "订单自清洁跟踪未结束"
             )
             else -> ReadinessDecision(ok = true, reason = "允许清除")
         }

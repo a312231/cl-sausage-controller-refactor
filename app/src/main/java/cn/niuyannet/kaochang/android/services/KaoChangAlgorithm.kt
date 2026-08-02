@@ -497,8 +497,7 @@ object KaoChangAlgorithm {
                 trackedArea.any { it.isHasSausage && !isHoldingPan(it) } ||
                 config.moveStatus != 0 ||
                 config.onlineStatus == 4 ||
-                config.transitionMode != 0 ||
-                config.zone3CleanPending == 1
+                config.transitionMode != 0
         return SupplyRuntimeContext(
             hasAutoSupplementSupplyBoxesAvailable = hasAutoSupplementSupplyBoxesAvailable,
             hasPhysicalSupplyBoxesAvailable = hasPhysicalSupplyBoxesAvailable,

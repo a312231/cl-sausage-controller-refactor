@@ -146,28 +146,6 @@ class ProtocolStatusPolicyTest {
     }
 
     @Test
-    fun zone3SelfClean_shouldNotMarkPendingWhenFourFNoOpSuppressed() {
-        assertEquals(
-            false,
-            Zone3SelfCleanPolicy.shouldMarkPending(
-                zone3Dirty = 1,
-                zone3CleanPending = 0,
-                zone3CleanSuppressedFor4F = 1,
-                zone3HasSausage = false
-            )
-        )
-        assertEquals(
-            true,
-            Zone3SelfCleanPolicy.shouldMarkPending(
-                zone3Dirty = 1,
-                zone3CleanPending = 0,
-                zone3CleanSuppressedFor4F = 0,
-                zone3HasSausage = false
-            )
-        )
-    }
-
-    @Test
     fun selfCleanNoOp_shouldBeRecognizedByStableMessage() {
         assertTrue(FourFSelfCleanNoOpPolicy.shouldSkipSequenceBeforeStateMutation())
         assertEquals(true, FourFSelfCleanNoOpPolicy.isNoOp("4f_self_clean_no_op"))

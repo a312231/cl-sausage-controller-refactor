@@ -6,7 +6,6 @@ object DeviceReadinessForUpgrade {
         val onlineStatus: Int,
         val hasProcessingOrder: Boolean,
         val hasRecentBusyOrder: Boolean,
-        val hasOrderTracking: Boolean,
         val mqttPendingCount: Int,
         val pendingRuntimeAckCount: Int,
         val pendingAvailableAckCount: Int
@@ -20,9 +19,6 @@ object DeviceReadinessForUpgrade {
     fun check(state: State, minimalGate: Boolean = false): Result {
         if (state.moveStatus != 0) {
             return blocked("机械动作状态不是空闲：moveStatus（机械动作状态）=${state.moveStatus}")
-        }
-        if (state.hasOrderTracking) {
-            return blocked("订单自清洁跟踪未结束")
         }
         if (minimalGate) {
             return Result(ok = true, blockedBy = null)
