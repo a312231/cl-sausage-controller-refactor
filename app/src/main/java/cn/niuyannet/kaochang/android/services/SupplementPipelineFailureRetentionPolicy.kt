@@ -68,7 +68,8 @@ object SupplementPipelineCompletionCoordinator {
         persistIdle: () -> Unit,
         releaseLock: () -> Unit,
         publish: () -> Unit,
-        restoreBusy: () -> Unit
+        restoreBusy: () -> Unit,
+        publishRestoredBusy: () -> Unit = {}
     ): SupplementPipelineCompletionResult {
         return try {
             persistIdle()
@@ -77,7 +78,10 @@ object SupplementPipelineCompletionCoordinator {
             releaseLock()
             SupplementPipelineCompletionResult.Success
         } catch (error: Throwable) {
-            val restoreFailure = runCatching(restoreBusy).exceptionOrNull()
+            val restoreFailure = runCatching {
+                restoreBusy()
+                publishRestoredBusy()
+            }.exceptionOrNull()
             SupplementPipelineCompletionResult.Failed(
                 reason = error.message ?: error::class.java.simpleName,
                 cause = error,

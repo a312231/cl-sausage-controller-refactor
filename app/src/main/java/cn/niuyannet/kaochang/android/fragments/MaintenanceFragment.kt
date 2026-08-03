@@ -44,8 +44,6 @@ import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnCoordinator
 import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnPlanner
 import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.services.SupplementBatchType
-import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
-import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
@@ -631,6 +629,28 @@ class MaintenanceFragment : Fragment() {
                 )
             }
 
+            val beforeCloseout = AppConfig.getAppConfig()
+            if (beforeCloseout.moveStatus in 0..2) {
+                val closeout = KaoChangOperate.confirmManualDeviceRecoveryResidue(
+                    reason = "维护页恢复正常状态",
+                    hasProcessingOrder = OrderStateManager.hasProcessingOrder()
+                )
+                if (!closeout.ok) {
+                    return@withContext ManualRecoveryGatePolicy.Decision(
+                        canRecoverDeviceStatus = false,
+                        reason = closeout.reason
+                    )
+                }
+                return@withContext ManualRecoveryGatePolicy.evaluate(
+                    modbusConnected = true,
+                    actionGroupReady = true,
+                    legacyActionStatus201 = 0,
+                    moveStatus = AppConfig.getAppConfig().moveStatus,
+                    panMoveResult203 = null,
+                    targetOnlineStatus = targetOnlineStatus
+                )
+            }
+
             val actionGroupReady = KaoChangOperate.recoverActionGroupStateAfterModbusReady("维护页恢复正常状态前检查")
             val currentConfig = AppConfig.getAppConfig()
             val legacyActionStatus201 = VMModbusHelper.readHoldingRegisters(
@@ -696,18 +716,13 @@ class MaintenanceFragment : Fragment() {
         val config = AppConfig.getAppConfig()
         val cloudDecision = confirmManualRecoveryInCloud(recoveredOnlineStatus)
         if (!cloudDecision.confirmed) {
-            ToastUtils.showLong(
-                "本机恢复已完成，但后台未确认恢复：${cloudDecision.reason}；" +
-                    "烤制算法保持关闭，请再次点击恢复正常状态"
-            )
             AdminOperationLogger.w(
                 action = "恢复正常状态",
                 page = AdminOperationLogger.PAGE_PAN,
-                result = AdminOperationLogger.RESULT_FAIL,
-                detail = "本机恢复完成但云端确认失败，原因=${cloudDecision.reason}，" +
+                result = AdminOperationLogger.RESULT_DONE,
+                detail = "本机恢复完成，云端确认待补偿，原因=${cloudDecision.reason}，" +
                     "设备营业状态=${onlineStatusText(config.onlineStatus)}，设备故障状态=${config.errorStatus}"
             )
-            return false
         }
         ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
         AdminOperationLogger.w(
@@ -778,102 +793,15 @@ class MaintenanceFragment : Fragment() {
 
     private suspend fun handleManualRecoveryBlocked(
         targetOnlineStatus: Int,
-        recoveryDecision: ManualRecoveryGatePolicy.Decision,
-        allowManualResidueClearPrompt: Boolean
+        recoveryDecision: ManualRecoveryGatePolicy.Decision
     ) {
-        val evidence = withContext(Dispatchers.IO) {
-            KaoChangOperate.buildActionGroupRecoveryResidueEvidence("维护页恢复正常状态被恢复闸门拦截")
-        }
-        val clearDecision = ActionGroupManualResidueClearPolicy.evaluate(evidence)
         AdminOperationLogger.w(
             action = "恢复正常状态",
             page = AdminOperationLogger.PAGE_PAN,
             result = AdminOperationLogger.RESULT_REJECT,
-            detail = "拒绝原因=${recoveryDecision.reason}，目标设备营业状态=${onlineStatusText(targetOnlineStatus)}，" +
-                "人工清理动作组残留允许=${clearDecision.canShowManualClear}，人工清理判断=${clearDecision.reason}，" +
-                "动作组证据=${evidence.summary()}"
+            detail = "拒绝原因=${recoveryDecision.reason}，目标设备营业状态=${onlineStatusText(targetOnlineStatus)}"
         )
-        if (allowManualResidueClearPrompt && clearDecision.canShowManualClear) {
-            showConfirmClearActionGroupResidueDialog(evidence)
-        } else {
-            ToastUtils.showLong("设备恢复检查未通过：${recoveryDecision.reason}")
-        }
-    }
-
-    private fun showConfirmClearActionGroupResidueDialog(evidence: ActionGroupRecoveryResidueEvidence) {
-        val session = evidence.session
-        val message = buildString {
-            if (session == null) {
-                append("检测到上位机没有动作组会话，但仍残留 moveStatus=1；下位机 201 和 300/400 寄存器当前均为空闲。\n\n")
-                append("是否已人工取走中途烤肠，并核对肠箱、滚筒、升降台和烤盘状态？确认后将连续两次复查下位机寄存器，再清理本地孤儿机械忙态。\n\n")
-            } else {
-                append("检测到上位机存在补肠动作组本地残留，但下位机 300/400 结果寄存器均为空闲。\n\n")
-                append("仅在现场已确认下位机复位完成、机械臂/升降台/夹爪空闲、烤盘和肠箱实物状态已核对、售卖口无卡肠时继续。\n\n")
-            }
-            append("sessionId=${session?.sessionId ?: "无"}\n")
-            append("type=${session?.type ?: "无"}\n")
-            append("sourceNo=${session?.sourceNo ?: "无"}，targetNo=${session?.targetNo ?: "无"}")
-        }
-        AlertDialog.Builder(requireContext())
-            .setTitle(if (session == null) "确认清理孤儿机械忙态" else "确认清理本地动作组残留")
-            .setMessage(message)
-            .setNegativeButton("取消", null)
-            .setPositiveButton(if (session == null) "已核对并继续恢复" else "确认清理本地动作组残留") { _, _ ->
-                retryManualRecoveryAfterClearingActionGroupResidue()
-            }
-            .show()
-    }
-
-    private fun retryManualRecoveryAfterClearingActionGroupResidue() {
-        if (!manualRecoveryInProgress.compareAndSet(false, true)) {
-            ToastUtils.showShort("正在恢复设备状态，请稍候")
-            return
-        }
-        if (!status.compareAndSet(true, false)) {
-            manualRecoveryInProgress.set(false)
-            ToastUtils.showShort("请等待当前维护操作完成")
-            return
-        }
-        val operationToken = operationGate.begin(MaintenanceOperationKind.FAULT_RECOVERY)
-        setFaultRecoveryConflictingControlsEnabled(false)
-        binding.tvCooldownHint.text = "正在清理动作组残留并恢复设备状态"
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                val cleared = withContext(Dispatchers.IO) {
-                    KaoChangOperate.confirmClearActionGroupRecoveryResidue("维护页人工确认清理动作组残留")
-                }
-                if (!cleared) {
-                    ToastUtils.showLong("动作组残留清理条件已变化，请重新检查下位机状态")
-                    return@launch
-                }
-                val config = AppConfig.getAppConfig()
-                val previousOnlineStatus = config.onlineStatus
-                val previousErrorStatus = config.errorStatus
-                val previousIsEnable = config.isEnable
-                val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
-                val recoveryDecision = evaluateManualRecoveryHeating(recoveredOnlineStatus)
-                if (!recoveryDecision.canRecoverDeviceStatus) {
-                    handleManualRecoveryBlocked(
-                        targetOnlineStatus = recoveredOnlineStatus,
-                        recoveryDecision = recoveryDecision,
-                        allowManualResidueClearPrompt = false
-                    )
-                    return@launch
-                }
-                applyManualRecoveredState(
-                    previousOnlineStatus = previousOnlineStatus,
-                    previousErrorStatus = previousErrorStatus,
-                    previousIsEnable = previousIsEnable,
-                    recoveredOnlineStatus = recoveredOnlineStatus,
-                    recoveryDecision = recoveryDecision
-                )
-            } finally {
-                finishFaultRecoveryOperation(
-                    operationToken,
-                    "正在清理动作组残留并恢复设备状态"
-                )
-            }
-        }
+        ToastUtils.showLong("设备恢复检查未通过：${recoveryDecision.reason}")
     }
 
     private fun clearIdleMoveStatusAfterManualRecovery(reason: String) {
@@ -1716,8 +1644,7 @@ class MaintenanceFragment : Fragment() {
                     if (!recoveryDecision.canRecoverDeviceStatus) {
                         handleManualRecoveryBlocked(
                             targetOnlineStatus = recoveredOnlineStatus,
-                            recoveryDecision = recoveryDecision,
-                            allowManualResidueClearPrompt = true
+                            recoveryDecision = recoveryDecision
                         )
                         return@launch
                     }

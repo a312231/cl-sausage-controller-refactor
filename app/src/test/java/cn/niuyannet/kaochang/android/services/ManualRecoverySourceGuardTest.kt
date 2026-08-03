@@ -17,6 +17,34 @@ class ManualRecoverySourceGuardTest {
     }
 
     @Test
+    fun manualRecoveryCloseout_shouldUseCasAndPreciseOwnerRelease() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "fun confirmManualDeviceRecoveryResidue")
+
+        assertTrue("双 lane 会话必须按 sessionId + revision CAS 清理", body.contains("clearIfRevision"))
+        assertTrue("人工恢复不得清空全局资源锁", !body.contains("actionGroupLocks.clear"))
+        assertTrue("人工恢复必须拒绝未知资源 owner", body.contains("actionGroupLocks.ownerIds()"))
+        assertTrue("人工恢复必须核对 owner 的资源 mask", body.contains("actionGroupLocks.ownedMask("))
+        assertTrue("人工恢复必须精确释放双 lane owner", body.contains("actionGroupLocks.release(prefetchSession.sessionId)"))
+        assertTrue("订单暂停只能按匹配订单号解除", body.contains("SupplementPauseController.clearOrderPause(pendingOrderNo)"))
+        assertTrue("恢复失败必须补发忙态", body.contains("publishRuntimeStateWithHttpFallback"))
+        assertTrue(
+            "回搬 intent 必须在 moveStatus/session 收口前确认",
+            body.indexOf("confirmManualSafetyPreservingRemainingTargets") in 0 until body.indexOf("val persistIdle")
+        )
+        assertTrue("无订单号 session 也必须能按当前暂停解除", body.contains("currentOrderNo()?.let"))
+    }
+
+    @Test
+    fun actionGroupBootstrap_shouldNeverClearAllResourceOwners() {
+        val source = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/actiongroup/ActionGroupRecoveryBootstrap.kt"
+        )
+
+        assertTrue("动作组恢复不得全局清空资源 owner", !source.contains("resourceLocks.clear()"))
+    }
+
+    @Test
     fun discardJournalRecovery_shouldUseStable201AndExistingOwnerFencedRelease() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val body = extractFunctionBody(source, "fun confirmDiscardJournalRecovery")
@@ -126,6 +154,28 @@ class ManualRecoverySourceGuardTest {
         assertTrue("恢复正常状态路径必须先调用 evaluateManualRecoveryHeating 恢复闸门", gateIndex >= 0)
         assertTrue("恢复正常状态路径必须通过 applyManualRecoveredState 统一写状态", applyIndex >= 0)
         assertTrue("恢复闸门必须先于状态写入方法调用", gateIndex < applyIndex)
+    }
+
+    @Test
+    fun maintenanceRecoveryClick_shouldUseSingleManualCloseoutWithoutResidueDialog() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val clickBody = extractFunctionBody(source, "binding.btnErroStatus.setOnClickListener")
+        val gateBody = extractFunctionBody(source, "suspend fun evaluateManualRecoveryHeating")
+
+        assertTrue(clickBody.contains("evaluateManualRecoveryHeating"))
+        assertTrue(gateBody.contains("confirmManualDeviceRecoveryResidue"))
+        assertTrue(!clickBody.contains("showConfirmClearActionGroupResidueDialog"))
+        assertTrue(!source.contains("动作组残留清理条件已变化"))
+    }
+
+    @Test
+    fun applyManualRecoveredState_shouldNotBlockLocalRecoveryOnCloudAck() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val body = extractFunctionBody(source, "private suspend fun applyManualRecoveredState")
+        val cloudIndex = body.indexOf("confirmManualRecoveryInCloud")
+        val failureIndex = body.indexOf("return false", cloudIndex)
+
+        assertTrue("本机恢复后的云端 ACK 只能记录，不得阻塞恢复", cloudIndex >= 0 && failureIndex < 0)
     }
 
     @Test

@@ -34,15 +34,17 @@ class SupplementPrefetchRecoveryWiringSourceTest {
     }
 
     @Test
-    fun manualCleanupEntries_shouldRejectActiveSessionBeforeClearingEvidence() {
-        val residue = functionBlock("suspend fun confirmClearActionGroupRecoveryResidue", "fun getLastActionGroupRecoveryFailureReason")
+    fun manualCleanupEntries_shouldFenceActiveSessionBeforeClearingEvidence() {
+        val residue = functionBlock("suspend fun confirmManualDeviceRecoveryResidue", "fun getLastActionGroupRecoveryFailureReason")
         val supplement = functionBlock("fun confirmPendingSupplementBatchSafety", "private fun clearFaultTimeoutCancelledReturnReservations")
         val doubleLaneCompletion = supplement.indexOf("SupplementPipelineCompletionCoordinator.complete(")
         val doubleLaneConfirm = supplement.indexOf("confirmManualSafetyPreservingRemainingTargets", doubleLaneCompletion)
         val genericConfirm = supplement.indexOf("confirmManualSafety(reason)")
         val strategyMark = supplement.indexOf("markManualConfirmStrategyPrefetchPreserveRemaining")
 
-        assertTrue(residue.indexOf("hasBlockingSupplementPrefetchEvidence") in 0 until residue.indexOf("actionGroupSessionStore.clear()"))
+        assertTrue(residue.indexOf("readSupplementPrefetchEvidence()") in 0 until residue.indexOf("actionGroupSessionStore.clear()"))
+        assertTrue(residue.indexOf("clearIfRevision") in 0 until residue.indexOf("actionGroupSessionStore.clear()"))
+        assertTrue(!residue.contains("actionGroupLocks.clear()"))
         assertTrue(supplement.indexOf("readSupplementPrefetchEvidence()") in 0 until supplement.indexOf("confirmManualSafety"))
         assertTrue(strategyMark >= 0 && strategyMark < doubleLaneCompletion)
         assertTrue(genericConfirm >= 0 && genericConfirm < doubleLaneCompletion)

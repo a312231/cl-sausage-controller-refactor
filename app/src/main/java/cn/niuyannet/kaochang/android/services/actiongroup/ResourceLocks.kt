@@ -63,6 +63,12 @@ class ResourceLocks {
         return owners.entries.joinToString(prefix = "[", postfix = "]") { "${it.key}:${describe(it.value)}" }
     }
 
+    @Synchronized
+    fun ownerIds(): Set<String> = owners.keys.toSet()
+
+    @Synchronized
+    fun ownedMask(owner: String): Int? = owners[owner]
+
     companion object {
         fun describe(mask: Int): String {
             if (mask == ResourceMask.none) {

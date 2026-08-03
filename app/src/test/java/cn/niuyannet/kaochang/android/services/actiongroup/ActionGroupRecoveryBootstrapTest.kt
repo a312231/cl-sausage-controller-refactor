@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services.actiongroup
 import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -242,16 +243,16 @@ class ActionGroupRecoveryBootstrapTest {
     }
 
     @Test
-    fun recover_shouldReturnIdleWhenAllRegistersIdleAndNoSessionExists() = runBlocking {
+    fun recover_shouldPreserveUnknownOwnerWhenAllRegistersIdleAndNoSessionExists() = runBlocking {
         val store = MemorySessionStore(null)
         val locks = ResourceLocks()
         locks.tryAcquire(ResourceMask.bottom, "stale-lock")
 
         val result = ActionGroupRecoveryBootstrap(FakeClient(), store, locks).recover()
 
-        assertEquals(ActionGroupRecoveryResult.Idle, result)
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
         assertEquals(null, store.session)
-        assertTrue(locks.isIdle())
+        assertFalse(locks.isIdle())
     }
 
     @Test

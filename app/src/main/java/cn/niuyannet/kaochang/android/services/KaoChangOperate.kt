@@ -8,6 +8,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
@@ -20,6 +21,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderRecoveryDecision
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupManualResidueClearPolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.ManualDeviceRecoveryCloseoutPolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.ManualDeviceRecoveryCloseoutResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOperationLogContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResidueEvidence
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRegisterState
@@ -2791,46 +2794,147 @@ object KaoChangOperate {
     }
 
     suspend fun confirmClearActionGroupRecoveryResidue(reason: String): Boolean {
-        if (discardJournalStore.load() != null) {
-            logW(LOG_ACTION_GROUP, "丢弃 journal 存在，拒绝人工清理通用动作组残留：reason=$reason")
-            return false
-        }
-        if (hasBlockingSupplementPrefetchEvidence()) {
-            logW(LOG_ACTION_GROUP, "双 lane 会话存在，拒绝人工清理通用动作组残留：reason=$reason")
-            return false
-        }
+        return confirmManualDeviceRecoveryResidue(
+            reason,
+            hasProcessingOrder = OrderStateManager.hasProcessingOrder()
+        ).ok
+    }
+
+    suspend fun confirmManualDeviceRecoveryResidue(
+        reason: String,
+        hasProcessingOrder: Boolean
+    ): ManualDeviceRecoveryCloseoutResult {
+        val prefetchRead = readSupplementPrefetchEvidence()
+        val prefetchSession = (prefetchRead as? DurableEvidenceReadResult.Valid)?.value
         val evidence = buildActionGroupRecoveryResidueEvidence(reason)
-        val decision = if (evidence.session == null) {
-            delay(500L)
-            val secondEvidence = buildActionGroupRecoveryResidueEvidence("$reason：第二次空闲确认")
-            if (hasBlockingSupplementPrefetchEvidence()) {
-                logW(LOG_ACTION_GROUP, "第二次空闲确认时发现双 lane 会话，拒绝人工清理孤儿机械忙态：reason=$reason")
-                return false
+        val decision = ManualDeviceRecoveryCloseoutPolicy.evaluate(
+            evidence = evidence,
+            hasProcessingOrder = hasProcessingOrder,
+            hasPanMoveJournal = panMoveJournalStore.load() != null,
+            hasDiscardJournal = discardJournalStore.load() != null,
+            durableEvidenceCorrupted = prefetchRead is DurableEvidenceReadResult.Corrupted
+        )
+        if (!decision.canCloseout) {
+            logW(LOG_ACTION_GROUP, "人工恢复本地残留被拒绝：reason=$reason，detail=${decision.reason}，evidence=${evidence.summary()}")
+            return ManualDeviceRecoveryCloseoutResult(false, decision.reason)
+        }
+
+        val actionSession = actionGroupSessionStore.load()
+        val pausedSession = pausedSupplementSessionStore.load()
+        val pendingIntent = supplementBatchIntentRepository.loadActive()
+        val expectedOwners = listOfNotNull(
+            prefetchSession?.let { it.sessionId to it.resourceMask },
+            actionSession?.let { it.sessionId to it.resourceMask },
+            pausedSession?.let { it.sessionId to it.resourceMask }
+        ).toMap()
+        val unknownOwners = actionGroupLocks.ownerIds() - expectedOwners.keys
+        if (unknownOwners.isNotEmpty()) {
+            return ManualDeviceRecoveryCloseoutResult(false, "存在未确认的资源占用，请重新检查设备状态")
+        }
+        val mismatchedOwner = expectedOwners.entries.firstOrNull { (owner, expectedMask) ->
+            actionGroupLocks.ownedMask(owner)?.let { it != expectedMask } == true
+        }
+        if (mismatchedOwner != null) {
+            return ManualDeviceRecoveryCloseoutResult(false, "本地资源占用与恢复记录不一致，请重新检查设备状态")
+        }
+        if (prefetchSession != null && pendingIntent?.requiresManualConfirm == true) {
+            val marked = runCatching {
+                supplementBatchIntentRepository.markManualConfirmStrategyPrefetchPreserveRemaining(
+                    pendingIntent.batchId,
+                    reason
+                )
+            }.getOrElse { error ->
+                logW(LOG_SUPPLEMENT, "人工恢复标记双 lane 保留策略失败：${error.message}")
+                return ManualDeviceRecoveryCloseoutResult(false, "本地回搬恢复状态保存失败，请重试")
             }
-            ActionGroupManualResidueClearPolicy.evaluateOrphanBusyStateSnapshots(
-                listOf(evidence, secondEvidence)
-            )
-        } else {
-            ActionGroupManualResidueClearPolicy.evaluate(evidence)
+            if (!marked) {
+                return ManualDeviceRecoveryCloseoutResult(false, "本地回搬恢复状态已变化，请重试")
+            }
         }
-        if (!decision.canShowManualClear) {
-            logW(LOG_ACTION_GROUP, "拒绝人工确认清理动作组残留：reason=$reason，拒绝原因=${decision.reason}，evidence=${evidence.summary()}")
-            return false
+
+        if (pendingIntent?.requiresManualConfirm == true) {
+            val confirmed = runCatching {
+                supplementBatchIntentRepository.confirmManualSafetyPreservingRemainingTargets(reason)
+            }.getOrNull()
+            if (confirmed == null) {
+                return ManualDeviceRecoveryCloseoutResult(false, "回搬任务状态尚未收口，请重试")
+            }
         }
-        actionGroupSessionStore.clear()
-        pausedSupplementSessionStore.clear()
-        actionGroupLocks.clear()
-        lastActionGroupRecoveryFailureReason = null
-        actionGroupRecoveryVerified = false
+
+        if (actionSession?.type == ActionGroupSessionType.OUT_SELL) {
+            actionSession.orderContext?.takeIf { it.isValid() }?.let { orderContext ->
+                savePendingActionGroupOrderEvent(
+                    orderContext = orderContext,
+                    status = ActionGroupOrderStatus.ERROR,
+                    panNo = actionSession.sourceNo,
+                    discarded = false
+                )
+            }
+        }
+
         val config = AppConfig.getAppConfig()
-        if (config.moveStatus != 0) {
-            val oldMoveStatus = config.moveStatus
+        val oldMoveStatus = config.moveStatus
+        val persistIdle = {
             config.moveStatus = 0
-            AppConfig.saveAppConfig(config)
-            logW(LOG_ACTION_GROUP, "人工确认清理动作组残留后规整机械动作状态：moveStatus（机械动作状态）=$oldMoveStatus->0（空闲），reason=$reason")
+            AppConfig.saveAppConfigDurable(config)
         }
-        logW(LOG_ACTION_GROUP, "人工确认清理动作组本地残留完成：reason=$reason，evidence=${evidence.summary()}")
-        return true
+        if (prefetchSession != null) {
+            val completion = SupplementPipelineCompletionCoordinator.complete(
+                persistIdle = persistIdle,
+                publish = { publishRuntimeStateWithHttpFallback("人工恢复双 lane 本地残留") },
+                clearSession = {
+                    supplementPrefetchSessionRepository.clearIfRevision(
+                        prefetchSession.sessionId,
+                        prefetchSession.revision
+                    )
+                },
+                releaseLock = { actionGroupLocks.release(prefetchSession.sessionId) },
+                restoreBusy = {
+                    config.moveStatus = if (oldMoveStatus != 0) oldMoveStatus else 1
+                    AppConfig.saveAppConfigDurable(config)
+                },
+                publishRestoredBusy = {
+                    publishRuntimeStateWithHttpFallback("人工恢复双 lane CAS 失败，恢复忙态")
+                }
+            )
+            if (completion is SupplementPipelineCompletionResult.Failed) {
+                logW(LOG_ACTION_GROUP, "人工恢复双 lane 本地残留失败：${completion.reason}")
+                return ManualDeviceRecoveryCloseoutResult(false, "本地恢复状态已变化，请重试")
+            }
+        } else {
+            runCatching(persistIdle).getOrElse { error ->
+                config.moveStatus = oldMoveStatus
+                logW(LOG_ACTION_GROUP, "人工恢复保存空闲状态失败：${error.message}")
+                return ManualDeviceRecoveryCloseoutResult(false, "本地恢复状态保存失败，请重试")
+            }
+        }
+
+        actionSession?.let {
+            actionGroupSessionStore.clear()
+            actionGroupLocks.release(it.sessionId)
+        }
+        pausedSession?.let {
+            pausedSupplementSessionStore.clear()
+            actionGroupLocks.release(it.sessionId)
+        }
+        val pendingOrderNo = listOfNotNull(
+            prefetchSession?.pendingOrderNo,
+            actionSession?.orderContext?.orderNo,
+            actionSession?.orderId,
+            pausedSession?.orderId
+        ).firstOrNull { it.isNotBlank() }
+        if (!pendingOrderNo.isNullOrBlank() && SupplementPauseController.currentOrderNo() == pendingOrderNo) {
+            SupplementPauseController.clearOrderPause(pendingOrderNo)
+        } else if (pendingOrderNo.isNullOrBlank()) {
+            SupplementPauseController.currentOrderNo()?.let { currentOrderNo ->
+                SupplementPauseController.clearOrderPause(currentOrderNo)
+            }
+        }
+        flushPendingActionGroupOrderEvent("人工恢复本地残留:$reason")
+        lastActionGroupRecoveryFailureReason = null
+        markActionGroupRecoveryVerified("人工恢复本地残留：$reason")
+        logW(LOG_ACTION_GROUP, "人工恢复本地残留完成：reason=$reason，evidence=${evidence.summary()}")
+        return ManualDeviceRecoveryCloseoutResult(true, decision.reason)
     }
 
     fun getLastActionGroupRecoveryFailureReason(): String? = lastActionGroupRecoveryFailureReason
@@ -3791,6 +3895,9 @@ object KaoChangOperate {
                 val config = AppConfig.getAppConfig()
                 config.moveStatus = if (oldMoveStatus != 0) oldMoveStatus else 1
                 AppConfig.saveAppConfigDurable(config)
+            },
+            publishRestoredBusy = {
+                publishRuntimeStateWithHttpFallback("人工确认双 lane 收口失败，恢复忙态")
             }
         )
         if (completion is SupplementPipelineCompletionResult.Failed) {

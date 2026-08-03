@@ -15,11 +15,12 @@ class SupplementPipelineCompletionCoordinatorTest {
             persistIdle = { events += "idle" },
             releaseLock = { events += "release" },
             publish = { events += "publish" },
-            restoreBusy = { events += "restore-busy" }
+            restoreBusy = { events += "restore-busy" },
+            publishRestoredBusy = { events += "republish-busy" }
         )
 
         assertTrue(result is SupplementPipelineCompletionResult.Failed)
-        assertEquals(listOf("idle", "publish", "clear", "restore-busy"), events)
+        assertEquals(listOf("idle", "publish", "clear", "restore-busy", "republish-busy"), events)
     }
 
     @Test

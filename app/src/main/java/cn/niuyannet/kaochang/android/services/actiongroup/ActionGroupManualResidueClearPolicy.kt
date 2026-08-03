@@ -41,6 +41,55 @@ data class ActionGroupManualResidueClearDecision(
     val reason: String
 )
 
+data class ManualDeviceRecoveryCloseoutDecision(
+    val canCloseout: Boolean,
+    val reason: String
+)
+
+data class ManualDeviceRecoveryCloseoutResult(
+    val ok: Boolean,
+    val reason: String
+)
+
+object ManualDeviceRecoveryCloseoutPolicy {
+    fun evaluate(
+        evidence: ActionGroupRecoveryResidueEvidence,
+        hasProcessingOrder: Boolean,
+        hasPanMoveJournal: Boolean,
+        hasDiscardJournal: Boolean,
+        durableEvidenceCorrupted: Boolean
+    ): ManualDeviceRecoveryCloseoutDecision {
+        val expectedActions = ActionGroupRecoveryBootstrap.allSpecs.map { it.name }.toSet()
+        return when {
+            !evidence.modbusConnected -> reject("下位机未连接")
+            evidence.legacyActionStatus201 != AtomicActionCodes.IDLE ->
+                reject("下位机仍在执行旧动作")
+            hasProcessingOrder -> reject("订单仍在执行，暂不能恢复")
+            hasDiscardJournal -> reject("存在待核对的丢弃记录，请先完成专用恢复")
+            hasPanMoveJournal -> reject("存在待核对的搬盘记录，请先完成专用恢复")
+            durableEvidenceCorrupted -> reject("双 lane 本地恢复记录损坏，禁止自动清理")
+            evidence.moveStatus !in 0..2 -> reject("当前机械状态需要专用恢复")
+            evidence.resultStates.size != expectedActions.size ||
+                evidence.resultStates.map { it.actionName }.toSet() != expectedActions ->
+                reject("动作结果寄存器读取不完整")
+            evidence.resultStates.any { it.value == null } ->
+                reject("动作结果寄存器读取失败")
+            evidence.resultStates.any {
+                it.value != AtomicActionCodes.IDLE && it.value != AtomicActionCodes.COMPLETED
+            } -> reject("动作结果寄存器未收口")
+            else -> ManualDeviceRecoveryCloseoutDecision(
+                canCloseout = true,
+                reason = "下位机已空闲，允许人工恢复本地残留"
+            )
+        }
+    }
+
+    private fun reject(reason: String) = ManualDeviceRecoveryCloseoutDecision(
+        canCloseout = false,
+        reason = reason
+    )
+}
+
 object ActionGroupManualResidueClearPolicy {
     fun evaluate(evidence: ActionGroupRecoveryResidueEvidence): ActionGroupManualResidueClearDecision {
         val session = evidence.session

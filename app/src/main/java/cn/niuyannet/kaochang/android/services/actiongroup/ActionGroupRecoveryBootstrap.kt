@@ -68,7 +68,7 @@ class ActionGroupRecoveryBootstrap(
             val session = sessionStore.load()
             if (session != null && allowKnownIsolatedTerminalFailure(session, failedState.spec.name, code)) {
                 sessionStore.clear()
-                resourceLocks.clear()
+                resourceLocks.release(session.sessionId)
                 logger(
                     "动作组恢复识别到已持久化下平台隔离终态，保持半故障并清理本地补肠会话：" +
                         "sessionId=${session.sessionId}，action=${failedState.spec.name}，" +
@@ -115,7 +115,7 @@ class ActionGroupRecoveryBootstrap(
                     )
                 }
                 if (sessionValues.all { it == AtomicActionCodes.COMPLETED }) {
-                    resourceLocks.clear()
+                    resourceLocks.release(session.sessionId)
                     logger(
                         "动作组恢复完成：按结果寄存器=0x0002（完成）推断本会话已完成，" +
                             "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
@@ -130,8 +130,15 @@ class ActionGroupRecoveryBootstrap(
                                 "states=${formatSessionStates(sessionSteps, sessionValues)}"
                         )
                     }
-                    resourceLocks.clear()
-                    resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+                    val claimFailure = runCatching {
+                        resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+                    }.exceptionOrNull()
+                    if (claimFailure != null) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "动作组恢复资源 owner 冲突，拒绝清理其他 owner：" +
+                                "sessionId=${session.sessionId}，error=${claimFailure.message}"
+                        )
+                    }
                     logger(
                         "动作组恢复接管开始：sessionId=${session.sessionId}，type=${session.type}，" +
                             "已识别连续完成前缀，resourceLocks=${resourceLocks.snapshot()}"
@@ -145,7 +152,7 @@ class ActionGroupRecoveryBootstrap(
                 }
                 if (session.type == ActionGroupSessionType.OUT_SELL || session.type == ActionGroupSessionType.OUT_MANUAL) {
                     sessionStore.clear()
-                    resourceLocks.clear()
+                    resourceLocks.release(session.sessionId)
                     val reason = "出餐动作组旧会话已收口：本地仍存在动作会话但下位机结果寄存器全部空闲，" +
                         "按下位机空闲状态解除本地会话锁，sessionId=${session.sessionId}，type=${session.type}，" +
                         "sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
@@ -164,8 +171,13 @@ class ActionGroupRecoveryBootstrap(
                 )
             }
             sessionStore.clear()
-            resourceLocks.clear()
-            return ActionGroupRecoveryResult.Idle
+            return if (resourceLocks.isIdle()) {
+                ActionGroupRecoveryResult.Idle
+            } else {
+                ActionGroupRecoveryResult.MaintenanceRequired(
+                    "动作组没有本地会话但仍存在未知资源 owner，禁止全局清锁：${resourceLocks.snapshot()}"
+                )
+            }
         }
         if (runningStates.size > 1) {
             return ActionGroupRecoveryResult.MaintenanceRequired(
@@ -195,8 +207,15 @@ class ActionGroupRecoveryBootstrap(
             )
         }
 
-        resourceLocks.clear()
-        resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+        val claimFailure = runCatching {
+            resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+        }.exceptionOrNull()
+        if (claimFailure != null) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组恢复资源 owner 冲突，拒绝清理其他 owner：" +
+                    "sessionId=${session.sessionId}，error=${claimFailure.message}"
+            )
+        }
         logger(
             "动作组恢复接管开始：sessionId=${session.sessionId}，type=${session.type}，" +
                 "runningAction=${runningStates.first().spec.name}，resourceLocks=${resourceLocks.snapshot()}"
