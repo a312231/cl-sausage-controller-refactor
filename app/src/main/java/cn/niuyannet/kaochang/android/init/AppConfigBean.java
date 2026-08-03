@@ -196,8 +196,8 @@ public class AppConfigBean implements Serializable {
     // 动作组补肠预取开关是否由后台明确配置过：0=未明确配置，1=后台已明确配置
     public int actionGroupPrefetchRemoteConfigured = 0;
 
-    // 双 lane 并行补肠灰度开关：0=关闭，1=允许；默认关闭，需后台明确开启。
-    public int enableParallelSupplementPrefetch = 0;
+    // 双 lane 并行补肠开关：0=关闭，1=允许；控制器默认开启，后台显式下发 0 才关闭。
+    public int enableParallelSupplementPrefetch = 1;
 
     // 视觉影子模式：0=关闭，1=仅记录视觉对账结果，不参与动作决策
     public int enableVisionShadowMode = 0;

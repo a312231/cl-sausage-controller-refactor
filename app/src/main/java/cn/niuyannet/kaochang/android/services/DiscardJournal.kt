@@ -9,6 +9,7 @@ import com.alibaba.fastjson.JSON
 
 enum class DiscardCheckpoint {
     PREPARED,
+    COMMAND_INTENT,
     COMMAND_ISSUED
 }
 

@@ -26,9 +26,14 @@ object AutoMechanicalDispatchPolicy {
         inspectionMode: Int,
         moveStatus: Int,
         lowerPlatformStatus: String = AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL,
-        lowerPlatformIsolationActionName: String? = ""
+        lowerPlatformIsolationActionName: String? = "",
+        orderPending: Boolean = false
     ): AutoMechanicalDispatchDecision {
         return when {
+            orderPending -> AutoMechanicalDispatchDecision(
+                canStart = false,
+                reason = "订单待出餐，暂停自动补肠/搬盘/丢弃/自清洁"
+            )
             onlineStatus == ONLINE_STATUS_DELIVERING -> AutoMechanicalDispatchDecision(
                 canStart = false,
                 reason = "订单出餐中，暂停自动补肠/搬盘/丢弃/自清洁"
@@ -61,6 +66,28 @@ object AutoMechanicalDispatchPolicy {
         moveStatus: Int
     ): Boolean {
         return onlineStatus == ONLINE_STATUS_DELIVERING && moveStatus == MOVE_STATUS_DELIVERING
+    }
+
+    fun canIssueAutomaticCommandAfterClaim(
+        onlineStatus: Int,
+        errorStatus: Int,
+        inspectionMode: Int,
+        isEnable: Int,
+        faultHeatPauseActive: Int,
+        orderPending: Boolean,
+        lowerPlatformStatus: String?,
+        lowerPlatformIsolationActionName: String?
+    ): Boolean {
+        return !orderPending &&
+            onlineStatus == ONLINE_STATUS_OPERATING &&
+            errorStatus == AppConfigBean.ERROR_STATUS_NORMAL &&
+            inspectionMode == AppConfigBean.INSPECTION_MODE_NORMAL &&
+            isEnable == 1 &&
+            faultHeatPauseActive == 0 &&
+            !shouldBlockAutoDispatchForLowerPlatformIsolation(
+                lowerPlatformStatus,
+                lowerPlatformIsolationActionName
+            )
     }
 
     fun shouldBlockAutoDispatchForLowerPlatformIsolation(

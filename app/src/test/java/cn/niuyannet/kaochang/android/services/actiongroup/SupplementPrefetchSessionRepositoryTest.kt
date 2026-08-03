@@ -75,6 +75,41 @@ class SupplementPrefetchSessionRepositoryTest {
     }
 
     @Test
+    fun sharedOrderDeliveryBoundary_shouldPersistBarrierBeforeRejectedIn4Cleanup() = runBlocking {
+        repeat(20) { index ->
+            val transitionLock = Any()
+            var orderPending = false
+            val repository = SupplementPrefetchSessionRepository(MemoryStore())
+            repository.create(baseSession("shared-boundary-$index"))
+            val results = awaitAll(
+                async(Dispatchers.Default) {
+                    synchronized(transitionLock) {
+                        orderPending = true
+                        repository.requestOrderBarrier("order-$index")
+                    }
+                },
+                async(Dispatchers.Default) {
+                    SupplementDeliveryCommitCoordinator(
+                        transitionLock = transitionLock,
+                        orderPending = { orderPending }
+                    ) {
+                        repository.tryCommitDelivery(17, 13)
+                    }.tryCommit()
+                }
+            )
+
+            assertEquals(1, results.count { it })
+            val saved = requireNotNull(repository.load())
+            assertEquals("order-$index", saved.pendingOrderNo)
+            assertTrue(saved.barrierState != SupplementBarrierState.OPEN)
+            if (!results[1]) {
+                assertEquals(SupplementBarrierState.ORDER_WON, saved.barrierState)
+                assertEquals(SupplementPipelinePhase.PAUSED_FOR_ORDER, saved.phase)
+            }
+        }
+    }
+
+    @Test
     fun orderBarrierDomainOperations_shouldPersistWinnerAndLaterPendingOrder() {
         val orderWins = SupplementPrefetchSessionRepository(MemoryStore())
         orderWins.create(baseSession("order-wins"))

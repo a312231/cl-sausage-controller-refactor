@@ -18,6 +18,12 @@ class ParallelSupplementOrderEntrySourceTest {
         assertTrue(order.contains("KaoChangOperate.clearSupplementPauseAndResume("))
         assertFalse(main.contains("SupplementPauseController.requestPauseForOrder"))
         assertFalse(order.contains("SupplementPauseController.clearOrderPause"))
+
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val clearStart = operate.indexOf("suspend fun clearSupplementPauseAndResume(")
+        val clearEnd = operate.indexOf("fun clearOrderMoveStatusIfRecoverySafe", clearStart)
+        val clear = operate.substring(clearStart, clearEnd)
+        assertTrue(clear.contains("isPausedForDifferentOrder(orderNo)"))
     }
 
     @Test
@@ -26,6 +32,24 @@ class ParallelSupplementOrderEntrySourceTest {
 
         assertFalse(order.contains("AppConfig.getAppConfig().moveStatus = 0"))
         assertTrue(order.contains("KaoChangOperate.clearOrderMoveStatusIfRecoverySafe("))
+    }
+
+    @Test
+    fun orderCloseout_shouldResumeSupplementOnlyAfterWholeOrderSuccess() {
+        val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
+        val start = order.indexOf("fun purchaseOrder")
+        val end = order.indexOf("private suspend fun handleOrderItemDelivery", start)
+        val block = order.substring(start, end)
+
+        assertTrue(block.contains("var orderOutcome = OrderExecutionOutcome.UNKNOWN"))
+        assertTrue(block.contains("OrderSupplementResumePolicy.completedOutcome("))
+        assertTrue(block.contains("OrderSupplementResumePolicy.shouldResume(orderOutcome)"))
+        assertTrue(
+            block.contains(
+                "OrderSupplementResumePolicy.shouldEnterMaintenance(orderOutcome, supplementResumeSucceeded)"
+            )
+        )
+        assertFalse(block.contains("if (preDeliveryReady) {\n                    KaoChangOperate.clearOrderMoveStatusIfRecoverySafe"))
     }
 
     @Test
@@ -43,6 +67,16 @@ class ParallelSupplementOrderEntrySourceTest {
         val recoveryEnd = operate.indexOf("private fun recoverPanMoveJournalAfterModbusReady", recoveryStart)
         val recovery = operate.substring(recoveryStart, recoveryEnd)
         assertTrue(recovery.contains("handleParallelSupplementResumePreparation("))
+    }
+
+    @Test
+    fun completedDeliveryReplan_shouldReleaseAfterOrderHandoffMoveStatus() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("is SupplementPrefetchResumePreparation.ReplanRemaining ->")
+        val end = operate.indexOf("is SupplementPrefetchResumePreparation.Ready ->", start)
+        val block = operate.substring(start, end)
+
+        assertTrue(block.contains("expectedMoveStatuses = setOf(1, 2)"))
     }
 
     @Test
@@ -81,8 +115,13 @@ class ParallelSupplementOrderEntrySourceTest {
         val start = operate.indexOf("fun requestSupplementPauseForOrder")
         val end = operate.indexOf("suspend fun clearSupplementPauseAndResume", start)
         val block = operate.substring(start, end)
+        val lockStart = block.indexOf("withFaultHeatTransitionLock {")
+        val lockEnd = block.indexOf("\n        }", lockStart)
+        val lockedAdmission = block.substring(lockStart, lockEnd)
 
-        assertTrue(block.contains("runCatching {\n                    actionGroupLocks.forceAcquire"))
+        assertTrue(lockedAdmission.contains("SupplementPauseController.requestPauseForOrder(orderNo)"))
+        assertTrue(lockedAdmission.contains("supplementPrefetchSessionRepository.requestOrderBarrier(orderNo)"))
+        assertTrue(Regex("runCatching \\{\\s+actionGroupLocks\\.forceAcquire").containsMatchIn(block))
         assertTrue(block.contains("lockError="))
         assertTrue(block.contains("preserveMoveStatus = true"))
     }

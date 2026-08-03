@@ -1144,12 +1144,12 @@ object AppConfig {
         jsonData: JSONObject?
     ) {
         val rawValue = jsonData?.get("enableParallelSupplementPrefetch")
-        config.enableParallelSupplementPrefetch =
-            if (rawValue is Byte || rawValue is Short || rawValue is Int || rawValue is Long) {
-                if ((rawValue as Number).toLong() == 1L) 1 else 0
-            } else {
-                0
+        if (rawValue is Byte || rawValue is Short || rawValue is Int || rawValue is Long) {
+            val normalized = (rawValue as Number).toLong()
+            if (normalized == 0L || normalized == 1L) {
+                config.enableParallelSupplementPrefetch = normalized.toInt()
             }
+        }
     }
 
     fun getDeviceId(): String {

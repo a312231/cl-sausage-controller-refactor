@@ -110,6 +110,16 @@ class MechanicalMoveClaimCoordinator(
         owner: String,
         expectedMoveStatus: Int,
         idleMoveStatus: Int
+    ): MechanicalMoveReleaseResult = release(
+        owner = owner,
+        expectedMoveStatuses = setOf(expectedMoveStatus),
+        idleMoveStatus = idleMoveStatus
+    )
+
+    fun release(
+        owner: String,
+        expectedMoveStatuses: Set<Int>,
+        idleMoveStatus: Int
     ): MechanicalMoveReleaseResult = synchronized(transitionLock) {
         val current = ownerStore.snapshot()
         if (current?.owner != owner) {
@@ -118,9 +128,9 @@ class MechanicalMoveClaimCoordinator(
             )
         }
         val currentMoveStatus = moveStore.load()
-        if (currentMoveStatus != expectedMoveStatus) {
+        if (currentMoveStatus !in expectedMoveStatuses) {
             return@synchronized MechanicalMoveReleaseResult.Rejected(
-                "moveStatus 不匹配：expected=$expectedMoveStatus，actual=$currentMoveStatus"
+                "moveStatus 不匹配：expected=$expectedMoveStatuses，actual=$currentMoveStatus"
             )
         }
         releaseOwned(owner, currentMoveStatus, idleMoveStatus)

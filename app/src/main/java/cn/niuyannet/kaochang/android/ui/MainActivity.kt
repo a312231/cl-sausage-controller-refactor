@@ -639,7 +639,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
         binding.deviceNameText.text = appConfigBean.deviceName + "(" + appConfigBean.deviceCode + ")"
         if (appConfigBean.status == 1 &&
-            AppConfig.getAppConfig().onlineStatus == 1 &&
+            appConfigBean.onlineStatus in setOf(1, 4) &&
             !isSupplySoldOut &&
             !isHomeQrHidden &&
             !isInspectionMode

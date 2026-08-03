@@ -48,6 +48,23 @@ class MechanicalMoveClaimCoordinatorTest {
     }
 
     @Test
+    fun release_shouldAcceptOrderHandoffMoveStatusForCompletedSupplementOwner() {
+        val owners = FakeOwnerStore(owner = "in-1", state = MechanicalClaimState.CLAIMED)
+        val moves = FakeMoveStore(2)
+        val coordinator = coordinator(owners, moves)
+
+        val result = coordinator.release(
+            owner = "in-1",
+            expectedMoveStatuses = setOf(1, 2),
+            idleMoveStatus = 0
+        )
+
+        assertTrue(result is MechanicalMoveReleaseResult.Released)
+        assertNull(owners.owner)
+        assertEquals(0, moves.status)
+    }
+
+    @Test
     fun claim_shouldRollbackPreparedOwnerWhenMoveDurableSaveFails() {
         val owners = FakeOwnerStore()
         val moves = FakeMoveStore(0, failOnSaveStatus = 1)

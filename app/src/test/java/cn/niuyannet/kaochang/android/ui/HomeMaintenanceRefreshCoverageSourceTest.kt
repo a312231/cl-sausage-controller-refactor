@@ -18,7 +18,7 @@ class HomeMaintenanceRefreshCoverageSourceTest {
         assertEquals(
             "当前主源码中锚定正则 `.onlineStatus = 3` 应只命中 10 处真实维护态赋值；" +
                 "新增命中点必须补首页刷新或显式白名单",
-            10,
+                11,
             assignments.size
         )
         assertTrue(

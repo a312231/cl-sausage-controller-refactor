@@ -98,6 +98,15 @@ object OverKeepWarmDiscardScanner {
         val successful = mutableListOf<Int>()
         val latestPending = AppConfig.getAppConfig().pendingDiscardPositions.toSet()
         for (pan in KaoPanHelper.getKaoPanList().filter { it.positionSn in positionRange && it.positionSn in latestPending }.sortedBy { it.positionSn }) {
+            val nextGate = evaluateMechanicalGate(AppConfig.getAppConfig(), allowMechanicalAction)
+            if (!nextGate.canStart) {
+                LogUtils.w(
+                    TAG,
+                    "【丢弃流程】开始下一根前重新检查门禁失败，停止本轮：source=$source，" +
+                        "pan=${pan.positionSn}，reason=${nextGate.reason}"
+                )
+                break
+            }
             if (!pan.isHasSausage) {
                 FaultHeatPauseManager.clearDiscardPositionAndAlertIfFinished(pan.positionSn)
                 continue
@@ -180,7 +189,8 @@ object OverKeepWarmDiscardScanner {
             inspectionMode = config.inspectionMode,
             moveStatus = config.moveStatus,
             lowerPlatformStatus = config.lowerPlatformStatus,
-            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
+            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName,
+            orderPending = SupplementPauseController.shouldPauseForOrder()
         )
     }
 }

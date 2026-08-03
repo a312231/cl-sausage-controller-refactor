@@ -7,6 +7,24 @@ import org.junit.Test
 class MainActivityHomeDisplayPrioritySourceTest {
 
     @Test
+    fun dispensingStatus_shouldKeepHomeQrVisible() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/ui/MainActivity.kt")
+        val body = extractFunctionBody(source, "override fun setDataToView()")
+
+        val qrConditionStart = body.indexOf("if (appConfigBean.status == 1 &&")
+        assertTrue("找不到首页二维码可见条件", qrConditionStart >= 0)
+        val qrConditionEnd = body.indexOf(") {", qrConditionStart)
+        assertTrue("首页二维码可见条件未闭合", qrConditionEnd > qrConditionStart)
+        val qrCondition = body.substring(qrConditionStart, qrConditionEnd)
+
+        assertTrue(
+            "出餐中 onlineStatus=4 也必须保持首页二维码展示",
+            qrCondition.contains("appConfigBean.onlineStatus in setOf(1, 4)")
+        )
+        assertTrue("远程明确隐藏首页二维码的配置仍必须生效", qrCondition.contains("!isHomeQrHidden"))
+    }
+
+    @Test
     fun maintenanceStatus_shouldTakePriorityOverHomeQrHiddenText() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/ui/MainActivity.kt")
         val body = extractFunctionBody(source, "override fun setDataToView()")

@@ -7,12 +7,10 @@ import org.junit.Test
 class AppConfigParallelPrefetchTest {
 
     @Test
-    fun parallelPrefetchFlag_shouldDefaultToZeroAndStayZeroWhenRemoteFieldMissing() {
+    fun parallelPrefetchFlag_shouldDefaultToEnabled() {
         val config = AppConfigBean()
 
-        AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, JSONObject())
-
-        assertEquals(0, config.enableParallelSupplementPrefetch)
+        assertEquals(1, config.enableParallelSupplementPrefetch)
     }
 
     @Test
@@ -28,7 +26,19 @@ class AppConfigParallelPrefetchTest {
     }
 
     @Test
-    fun remoteParallelPrefetchFlag_shouldNormalizeInvalidOrMissingValuesToZero() {
+    fun remoteParallelPrefetchFlag_shouldDisableOnlyForExplicitIntegerZero() {
+        val config = AppConfigBean()
+        val remote = JSONObject().apply {
+            put("enableParallelSupplementPrefetch", 0)
+        }
+
+        AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, remote)
+
+        assertEquals(0, config.enableParallelSupplementPrefetch)
+    }
+
+    @Test
+    fun remoteParallelPrefetchFlag_shouldKeepCurrentValueForMissingOrInvalidValue() {
         listOf<Any?>(null, "1", 1.0, true, -1, 2).forEach { rawValue ->
             val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 1 }
             val remote = JSONObject().apply {
@@ -37,13 +47,13 @@ class AppConfigParallelPrefetchTest {
 
             AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, remote)
 
-            assertEquals("remote=$rawValue", 0, config.enableParallelSupplementPrefetch)
+            assertEquals("remote=$rawValue", 1, config.enableParallelSupplementPrefetch)
         }
     }
 
     @Test
-    fun missingCompleteRemotePayload_shouldDisablePreviouslyEnabledParallelPrefetch() {
-        val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 1 }
+    fun missingCompleteRemotePayload_shouldKeepPreviouslyDisabledValue() {
+        val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 0 }
 
         AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, null)
 

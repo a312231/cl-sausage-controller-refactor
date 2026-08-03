@@ -876,7 +876,8 @@ object KaoChangAlgorithm {
             inspectionMode = config.inspectionMode,
             moveStatus = config.moveStatus,
             lowerPlatformStatus = config.lowerPlatformStatus,
-            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
+            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName,
+            orderPending = SupplementPauseController.shouldPauseForOrder()
         )
         val schedulingEnabled =
             isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus) && autoDispatchDecision.canStart
@@ -1272,7 +1273,8 @@ object KaoChangAlgorithm {
             KaoChangOperate.discardSausage(
                 kaoPan,
                 source = "管理员指定",
-                detail = "维护页批量重置烤盘"
+                detail = "维护页批量重置烤盘",
+                automatic = false
             )
         }
         FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页批量重置烤盘完成")

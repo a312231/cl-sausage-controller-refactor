@@ -1305,7 +1305,8 @@ object HighCurrentTrafficMode {
             inspectionMode = config.inspectionMode,
             moveStatus = config.moveStatus,
             lowerPlatformStatus = config.lowerPlatformStatus,
-            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName
+            lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName,
+            orderPending = SupplementPauseController.shouldPauseForOrder()
         )
         if (dispatchDecision.canStart) {
             return null
@@ -1345,7 +1346,8 @@ object HighCurrentTrafficMode {
             inspectionMode = AppConfig.getAppConfig().inspectionMode,
             moveStatus = AppConfig.getAppConfig().moveStatus,
             lowerPlatformStatus = AppConfig.getAppConfig().lowerPlatformStatus,
-            lowerPlatformIsolationActionName = AppConfig.getAppConfig().lowerPlatformIsolationActionName
+            lowerPlatformIsolationActionName = AppConfig.getAppConfig().lowerPlatformIsolationActionName,
+            orderPending = SupplementPauseController.shouldPauseForOrder()
         )
         if (!dispatchDecision.canStart) {
             LogUtils.i(

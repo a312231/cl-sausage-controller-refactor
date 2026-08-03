@@ -124,6 +124,21 @@ class DiscardJournalTest {
     }
 
     @Test
+    fun recoveryPolicy_shouldRequirePhysicalConfirmationAfterCommandIntent() {
+        val decision = DiscardJournalRecoveryPolicy.evaluate(
+            journal = journal(DiscardCheckpoint.COMMAND_INTENT),
+            onlineStatus = 3,
+            isEnable = 0,
+            moveStatus = 4,
+            status201Readings = listOf(0, 0),
+            actionGroupResultStates = listOf(AtomicActionCodes.IDLE, AtomicActionCodes.COMPLETED),
+            physicalResult = null
+        )
+
+        assertFalse(decision.canClose)
+    }
+
+    @Test
     fun recoveryPolicy_shouldTellCommitWhetherConfirmedPanMustBeCleared() {
         val journal = journal(DiscardCheckpoint.COMMAND_ISSUED)
 

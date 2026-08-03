@@ -66,7 +66,9 @@ class ManualPanMoveSourceGuardTest {
 
         assertTrue("丢弃必须通过统一机械认领协调器", body.contains("claimMechanicalMove("))
         assertTrue("丢弃必须保留 0 -> 4 的认领语义", body.contains("claimedMoveStatus = 4"))
-        assertTrue("丢弃认领必须早于硬件指令", body.indexOf("claimedMoveStatus = 4") < body.indexOf("writeSingleRegister2("))
+        val hardwareWrite = body.indexOf("writeSingleRegister(action_address")
+        assertTrue("丢弃必须保留下位机要求的 150ms 写入延迟", body.contains("delay(150L)"))
+        assertTrue("丢弃认领必须早于硬件指令", body.indexOf("claimedMoveStatus = 4") < hardwareWrite)
         assertTrue("丢弃不得再无界等待订单状态", !body.contains("while (appState!=0)"))
         assertTrue("丢弃下发前必须保留耐久 journal", body.contains("DiscardJournal("))
         assertTrue("丢弃结果未知不得清理 moveStatus", body.contains("保留 owner/journal 与 moveStatus=4"))

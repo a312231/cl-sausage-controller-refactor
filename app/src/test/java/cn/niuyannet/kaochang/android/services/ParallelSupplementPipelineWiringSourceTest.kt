@@ -87,6 +87,10 @@ class ParallelSupplementPipelineWiringSourceTest {
 
         assertTrue(block.contains("SupplementPrefetchPhysicalStateCoordinator("))
         assertTrue(block.contains("beforeDeliveryCommit ="))
+        assertTrue(block.contains("SupplementDeliveryCommitCoordinator("))
+        assertTrue(block.contains("orderPending = SupplementPauseController::shouldPauseForOrder"))
+        assertTrue(block.contains("if (parallelEnabled)"))
+        assertTrue(block.contains("supplementPrefetchSessionRepository.tryCommitDelivery("))
         assertTrue(block.contains("onActionCommandWritten ="))
         assertTrue(block.contains("onActionRunningConfirmed ="))
         assertTrue(block.contains("onActionTerminalConfirmed ="))

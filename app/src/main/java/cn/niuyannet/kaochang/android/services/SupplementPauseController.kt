@@ -13,15 +13,15 @@ object SupplementPauseController {
     private var pauseOrderNo: String? = null
 
     @Synchronized
-    fun requestPauseForOrder(orderNo: String) {
+    fun requestPauseForOrder(orderNo: String): Boolean {
         if (orderNo.isBlank()) {
-            return
+            return false
         }
         if (pauseOrderNo == orderNo) {
-            return
+            return false
         }
         pauseOrderNo = orderNo
-        LogUtils.i("【订单优先】收到顾客订单，自动补肠将在当前单根安全完成后暂停：orderNo=$orderNo")
+        return true
     }
 
     @Synchronized
@@ -38,4 +38,8 @@ object SupplementPauseController {
     fun shouldPauseForOrder(): Boolean = !pauseOrderNo.isNullOrBlank()
 
     fun currentOrderNo(): String? = pauseOrderNo
+
+    @Synchronized
+    fun isPausedForDifferentOrder(orderNo: String): Boolean =
+        !pauseOrderNo.isNullOrBlank() && pauseOrderNo != orderNo
 }

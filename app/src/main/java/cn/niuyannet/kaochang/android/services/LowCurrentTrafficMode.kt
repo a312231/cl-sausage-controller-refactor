@@ -533,7 +533,8 @@ object LowCurrentTrafficMode {
             inspectionMode = AppConfig.getAppConfig().inspectionMode,
             moveStatus = AppConfig.getAppConfig().moveStatus,
             lowerPlatformStatus = AppConfig.getAppConfig().lowerPlatformStatus,
-            lowerPlatformIsolationActionName = AppConfig.getAppConfig().lowerPlatformIsolationActionName
+            lowerPlatformIsolationActionName = AppConfig.getAppConfig().lowerPlatformIsolationActionName,
+            orderPending = SupplementPauseController.shouldPauseForOrder()
         )
         if (!dispatchDecision.canStart) {
             LogUtils.i(
