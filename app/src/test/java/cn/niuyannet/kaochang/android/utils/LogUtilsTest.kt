@@ -69,4 +69,14 @@ class LogUtilsTest {
         assertTrue(LogUtils.shouldWriteToFileForTest("W", "串口探测失败：device=/dev/ttyS2, error=Port not found"))
         assertFalse(LogUtils.shouldWriteToFileForTest("D", "【Modbus】复用刚完成的重连结果，避免连续重复完整串口探测：status=false"))
     }
+
+    @Test
+    fun shouldWriteToFileForTest_shouldFilterSnapshotNoChangeDebugLogs() {
+        assertFalse(
+            LogUtils.shouldWriteToFileForTest(
+                "D",
+                "【云端同步】设备快照投影未变化，跳过HTTP同步：reason=poll_loop，skipCount=60"
+            )
+        )
+    }
 }

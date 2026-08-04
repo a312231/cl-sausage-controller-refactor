@@ -72,7 +72,7 @@ object SnapshotSyncPolicy {
     @Volatile
     private var state: State = PreferenceState
     @Volatile
-    private var logger: (String) -> Unit = { message -> LogUtils.d(message) }
+    private var logger: (String) -> Unit = { message -> LogUtils.dLocalOnly(message) }
     @Volatile
     private var skippedSnapshotCount: Long = 0L
 

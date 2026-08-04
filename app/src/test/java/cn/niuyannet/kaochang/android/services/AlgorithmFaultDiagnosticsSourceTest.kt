@@ -50,6 +50,32 @@ class AlgorithmFaultDiagnosticsSourceTest {
     }
 
     @Test
+    fun repeatedFaultCloseout_shouldDeduplicateOnlyOuterSummaryAfterSafetyStop() {
+        val source = algorithmSourceText()
+        val faultStart = source.indexOf("private fun stopHeatingAndDispatchForFault(")
+        val faultEnd = source.indexOf("/**\n     * 轮询烤盘和设备状态", faultStart)
+            .let { if (it >= 0) it else source.length }
+        val faultBlock = source.substring(faultStart, faultEnd)
+        val stopCall = faultBlock.indexOf("KaoChangOperate.stopHeatingForFault(")
+        val gateCall = faultBlock.indexOf("faultCloseoutLogGate.evaluate(")
+
+        assertTrue("故障停热动作必须先执行，不能被日志去重跳过", stopCall >= 0 && gateCall > stopCall)
+        assertTrue("重复故障只能去重外层收口摘要", faultBlock.contains("faultCloseoutLogGate.evaluate"))
+    }
+
+    @Test
+    fun recoveredFaultEpisode_shouldResetDiagnosticDeduplication() {
+        val source = algorithmSourceText()
+        val pollStart = source.indexOf("private suspend fun pollKaoPanStatus()")
+        val pollEnd = source.indexOf("private fun settleMaturedZonesBeforeDispatch", pollStart)
+            .let { if (it >= 0) it else source.length }
+        val pollBlock = source.substring(pollStart, pollEnd)
+
+        assertTrue("故障恢复后必须清空诊断去重状态", pollBlock.contains("lastFaultHeatDiagnosticLogKey = null"))
+        assertTrue("故障恢复后必须重置收口摘要去重状态", pollBlock.contains("faultCloseoutLogGate.reset()"))
+    }
+
+    @Test
     fun pollKaoPanStatus_shouldRefreshActiveBakingTimeBeforeMaturitySettlement() {
         val source = algorithmSourceText()
         val pollStart = source.indexOf("private suspend fun pollKaoPanStatus()")

@@ -278,7 +278,7 @@ object AppConfig {
             if (preserveRuntimeAvailableState) {
                 preservedFields.add("$fieldLabel(runtime_local)")
                 if (emitLogs && remoteValue != currentValue) {
-                    LogUtils.w(
+                    LogUtils.dLocalOnly(
                         "[$logPrefix] 远端首页预计时间未覆盖本地实时值：" +
                             "$fieldLabel remote=$remoteValue，local=$currentValue"
                     )
@@ -302,7 +302,7 @@ object AppConfig {
             if (preserveRuntimeAvailableState) {
                 preservedFields.add("$fieldLabel(runtime_local)")
                 if (emitLogs && remoteValue != currentValue) {
-                    LogUtils.w(
+                    LogUtils.dLocalOnly(
                         "[$logPrefix] 远端首页预计时间锁存标记未覆盖本地实时值：" +
                             "$fieldLabel remote=$remoteValue，local=$currentValue"
                     )
@@ -1060,7 +1060,11 @@ object AppConfig {
 
         if (details.isNotEmpty()) {
             if (hasValidConfig) {
-                LogUtils.w("[$logPrefix] $message")
+                if (RemoteConfigMergeLogPolicy.isRoutinePreservation(significantPreservedFields, parseIssues)) {
+                    LogUtils.dLocalOnly("[$logPrefix] $message")
+                } else {
+                    LogUtils.w("[$logPrefix] $message")
+                }
             } else {
                 LogUtils.e("[$logPrefix] $message，合并后配置仍然无效")
             }

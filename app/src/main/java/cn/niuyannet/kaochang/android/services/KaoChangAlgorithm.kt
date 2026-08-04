@@ -1,5 +1,6 @@
 ﻿package cn.niuyannet.kaochang.android.services
 
+import android.os.SystemClock
 import cn.niuyannet.kaochang.android.fault.FaultCode
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
@@ -13,6 +14,7 @@ import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -68,6 +70,7 @@ object KaoChangAlgorithm {
     private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
     private var lastFaultHeatDiagnosticLogKey: String? = null
+    private val faultCloseoutLogGate = RepeatedLogGate(summaryIntervalMs = null)
     private var lastStableHighOldLowHeatDiagnosticKey: String? = null
     var isEnabled = false
 
@@ -723,14 +726,26 @@ object KaoChangAlgorithm {
             ) {
                 KaoChangOperate.stopHeatingForFault(reason)
             }
-            logW(
-                LOG_DEVICE,
-                "设备故障态收口：reason=$reason，" +
-                    "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
-                    "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(currentConfig.isEnable)}，" +
-                    "errorStatus（设备故障状态）=${errorStatusText(currentConfig.errorStatus)}，" +
-                    faultHeatDiagnosticText(currentConfig, currentTime, isWithinBusinessHours)
-            )
+            val faultCloseoutState = listOf(
+                reason,
+                currentConfig.onlineStatus,
+                currentConfig.isEnable,
+                currentConfig.errorStatus,
+                currentConfig.errorCode ?: "null",
+                currentConfig.moveStatus,
+                currentConfig.faultHeatPauseActive,
+                currentConfig.faultHeatStopConfirmed
+            ).joinToString("|")
+            if (faultCloseoutLogGate.evaluate(faultCloseoutState, SystemClock.elapsedRealtime())?.stateChanged == true) {
+                logW(
+                    LOG_DEVICE,
+                    "设备故障态收口：reason=$reason，" +
+                        "onlineStatus（设备营业状态）=${onlineStatusText(previousOnlineStatus)}->${onlineStatusText(currentConfig.onlineStatus)}，" +
+                        "isEnable（烤肠算法开关）=${isEnableText(previousIsEnable)}->${isEnableText(currentConfig.isEnable)}，" +
+                        "errorStatus（设备故障状态）=${errorStatusText(currentConfig.errorStatus)}，" +
+                        faultHeatDiagnosticText(currentConfig, currentTime, isWithinBusinessHours)
+                )
+            }
             HomeUiRefreshBridge.requestRefresh("algorithm_fault:$reason")
         }
     }
@@ -749,6 +764,11 @@ object KaoChangAlgorithm {
         normalizeSupplementSourceKeepWarmBeforeEarlyReturns(config, kaoPanList)
         val currentTime = getCurrentTime()
         val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
+
+        if (config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL) {
+            lastFaultHeatDiagnosticLogKey = null
+            faultCloseoutLogGate.reset()
+        }
 
         if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
             logFaultHeatDiagnosticOnce("error_status_before_fault_stop", config, currentTime, isWithinBusinessHours)

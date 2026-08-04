@@ -48,6 +48,7 @@ object LogUtils {
         "Modbus 重连"
     )
     private val FILE_LOG_NOISE_KEYWORDS = listOf(
+        "设备快照投影未变化，跳过HTTP同步",
         "轮询原子动作",
         "准备下发原子动作",
         "写入信息寄存器成功",
@@ -258,6 +259,13 @@ object LogUtils {
         }
     }
 
+    /** 只写 Android logcat，不写本地文件，也不上报云端。用于高频、非关键诊断采样。 */
+    fun dLocalOnly(tag: String, msg: String) {
+        if (currentLevel <= LEVEL_DEBUG) {
+            Log.d(tag, msg)
+        }
+    }
+
     fun i(tag: String, msg: String) {
         if (currentLevel <= LEVEL_INFO) {
             Log.i(tag, msg)
@@ -289,6 +297,7 @@ object LogUtils {
 
     fun v(msg: String) = v(TAG, msg)
     fun d(msg: String) = d(TAG, msg)
+    fun dLocalOnly(msg: String) = dLocalOnly(TAG, msg)
     fun i(msg: String) = i(TAG, msg)
     fun w(msg: String, tr: Throwable? = null) = w(TAG, msg, tr)
     fun e(msg: String, tr: Throwable? = null) = e(TAG, msg, tr)

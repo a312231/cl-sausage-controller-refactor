@@ -10,12 +10,14 @@ class RepeatedLogGate(private val summaryIntervalMs: Long?) {
     private var lastEmittedAtMs: Long = 0L
     private var suppressedCount: Int = 0
 
+    @Synchronized
     fun markInitial(state: String, nowMs: Long) {
         lastState = state
         lastEmittedAtMs = nowMs
         suppressedCount = 0
     }
 
+    @Synchronized
     fun evaluate(state: String, nowMs: Long): Decision? {
         if (state != lastState) {
             val suppressed = suppressedCount
@@ -40,6 +42,7 @@ class RepeatedLogGate(private val summaryIntervalMs: Long?) {
         return Decision(stateChanged = false, suppressedCount = suppressed)
     }
 
+    @Synchronized
     fun reset() {
         lastState = null
         lastEmittedAtMs = 0L
