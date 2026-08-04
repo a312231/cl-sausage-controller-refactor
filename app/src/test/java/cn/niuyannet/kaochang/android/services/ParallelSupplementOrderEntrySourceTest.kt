@@ -13,13 +13,22 @@ class ParallelSupplementOrderEntrySourceTest {
         val main = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/MainActivity.kt")
         val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
 
-        assertTrue(main.contains("KaoChangOperate.requestSupplementPauseForOrder(orderNo)"))
+        assertTrue(main.contains("KaoChangOperate.acceptIncomingOrderForMechanicalDispatch(orderNo)"))
+        assertFalse(main.contains("OrderStateManager.checkAndAcceptOrder(orderNo)"))
+        assertFalse(main.contains("KaoChangOperate.requestSupplementPauseForOrder(orderNo)"))
         assertTrue(order.contains("KaoChangOperate.requestSupplementPauseForOrder(safeOrderNo)"))
         assertTrue(order.contains("KaoChangOperate.clearSupplementPauseAndResume("))
         assertFalse(main.contains("SupplementPauseController.requestPauseForOrder"))
         assertFalse(order.contains("SupplementPauseController.clearOrderPause"))
 
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val admissionStart = operate.indexOf("fun acceptIncomingOrderForMechanicalDispatch")
+        val admissionEnd = operate.indexOf("fun requestSupplementPauseForOrder", admissionStart)
+        val admission = operate.substring(admissionStart, admissionEnd)
+        assertTrue(admission.contains("withFaultHeatTransitionLock"))
+        assertTrue(admission.contains("OrderStateManager.checkAndAcceptOrder(orderNo)"))
+        assertTrue(admission.contains("requestSupplementPauseForOrder(orderNo)"))
+
         val clearStart = operate.indexOf("suspend fun clearSupplementPauseAndResume(")
         val clearEnd = operate.indexOf("fun clearOrderMoveStatusIfRecoverySafe", clearStart)
         val clear = operate.substring(clearStart, clearEnd)

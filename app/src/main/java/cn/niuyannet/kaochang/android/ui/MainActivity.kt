@@ -236,11 +236,32 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             OrderStateManager.recordBusyIgnored(orderNo)
                             reportBusyRejectedOrderFailure(orderMessage, orderNo, moveStatus, onlineStatus, actionGroupBusy)
                         } else {
-                            if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
-                                return@runOnUiThread
+                            when (KaoChangOperate.acceptIncomingOrderForMechanicalDispatch(orderNo)) {
+                                KaoChangOperate.IncomingOrderMechanicalAdmission.ACCEPTED -> Unit
+                                KaoChangOperate.IncomingOrderMechanicalAdmission.DUPLICATE ->
+                                    return@runOnUiThread
+                                KaoChangOperate.IncomingOrderMechanicalAdmission.BECAME_BUSY -> {
+                                    val latestConfig = AppConfig.getAppConfig()
+                                    val latestMoveStatus = latestConfig.moveStatus
+                                    val latestOnlineStatus = latestConfig.onlineStatus
+                                    val latestActionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+                                    logBusyOrderRejected(
+                                        orderNo,
+                                        latestMoveStatus,
+                                        latestOnlineStatus,
+                                        latestActionGroupBusy
+                                    )
+                                    OrderStateManager.recordBusyIgnored(orderNo)
+                                    reportBusyRejectedOrderFailure(
+                                        orderMessage,
+                                        orderNo,
+                                        latestMoveStatus,
+                                        latestOnlineStatus,
+                                        latestActionGroupBusy
+                                    )
+                                    return@runOnUiThread
+                                }
                             }
-
-                            KaoChangOperate.requestSupplementPauseForOrder(orderNo)
                             OrderProcessingStageBridge.publish(
                                 if (moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
                                     OrderProcessingStage.SUPPLEMENTING

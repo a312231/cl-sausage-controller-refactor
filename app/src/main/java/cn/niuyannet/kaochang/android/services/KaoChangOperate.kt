@@ -84,12 +84,14 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementResumeSingle
 import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
+import cn.niuyannet.kaochang.android.ui.OrderMoveStatusPolicy
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStageBridge
 import com.alibaba.fastjson.JSON
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -194,6 +196,7 @@ object KaoChangOperate {
      * 但又需要切回主线程执行的任务，避免继续使用 GlobalScope 造成悬挂协程。
      */
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val manualTakeTaskCoordinator = ManualTakeTaskCoordinator(operateScope)
     private val actionGroupLocks = ResourceLocks()
     private val faultHeatTransitionLock = Any()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
@@ -881,6 +884,33 @@ object KaoChangOperate {
         is InActionGroupPipelineResult.ReplanRequired -> SupplementPipelineOutcome.REPLAN_REQUIRED
         is InActionGroupPipelineResult.Failed -> SupplementPipelineOutcome.FAILED
         null -> SupplementPipelineOutcome.CANCELLED
+    }
+
+    enum class IncomingOrderMechanicalAdmission {
+        ACCEPTED,
+        DUPLICATE,
+        BECAME_BUSY
+    }
+
+    fun acceptIncomingOrderForMechanicalDispatch(orderNo: String): IncomingOrderMechanicalAdmission {
+        return withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(
+                    moveStatus = config.moveStatus,
+                    onlineStatus = config.onlineStatus,
+                    actionGroupBusy = isActionGroupBusyForOrderGate(),
+                    errorStatus = config.errorStatus,
+                    inspectionMode = config.inspectionMode
+                )
+            ) {
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
+            }
+            if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.DUPLICATE
+            }
+            requestSupplementPauseForOrder(orderNo)
+            IncomingOrderMechanicalAdmission.ACCEPTED
+        }
     }
 
     fun requestSupplementPauseForOrder(orderNo: String) {
@@ -3601,7 +3631,8 @@ object KaoChangOperate {
         ownerStore: MechanicalClaimOwnerStore,
         allowedMoveStatuses: Set<Int>,
         claimedMoveStatus: Int,
-        requireSupplementGate: Boolean
+        requireSupplementGate: Boolean,
+        claimGate: () -> Boolean = { true }
     ): Boolean {
         val coordinator = MechanicalMoveClaimCoordinator(
             faultHeatTransitionLock,
@@ -3609,7 +3640,9 @@ object KaoChangOperate {
             mechanicalMoveStatusStore
         )
         val result = coordinator.claim(owner, allowedMoveStatuses, claimedMoveStatus) {
-            if (!requireSupplementGate) {
+            if (!claimGate()) {
+                false
+            } else if (!requireSupplementGate) {
                 true
             } else {
                 val config = AppConfig.getAppConfig()
@@ -7299,7 +7332,19 @@ object KaoChangOperate {
      * 当前手动取肠也走 300/400 新动作组 out1~out5，由 out4 负责售卖口出肠检测和收口；
      * out5 只负责关门回零，不再调用售卖口拍照或视觉识别。
      */
+    fun startManualTakeSausage(kaoPan: KaoPan): Deferred<Boolean>? {
+        if (AppConfig.getAppConfig().inspectionMode != AppConfigBean.INSPECTION_MODE_ACTIVE) {
+            logW(LOG_ACTION, "维护手动取肠启动被拒绝：检修模式未开启，pan=${kaoPan.positionSn}")
+            return null
+        }
+        return manualTakeTaskCoordinator.start { takeSausage(kaoPan) }
+    }
+
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
+        if (AppConfig.getAppConfig().inspectionMode != AppConfigBean.INSPECTION_MODE_ACTIVE) {
+            logW(LOG_ACTION, "维护手动取肠动作层被拒绝：检修模式未开启，pan=${kaoPan.positionSn}")
+            return false
+        }
         if (!ensureModbusReady("维护手动取肠动作组恢复检查")) {
             enterActionGroupMaintenance(
                 "维护手动取肠入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=维护手动取肠",
@@ -7311,21 +7356,9 @@ object KaoChangOperate {
             return false
         }
 
-        var appState = AppConfig.getAppConfig().moveStatus
-        while (appState == 1 || appState == 3 || appState == 4 || appState == 5) {
-            delay(2000)
-            appState = AppConfig.getAppConfig().moveStatus
-            logD(LOG_ACTION, "维护手动取肠前等待机械动作收尾：moveStatus=$appState")
-        }
-        if (appState != 0 && appState != 2) {
-            logW(
-                LOG_ACTION,
-                "维护手动取肠被非空闲机械状态拦截：moveStatus（机械动作状态）=${moveStatusDesc(appState)}"
-            )
+        if (!waitUntilMoveStatusIdleOrTimeout("维护手动取肠")) {
             return false
         }
-
-        val acquiredByThisCall = appState == 0
 
         val sausageName = getPanTasteLabel(kaoPan)
         logD(
@@ -7347,9 +7380,14 @@ object KaoChangOperate {
                         resourceMask = lockMask
                     )
                 ),
-                allowedMoveStatuses = setOf(appState),
+                allowedMoveStatuses = setOf(0),
                 claimedMoveStatus = 2,
-                requireSupplementGate = false
+                requireSupplementGate = false,
+                claimGate = {
+                    AppConfig.getAppConfig().inspectionMode == AppConfigBean.INSPECTION_MODE_ACTIVE &&
+                        !OrderStateManager.hasProcessingOrder() &&
+                        !SupplementPauseController.shouldPauseForOrder()
+                }
             )
         ) {
             return false
@@ -7361,7 +7399,7 @@ object KaoChangOperate {
                     owner,
                     actionGroupClaimOwnerStore(),
                     expectedMoveStatus = 2,
-                    idleMoveStatus = if (acquiredByThisCall) 0 else 2
+                    idleMoveStatus = 0
                 )
                 return false
             }
@@ -7372,7 +7410,7 @@ object KaoChangOperate {
                     owner,
                     actionGroupClaimOwnerStore(),
                     expectedMoveStatus = 2,
-                    idleMoveStatus = if (acquiredByThisCall) 0 else 2
+                    idleMoveStatus = 0
                 )
                 logW(
                     LOG_ACTION_GROUP,
@@ -7442,7 +7480,7 @@ object KaoChangOperate {
                             owner,
                             actionGroupClaimOwnerStore(),
                             expectedMoveStatus = 2,
-                            idleMoveStatus = if (acquiredByThisCall) 0 else 2
+                            idleMoveStatus = 0
                         )
                     ) {
                         enterActionGroupMaintenance("维护手动取肠完成但 owner/moveStatus 收口失败")
@@ -7468,7 +7506,7 @@ object KaoChangOperate {
             if (!hasUnsettledSession) {
                 actionGroupLocks.release(owner)
             }
-            if (acquiredByThisCall && !hasUnsettledSession && AppConfig.getAppConfig().moveStatus != 0) {
+            if (!hasUnsettledSession && AppConfig.getAppConfig().moveStatus != 0) {
                 enterActionGroupMaintenance("维护手动取肠 owner 已清理但 moveStatus 仍忙，禁止无 owner 自动清零")
             }
         }

@@ -1692,6 +1692,10 @@ class MaintenanceFragment : Fragment() {
             .setItems(actions) { dialog, which ->
                 when (actions[which]) {
                     "手动取肠" -> {
+                        if (AppConfig.getAppConfig().inspectionMode != AppConfigBean.INSPECTION_MODE_ACTIVE) {
+                            ToastUtils.showShort("请先开启检修模式")
+                            return@setItems
+                        }
                         resetAdminIdleTimer("手动取肠弹窗确认")
                         showManualTakeSausageDialog(kaoPan)
                     }
@@ -1736,40 +1740,24 @@ class MaintenanceFragment : Fragment() {
                     detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel"
                 )
 
-                lifecycleScope.launch {
+                if (AppConfig.getAppConfig().inspectionMode != AppConfigBean.INSPECTION_MODE_ACTIVE) {
+                    ToastUtils.showShort("检修模式已关闭，手动取肠未启动")
+                    dialog.dismiss()
+                    status.set(true)
+                    endAdminBusy(adminBusy)
+                    return@setPositiveButton
+                }
+                val manualTakeTask = KaoChangOperate.startManualTakeSausage(kaoPan)
+                if (manualTakeTask == null) {
+                    ToastUtils.showShort("已有手动取肠任务正在执行，请等待完成")
+                    dialog.dismiss()
+                    status.set(true)
+                    endAdminBusy(adminBusy)
+                    return@setPositiveButton
+                }
+                viewLifecycleOwner.lifecycleScope.launch {
                     try {
-                        val modbusConnected = withContext(Dispatchers.IO) {
-                            MaintenanceModbusRecoveryConnector.ensureConnected()
-                        }
-                        if (!modbusConnected) {
-                            ToastUtils.showShort("下位机未连接，请先恢复通信")
-                            AdminOperationLogger.w(
-                                action = "手动取肠",
-                                page = AdminOperationLogger.PAGE_PAN,
-                                result = AdminOperationLogger.RESULT_REJECT,
-                                detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel，拒绝原因=下位机未连接，" +
-                                    "Modbus串口地址=${AppConfig.getAppConfig().modbusAddress}"
-                            )
-                            return@launch
-                        }
-                        val idleReady = waitUntilMachineIdleOrTimeout(
-                            reason = "维护页手动取肠等待空闲",
-                            waitingText = "请等待上位机空闲"
-                        )
-                        if (!idleReady) {
-                            AdminOperationLogger.w(
-                                action = "手动取肠",
-                                page = AdminOperationLogger.PAGE_PAN,
-                                result = AdminOperationLogger.RESULT_FAIL,
-                                detail = "烤盘位=${kaoPan.positionSn}，口味=$tasteLabel，失败原因=等待机械臂空闲超时，" +
-                                    "机械动作状态=${AppConfig.getAppConfig().moveStatus}"
-                            )
-                            ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                            return@launch
-                        }
-                        val result = withContext(Dispatchers.IO) {
-                            KaoChangOperate.takeSausage(kaoPan)
-                        }
+                        val result = manualTakeTask.await()
                         if (!result) {
                             AdminOperationLogger.w(
                                 action = "手动取肠",
