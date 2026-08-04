@@ -183,7 +183,6 @@ class RemoteRuntimeConfigPatchApplierTest {
 
         assertTrue(result.hasApplied)
         assertEquals(1, config.enableParallelSupplementPrefetch)
-        assertEquals(1, config.parallelSupplementPrefetchRemoteConfigured)
         assertEquals(listOf("enableParallelSupplementPrefetch"), result.appliedFields)
     }
 

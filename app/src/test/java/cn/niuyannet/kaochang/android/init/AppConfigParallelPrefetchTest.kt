@@ -7,10 +7,10 @@ import org.junit.Test
 class AppConfigParallelPrefetchTest {
 
     @Test
-    fun parallelPrefetchFlag_shouldDefaultToDisabledUntilExplicitRemoteEnable() {
+    fun parallelPrefetchFlag_shouldDefaultToEnabled() {
         val config = AppConfigBean()
 
-        assertEquals(0, config.enableParallelSupplementPrefetch)
+        assertEquals(1, config.enableParallelSupplementPrefetch)
     }
 
     @Test
@@ -23,7 +23,6 @@ class AppConfigParallelPrefetchTest {
         AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, remote)
 
         assertEquals(1, config.enableParallelSupplementPrefetch)
-        assertEquals(1, config.parallelSupplementPrefetchRemoteConfigured)
     }
 
     @Test
@@ -36,7 +35,6 @@ class AppConfigParallelPrefetchTest {
         AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, remote)
 
         assertEquals(0, config.enableParallelSupplementPrefetch)
-        assertEquals(1, config.parallelSupplementPrefetchRemoteConfigured)
     }
 
     @Test
@@ -44,7 +42,6 @@ class AppConfigParallelPrefetchTest {
         listOf<Any?>(null, "1", 1.0, true, -1, 2).forEach { rawValue ->
             val config = AppConfigBean().apply {
                 enableParallelSupplementPrefetch = 1
-                parallelSupplementPrefetchRemoteConfigured = 1
             }
             val remote = JSONObject().apply {
                 if (rawValue != null) put("enableParallelSupplementPrefetch", rawValue)
@@ -61,15 +58,6 @@ class AppConfigParallelPrefetchTest {
         val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 0 }
 
         AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, null)
-
-        assertEquals(0, config.enableParallelSupplementPrefetch)
-    }
-
-    @Test
-    fun legacyStoredParallelPrefetch_shouldBeDisabledUntilRemoteExplicitlyEnablesIt() {
-        val config = AppConfigBean().apply { enableParallelSupplementPrefetch = 1 }
-
-        AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, JSONObject())
 
         assertEquals(0, config.enableParallelSupplementPrefetch)
     }
