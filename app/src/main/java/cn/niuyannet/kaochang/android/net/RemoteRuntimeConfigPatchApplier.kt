@@ -54,6 +54,7 @@ object RemoteRuntimeConfigPatchApplier {
                 "enableParallelSupplementPrefetch" ->
                     applyStrictBinaryInt(config, field, entry.value) {
                         config.enableParallelSupplementPrefetch = it
+                        config.parallelSupplementPrefetchRemoteConfigured = 1
                     }
                 "keepWarmTemperature" ->
                     applyTemperatureTarget(config, field, entry.value, normalizedFields) { config.keepWarmTemperature = it }

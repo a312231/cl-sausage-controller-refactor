@@ -7,6 +7,8 @@ class SupplementResumeSingleFlight {
 
     fun tryEnter(): Boolean = running.compareAndSet(false, true)
 
+    fun isRunning(): Boolean = running.get()
+
     fun exit() {
         running.set(false)
     }

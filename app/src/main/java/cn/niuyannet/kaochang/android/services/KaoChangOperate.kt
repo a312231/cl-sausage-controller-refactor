@@ -787,12 +787,35 @@ object KaoChangOperate {
 
     private fun deferParallelSupplementForRuntimeRecovery(
         plan: SupplementPrefetchResumePlan,
-        reason: String
+        reason: String,
+        lockOwner: String? = null,
+        singleFlightAlreadyOwned: Boolean = false
     ): Boolean {
         var deferredSessionId: String? = null
         val deferred = withFaultHeatTransitionLock {
-            val session = activeSupplementPrefetchSessionOrNull("双 lane 延迟续作")
-                ?: return@withFaultHeatTransitionLock false
+            if (supplementResumeSingleFlight.isRunning() && !singleFlightAlreadyOwned) {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "双 lane 延迟续作遇到正在执行的运行态恢复，保留当前会话和资源锁：" +
+                        "sessionId=${plan.sessionId}，reason=$reason"
+                )
+                return@withFaultHeatTransitionLock false
+            }
+            val ownerToRelease = lockOwner ?: plan.sessionId
+            val session = when (val read = readSupplementPrefetchEvidence()) {
+                DurableEvidenceReadResult.Absent -> {
+                    actionGroupLocks.release(ownerToRelease)
+                    return@withFaultHeatTransitionLock false
+                }
+                is DurableEvidenceReadResult.Valid -> read.value
+                is DurableEvidenceReadResult.Corrupted -> {
+                    enterActionGroupMaintenance(
+                        "双 lane 会话读取失败，已禁止相关动作：context=双 lane 延迟续作，" +
+                            "fingerprint=${read.fingerprint}，reason=${read.reason}"
+                    )
+                    return@withFaultHeatTransitionLock false
+                }
+            }
             val lane = session.deliveryLane
             if (session.sessionId != plan.sessionId ||
                 lane?.sourceBoxNo != plan.sourceBoxNo ||
@@ -803,6 +826,7 @@ object KaoChangOperate {
                 return@withFaultHeatTransitionLock false
             }
             if (session.mechanicalClaimState == null && session.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME) {
+                actionGroupLocks.release(ownerToRelease)
                 markActionGroupRecoveryVerified("双 lane 已验证但等待运行态续作：" + reason)
                 deferredSessionId = session.sessionId
                 return@withFaultHeatTransitionLock true
@@ -823,7 +847,7 @@ object KaoChangOperate {
                     moveStatusCleared = true
                 }
                 supplementPrefetchSessionRepository.pauseForRuntimeRecovery(session.sessionId)
-                actionGroupLocks.release(session.sessionId)
+                actionGroupLocks.release(ownerToRelease)
                 markActionGroupRecoveryVerified("双 lane 已验证但等待运行态续作：" + reason)
                 deferredSessionId = session.sessionId
             }.fold(
@@ -853,27 +877,36 @@ object KaoChangOperate {
 
     suspend fun resumeParallelSupplementForRuntimeRecovery(reason: String): Boolean {
         if (!isParallelSupplementPausedForRuntimeRecovery()) return true
-        if (!parallelSupplementRuntimeAvailable()) return false
-        val session = activeSupplementPrefetchSessionOrNull("双 lane 运行态恢复") ?: return false
-        val acquired = withFaultHeatTransitionLock {
-            actionGroupLocks.tryAcquire(session.resourceMask, session.sessionId)
+        if (!supplementResumeSingleFlight.tryEnter()) {
+            logW(LOG_SUPPLEMENT, "双 lane 运行态恢复已有执行中的尝试，跳过重复恢复：reason=$reason")
+            return false
         }
-        if (!acquired) return false
-        val preparation = runCatching {
-            SupplementPrefetchResumePlanner.prepareRecovered(supplementPrefetchSessionRepository)
-        }.getOrElse { error ->
-            actionGroupLocks.release(session.sessionId)
-            enterActionGroupMaintenance(
-                "双 lane 运行态恢复检查失败：reason=" + reason + "，error=" + error.message
+        return try {
+            if (!parallelSupplementRuntimeAvailable()) return false
+            val session = activeSupplementPrefetchSessionOrNull("双 lane 运行态恢复") ?: return false
+            val acquired = withFaultHeatTransitionLock {
+                actionGroupLocks.tryAcquire(session.resourceMask, session.sessionId)
+            }
+            if (!acquired) return false
+            val preparation = runCatching {
+                SupplementPrefetchResumePlanner.prepareRecovered(supplementPrefetchSessionRepository)
+            }.getOrElse { error ->
+                enterActionGroupMaintenance(
+                    "双 lane 运行态恢复检查失败，保留会话和资源锁：reason=" + reason + "，error=" + error.message,
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+            handleParallelSupplementResumePreparation(
+                preparation,
+                reason,
+                lockAlreadyOwned = true,
+                lockOwner = session.sessionId,
+                singleFlightAlreadyOwned = true
             )
-            return false
+        } finally {
+            supplementResumeSingleFlight.exit()
         }
-        if (preparation !is SupplementPrefetchResumePreparation.Ready) {
-            actionGroupLocks.release(session.sessionId)
-            enterActionGroupMaintenance("双 lane 运行态恢复计划不可执行：reason=" + reason + "，preparation=$preparation")
-            return false
-        }
-        return handleParallelSupplementResumePreparation(preparation, reason, lockAlreadyOwned = true)
     }
 
     private fun supplementPipelineOutcome(
@@ -995,6 +1028,7 @@ object KaoChangOperate {
                 preparation,
                 reason,
                 lockAlreadyOwned = true,
+                lockOwner = parallelSession.sessionId,
                 allowRuntimeDefer = true
             )
             return resumed || SupplementPauseController.isPausedForDifferentOrder(orderNo)
@@ -1025,9 +1059,16 @@ object KaoChangOperate {
         preparation: SupplementPrefetchResumePreparation,
         reason: String,
         lockAlreadyOwned: Boolean,
-        allowRuntimeDefer: Boolean = false
+        lockOwner: String? = null,
+        allowRuntimeDefer: Boolean = false,
+        singleFlightAlreadyOwned: Boolean = false
     ): Boolean = when (preparation) {
-        SupplementPrefetchResumePreparation.NoSession -> true
+        SupplementPrefetchResumePreparation.NoSession -> {
+            if (lockAlreadyOwned && lockOwner != null) {
+                actionGroupLocks.release(lockOwner)
+            }
+            true
+        }
         is SupplementPrefetchResumePreparation.Unsafe -> {
             enterActionGroupMaintenance("双 lane 续作检查失败：reason=$reason，${preparation.reason}")
             false
@@ -1062,13 +1103,19 @@ object KaoChangOperate {
         }
         is SupplementPrefetchResumePreparation.Ready -> {
             if (!parallelSupplementRuntimeAvailable() && allowRuntimeDefer) {
-                deferParallelSupplementForRuntimeRecovery(preparation.plan, reason)
+                deferParallelSupplementForRuntimeRecovery(
+                    preparation.plan,
+                    reason,
+                    lockOwner = lockOwner,
+                    singleFlightAlreadyOwned = singleFlightAlreadyOwned
+                )
             } else {
                 resumePreparedParallelSupplement(
                     preparation.plan,
                     reason,
                     lockAlreadyOwned,
-                    allowRuntimeDefer
+                    allowRuntimeDefer,
+                    singleFlightAlreadyOwned
                 )
             }
         }
@@ -1078,8 +1125,12 @@ object KaoChangOperate {
         plan: SupplementPrefetchResumePlan,
         reason: String,
         lockAlreadyOwned: Boolean,
-        allowRuntimeDefer: Boolean
+        allowRuntimeDefer: Boolean,
+        singleFlightAlreadyOwned: Boolean = false
     ): Boolean {
+        if (singleFlightAlreadyOwned) {
+            return resumePreparedParallelSupplementOnce(plan, reason, lockAlreadyOwned, allowRuntimeDefer)
+        }
         if (!supplementResumeSingleFlight.tryEnter()) {
             logW(LOG_SUPPLEMENT, "双 lane 续作已有执行中的尝试，拒绝重复下发：sessionId=${plan.sessionId}，reason=$reason")
             return false
@@ -1105,16 +1156,29 @@ object KaoChangOperate {
             }
         }
 
-        val session = activeSupplementPrefetchSessionOrNull("双 lane 续作执行前") ?: run {
-            releaseResumeLock()
-            return false
+        val session = when (val read = readSupplementPrefetchEvidence()) {
+            DurableEvidenceReadResult.Absent -> {
+                releaseResumeLock()
+                return false
+            }
+            is DurableEvidenceReadResult.Valid -> read.value
+            is DurableEvidenceReadResult.Corrupted -> {
+                enterActionGroupMaintenance(
+                    "双 lane 续作执行前读取会话失败，保留会话和资源锁：" +
+                        "fingerprint=${read.fingerprint}，reason=${read.reason}",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
         }
         val lane = session.deliveryLane
         if (session.sessionId != plan.sessionId || lane?.sourceBoxNo != plan.sourceBoxNo ||
             lane.targetPanNo != plan.targetPanNo || lane.lastConfirmedStage != plan.resumeAfterAction
         ) {
-            enterActionGroupMaintenance("双 lane 续作计划与持久化会话不一致：plan=$plan")
-            releaseResumeLock()
+            enterActionGroupMaintenance(
+                "双 lane 续作计划与持久化会话不一致，保留会话和资源锁：plan=$plan",
+                preserveMoveStatus = true
+            )
             return false
         }
         val runtime = AppConfig.getAppConfig()
@@ -1123,7 +1187,12 @@ object KaoChangOperate {
         ) {
             logW(LOG_SUPPLEMENT, "双 lane 续作运行态门禁拒绝下发，保留会话并释放本次资源锁：reason=$reason")
             if (allowRuntimeDefer) {
-                return deferParallelSupplementForRuntimeRecovery(plan, reason)
+                return deferParallelSupplementForRuntimeRecovery(
+                    plan,
+                    reason,
+                    lockOwner = plan.sessionId,
+                    singleFlightAlreadyOwned = true
+                )
             }
             releaseResumeLock()
             return false
@@ -1137,8 +1206,10 @@ object KaoChangOperate {
         val pan = KaoPanHelper.getKaoPanList().firstOrNull { it.positionSn == plan.targetPanNo }
         val box = KaoPanHelper.getKaoPanBoxList().firstOrNull { it.positionSn == plan.sourceBoxNo }
         if (pan == null || box == null) {
-            enterActionGroupMaintenance("双 lane 续作找不到目标盘或来源箱：plan=$plan")
-            releaseResumeLock()
+            enterActionGroupMaintenance(
+                "双 lane 续作找不到目标盘或来源箱，保留会话和资源锁：plan=$plan",
+                preserveMoveStatus = true
+            )
             return false
         }
         val runtimePaused = session.phase == SupplementPipelinePhase.PAUSED_FOR_RUNTIME
@@ -2481,6 +2552,7 @@ object KaoChangOperate {
             val recovered = when (dedicated) {
                 SupplementPrefetchRecoveryResult.Idle -> {
                     enterActionGroupMaintenance("双 lane 会话在专用恢复期间消失，拒绝进入通用恢复")
+                    actionGroupLocks.release(doubleLaneSession.sessionId)
                     false
                 }
                 is SupplementPrefetchRecoveryResult.PausedForOrder -> {
@@ -2513,6 +2585,7 @@ object KaoChangOperate {
                         preparation,
                         "双 lane 启动恢复：$reason",
                         lockAlreadyOwned = true,
+                        lockOwner = doubleLaneSession.sessionId,
                         allowRuntimeDefer = true
                     )
                 }

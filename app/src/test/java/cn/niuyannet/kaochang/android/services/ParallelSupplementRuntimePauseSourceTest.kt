@@ -44,7 +44,7 @@ class ParallelSupplementRuntimePauseSourceTest {
         assertTrue(enable.contains("isActionGroupRecoveryBlocked()"))
 
         val resume = functionBlock(operate, "suspend fun resumeParallelSupplementForRuntimeRecovery", "private fun supplementPipelineOutcome")
-        assertTrue(resume.contains("actionGroupLocks.release(session.sessionId)"))
+        assertTrue(resume.contains("handleParallelSupplementResumePreparation("))
 
         val resumeOnce = functionBlock(
             operate,
@@ -87,9 +87,174 @@ class ParallelSupplementRuntimePauseSourceTest {
         assertTrue(resumeOnce.contains("allowRuntimeDefer: Boolean"))
         val secondRuntimeGate = functionBlock(resumeOnce, "val runtime = AppConfig.getAppConfig()", "if (!lockOwnedByResume)")
         assertTrue(secondRuntimeGate.contains("if (allowRuntimeDefer)"))
-        assertTrue(secondRuntimeGate.contains("return deferParallelSupplementForRuntimeRecovery(plan, reason)"))
-        assertTrue(secondRuntimeGate.indexOf("return deferParallelSupplementForRuntimeRecovery(plan, reason)") <
+        assertTrue(secondRuntimeGate.contains("deferParallelSupplementForRuntimeRecovery("))
+        assertTrue(secondRuntimeGate.contains("lockOwner = plan.sessionId"))
+        assertTrue(secondRuntimeGate.indexOf("deferParallelSupplementForRuntimeRecovery(") <
             secondRuntimeGate.lastIndexOf("releaseResumeLock()"))
+    }
+
+    @Test
+    fun runtimeResume_shouldHoldSingleFlightAcrossLockAcquireAndPreparation() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val resume = functionBlock(
+            operate,
+            "suspend fun resumeParallelSupplementForRuntimeRecovery",
+            "private fun supplementPipelineOutcome"
+        )
+
+        assertTrue(resume.contains("supplementResumeSingleFlight.tryEnter()"))
+        assertTrue(resume.contains("supplementResumeSingleFlight.exit()"))
+    }
+
+    @Test
+    fun runtimeDefer_shouldNotReleaseAnotherResumeAttemptOwner() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val defer = functionBlock(
+            operate,
+            "private fun deferParallelSupplementForRuntimeRecovery(",
+            "suspend fun resumeParallelSupplementForRuntimeRecovery"
+        )
+
+        assertTrue(defer.contains("lockOwner"))
+        assertTrue(defer.contains("supplementResumeSingleFlight.isRunning()"))
+    }
+
+    @Test
+    fun alreadyPausedRuntimeDefer_shouldReleaseTheTemporaryOwnerBeforeReturning() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val defer = functionBlock(
+            operate,
+            "private fun deferParallelSupplementForRuntimeRecovery(",
+            "suspend fun resumeParallelSupplementForRuntimeRecovery"
+        )
+        val alreadyPaused = defer.substring(
+            defer.indexOf("if (session.mechanicalClaimState == null"),
+            defer.indexOf("val currentMoveStatus")
+        )
+
+        assertTrue(alreadyPaused.contains("actionGroupLocks.release(ownerToRelease)"))
+        assertTrue(alreadyPaused.indexOf("actionGroupLocks.release(ownerToRelease)") <
+            alreadyPaused.indexOf("return@withFaultHeatTransitionLock true"))
+    }
+
+    @Test
+    fun corruptedRuntimeEvidence_shouldRetainTheOwnerLock() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val defer = functionBlock(
+            operate,
+            "private fun deferParallelSupplementForRuntimeRecovery(",
+            "suspend fun resumeParallelSupplementForRuntimeRecovery"
+        )
+        val evidenceRead = defer.substring(
+            defer.indexOf("val session ="),
+            defer.indexOf("val lane =")
+        )
+
+        assertTrue(evidenceRead.contains("DurableEvidenceReadResult.Corrupted"))
+        val corrupted = evidenceRead.substring(evidenceRead.indexOf("DurableEvidenceReadResult.Corrupted"))
+        assertTrue(corrupted.contains("enterActionGroupMaintenance"))
+        assertTrue(!corrupted.contains("actionGroupLocks.release(plan.sessionId)"))
+    }
+
+    @Test
+    fun noSessionResumePreparation_shouldReleaseTheKnownOwnedOwner() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val handler = functionBlock(
+            operate,
+            "private suspend fun handleParallelSupplementResumePreparation(",
+            "private suspend fun resumePreparedParallelSupplement("
+        )
+        val noSession = handler.substring(
+            handler.indexOf("SupplementPrefetchResumePreparation.NoSession"),
+            handler.indexOf("is SupplementPrefetchResumePreparation.Unsafe")
+        )
+
+        assertTrue(noSession.contains("lockOwner"))
+        assertTrue(noSession.contains("actionGroupLocks.release(lockOwner)"))
+    }
+
+    @Test
+    fun startupRecoveryIdle_shouldReleaseTheForceAcquiredOwner() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val recovery = functionBlock(
+            operate,
+            "suspend fun recoverActionGroupStateAfterModbusReady",
+            "private fun recoverPanMoveJournalAfterModbusReady"
+        )
+        val idle = recovery.substring(
+            recovery.indexOf("SupplementPrefetchRecoveryResult.Idle"),
+            recovery.indexOf("is SupplementPrefetchRecoveryResult.PausedForOrder")
+        )
+
+        assertTrue(idle.contains("actionGroupLocks.release(doubleLaneSession.sessionId)"))
+    }
+
+    @Test
+    fun runtimeResumePreparationFailure_shouldRetainTheOwnedLockForMaintenance() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val resume = functionBlock(
+            operate,
+            "suspend fun resumeParallelSupplementForRuntimeRecovery",
+            "private fun supplementPipelineOutcome"
+        )
+        val preparation = resume.substring(
+            resume.indexOf("val preparation = runCatching"),
+            resume.indexOf("handleParallelSupplementResumePreparation(")
+        )
+
+        assertTrue(preparation.contains("enterActionGroupMaintenance"))
+        assertTrue(!preparation.contains("actionGroupLocks.release(session.sessionId)"))
+    }
+
+    @Test
+    fun runtimeResumeEvidenceRead_shouldKeepCorruptedEvidenceLocked() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val resumeOnce = functionBlock(
+            operate,
+            "private suspend fun resumePreparedParallelSupplementOnce",
+            "private suspend fun finishParallelSupplementResume"
+        )
+
+        assertTrue(resumeOnce.contains("readSupplementPrefetchEvidence()"))
+        assertTrue(resumeOnce.contains("DurableEvidenceReadResult.Corrupted"))
+        val corruptedStart = resumeOnce.indexOf("DurableEvidenceReadResult.Corrupted")
+        val corrupted = resumeOnce.substring(corruptedStart, resumeOnce.indexOf("val lane", corruptedStart))
+        assertTrue(corrupted.contains("enterActionGroupMaintenance"))
+        assertTrue(!corrupted.contains("releaseResumeLock()"))
+    }
+
+    @Test
+    fun runtimeResumePlanMismatch_shouldRetainTheOwnedLock() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val resumeOnce = functionBlock(
+            operate,
+            "private suspend fun resumePreparedParallelSupplementOnce",
+            "private suspend fun finishParallelSupplementResume"
+        )
+        val mismatch = resumeOnce.substring(
+            resumeOnce.indexOf("if (session.sessionId != plan.sessionId"),
+            resumeOnce.indexOf("val runtime = AppConfig.getAppConfig()")
+        )
+
+        assertTrue(mismatch.contains("enterActionGroupMaintenance"))
+        assertTrue(!mismatch.contains("releaseResumeLock()"))
+    }
+
+    @Test
+    fun runtimeResumeMissingPanOrBox_shouldRetainTheOwnedLock() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val resumeOnce = functionBlock(
+            operate,
+            "private suspend fun resumePreparedParallelSupplementOnce",
+            "private suspend fun finishParallelSupplementResume"
+        )
+        val missingState = resumeOnce.substring(
+            resumeOnce.indexOf("if (pan == null || box == null)"),
+            resumeOnce.indexOf("val runtimePaused")
+        )
+
+        assertTrue(missingState.contains("enterActionGroupMaintenance"))
+        assertTrue(!missingState.contains("releaseResumeLock()"))
     }
 
     private fun functionBlock(source: String, startMarker: String, endMarker: String): String {

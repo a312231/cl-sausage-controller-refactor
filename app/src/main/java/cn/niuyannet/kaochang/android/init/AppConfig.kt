@@ -373,6 +373,7 @@ object AppConfig {
         syncHomeQrHiddenFields(config)
         val apiBaseUrlMigrated = normalizeApiBaseUrlConfig(config)
         val actionGroupPrefetchMigrated = migrateActionGroupPrefetchDefault(config)
+        val parallelSupplementPrefetchMigrated = migrateParallelSupplementPrefetchDefault(config)
         val forceVisionSuccessMigrated = migrateForceVisionSuccessDefault(config)
         val boxRefillTargetNumMigrated = migrateBoxRefillTargetNumDefault(config)
         val faultSafetyMigrated = normalizeFaultSafetyConfig(config, "配置加载")
@@ -383,6 +384,7 @@ object AppConfig {
         normalizeConcurrencyState(config, "配置加载")
         if (apiBaseUrlMigrated ||
             actionGroupPrefetchMigrated ||
+            parallelSupplementPrefetchMigrated ||
             forceVisionSuccessMigrated ||
             boxRefillTargetNumMigrated ||
             faultSafetyMigrated ||
@@ -541,6 +543,21 @@ object AppConfig {
             "【配置迁移】检测到旧版本动作组补肠预取默认值，已自动开启：" +
                 "enableActionGroupPrefetch（动作组补肠预取开关）=0（关闭）->1（开启），" +
                 "actionGroupPrefetchRemoteConfigured（后台是否明确配置预取）=0（未明确配置）"
+        )
+        return true
+    }
+
+    private fun migrateParallelSupplementPrefetchDefault(config: AppConfigBean): Boolean {
+        if (config.parallelSupplementPrefetchRemoteConfigured == 1 ||
+            config.enableParallelSupplementPrefetch != 1
+        ) {
+            return false
+        }
+        config.enableParallelSupplementPrefetch = 0
+        LogUtils.w(
+            "【配置迁移】检测到旧版本双 lane 并行补肠历史开启但没有后台明确配置，" +
+                "已自动关闭：enableParallelSupplementPrefetch=1（开启）->0（关闭），" +
+                "等待后台明确下发后再启用"
         )
         return true
     }
@@ -1148,7 +1165,12 @@ object AppConfig {
             val normalized = (rawValue as Number).toLong()
             if (normalized == 0L || normalized == 1L) {
                 config.enableParallelSupplementPrefetch = normalized.toInt()
+                config.parallelSupplementPrefetchRemoteConfigured = 1
+                return
             }
+        }
+        if (config.parallelSupplementPrefetchRemoteConfigured != 1) {
+            config.enableParallelSupplementPrefetch = 0
         }
     }
 
