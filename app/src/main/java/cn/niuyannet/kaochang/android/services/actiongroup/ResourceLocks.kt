@@ -32,6 +32,20 @@ class ResourceLocks {
         owners.remove(owner)
     }
 
+    /**
+     * 仅当 owner 仍持有期望的资源集合时释放，检查和删除在同一同步范围内完成。
+     * owner 已不存在视为幂等成功，mask 不匹配则拒绝触碰任何资源。
+     */
+    @Synchronized
+    fun releaseIfOwned(owner: String, expectedMask: Int): ResourceReleaseResult {
+        val currentMask = owners[owner] ?: return ResourceReleaseResult.ALREADY_ABSENT
+        if (currentMask != expectedMask) {
+            return ResourceReleaseResult.MASK_MISMATCH
+        }
+        owners.remove(owner)
+        return ResourceReleaseResult.RELEASED
+    }
+
     @Synchronized
     fun forceAcquire(mask: Int, owner: String) {
         owners[owner]?.let { ownedMask ->
@@ -83,6 +97,12 @@ class ResourceLocks {
             }.joinToString("|")
         }
     }
+}
+
+enum class ResourceReleaseResult {
+    RELEASED,
+    ALREADY_ABSENT,
+    MASK_MISMATCH
 }
 
 data class ActionGroupSession(

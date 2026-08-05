@@ -56,6 +56,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.OutActionGroupRunner
 import cn.niuyannet.kaochang.android.services.actiongroup.PrefetchSupplementPlanner
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceLocks
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
+import cn.niuyannet.kaochang.android.services.actiongroup.ResourceReleaseResult
 import cn.niuyannet.kaochang.android.services.actiongroup.PendingActionGroupOrderEvent
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupOrderEventStore
 import cn.niuyannet.kaochang.android.services.actiongroup.SharedPreferenceActionGroupSessionStore
@@ -183,6 +184,26 @@ object KaoChangOperate {
         val lowerPlatformIsolationRequiresManualConfirm: Boolean = false
     )
 
+    /** 仅存在于当前进程的本次串行补肠失败证据，重启后故意丢失。 */
+    private data class SerialSupplementFailureProof(
+        val owner: String,
+        val sessionId: String,
+        val mechanicalClaimRevision: Long,
+        val resourceMask: Int,
+        val actionName: String,
+        val sourceNo: Int,
+        val targetNo: Int,
+        val batchId: String?,
+        val batchType: SupplementBatchType?,
+        val rawResult: AtomicActionResult,
+        val lastConfirmedStage: String?,
+        val boxDeductionApplied: Boolean,
+        val panPlacementApplied: Boolean,
+        val physicalBoxDeducted: Boolean,
+        val physicalPanPlaced: Boolean,
+        val physicalStockInconsistent: Boolean
+    )
+
     internal data class FaultHeatingRestoreOutcome(
         val succeeded: Boolean,
         val pauseEndResult: FaultHeatPauseManager.EndPauseResult?
@@ -200,6 +221,8 @@ object KaoChangOperate {
     private val manualOutOrderRecoveryCoordinator = ManualOutOrderRecoveryCoordinator()
     private val actionGroupLocks = ResourceLocks()
     private val faultHeatTransitionLock = Any()
+    @Volatile
+    private var serialSupplementFailureProof: SerialSupplementFailureProof? = null
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
     private val supplementPrefetchSessionStore = SharedPreferenceSupplementPrefetchSessionStore()
     private val supplementPrefetchSessionRepository = SupplementPrefetchSessionRepository(
@@ -380,8 +403,9 @@ object KaoChangOperate {
     private fun clearActionGroupSessionIfCurrent(expected: ActionGroupSession): Boolean =
         withFaultHeatTransitionLock {
             val current = actionGroupSessionStore.load()
-            if (current?.sessionId != expected.sessionId ||
-                current?.mechanicalClaimRevision != expected.mechanicalClaimRevision
+            if (current == null ||
+                current.sessionId != expected.sessionId ||
+                current.mechanicalClaimRevision != expected.mechanicalClaimRevision
             ) {
                 logW(
                     LOG_ACTION_GROUP,
@@ -413,14 +437,19 @@ object KaoChangOperate {
                 )
                 return@withFaultHeatTransitionLock false
             }
-            actionGroupLocks.release(expected.sessionId)
-            if (!actionGroupLocks.isIdle()) {
-                logW(
-                    LOG_ACTION_GROUP,
-                    "动作组旧会话收口后仍有资源锁，恢复失败：locks=${actionGroupLocks.snapshot()}，" +
-                        "sessionId=${expected.sessionId}"
-                )
-                return@withFaultHeatTransitionLock false
+            when (actionGroupLocks.releaseIfOwned(expected.sessionId, expected.resourceMask)) {
+                ResourceReleaseResult.RELEASED,
+                ResourceReleaseResult.ALREADY_ABSENT -> Unit
+                ResourceReleaseResult.MASK_MISMATCH -> {
+                    logW(
+                        LOG_ACTION_GROUP,
+                        "动作组旧会话收口后资源 mask 不匹配，恢复失败：" +
+                            "expectedOwner=${expected.sessionId}，" +
+                            "expectedMask=${ResourceLocks.describe(expected.resourceMask)}，" +
+                            "locks=${actionGroupLocks.snapshot()}"
+                    )
+                    return@withFaultHeatTransitionLock false
+                }
             }
             true
         }
@@ -462,6 +491,10 @@ object KaoChangOperate {
             if (current.sessionId != owner) return false
             return supplementPrefetchSessionRepository.clearIfRevision(current.sessionId, current.revision)
         }
+
+        override fun clearIfOwnerAndRevision(owner: String, revision: Long): Boolean {
+            return supplementPrefetchSessionRepository.clearIfMechanicalClaimRevision(owner, revision)
+        }
     }
 
     @Volatile
@@ -488,6 +521,34 @@ object KaoChangOperate {
             evidencePresent = evidence !is DurableEvidenceReadResult.Absent,
             safePausedForOrder = safePausedForOrder
         )
+    }
+
+    /**
+     * 订单接管出餐的唯一 moveStatus=2 写入口。
+     * 只在锁内重新读取状态和动作组忙闲，避免补肠收口把订单接管状态覆盖回 0。
+     */
+    fun tryClaimOrderDeliveryMoveStatus(): Boolean = withFaultHeatTransitionLock {
+        val config = AppConfig.getAppConfig()
+        when (config.moveStatus) {
+            OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING -> true
+            OrderMoveStatusPolicy.MOVE_STATUS_IDLE -> {
+                if (isActionGroupBusyForOrderGate()) {
+                    false
+                } else {
+                    try {
+                        mechanicalMoveStatusStore.saveDurable(OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING)
+                        true
+                    } catch (error: Throwable) {
+                        logW(
+                            LOG_ORDER,
+                            "订单接管出餐写入 moveStatus=2 失败，保持空闲：${error.message ?: error.javaClass.simpleName}"
+                        )
+                        false
+                    }
+                }
+            }
+            else -> false
+        }
     }
 
     fun shouldRecoverManualOutBeforeIncomingOrder(orderNo: String? = null): Boolean {
@@ -1612,16 +1673,16 @@ object KaoChangOperate {
         ) {
             return false
         }
+        val resumedClaimRevision = actionGroupSessionStore.load()
+            ?.takeIf { it.sessionId == session.sessionId }
+            ?.mechanicalClaimRevision
+            ?: return false
         if (!actionGroupLocks.tryAcquire(session.resourceMask, session.sessionId)) {
             releaseSupplementMoveClaimIfOwned(
-                session.sessionId,
-                currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                clearOwner = {
-                    if (actionGroupSessionStore.load()?.sessionId != session.sessionId) false else {
-                        actionGroupSessionStore.clear()
-                        true
-                    }
-                }
+                owner = session.sessionId,
+                ownerStore = actionGroupClaimOwnerStore(),
+                resourceMask = session.resourceMask,
+                expectedRevision = resumedClaimRevision
             )
             logW(LOG_SUPPLEMENT, "暂停补肠续作资源忙：session=${session.sessionId}，held=${actionGroupLocks.snapshot()}")
             return false
@@ -2723,7 +2784,7 @@ object KaoChangOperate {
             sessionStore = actionGroupSessionStore,
             resourceLocks = actionGroupLocks,
             logger = { message -> logD(LOG_ACTION_GROUP, message) },
-            allowKnownIsolatedTerminalFailure = ::isKnownIsolatedSupplementTerminalFailure,
+            closeKnownIsolatedTerminalFailure = ::closeKnownIsolatedSupplementFailure,
             clearSessionIfCurrent = ::clearActionGroupSessionIfCurrent,
             abandonPreparedClaim = { session ->
                 mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore())
@@ -2909,36 +2970,6 @@ object KaoChangOperate {
                 )
                 false
             }
-        }
-    }
-
-    private fun isKnownIsolatedSupplementTerminalFailure(
-        session: ActionGroupSession,
-        actionName: String,
-        errorCode: Int
-    ): Boolean {
-        if (session.type != ActionGroupSessionType.IN_SUPPLEMENT || session.currentAction != actionName) {
-            return false
-        }
-        if (actionName !in setOf("in1", "in2", "in3", "in4", "in5") ||
-            LowerPlatformIsolationPolicy.isUnsafeLiftTerminalError(errorCode)
-        ) {
-            return false
-        }
-        val config = AppConfig.getAppConfig()
-        if (config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
-            return false
-        }
-        val formattedCode = AtomicActionExecutor.formatCode(errorCode)
-        return config.lowerPlatformEpisodes.any { episode ->
-            episode.lifecycle == "OPEN" &&
-                episode.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
-                episode.actionName == actionName &&
-                episode.errorCode.equals(formattedCode, ignoreCase = true) &&
-                episode.sourceBoxNo == session.sourceNo &&
-                episode.targetPanNo == session.targetNo &&
-                (episode.batchId.isNullOrBlank() && session.batchId.isNullOrBlank()) ||
-                    (!episode.batchId.isNullOrBlank() && episode.batchId == session.batchId)
         }
     }
 
@@ -3857,44 +3888,318 @@ object KaoChangOperate {
 
     private fun releaseSupplementMoveClaimIfOwned(
         owner: String,
-        currentOwner: () -> String?,
-        clearOwner: () -> Boolean
-    ): Boolean {
-        val ownerStore = supplementReleaseOwnerStore(currentOwner, clearOwner)
+        ownerStore: MechanicalClaimOwnerStore,
+        resourceMask: Int,
+        expectedRevision: Long? = null
+    ): Boolean = withFaultHeatTransitionLock {
+        val current = ownerStore.snapshot()
+        if (current?.owner != owner) {
+            logW(LOG_SUPPLEMENT, "补肠认领释放失败：owner 不匹配，expected=$owner，actual=${current?.owner}")
+            return@withFaultHeatTransitionLock false
+        }
+        val revision = expectedRevision ?: current.revision
+        if (actionGroupLocks.ownedMask(owner)?.let { it != resourceMask } == true) {
+            logW(
+                LOG_SUPPLEMENT,
+                "补肠认领释放失败：资源 mask 不匹配，owner=$owner，" +
+                    "expected=${ResourceLocks.describe(resourceMask)}，" +
+                    "actual=${ResourceLocks.describe(requireNotNull(actionGroupLocks.ownedMask(owner)))}"
+            )
+            return@withFaultHeatTransitionLock false
+        }
         val result = MechanicalMoveClaimCoordinator(
             faultHeatTransitionLock,
             ownerStore,
             mechanicalMoveStatusStore
-        ).release(owner, expectedMoveStatus = 1, idleMoveStatus = 0)
+        ).release(
+            owner = owner,
+            expectedMoveStatus = 1,
+            idleMoveStatus = 0,
+            expectedRevision = revision
+        )
         if (result !is MechanicalMoveReleaseResult.Released) {
             logW(LOG_SUPPLEMENT, "补肠认领释放失败：owner=$owner，result=$result")
+            return@withFaultHeatTransitionLock false
         }
-        return result is MechanicalMoveReleaseResult.Released
+        when (actionGroupLocks.releaseIfOwned(owner, resourceMask)) {
+            ResourceReleaseResult.RELEASED,
+            ResourceReleaseResult.ALREADY_ABSENT -> true
+            ResourceReleaseResult.MASK_MISMATCH -> {
+                logW(
+                    LOG_SUPPLEMENT,
+                    "补肠认领已清 owner/moveStatus，但资源 mask 在收口期间变化：owner=$owner，" +
+                        "expected=${ResourceLocks.describe(resourceMask)}"
+                )
+                false
+            }
+        }
+    }
+
+    private sealed class SerialSupplementFailureCloseoutResult {
+        data object Released : SerialSupplementFailureCloseoutResult()
+        data class Rejected(val reason: String) : SerialSupplementFailureCloseoutResult()
+        data class Maintenance(val reason: String) : SerialSupplementFailureCloseoutResult()
+    }
+
+    private fun captureSerialSupplementFailureProof(
+        owner: String,
+        actionName: String,
+        sourceNo: Int,
+        targetNo: Int,
+        batchId: String?,
+        batchType: SupplementBatchType?,
+        rawResult: AtomicActionResult,
+        physicalBoxDeducted: Boolean,
+        physicalPanPlaced: Boolean,
+        physicalStockInconsistent: Boolean
+    ): SerialSupplementFailureProof? {
+        val session = actionGroupSessionStore.load()?.takeIf {
+            it.sessionId == owner &&
+                it.type == ActionGroupSessionType.IN_SUPPLEMENT &&
+                !it.prefetch &&
+                it.sourceNo == sourceNo &&
+                it.targetNo == targetNo
+        }
+        val proof = session?.let {
+            SerialSupplementFailureProof(
+                owner = owner,
+                sessionId = it.sessionId,
+                mechanicalClaimRevision = it.mechanicalClaimRevision,
+                resourceMask = it.resourceMask,
+                actionName = actionName,
+                sourceNo = sourceNo,
+                targetNo = targetNo,
+                batchId = batchId,
+                batchType = batchType,
+                rawResult = rawResult,
+                lastConfirmedStage = it.lastConfirmedStage,
+                boxDeductionApplied = it.boxDeductionApplied,
+                panPlacementApplied = it.panPlacementApplied,
+                physicalBoxDeducted = physicalBoxDeducted,
+                physicalPanPlaced = physicalPanPlaced,
+                physicalStockInconsistent = physicalStockInconsistent
+            )
+        }
+        serialSupplementFailureProof = proof
+        return proof
+    }
+
+    private fun closeSerialSupplementFailure(
+        proof: SerialSupplementFailureProof,
+        expectedSession: ActionGroupSession? = null,
+        expectedActionName: String? = null,
+        expectedErrorCode: Int? = null
+    ): SerialSupplementFailureCloseoutResult = withFaultHeatTransitionLock {
+        val current = actionGroupSessionStore.load()
+            ?: return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：当前 session 已不存在"
+            )
+        val rawFailed = proof.rawResult as? AtomicActionResult.Failed
+            ?: return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：原始结果不是明确 Failed"
+            )
+        if (expectedActionName != null && proof.actionName != expectedActionName ||
+            expectedErrorCode != null && rawFailed.errorCode != expectedErrorCode
+        ) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：恢复动作或错误码与本进程 proof 不匹配"
+            )
+        }
+        if (expectedSession != null &&
+            (current.sessionId != expectedSession.sessionId ||
+                current.mechanicalClaimRevision != expectedSession.mechanicalClaimRevision)
+        ) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：恢复期间 owner/revision 已变化"
+            )
+        }
+        if (current.sessionId != proof.sessionId ||
+            current.sessionId != proof.owner ||
+            current.type != ActionGroupSessionType.IN_SUPPLEMENT ||
+            current.prefetch ||
+            current.sourceNo != proof.sourceNo ||
+            current.targetNo != proof.targetNo ||
+            current.batchId != proof.batchId ||
+            current.resourceMask != proof.resourceMask ||
+            current.currentAction != proof.actionName ||
+            current.mechanicalClaimState != MechanicalClaimState.CLAIMED ||
+            current.mechanicalClaimRevision != proof.mechanicalClaimRevision
+        ) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：session/owner/revision/action/resource 不匹配"
+            )
+        }
+        if (readSupplementPrefetchEvidence() !is DurableEvidenceReadResult.Absent ||
+            panMoveJournalStore.load() != null ||
+            discardJournalStore.load() != null
+        ) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：存在并行补肠或搬盘/丢弃 journal 证据"
+            )
+        }
+        if (!SupplementFailureCloseoutPolicy.canAutoRelease(
+                SupplementFailureCloseoutEvidence(
+                    batchType = proof.batchType,
+                    actionName = proof.actionName,
+                    rawResult = proof.rawResult,
+                    prefetch = current.prefetch,
+                    mechanicalClaimState = current.mechanicalClaimState,
+                    lastConfirmedStage = proof.lastConfirmedStage,
+                    boxDeductionApplied = current.boxDeductionApplied || proof.boxDeductionApplied,
+                    panPlacementApplied = current.panPlacementApplied || proof.panPlacementApplied,
+                    physicalBoxDeducted = proof.physicalBoxDeducted,
+                    physicalPanPlaced = proof.physicalPanPlaced,
+                    physicalStockInconsistent = proof.physicalStockInconsistent
+                )
+            )
+        ) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：不满足串行 in1~in3 无物理提交安全条件"
+            )
+        }
+        val ownedMask = actionGroupLocks.ownedMask(proof.owner)
+        if (ownedMask != null && ownedMask != proof.resourceMask) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Maintenance(
+                "补肠失败收口发现资源 mask 不匹配：owner=${proof.owner}，" +
+                    "expected=${ResourceLocks.describe(proof.resourceMask)}，actual=${ResourceLocks.describe(ownedMask)}"
+            )
+        }
+        val moveStatus = mechanicalMoveStatusStore.load()
+        val claimRelease = when (moveStatus) {
+            OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING ->
+                mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore()).release(
+                    owner = proof.owner,
+                    expectedMoveStatus = OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING,
+                    idleMoveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
+                    expectedRevision = proof.mechanicalClaimRevision
+                )
+            OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING ->
+                mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore()).releaseOwnerKeepingMoveStatus(
+                    owner = proof.owner,
+                    expectedMoveStatuses = setOf(OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING),
+                    expectedRevision = proof.mechanicalClaimRevision
+                )
+            else -> MechanicalMoveReleaseResult.Rejected(
+                "补肠失败收口拒绝：当前 moveStatus=${moveStatusDesc(moveStatus)}，不允许覆盖"
+            )
+        }
+        if (claimRelease !is MechanicalMoveReleaseResult.Released) {
+            return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Rejected(
+                "补肠失败收口拒绝：owner/moveStatus 收口失败：$claimRelease"
+            )
+        }
+        when (actionGroupLocks.releaseIfOwned(proof.owner, proof.resourceMask)) {
+            ResourceReleaseResult.RELEASED,
+            ResourceReleaseResult.ALREADY_ABSENT -> {
+                serialSupplementFailureProof = null
+                SerialSupplementFailureCloseoutResult.Released
+            }
+            ResourceReleaseResult.MASK_MISMATCH -> SerialSupplementFailureCloseoutResult.Maintenance(
+                "补肠失败收口完成 owner 清理但资源提交失败：owner=${proof.owner}，" +
+                    "expected=${ResourceLocks.describe(proof.resourceMask)}"
+            )
+        }
+    }
+
+    private fun closeKnownIsolatedSupplementFailure(
+        session: ActionGroupSession,
+        actionName: String,
+        errorCode: Int
+    ): Boolean {
+        val proof = serialSupplementFailureProof ?: return false
+        if (!matchesOpenLowerPlatformIsolationEpisode(proof, actionName, errorCode)) {
+            logW(
+                LOG_ACTION_GROUP,
+                "补肠恢复收口拒绝：当前没有匹配的下平台隔离 episode，" +
+                    "action=$actionName，code=${AtomicActionExecutor.formatCode(errorCode)}"
+            )
+            return false
+        }
+        return when (val result = closeSerialSupplementFailure(proof, session, actionName, errorCode)) {
+            SerialSupplementFailureCloseoutResult.Released -> true
+            is SerialSupplementFailureCloseoutResult.Maintenance -> {
+                enterActionGroupMaintenance(result.reason, preserveMoveStatus = true)
+                false
+            }
+            is SerialSupplementFailureCloseoutResult.Rejected -> {
+                logW(LOG_ACTION_GROUP, result.reason)
+                false
+            }
+        }
+    }
+
+    private fun matchesOpenLowerPlatformIsolationEpisode(
+        proof: SerialSupplementFailureProof,
+        actionName: String,
+        errorCode: Int
+    ): Boolean {
+        val config = AppConfig.getAppConfig()
+        if (config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED ||
+            proof.actionName != actionName ||
+            (proof.rawResult as? AtomicActionResult.Failed)?.errorCode != errorCode
+        ) {
+            return false
+        }
+        val formattedCode = AtomicActionExecutor.formatCode(errorCode)
+        return config.lowerPlatformEpisodes.any { episode ->
+            val batchMatches =
+                (episode.batchId.isNullOrBlank() && proof.batchId.isNullOrBlank()) ||
+                    (!episode.batchId.isNullOrBlank() && episode.batchId == proof.batchId)
+            episode.lifecycle == "OPEN" &&
+                episode.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+                episode.actionName == actionName &&
+                episode.errorCode.equals(formattedCode, ignoreCase = true) &&
+                episode.sourceBoxNo == proof.sourceNo &&
+                episode.targetPanNo == proof.targetNo &&
+                batchMatches
+        }
+    }
+
+    /** 既有串行 in2+IR_PICK_FAILED 换箱 fallback 的 owner/revision 收口。 */
+    private fun releaseSerialSupplementPickFallback(owner: String): Boolean = withFaultHeatTransitionLock {
+        val session = actionGroupSessionStore.load()
+            ?: return@withFaultHeatTransitionLock false
+        if (session.sessionId != owner ||
+            session.type != ActionGroupSessionType.IN_SUPPLEMENT ||
+            session.prefetch ||
+            session.mechanicalClaimState != MechanicalClaimState.CLAIMED
+        ) {
+            return@withFaultHeatTransitionLock false
+        }
+        if (actionGroupLocks.ownedMask(owner)?.let { it != session.resourceMask } == true) {
+            return@withFaultHeatTransitionLock false
+        }
+        val release = mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore()).release(
+            owner = owner,
+            expectedMoveStatus = OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING,
+            idleMoveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
+            expectedRevision = session.mechanicalClaimRevision
+        )
+        if (release !is MechanicalMoveReleaseResult.Released) {
+            return@withFaultHeatTransitionLock false
+        }
+        when (actionGroupLocks.releaseIfOwned(owner, session.resourceMask)) {
+            ResourceReleaseResult.RELEASED,
+            ResourceReleaseResult.ALREADY_ABSENT -> true
+            ResourceReleaseResult.MASK_MISMATCH -> false
+        }
     }
 
     private fun releaseCompletedSerialSupplementRoot(
         owner: String,
-        currentOwner: () -> String?,
-        clearOwner: () -> Boolean,
         closeout: SupplementPipelineOrderCloseout
-    ): Boolean = NonParallelSupplementOrderHandoffCoordinator(
-        transitionLock = faultHeatTransitionLock,
-        ownerStore = supplementReleaseOwnerStore(currentOwner, clearOwner),
-        moveStore = mechanicalMoveStatusStore,
-        resourceLocks = actionGroupLocks
-    ).releaseCompletedRoot(owner, closeout)
-
-    private fun supplementReleaseOwnerStore(
-        currentOwner: () -> String?,
-        clearOwner: () -> Boolean
-    ): MechanicalClaimOwnerStore = object : MechanicalClaimOwnerStore {
-            override fun snapshot(): MechanicalClaimOwnerSnapshot? = currentOwner()?.let {
-                MechanicalClaimOwnerSnapshot(it, MechanicalClaimState.CLAIMED, 0L)
-            }
-            override fun savePrepared(owner: String) = error("释放路径禁止 prepare")
-            override fun saveClaimed(owner: String) = error("释放路径禁止 claim")
-            override fun clearIfOwner(owner: String): Boolean = clearOwner()
-        }
+    ): Boolean {
+        val expectedSession = actionGroupSessionStore.load()
+            ?.takeIf { it.sessionId == owner }
+            ?: return false
+        return NonParallelSupplementOrderHandoffCoordinator(
+            transitionLock = faultHeatTransitionLock,
+            ownerStore = actionGroupClaimOwnerStore(),
+            moveStore = mechanicalMoveStatusStore,
+            resourceLocks = actionGroupLocks,
+            expectedResourceMask = expectedSession.resourceMask
+        ).releaseCompletedRoot(owner, closeout)
+    }
 
     private fun discardPreparedSupplementOwnerIfIdle(
         owner: String,
@@ -4842,23 +5147,6 @@ object KaoChangOperate {
                     )
             )
         }
-        val currentPipelineOwner = {
-            if (parallelEnabled) supplementPrefetchSessionRepository.load()?.sessionId
-            else actionGroupSessionStore.load()?.sessionId
-        }
-        val clearPipelineOwner = {
-            if (parallelEnabled) {
-                val current = supplementPrefetchSessionRepository.load()
-                current?.takeIf { it.sessionId == sessionId }?.let {
-                    supplementPrefetchSessionRepository.clearIfRevision(it.sessionId, it.revision)
-                } == true
-            } else if (actionGroupSessionStore.load()?.sessionId == sessionId) {
-                actionGroupSessionStore.clear()
-                true
-            } else {
-                false
-            }
-        }
         if (!claimPreparedSupplementMove(
                 stage = "补肠预取流水线下发前",
                 owner = sessionId,
@@ -4867,16 +5155,30 @@ object KaoChangOperate {
         ) {
             return 0
         }
+        val pipelineClaimRevision = preparedOwnerStore.snapshot()
+            ?.takeIf { it.owner == sessionId }
+            ?.revision
+            ?: return 0
         publishRuntimeStateWithHttpFallback("补肠预取流水线开始")
 
         if (!isActionGroupEnabledOrEnterMaintenance("补肠预取流水线")) {
-            releaseSupplementMoveClaimIfOwned(sessionId, currentPipelineOwner, clearPipelineOwner)
+            releaseSupplementMoveClaimIfOwned(
+                owner = sessionId,
+                ownerStore = preparedOwnerStore,
+                resourceMask = lockMask,
+                expectedRevision = pipelineClaimRevision
+            )
             publishRuntimeStateWithHttpFallback("补肠预取流水线启动前终止")
             return 0
         }
 
         if (!actionGroupLocks.tryAcquire(lockMask, sessionId)) {
-            releaseSupplementMoveClaimIfOwned(sessionId, currentPipelineOwner, clearPipelineOwner)
+            releaseSupplementMoveClaimIfOwned(
+                owner = sessionId,
+                ownerStore = preparedOwnerStore,
+                resourceMask = lockMask,
+                expectedRevision = pipelineClaimRevision
+            )
             publishRuntimeStateWithHttpFallback("补肠预取流水线资源忙终止")
             logW(
                 LOG_ACTION_GROUP,
@@ -5546,15 +5848,15 @@ object KaoChangOperate {
             val completionFailure = if (parallelEnabled) {
                 runCatching {
                     check(
-                        releaseMechanicalMove(
-                            "补肠双 lane 流水线收口",
-                            sessionId,
-                            supplementPipelineClaimOwnerStore(),
-                            expectedMoveStatus = 1,
-                            idleMoveStatus = 0
+                        releaseSupplementMoveClaimIfOwned(
+                            owner = sessionId,
+                            ownerStore = supplementPipelineClaimOwnerStore(),
+                            resourceMask = lockMask,
+                            expectedRevision = parallelSessionForCleanup
+                                ?.takeIf { it.sessionId == sessionId }
+                                ?.mechanicalClaimRevision
                         )
                     ) { "补肠双 lane 流水线 owner 条件释放失败" }
-                    actionGroupLocks.release(sessionId)
                     publishRuntimeStateWithHttpFallback("补肠双 lane 流水线收口")
                 }.exceptionOrNull()
             } else {
@@ -5562,28 +5864,17 @@ object KaoChangOperate {
                     val released = if (safeSerialCompletedRoot) {
                         releaseCompletedSerialSupplementRoot(
                             owner = sessionId,
-                            currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                            clearOwner = {
-                                if (actionGroupSessionStore.load()?.sessionId != sessionId) false else {
-                                    actionGroupSessionStore.clear()
-                                    true
-                                }
-                            },
                             closeout = orderCloseout
                         )
                     } else {
                         releaseSupplementMoveClaimIfOwned(
                             owner = sessionId,
-                            currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                            clearOwner = {
-                                if (actionGroupSessionStore.load()?.sessionId != sessionId) false else {
-                                    actionGroupSessionStore.clear()
-                                    true
-                                }
-                            }
-                        ).also { success ->
-                            if (success) actionGroupLocks.release(sessionId)
-                        }
+                            ownerStore = actionGroupClaimOwnerStore(),
+                            resourceMask = lockMask,
+                            expectedRevision = actionGroupSessionStore.load()
+                                ?.takeIf { it.sessionId == sessionId }
+                                ?.mechanicalClaimRevision
+                        )
                     }
                     check(released) { "补肠预取流水线owner条件释放失败" }
                     publishRuntimeStateWithHttpFallback("补肠预取流水线收口")
@@ -5606,13 +5897,21 @@ object KaoChangOperate {
             !retainParallelEvidence
         ) {
             runCatching {
-                val settledConfig = AppConfig.getAppConfig()
-                settledConfig.moveStatus = 0
-                AppConfig.saveAppConfigDurable(settledConfig)
-                if (safePausedSession != null) {
-                    actionGroupLocks.release(requireNotNull(safePausedSession).sessionId)
-                } else {
-                    actionGroupLocks.release(sessionId)
+                withFaultHeatTransitionLock {
+                    val settledConfig = AppConfig.getAppConfig()
+                    settledConfig.moveStatus = 0
+                    AppConfig.saveAppConfigDurable(settledConfig)
+                    val pausedOwner = safePausedSession?.sessionId ?: sessionId
+                    val pausedResourceMask = safePausedSession?.resourceMask ?: lockMask
+                    when (actionGroupLocks.releaseIfOwned(pausedOwner, pausedResourceMask)) {
+                        ResourceReleaseResult.RELEASED,
+                        ResourceReleaseResult.ALREADY_ABSENT -> Unit
+                        ResourceReleaseResult.MASK_MISMATCH -> error(
+                            "补肠暂停资源 owner/mask 不匹配：owner=$pausedOwner，" +
+                                "expected=${ResourceLocks.describe(pausedResourceMask)}，" +
+                                "actual=${actionGroupLocks.ownedMask(pausedOwner)?.let(ResourceLocks::describe)}"
+                        )
+                    }
                 }
                 publishRuntimeStateWithHttpFallback("补肠暂停等待订单完成")
                 logI(
@@ -6656,6 +6955,10 @@ object KaoChangOperate {
         ) {
             return SingleSupplementMoveResult(false)
         }
+        val claimedRevision = actionGroupSessionStore.load()
+            ?.takeIf { it.sessionId == owner }
+            ?.mechanicalClaimRevision
+            ?: return SingleSupplementMoveResult(false)
 
         logD(
             LOG_SUPPLEMENT,
@@ -6665,13 +6968,9 @@ object KaoChangOperate {
         if (!isActionGroupEnabledOrEnterMaintenance("补肠")) {
             releaseSupplementMoveClaimIfOwned(
                 owner = owner,
-                currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                clearOwner = {
-                    if (actionGroupSessionStore.load()?.sessionId != owner) false else {
-                        actionGroupSessionStore.clear()
-                        true
-                    }
-                }
+                ownerStore = actionGroupClaimOwnerStore(),
+                resourceMask = lockMask,
+                expectedRevision = claimedRevision
             )
             return SingleSupplementMoveResult(false)
         }
@@ -6679,13 +6978,9 @@ object KaoChangOperate {
         if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
             releaseSupplementMoveClaimIfOwned(
                 owner = owner,
-                currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                clearOwner = {
-                    if (actionGroupSessionStore.load()?.sessionId != owner) false else {
-                        actionGroupSessionStore.clear()
-                        true
-                    }
-                }
+                ownerStore = actionGroupClaimOwnerStore(),
+                resourceMask = lockMask,
+                expectedRevision = claimedRevision
             )
             logW(
                 LOG_ACTION_GROUP,
@@ -6786,6 +7081,7 @@ object KaoChangOperate {
             result
         }
 
+        val rawActionGroupResult = actionGroupResult
         val timeoutProbe = if (
             actionGroupResult is ActionGroupResult.Failed &&
             actionGroupResult.result is AtomicActionResult.Timeout
@@ -6825,6 +7121,24 @@ object KaoChangOperate {
         val moveSuccess = actionGroupResult == ActionGroupResult.Success
         val failureCode = atomicFailureCode(actionGroupResult)
         val failureActionName = (actionGroupResult as? ActionGroupResult.Failed)?.actionName.orEmpty()
+        val serialFailureProof = if (actionGroupResult is ActionGroupResult.Failed) {
+            captureSerialSupplementFailureProof(
+                owner = owner,
+                actionName = failureActionName,
+                sourceNo = kaoPanBox.positionSn,
+                targetNo = kaoPan.positionSn,
+                batchId = batchId,
+                batchType = batchType,
+                rawResult = (rawActionGroupResult as? ActionGroupResult.Failed)?.result
+                    ?: actionGroupResult.result,
+                physicalBoxDeducted = physicalBoxDeducted,
+                physicalPanPlaced = physicalPanPlaced,
+                physicalStockInconsistent = physicalStockInconsistent
+            )
+        } else {
+            serialSupplementFailureProof = null
+            null
+        }
         val lowerPlatformIsolationDecision = if (!moveSuccess && actionGroupResult is ActionGroupResult.Failed) {
             LowerPlatformIsolationPolicy.classifyForSupplementBatch(
                 batchType = batchType,
@@ -6848,7 +7162,14 @@ object KaoChangOperate {
         } else {
             null
         }
-        val shouldRecordIrPickFailure = !moveSuccess && failureCode == AtomicActionCodes.IR_PICK_FAILED
+        val rawIrPickFailure = (rawActionGroupResult as? ActionGroupResult.Failed)?.result
+            ?.let { result ->
+                result is AtomicActionResult.Failed &&
+                    result.errorCode == AtomicActionCodes.IR_PICK_FAILED
+            } == true
+        val shouldRecordIrPickFailure = !moveSuccess &&
+            failureCode == AtomicActionCodes.IR_PICK_FAILED &&
+            rawIrPickFailure
         kaoPanBox.cmdStatusTake = when {
             moveSuccess -> if (kaoPanBox.cmdStatusTake == AtomicActionCodes.IR_PICK_FAILED) {
                 AtomicActionCodes.IR_PICK_FAILED
@@ -6979,7 +7300,10 @@ object KaoChangOperate {
                     "补肠下平台动作失败，已隔离下平台并停止自动补肠，不切整机维护：" +
                         "targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, reason=$lowerPlatformIsolationReason"
                 )
-            } else if (allowPickFailureFallback && atomicFailureCode(actionGroupResult) == AtomicActionCodes.IR_PICK_FAILED) {
+            } else if (allowPickFailureFallback &&
+                atomicFailureCode(actionGroupResult) == AtomicActionCodes.IR_PICK_FAILED &&
+                rawIrPickFailure
+            ) {
                 logW(
                     LOG_SUPPLEMENT,
                     "补肠取肠失败由同口味切箱逻辑接管，暂不切维护：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}"
@@ -6992,19 +7316,44 @@ object KaoChangOperate {
         val canClearFailedSession = actionGroupResult is ActionGroupResult.Failed &&
             failureActionName == "in2" &&
             failureCode == AtomicActionCodes.IR_PICK_FAILED &&
-            allowPickFailureFallback
+            allowPickFailureFallback &&
+            rawIrPickFailure
+        var failureCloseoutCompleted = false
         if (actionGroupResult is ActionGroupResult.Failed && !canClearFailedSession) {
-            logW(
-                LOG_ACTION_GROUP,
-                "补肠失败物理状态未完全确定，保留session、资源锁和moveStatus等待恢复：" +
-                    "action=$failureActionName，code=${AtomicActionExecutor.formatCode(failureCode)}"
-            )
-            return SingleSupplementMoveResult(
-                success = false,
-                actionGroupResult = actionGroupResult,
-                lowerPlatformIsolationReason = lowerPlatformIsolationReason,
-                lowerPlatformIsolationRequiresManualConfirm = true
-            )
+            when (val closeout = serialFailureProof?.let { closeSerialSupplementFailure(it) }) {
+                SerialSupplementFailureCloseoutResult.Released -> {
+                    failureCloseoutCompleted = true
+                    logW(
+                        LOG_ACTION_GROUP,
+                        "补肠明确失败且无物理提交，已安全释放旧补肠占有：" +
+                            "action=$failureActionName，code=${AtomicActionExecutor.formatCode(failureCode)}"
+                    )
+                }
+                is SerialSupplementFailureCloseoutResult.Maintenance -> {
+                    enterActionGroupMaintenance(closeout.reason, preserveMoveStatus = true)
+                    return SingleSupplementMoveResult(
+                        success = false,
+                        actionGroupResult = actionGroupResult,
+                        lowerPlatformIsolationReason = lowerPlatformIsolationReason,
+                        lowerPlatformIsolationRequiresManualConfirm = true
+                    )
+                }
+                is SerialSupplementFailureCloseoutResult.Rejected,
+                null -> {
+                    logW(
+                        LOG_ACTION_GROUP,
+                        "补肠失败物理状态未完全确定，保留session、资源锁和moveStatus等待恢复：" +
+                            "action=$failureActionName，code=${AtomicActionExecutor.formatCode(failureCode)}，" +
+                            "reason=${(closeout as? SerialSupplementFailureCloseoutResult.Rejected)?.reason ?: "缺少进程 proof"}"
+                    )
+                    return SingleSupplementMoveResult(
+                        success = false,
+                        actionGroupResult = actionGroupResult,
+                        lowerPlatformIsolationReason = lowerPlatformIsolationReason,
+                        lowerPlatformIsolationRequiresManualConfirm = true
+                    )
+                }
+            }
         }
         if (moveSuccess && supplementStateApplied) {
             verifySupplementConsistencyOrEnterMaintenance(
@@ -7022,16 +7371,13 @@ object KaoChangOperate {
                 check(
                     releaseSupplementMoveClaimIfOwned(
                         owner = owner,
-                        currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                        clearOwner = {
-                            if (actionGroupSessionStore.load()?.sessionId != owner) false else {
-                                actionGroupSessionStore.clear()
-                                true
-                            }
-                        }
+                        ownerStore = actionGroupClaimOwnerStore(),
+                        resourceMask = lockMask,
+                        expectedRevision = actionGroupSessionStore.load()
+                            ?.takeIf { it.sessionId == owner }
+                            ?.mechanicalClaimRevision
                     )
                 ) { "补肠成功后owner条件释放失败" }
-                actionGroupLocks.release(owner)
                 applyPendingActionGroupDisableIfIdle("补肠动作组会话收口")
             } catch (e: Exception) {
                 enterActionGroupMaintenance(
@@ -7046,18 +7392,18 @@ object KaoChangOperate {
             )
             return SingleSupplementMoveResult(false, actionGroupResult = actionGroupResult)
         } else {
-            if (releaseSupplementMoveClaimIfOwned(
-                    owner = owner,
-                    currentOwner = { actionGroupSessionStore.load()?.sessionId },
-                    clearOwner = {
-                        if (actionGroupSessionStore.load()?.sessionId != owner) false else {
-                            actionGroupSessionStore.clear()
-                            true
-                        }
-                    }
+            val fallbackReleased = if (canClearFailedSession) {
+                releaseSerialSupplementPickFallback(owner)
+            } else {
+                failureCloseoutCompleted
+            }
+            if (!fallbackReleased) {
+                enterActionGroupMaintenance(
+                    "补肠失败收口 owner/resource 条件未满足，保留现场维护证据：" +
+                        "action=$failureActionName，code=${AtomicActionExecutor.formatCode(failureCode)}",
+                    preserveMoveStatus = true
                 )
-            ) {
-                actionGroupLocks.release(owner)
+                return SingleSupplementMoveResult(false, actionGroupResult = actionGroupResult)
             }
             applyPendingActionGroupDisableIfIdle("补肠动作组失败收口")
         }

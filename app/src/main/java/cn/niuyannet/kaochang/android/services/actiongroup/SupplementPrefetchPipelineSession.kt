@@ -639,6 +639,18 @@ class SupplementPrefetchSessionRepository(
         true
     }
 
+    fun clearIfMechanicalClaimRevision(sessionId: String, mechanicalClaimRevision: Long): Boolean =
+        synchronized(lock) {
+            val current = store.load()?.also(::validatePersistedSession) ?: return@synchronized false
+            if (current.sessionId != sessionId ||
+                current.mechanicalClaimRevision != mechanicalClaimRevision
+            ) {
+                return@synchronized false
+            }
+            store.clear()
+            true
+        }
+
     fun markRecoveryStarted(): SupplementPrefetchPipelineSession = mutate { current ->
         current.copy(phase = SupplementPipelinePhase.RECOVERING)
     }

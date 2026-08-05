@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.io.File
 
@@ -70,14 +71,14 @@ class SupplementRecoverySafetySourceTest {
         val block = source.substring(start, end)
         val safeFallback = block.indexOf("val canClearFailedSession =")
         val ownerFencedRelease = block.indexOf("releaseSupplementMoveClaimIfOwned(", safeFallback)
-        val releaseLock = block.indexOf("actionGroupLocks.release(owner)", ownerFencedRelease)
 
         assertTrue("必须先限定只有in2取肠失败且允许切箱才可清恢复证据", safeFallback >= 0)
         assertTrue(block.substring(safeFallback).contains("failureActionName == \"in2\""))
         assertTrue(block.substring(safeFallback).contains("failureCode == AtomicActionCodes.IR_PICK_FAILED"))
         assertTrue(block.substring(safeFallback).contains("allowPickFailureFallback"))
+        assertTrue("in2切箱必须确认原始结果就是明确IR_PICK_FAILED", block.substring(safeFallback).contains("rawIrPickFailure"))
         assertTrue("安全切箱失败必须通过 owner 条件释放清 session/moveStatus", ownerFencedRelease > safeFallback)
-        assertTrue("owner 条件释放成功后才能释放补肠资源锁", releaseLock > ownerFencedRelease)
+        assertTrue("安全切箱必须调用带资源 mask 的收口 helper", block.substring(ownerFencedRelease).contains("resourceMask"))
 
         val failureTail = source.substring(isolationPublish, source.indexOf("if (moveSuccess && supplementStateApplied)", isolationPublish))
         assertTrue(
@@ -85,6 +86,40 @@ class SupplementRecoverySafetySourceTest {
             failureTail.contains("actionGroupResult is ActionGroupResult.Failed && !canClearFailedSession")
         )
         assertTrue(failureTail.contains("保留session、资源锁和moveStatus等待恢复"))
+    }
+
+    @Test
+    fun serialFailureCloseout_shouldUseRawProofAndKeepOrderTakeoverStatus() {
+        val source = operateSource()
+        val singleStart = source.indexOf("private suspend fun moveSausageToKaoPanDetailed(")
+        val singleEnd = source.indexOf("/**\n     * 烤盘间搬移", singleStart)
+        val block = source.substring(singleStart, singleEnd)
+
+        assertTrue(block.contains("val rawActionGroupResult = actionGroupResult"))
+        assertTrue(block.contains("serialFailureProof?.let { closeSerialSupplementFailure(it) }"))
+        assertTrue(block.contains("rawResult = (rawActionGroupResult as? ActionGroupResult.Failed)?.result"))
+
+        val closeoutStart = source.indexOf("private fun closeSerialSupplementFailure(")
+        val closeoutEnd = source.indexOf("private fun closeKnownIsolatedSupplementFailure(", closeoutStart)
+        assertTrue("找不到统一补肠失败收口 helper", closeoutStart >= 0 && closeoutEnd > closeoutStart)
+        val closeoutBlock = source.substring(closeoutStart, closeoutEnd)
+        assertTrue(closeoutBlock.contains("SupplementFailureCloseoutPolicy.canAutoRelease"))
+        assertTrue(closeoutBlock.contains("releaseOwnerKeepingMoveStatus"))
+        assertTrue(closeoutBlock.contains("releaseIfOwned"))
+    }
+
+    @Test
+    fun recoveryBootstrap_shouldDelegateKnownIsolationCloseoutInsteadOfClearingItself() {
+        val bootstrap = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/actiongroup/ActionGroupRecoveryBootstrap.kt"
+        )
+        val start = bootstrap.indexOf("val terminalFailures")
+        val end = bootstrap.indexOf("terminalFailures.firstOrNull()", start)
+        val block = bootstrap.substring(start, end)
+
+        assertTrue(block.contains("closeKnownIsolatedTerminalFailure"))
+        assertFalse(block.contains("clearSessionIfCurrent(session)"))
+        assertFalse(block.contains("resourceLocks.release(session.sessionId)"))
     }
 
     @Test
@@ -106,11 +141,9 @@ class SupplementRecoverySafetySourceTest {
         val end = source.indexOf("private fun describeAtomicActionResult", start)
         val block = source.substring(start, end)
         val completedForEach = block.indexOf("completed.forEach")
-        val finalSessionClear = block.lastIndexOf("actionGroupSessionStore.clear()")
-        val finalMoveReset = block.lastIndexOf("moveStatus = 0")
+        val finalRelease = block.lastIndexOf("releaseSupplementMoveClaimIfOwned(")
         val pausedRelease = block.indexOf("补肠暂停等待订单完成")
-        assertTrue("预取完成目标必须先批量回写再清session", completedForEach >= 0 && finalSessionClear > completedForEach)
-        assertTrue("预取完成目标必须先批量回写再清moveStatus", completedForEach >= 0 && finalMoveReset > completedForEach)
+        assertTrue("预取完成目标必须先批量回写再进入 owner/resource 收口", completedForEach >= 0 && finalRelease > completedForEach)
         assertTrue("预取暂停也必须先回写完成目标再释放机械状态", pausedRelease > completedForEach)
         assertTrue("预取收口不能使用异步盘箱保存", !block.contains("saveKaoPanBoxListSync"))
         assertTrue("预取收口不能使用异步烤盘保存", !block.contains("saveKaoPanListSync"))

@@ -498,9 +498,17 @@ class ActionGroupRecoveryBootstrapTest {
             client = client,
             sessionStore = store,
             resourceLocks = locks,
-            allowKnownIsolatedTerminalFailure = { recoveredSession, actionName, errorCode ->
-                recoveredSession == session && actionName == "in4" && errorCode == AtomicActionCodes.PARAM_ERROR
-            }
+            closeKnownIsolatedTerminalFailure = { recoveredSession, actionName, errorCode ->
+                if (recoveredSession == session && actionName == "in4" && errorCode == AtomicActionCodes.PARAM_ERROR) {
+                    store.clear()
+                    locks.release(session.sessionId)
+                    true
+                } else {
+                    false
+                }
+            },
+            clearSessionIfCurrent = { store.clear(); true },
+            abandonPreparedClaim = { store.clear(); true }
         ).recover()
 
         assertTrue(result is ActionGroupRecoveryResult.IsolatedSupplementFailurePreserved)
@@ -526,7 +534,7 @@ class ActionGroupRecoveryBootstrapTest {
             client = client,
             sessionStore = MemorySessionStore(session),
             resourceLocks = ResourceLocks(),
-            allowKnownIsolatedTerminalFailure = { _, actionName, _ -> actionName == "in4" }
+            closeKnownIsolatedTerminalFailure = { _, actionName, _ -> actionName == "in4" }
         ).recover()
 
         assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)

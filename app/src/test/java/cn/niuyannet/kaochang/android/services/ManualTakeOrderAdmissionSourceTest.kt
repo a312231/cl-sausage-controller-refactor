@@ -64,7 +64,7 @@ class ManualTakeOrderAdmissionSourceTest {
         )
 
         assertTrue(closeout.contains("ownerIds()"))
-        assertTrue(closeout.contains("actionGroupLocks.isIdle()"))
+        assertTrue(closeout.contains("releaseIfOwned"))
     }
 
     @Test

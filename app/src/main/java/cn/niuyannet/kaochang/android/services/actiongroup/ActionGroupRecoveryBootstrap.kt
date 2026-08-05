@@ -39,7 +39,7 @@ class ActionGroupRecoveryBootstrap(
     private val sessionStore: ActionGroupSessionStore,
     private val resourceLocks: ResourceLocks,
     private val logger: (String) -> Unit = {},
-    private val allowKnownIsolatedTerminalFailure: (ActionGroupSession, String, Int) -> Boolean = { _, _, _ -> false },
+    private val closeKnownIsolatedTerminalFailure: (ActionGroupSession, String, Int) -> Boolean = { _, _, _ -> false },
     private val clearSessionIfCurrent: (ActionGroupSession) -> Boolean = { expected ->
         val current = sessionStore.load()
         if (current?.sessionId != expected.sessionId ||
@@ -74,16 +74,9 @@ class ActionGroupRecoveryBootstrap(
             val failedState = terminalFailures.single()
             val code = (failedState.value as AtomicReadResult.Success).value
             val session = sessionStore.load()
-            if (session != null && allowKnownIsolatedTerminalFailure(session, failedState.spec.name, code)) {
-                if (!clearSessionIfCurrent(session)) {
-                    return ActionGroupRecoveryResult.MaintenanceRequired(
-                        "动作组已知隔离故障会话发生 owner/revision 变化，拒绝清理新会话：" +
-                            "sessionId=${session.sessionId}，revision=${session.mechanicalClaimRevision}"
-                    )
-                }
-                resourceLocks.release(session.sessionId)
+            if (session != null && closeKnownIsolatedTerminalFailure(session, failedState.spec.name, code)) {
                 logger(
-                    "动作组恢复识别到已持久化下平台隔离终态，保持半故障并清理本地补肠会话：" +
+                    "动作组恢复识别到已持久化下平台隔离终态，统一安全收口本地补肠会话：" +
                         "sessionId=${session.sessionId}，action=${failedState.spec.name}，" +
                         "code=${AtomicActionExecutor.formatCode(code)}"
                 )

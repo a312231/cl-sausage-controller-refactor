@@ -443,6 +443,29 @@ class SupplementPrefetchSessionRepositoryTest {
         assertNull(repository.load())
     }
 
+    @Test
+    fun mechanicalClaimRevisionClear_shouldUseMechanicalClaimRevisionAsCas() {
+        val repository = SupplementPrefetchSessionRepository(MemoryStore())
+        val created = repository.create(baseSession())
+        val prepared = repository.markMechanicalClaimPrepared(created.sessionId)
+        val claimed = repository.markMechanicalClaimed(prepared.sessionId)
+
+        assertFalse(
+            repository.clearIfMechanicalClaimRevision(
+                claimed.sessionId,
+                claimed.mechanicalClaimRevision - 1L
+            )
+        )
+        assertNotNull(repository.load())
+        assertTrue(
+            repository.clearIfMechanicalClaimRevision(
+                claimed.sessionId,
+                claimed.mechanicalClaimRevision
+            )
+        )
+        assertNull(repository.load())
+    }
+
     private fun baseSession(sessionId: String = "session-1", revision: Long = 0L) =
         SupplementPrefetchPipelineSession(
             revision = revision,

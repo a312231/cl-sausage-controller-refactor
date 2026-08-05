@@ -85,6 +85,41 @@ class MechanicalMoveClaimCoordinatorTest {
     }
 
     @Test
+    fun releaseOwnerKeepingMoveStatus_shouldClearOnlyMatchingClaimedOwner() {
+        val owners = FakeOwnerStore(owner = "in-1", state = MechanicalClaimState.CLAIMED)
+        val moves = FakeMoveStore(2)
+        val coordinator = coordinator(owners, moves)
+        val revision = requireNotNull(owners.snapshot()).revision
+
+        val result = coordinator.releaseOwnerKeepingMoveStatus(
+            owner = "in-1",
+            expectedMoveStatuses = setOf(2),
+            expectedRevision = revision
+        )
+
+        assertTrue(result is MechanicalMoveReleaseResult.Released)
+        assertNull(owners.owner)
+        assertEquals(2, moves.status)
+    }
+
+    @Test
+    fun releaseOwnerKeepingMoveStatus_shouldRejectPreparedClaim() {
+        val owners = FakeOwnerStore(owner = "in-prepared", state = MechanicalClaimState.PREPARED)
+        val moves = FakeMoveStore(2)
+        val coordinator = coordinator(owners, moves)
+
+        val result = coordinator.releaseOwnerKeepingMoveStatus(
+            owner = "in-prepared",
+            expectedMoveStatuses = setOf(2),
+            expectedRevision = requireNotNull(owners.snapshot()).revision
+        )
+
+        assertTrue(result is MechanicalMoveReleaseResult.Rejected)
+        assertEquals("in-prepared", owners.owner)
+        assertEquals(2, moves.status)
+    }
+
+    @Test
     fun claim_shouldRollbackPreparedOwnerWhenMoveDurableSaveFails() {
         val owners = FakeOwnerStore()
         val moves = FakeMoveStore(0, failOnSaveStatus = 1)

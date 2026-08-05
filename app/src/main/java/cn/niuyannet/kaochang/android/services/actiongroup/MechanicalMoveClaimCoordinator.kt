@@ -145,6 +145,53 @@ class MechanicalMoveClaimCoordinator(
         releaseOwned(owner, currentMoveStatus, idleMoveStatus, expectedRevision)
     }
 
+    /**
+     * 只清理匹配的 CLAIMED owner，不改写当前 moveStatus。
+     * 订单已经接管为 2 时，补肠失败只能走这条路径，不能把 2 写回 0。
+     */
+    fun releaseOwnerKeepingMoveStatus(
+        owner: String,
+        expectedMoveStatuses: Set<Int>,
+        expectedRevision: Long? = null
+    ): MechanicalMoveReleaseResult = synchronized(transitionLock) {
+        val current = ownerStore.snapshot()
+        if (current?.owner != owner) {
+            return@synchronized MechanicalMoveReleaseResult.Rejected(
+                "owner 不匹配：expected=$owner，actual=${current?.owner}"
+            )
+        }
+        if (current.state != MechanicalClaimState.CLAIMED) {
+            return@synchronized MechanicalMoveReleaseResult.Rejected(
+                "仅允许 CLAIMED owner 保持 moveStatus 收口：owner=$owner，state=${current.state}"
+            )
+        }
+        if (expectedRevision != null && current.revision != expectedRevision) {
+            return@synchronized MechanicalMoveReleaseResult.Rejected(
+                "owner revision 不匹配：expected=$expectedRevision，actual=${current.revision}"
+            )
+        }
+        val currentMoveStatus = moveStore.load()
+        if (currentMoveStatus !in expectedMoveStatuses) {
+            return@synchronized MechanicalMoveReleaseResult.Rejected(
+                "moveStatus 不匹配：expected=$expectedMoveStatuses，actual=$currentMoveStatus"
+            )
+        }
+        try {
+            val cleared = if (expectedRevision != null) {
+                ownerStore.clearIfOwnerAndRevision(owner, expectedRevision)
+            } else {
+                ownerStore.clearIfOwner(owner)
+            }
+            if (!cleared) {
+                MechanicalMoveReleaseResult.Rejected("owner/revision 已变化，拒绝清理")
+            } else {
+                MechanicalMoveReleaseResult.Released
+            }
+        } catch (error: Throwable) {
+            MechanicalMoveReleaseResult.Failed("owner 保持 moveStatus 清理失败", error)
+        }
+    }
+
     fun abandonPrepared(
         owner: String,
         allowedMoveStatuses: Set<Int>,

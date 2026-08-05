@@ -44,6 +44,15 @@ class ParallelSupplementOrderEntrySourceTest {
     }
 
     @Test
+    fun orderMoveStatusTakeover_shouldUseOneLockBackedHelperAtBothWriteSites() {
+        val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
+
+        assertEquals(2, "KaoChangOperate.tryClaimOrderDeliveryMoveStatus()".toRegex().findAll(order).count())
+        assertFalse(order.contains("AppConfig.getAppConfig().moveStatus = 2"))
+        assertFalse(order.contains("config.moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING"))
+    }
+
+    @Test
     fun orderCloseout_shouldResumeSupplementOnlyAfterWholeOrderSuccess() {
         val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
         val start = order.indexOf("fun purchaseOrder")
@@ -160,7 +169,7 @@ class ParallelSupplementOrderEntrySourceTest {
         val block = operate.substring(start, end)
 
         assertTrue(block.contains("safePausedSession?.sessionId == sessionId"))
-        assertTrue(block.contains("actionGroupLocks.release(requireNotNull(safePausedSession).sessionId)"))
+        assertTrue(block.contains("actionGroupLocks.releaseIfOwned(pausedOwner, pausedResourceMask)"))
     }
 
     @Test
@@ -174,7 +183,7 @@ class ParallelSupplementOrderEntrySourceTest {
         val safePausedRead = block.indexOf("val safePausedSession = activeSafePausedSupplementSession()")
         val replanRelease = block.indexOf("val safeReplanReleaseConfirmed")
         val completion = block.indexOf("val completionFailure = if (parallelEnabled)", replanRelease)
-        val ownerFencedRelease = block.indexOf("releaseMechanicalMove(", completion)
+        val ownerFencedRelease = block.indexOf("releaseSupplementMoveClaimIfOwned(", completion)
 
         assertTrue("订单 barrier 必须先转为安全暂停", orderPause >= 0)
         assertTrue("必须在重规划释放前重新读取安全订单暂停", orderPause < safePausedRead)

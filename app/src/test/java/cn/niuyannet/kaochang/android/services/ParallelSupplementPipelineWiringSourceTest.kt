@@ -101,7 +101,6 @@ class ParallelSupplementPipelineWiringSourceTest {
                 .containsMatchIn(block)
         )
         assertTrue(block.contains("context.laneRole"))
-        assertTrue(block.contains("releaseMechanicalMove("))
         assertTrue(block.contains("releaseSupplementMoveClaimIfOwned("))
     }
 
@@ -131,7 +130,7 @@ class ParallelSupplementPipelineWiringSourceTest {
         assertTrue(handler.contains("parallelSessionActive = parallelSessionActive"))
         assertTrue(block.contains("SupplementPipelineOutcome.SUPPLY_DEGRADED"))
         assertTrue(block.contains("markSkippedBySupplyDegrade"))
-        assertTrue(block.contains("clearIfRevision"))
+        assertTrue(operateSource().contains("clearIfMechanicalClaimRevision"))
     }
 
     @Test

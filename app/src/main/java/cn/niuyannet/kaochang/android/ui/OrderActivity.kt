@@ -256,10 +256,14 @@ abstract class OrderActivity: BaseSauceDetection() {
                 else {
                     // 机械臂开始执行当前订单，本地动作状态置为 2。
                     // 只有 moveStatus=2 才允许后续继续执行单根出餐。
-                    appState = 2
-                    AppConfig.getAppConfig().moveStatus = appState
-                    AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                    preDeliveryReady = true
+                    preDeliveryReady = KaoChangOperate.tryClaimOrderDeliveryMoveStatus()
+                    appState = AppConfig.getAppConfig().moveStatus
+                    if (!preDeliveryReady) {
+                        LogUtils.w(
+                            "【订单流转】锁内重新检查后未能接管出餐，停止本单动作：" +
+                                "moveStatus=${OrderMoveStatusPolicy.describe(appState)}"
+                        )
+                    }
                 }
 
                 val json = JSON.parseObject(orderMessage)
@@ -673,9 +677,17 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
 
         if (OrderMoveStatusPolicy.shouldNormalizeToDelivering(currentStatus) && !actionGroupBusy) {
-            val config = AppConfig.getAppConfig()
-            config.moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING
-            AppConfig.saveAppConfig(config)
+            val claimed = KaoChangOperate.tryClaimOrderDeliveryMoveStatus()
+            currentStatus = AppConfig.getAppConfig().moveStatus
+            if (!claimed) {
+                return MoveStatusNormalizationResult(
+                    canContinue = false,
+                    initialStatus = initialStatus,
+                    finalStatus = currentStatus,
+                    waitedMs = waitedMs,
+                    reason = "锁内重新检查后未能接管出餐"
+                )
+            }
             LogUtils.d(
                 "【订单流转】单根出餐前规整 moveStatus：orderNo=$orderNo, itemId=$itemId, " +
                     "current=$currentIndex/$totalCount, " +

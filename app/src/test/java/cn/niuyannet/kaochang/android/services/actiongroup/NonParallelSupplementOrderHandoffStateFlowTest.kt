@@ -8,6 +8,7 @@ import cn.niuyannet.kaochang.android.services.SupplementBatchIntentStore
 import cn.niuyannet.kaochang.android.services.SupplementBatchIntentTarget
 import cn.niuyannet.kaochang.android.services.SupplementBatchType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +52,29 @@ class NonParallelSupplementOrderHandoffStateFlowTest {
         assertTrue(OrderSupplementResumePolicy.shouldResume(OrderExecutionOutcome.SUCCESS))
         assertEquals(listOf(14, 15), batchRepository.loadActive()!!.remainingTargets().map { it.positionSn })
         assertTrue(batchRepository.loadActive()!!.targets.first { it.positionSn == 13 }.completed)
+    }
+
+    @Test
+    fun completedRoot_shouldRejectResourceMaskMismatchWithoutClearingClaim() {
+        val ownerStore = MemoryOwnerStore(OWNER, MechanicalClaimState.CLAIMED)
+        val moveStore = MemoryMoveStore(1)
+        val resourceLocks = ResourceLocks().apply {
+            assertTrue(tryAcquire(ResourceMask.bottom or ResourceMask.lift, OWNER))
+        }
+        val closeout = SupplementPipelineOrderCloseout.COMPLETED_ROOT
+
+        val released = NonParallelSupplementOrderHandoffCoordinator(
+            transitionLock = Any(),
+            ownerStore = ownerStore,
+            moveStore = moveStore,
+            resourceLocks = resourceLocks,
+            expectedResourceMask = ResourceMask.above
+        ).releaseCompletedRoot(OWNER, closeout)
+
+        assertFalse(released)
+        assertEquals(OWNER, ownerStore.owner)
+        assertEquals(1, moveStore.status)
+        assertEquals(ResourceMask.bottom or ResourceMask.lift, resourceLocks.ownedMask(OWNER))
     }
 
     private fun batchIntent() = SupplementBatchIntent(
