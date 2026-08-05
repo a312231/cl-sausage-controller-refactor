@@ -104,7 +104,7 @@ public class AppConfigBean implements Serializable {
     // - MANUAL_LOCAL：本地人工切到休息中
     public String restStatusSource = REST_SOURCE_UNKNOWN;
 
-    // 机械动作状态：0=空闲，1=补肠，2=夹取/出餐，3=搬运，4=丢弃
+    // 机械动作状态：0=空闲，1=补肠，2=夹取/出餐，3=搬运，4=丢弃，5=自清洁
     public int moveStatus = 0;
 
     // 当前二维码页展示的“预计烤制时间”，0 表示不展示倒计时
