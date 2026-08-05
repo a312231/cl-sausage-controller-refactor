@@ -40,10 +40,18 @@ class ActionGroupRecoveryBootstrap(
     private val resourceLocks: ResourceLocks,
     private val logger: (String) -> Unit = {},
     private val allowKnownIsolatedTerminalFailure: (ActionGroupSession, String, Int) -> Boolean = { _, _, _ -> false },
-    private val abandonPreparedClaim: (ActionGroupSession) -> Boolean = {
-        sessionStore.clear()
-        true
+    private val clearSessionIfCurrent: (ActionGroupSession) -> Boolean = { expected ->
+        val current = sessionStore.load()
+        if (current?.sessionId != expected.sessionId ||
+            current.mechanicalClaimRevision != expected.mechanicalClaimRevision
+        ) {
+            false
+        } else {
+            sessionStore.clear()
+            true
+        }
     },
+    private val abandonPreparedClaim: (ActionGroupSession) -> Boolean = clearSessionIfCurrent,
     private val moveStatusProvider: () -> Int = { 0 }
 ) {
     suspend fun recover(): ActionGroupRecoveryResult {
@@ -67,7 +75,12 @@ class ActionGroupRecoveryBootstrap(
             val code = (failedState.value as AtomicReadResult.Success).value
             val session = sessionStore.load()
             if (session != null && allowKnownIsolatedTerminalFailure(session, failedState.spec.name, code)) {
-                sessionStore.clear()
+                if (!clearSessionIfCurrent(session)) {
+                    return ActionGroupRecoveryResult.MaintenanceRequired(
+                        "动作组已知隔离故障会话发生 owner/revision 变化，拒绝清理新会话：" +
+                            "sessionId=${session.sessionId}，revision=${session.mechanicalClaimRevision}"
+                    )
+                }
                 resourceLocks.release(session.sessionId)
                 logger(
                     "动作组恢复识别到已持久化下平台隔离终态，保持半故障并清理本地补肠会话：" +
@@ -151,7 +164,12 @@ class ActionGroupRecoveryBootstrap(
                     return ActionGroupRecoveryResult.TakeoverFinished(session, actionResult)
                 }
                 if (session.type == ActionGroupSessionType.OUT_SELL || session.type == ActionGroupSessionType.OUT_MANUAL) {
-                    sessionStore.clear()
+                    if (!clearSessionIfCurrent(session)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "出餐动作组旧会话发生 owner/revision 变化，拒绝清理新会话：" +
+                                "sessionId=${session.sessionId}，revision=${session.mechanicalClaimRevision}"
+                        )
+                    }
                     resourceLocks.release(session.sessionId)
                     val reason = "出餐动作组旧会话已收口：本地仍存在动作会话但下位机结果寄存器全部空闲，" +
                         "按下位机空闲状态解除本地会话锁，sessionId=${session.sessionId}，type=${session.type}，" +
@@ -170,7 +188,6 @@ class ActionGroupRecoveryBootstrap(
                     "动作组 moveStatus=1 但没有 owner，会话证据缺失，禁止自动清零"
                 )
             }
-            sessionStore.clear()
             return if (resourceLocks.isIdle()) {
                 ActionGroupRecoveryResult.Idle
             } else {

@@ -191,7 +191,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val checkInterval = 1000L
                 var waited = 0L
                 var preDeliveryReady = false
-                val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder()
+                val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder(safeOrderNo)
                 val manualOutRecoveryFailed = if (manualOutRecoveryPending) {
                     val recovered = runCatching {
                         KaoChangOperate.ensureActionGroupReadyForOrderDispatch(
@@ -406,6 +406,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                     supplementResumeCancellation?.let { throw it }
                 } finally {
+                    KaoChangOperate.releaseManualOutOrderRecovery(safeOrderNo)
                     cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
                 }
             }

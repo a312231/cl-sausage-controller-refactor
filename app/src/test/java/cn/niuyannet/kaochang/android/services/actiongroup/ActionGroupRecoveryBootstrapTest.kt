@@ -243,6 +243,29 @@ class ActionGroupRecoveryBootstrapTest {
     }
 
     @Test
+    fun recover_shouldKeepSessionWhenGuardRejectsChangedOwner() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "stale-manual-out",
+            type = ActionGroupSessionType.OUT_MANUAL,
+            sourceNo = 3,
+            resourceMask = ResourceMask.above or ResourceMask.gate
+        )
+        val store = MemorySessionStore(session)
+        val locks = ResourceLocks().apply { tryAcquire(session.resourceMask, session.sessionId) }
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = FakeClient(),
+            sessionStore = store,
+            resourceLocks = locks,
+            clearSessionIfCurrent = { false }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertEquals(session, store.session)
+        assertTrue(!locks.isIdle())
+    }
+
+    @Test
     fun recover_shouldPreserveUnknownOwnerWhenAllRegistersIdleAndNoSessionExists() = runBlocking {
         val store = MemorySessionStore(null)
         val locks = ResourceLocks()

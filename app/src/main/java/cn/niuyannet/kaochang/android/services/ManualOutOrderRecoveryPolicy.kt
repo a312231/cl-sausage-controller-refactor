@@ -10,10 +10,11 @@ internal object ManualOutOrderRecoveryPolicy {
         errorStatus: Int,
         inspectionMode: Int,
         sessionType: ActionGroupSessionType?,
-        manualTakeTaskActive: Boolean
+        manualTakeTaskActive: Boolean,
+        recoveryReservedForOrder: Boolean = false
     ): Boolean {
         return moveStatus == 2 &&
-            onlineStatus in setOf(1, 4) &&
+            (onlineStatus == 1 || (onlineStatus == 4 && recoveryReservedForOrder)) &&
             errorStatus == 0 &&
             inspectionMode == 0 &&
             sessionType == ActionGroupSessionType.OUT_MANUAL &&

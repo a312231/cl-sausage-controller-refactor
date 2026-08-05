@@ -197,6 +197,7 @@ object KaoChangOperate {
      */
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val manualTakeTaskCoordinator = ManualTakeTaskCoordinator(operateScope)
+    private val manualOutOrderRecoveryCoordinator = ManualOutOrderRecoveryCoordinator()
     private val actionGroupLocks = ResourceLocks()
     private val faultHeatTransitionLock = Any()
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
@@ -356,6 +357,15 @@ object KaoChangOperate {
             actionGroupSessionStore.clear()
             return true
         }
+
+        override fun clearIfOwnerAndRevision(owner: String, revision: Long): Boolean {
+            val current = actionGroupSessionStore.load() ?: return false
+            if (current.sessionId != owner || current.mechanicalClaimRevision != revision) {
+                return false
+            }
+            actionGroupSessionStore.clear()
+            return true
+        }
     }
 
     private fun mechanicalMoveClaimCoordinator(
@@ -365,6 +375,55 @@ object KaoChangOperate {
         ownerStore = ownerStore,
         moveStore = mechanicalMoveStatusStore
     )
+
+    /** 仅在旧会话 owner 和 revision 都未变化时收口，避免恢复线程误清新订单。 */
+    private fun clearActionGroupSessionIfCurrent(expected: ActionGroupSession): Boolean =
+        withFaultHeatTransitionLock {
+            val current = actionGroupSessionStore.load()
+            if (current?.sessionId != expected.sessionId ||
+                current?.mechanicalClaimRevision != expected.mechanicalClaimRevision
+            ) {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "动作组旧会话收口拒绝：owner/revision 已变化，" +
+                        "expected=${expected.sessionId}/${expected.mechanicalClaimRevision}，" +
+                        "actual=${current?.sessionId}/${current?.mechanicalClaimRevision}"
+                )
+                return@withFaultHeatTransitionLock false
+            }
+            val otherOwners = actionGroupLocks.ownerIds() - expected.sessionId
+            if (otherOwners.isNotEmpty()) {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "动作组旧会话收口拒绝：存在其他资源 owner=$otherOwners，" +
+                        "sessionId=${expected.sessionId}"
+                )
+                return@withFaultHeatTransitionLock false
+            }
+            val release = mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore()).release(
+                owner = expected.sessionId,
+                expectedMoveStatuses = setOf(0, 1, 2),
+                idleMoveStatus = 0,
+                expectedRevision = expected.mechanicalClaimRevision
+            )
+            if (release !is MechanicalMoveReleaseResult.Released) {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "动作组旧会话收口拒绝清理：$release，sessionId=${expected.sessionId}"
+                )
+                return@withFaultHeatTransitionLock false
+            }
+            actionGroupLocks.release(expected.sessionId)
+            if (!actionGroupLocks.isIdle()) {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "动作组旧会话收口后仍有资源锁，恢复失败：locks=${actionGroupLocks.snapshot()}，" +
+                        "sessionId=${expected.sessionId}"
+                )
+                return@withFaultHeatTransitionLock false
+            }
+            true
+        }
 
     private fun supplementPipelineClaimOwnerStore(
         preparedSession: SupplementPrefetchPipelineSession? = null
@@ -431,7 +490,7 @@ object KaoChangOperate {
         )
     }
 
-    fun shouldRecoverManualOutBeforeIncomingOrder(): Boolean {
+    fun shouldRecoverManualOutBeforeIncomingOrder(orderNo: String? = null): Boolean {
         val config = AppConfig.getAppConfig()
         return ManualOutOrderRecoveryPolicy.shouldRecoverBeforeOrder(
             moveStatus = config.moveStatus,
@@ -439,8 +498,15 @@ object KaoChangOperate {
             errorStatus = config.errorStatus,
             inspectionMode = config.inspectionMode,
             sessionType = actionGroupSessionStore.load()?.type,
-            manualTakeTaskActive = manualTakeTaskCoordinator.hasActiveTask()
+            manualTakeTaskActive = manualTakeTaskCoordinator.hasActiveTask(),
+            recoveryReservedForOrder = orderNo?.let {
+                manualOutOrderRecoveryCoordinator.isReservedFor(it)
+            } == true
         )
+    }
+
+    fun releaseManualOutOrderRecovery(orderNo: String) {
+        manualOutOrderRecoveryCoordinator.release(orderNo)
     }
 
     fun isActionGroupIdleForMoveStatusRecovery(): Boolean {
@@ -940,7 +1006,17 @@ object KaoChangOperate {
     fun acceptIncomingOrderForMechanicalDispatch(orderNo: String): IncomingOrderMechanicalAdmission {
         return withFaultHeatTransitionLock {
             val config = AppConfig.getAppConfig()
-            val manualOutRecoveryPending = shouldRecoverManualOutBeforeIncomingOrder()
+            val manualOutRecoveryPending = shouldRecoverManualOutBeforeIncomingOrder(orderNo)
+            val recoveryAlreadyReserved = manualOutOrderRecoveryCoordinator.isReservedFor(orderNo)
+            val recoveryReserved = if (manualOutRecoveryPending) {
+                manualOutOrderRecoveryCoordinator.tryReserve(orderNo)
+            } else {
+                false
+            }
+            val ownsRecoveryReservation = recoveryReserved && !recoveryAlreadyReserved
+            if (manualOutRecoveryPending && !recoveryReserved) {
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
+            }
             if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(
                     moveStatus = config.moveStatus,
                     onlineStatus = config.onlineStatus,
@@ -949,9 +1025,15 @@ object KaoChangOperate {
                     inspectionMode = config.inspectionMode
                 ) && !manualOutRecoveryPending
             ) {
+                if (ownsRecoveryReservation) {
+                    manualOutOrderRecoveryCoordinator.release(orderNo)
+                }
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
             if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
+                if (ownsRecoveryReservation) {
+                    manualOutOrderRecoveryCoordinator.release(orderNo)
+                }
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.DUPLICATE
             }
             requestSupplementPauseForOrder(orderNo)
@@ -2642,6 +2724,7 @@ object KaoChangOperate {
             resourceLocks = actionGroupLocks,
             logger = { message -> logD(LOG_ACTION_GROUP, message) },
             allowKnownIsolatedTerminalFailure = ::isKnownIsolatedSupplementTerminalFailure,
+            clearSessionIfCurrent = ::clearActionGroupSessionIfCurrent,
             abandonPreparedClaim = { session ->
                 mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore())
                     .abandonPrepared(session.sessionId, setOf(0, 1, 2), 0) is
@@ -2672,9 +2755,6 @@ object KaoChangOperate {
             is ActionGroupRecoveryResult.StaleSessionCleared -> {
                 lastActionGroupRecoveryFailureReason = null
                 val session = result.session
-                val config = AppConfig.getAppConfig()
-                config.moveStatus = 0
-                AppConfig.saveAppConfig(config)
                 if (session.type == ActionGroupSessionType.OUT_SELL) {
                     val orderContext = session.orderContext
                     if (orderContext != null && orderContext.isValid()) {
@@ -2720,9 +2800,6 @@ object KaoChangOperate {
                 false
             }
             is ActionGroupRecoveryResult.IsolatedSupplementFailurePreserved -> {
-                val config = AppConfig.getAppConfig()
-                config.moveStatus = 0
-                AppConfig.saveAppConfigDurable(config)
                 lastActionGroupRecoveryFailureReason = null
                 markActionGroupRecoveryVerified("已保持下平台半故障：$reason")
                 publishRuntimeStateWithHttpFallback("动作组恢复保持下平台半故障")

@@ -57,5 +57,37 @@ class ManualOutOrderRecoveryPolicyTest {
                 manualTakeTaskActive = false
             )
         )
+        assertFalse(
+            ManualOutOrderRecoveryPolicy.shouldRecoverBeforeOrder(
+                moveStatus = 2,
+                onlineStatus = 4,
+                errorStatus = 0,
+                inspectionMode = 0,
+                sessionType = ActionGroupSessionType.OUT_MANUAL,
+                manualTakeTaskActive = false
+            )
+        )
+        assertTrue(
+            ManualOutOrderRecoveryPolicy.shouldRecoverBeforeOrder(
+                moveStatus = 2,
+                onlineStatus = 4,
+                errorStatus = 0,
+                inspectionMode = 0,
+                sessionType = ActionGroupSessionType.OUT_MANUAL,
+                manualTakeTaskActive = false,
+                recoveryReservedForOrder = true
+            )
+        )
+        assertFalse(
+            ManualOutOrderRecoveryPolicy.shouldRecoverBeforeOrder(
+                moveStatus = 2,
+                onlineStatus = 3,
+                errorStatus = 0,
+                inspectionMode = 0,
+                sessionType = ActionGroupSessionType.OUT_MANUAL,
+                manualTakeTaskActive = false,
+                recoveryReservedForOrder = true
+            )
+        )
     }
 }

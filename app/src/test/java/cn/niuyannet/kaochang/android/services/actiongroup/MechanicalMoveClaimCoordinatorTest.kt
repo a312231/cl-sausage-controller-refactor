@@ -48,6 +48,26 @@ class MechanicalMoveClaimCoordinatorTest {
     }
 
     @Test
+    fun release_shouldRejectSameOwnerWhenRevisionChanged() {
+        val owners = FakeOwnerStore(owner = "out-old", state = MechanicalClaimState.CLAIMED)
+        val moves = FakeMoveStore(2)
+        val coordinator = coordinator(owners, moves)
+        val originalRevision = requireNotNull(owners.snapshot()).revision
+        owners.bumpRevision()
+
+        val result = coordinator.release(
+            owner = "out-old",
+            expectedMoveStatus = 2,
+            idleMoveStatus = 0,
+            expectedRevision = originalRevision
+        )
+
+        assertTrue(result is MechanicalMoveReleaseResult.Rejected)
+        assertEquals("out-old", owners.owner)
+        assertEquals(2, moves.status)
+    }
+
+    @Test
     fun release_shouldAcceptOrderHandoffMoveStatusForCompletedSupplementOwner() {
         val owners = FakeOwnerStore(owner = "in-1", state = MechanicalClaimState.CLAIMED)
         val moves = FakeMoveStore(2)
@@ -206,6 +226,10 @@ class MechanicalMoveClaimCoordinatorTest {
             this.owner = null
             state = null
             return true
+        }
+
+        fun bumpRevision() {
+            revision += 1
         }
     }
 

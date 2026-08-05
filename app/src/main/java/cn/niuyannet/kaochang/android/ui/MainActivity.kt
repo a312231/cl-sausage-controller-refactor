@@ -224,7 +224,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                         val moveStatus = config.moveStatus
                         val onlineStatus = config.onlineStatus
                         val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
-                        val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder()
+                        val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder(orderNo)
                         if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(
                                 moveStatus = moveStatus,
                                 onlineStatus = onlineStatus,

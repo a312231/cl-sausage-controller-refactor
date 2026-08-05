@@ -16,6 +16,7 @@ interface MechanicalClaimOwnerStore {
     fun savePrepared(owner: String)
     fun saveClaimed(owner: String)
     fun clearIfOwner(owner: String): Boolean
+    fun clearIfOwnerAndRevision(owner: String, revision: Long): Boolean = clearIfOwner(owner)
 }
 
 interface MechanicalMoveStatusStore {
@@ -109,22 +110,30 @@ class MechanicalMoveClaimCoordinator(
     fun release(
         owner: String,
         expectedMoveStatus: Int,
-        idleMoveStatus: Int
+        idleMoveStatus: Int,
+        expectedRevision: Long? = null
     ): MechanicalMoveReleaseResult = release(
         owner = owner,
         expectedMoveStatuses = setOf(expectedMoveStatus),
-        idleMoveStatus = idleMoveStatus
+        idleMoveStatus = idleMoveStatus,
+        expectedRevision = expectedRevision
     )
 
     fun release(
         owner: String,
         expectedMoveStatuses: Set<Int>,
-        idleMoveStatus: Int
+        idleMoveStatus: Int,
+        expectedRevision: Long? = null
     ): MechanicalMoveReleaseResult = synchronized(transitionLock) {
         val current = ownerStore.snapshot()
         if (current?.owner != owner) {
             return@synchronized MechanicalMoveReleaseResult.Rejected(
                 "owner 不匹配：expected=$owner，actual=${current?.owner}"
+            )
+        }
+        if (expectedRevision != null && current.revision != expectedRevision) {
+            return@synchronized MechanicalMoveReleaseResult.Rejected(
+                "owner revision 不匹配：expected=$expectedRevision，actual=${current.revision}"
             )
         }
         val currentMoveStatus = moveStore.load()
@@ -133,7 +142,7 @@ class MechanicalMoveClaimCoordinator(
                 "moveStatus 不匹配：expected=$expectedMoveStatuses，actual=$currentMoveStatus"
             )
         }
-        releaseOwned(owner, currentMoveStatus, idleMoveStatus)
+        releaseOwned(owner, currentMoveStatus, idleMoveStatus, expectedRevision)
     }
 
     fun abandonPrepared(
@@ -159,7 +168,8 @@ class MechanicalMoveClaimCoordinator(
     private fun releaseOwned(
         owner: String,
         currentMoveStatus: Int,
-        idleMoveStatus: Int
+        idleMoveStatus: Int,
+        expectedRevision: Long? = null
     ): MechanicalMoveReleaseResult {
         try {
             if (currentMoveStatus != idleMoveStatus) {
@@ -169,7 +179,12 @@ class MechanicalMoveClaimCoordinator(
             return MechanicalMoveReleaseResult.Failed("moveStatus 耐久释放失败", error)
         }
         return try {
-            if (!ownerStore.clearIfOwner(owner)) {
+            val cleared = if (expectedRevision != null) {
+                ownerStore.clearIfOwnerAndRevision(owner, expectedRevision)
+            } else {
+                ownerStore.clearIfOwner(owner)
+            }
+            if (!cleared) {
                 throw IllegalStateException("owner 已变化，拒绝清理")
             }
             MechanicalMoveReleaseResult.Released

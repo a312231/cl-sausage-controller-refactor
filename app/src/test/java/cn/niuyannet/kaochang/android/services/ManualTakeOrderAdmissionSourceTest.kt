@@ -38,7 +38,9 @@ class ManualTakeOrderAdmissionSourceTest {
         )
         val orderBranch = section(main, "val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()", "OrderProcessingStageBridge.publish(")
 
-        assertTrue(admission.contains("shouldRecoverManualOutBeforeIncomingOrder()"))
+        assertTrue(admission.contains("shouldRecoverManualOutBeforeIncomingOrder(orderNo)"))
+        assertTrue(admission.contains("manualOutOrderRecoveryCoordinator.tryReserve(orderNo)"))
+        assertTrue(admission.contains("BECAME_BUSY"))
         assertTrue(orderBranch.contains("manualOutRecoveryPending"))
         assertTrue(orderBranch.contains("!manualOutRecoveryPending"))
     }
@@ -47,9 +49,22 @@ class ManualTakeOrderAdmissionSourceTest {
     fun orderFlow_shouldRecoverManualOutBeforeWaitingAndAvoidLongBusyTimeout() {
         val purchase = section(order, "fun purchaseOrder(", "private suspend fun handleOrderItemDelivery(")
 
-        assertTrue(purchase.contains("shouldRecoverManualOutBeforeIncomingOrder()"))
+        assertTrue(purchase.contains("shouldRecoverManualOutBeforeIncomingOrder(safeOrderNo)"))
         assertTrue(purchase.contains("ensureActionGroupReadyForOrderDispatch("))
         assertTrue(purchase.contains("避免无意义等待"))
+        assertTrue(purchase.contains("releaseManualOutOrderRecovery(safeOrderNo)"))
+    }
+
+    @Test
+    fun staleSessionCloseout_shouldFailWhenAnyOtherResourceOwnerRemains() {
+        val closeout = section(
+            operate,
+            "private fun clearActionGroupSessionIfCurrent(",
+            "private fun supplementPipelineClaimOwnerStore("
+        )
+
+        assertTrue(closeout.contains("ownerIds()"))
+        assertTrue(closeout.contains("actionGroupLocks.isIdle()"))
     }
 
     @Test
