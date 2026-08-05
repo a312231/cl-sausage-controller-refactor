@@ -28,6 +28,7 @@ class ManualTakeTaskCoordinatorTest {
                 true
             })
             started.await()
+            assertTrue(coordinator.hasActiveTask())
 
             val pageObserver = launch { task.await() }
             pageObserver.cancel()
@@ -36,6 +37,7 @@ class ManualTakeTaskCoordinatorTest {
             assertFalse(task.isCancelled)
             finish.complete(Unit)
             assertTrue(task.await())
+            assertFalse(coordinator.hasActiveTask())
         } finally {
             scope.cancel()
         }
@@ -53,9 +55,11 @@ class ManualTakeTaskCoordinatorTest {
                 true
             })
 
+            assertTrue(coordinator.hasActiveTask())
             assertNull(coordinator.start { true })
             finish.complete(Unit)
             assertTrue(first.await())
+            assertFalse(coordinator.hasActiveTask())
 
             val next = requireNotNull(coordinator.start { true })
             assertTrue(next.await())

@@ -9,6 +9,7 @@ class ManualTakeOrderAdmissionSourceTest {
 
     private val operate = source("services/KaoChangOperate.kt")
     private val main = source("ui/MainActivity.kt")
+    private val order = source("ui/OrderActivity.kt")
 
     @Test
     fun incomingOrder_shouldUseMechanicalTransitionLockForFinalAdmission() {
@@ -26,6 +27,29 @@ class ManualTakeOrderAdmissionSourceTest {
         assertTrue(admission.contains("requestSupplementPauseForOrder(orderNo)"))
         assertTrue(orderBranch.contains("KaoChangOperate.acceptIncomingOrderForMechanicalDispatch(orderNo)"))
         assertFalse(orderBranch.contains("OrderStateManager.checkAndAcceptOrder(orderNo)"))
+    }
+
+    @Test
+    fun incomingOrder_shouldOnlyBypassBusyGateForManualOutRecoveryCandidate() {
+        val admission = section(
+            operate,
+            "fun acceptIncomingOrderForMechanicalDispatch(",
+            "fun requestSupplementPauseForOrder("
+        )
+        val orderBranch = section(main, "val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()", "OrderProcessingStageBridge.publish(")
+
+        assertTrue(admission.contains("shouldRecoverManualOutBeforeIncomingOrder()"))
+        assertTrue(orderBranch.contains("manualOutRecoveryPending"))
+        assertTrue(orderBranch.contains("!manualOutRecoveryPending"))
+    }
+
+    @Test
+    fun orderFlow_shouldRecoverManualOutBeforeWaitingAndAvoidLongBusyTimeout() {
+        val purchase = section(order, "fun purchaseOrder(", "private suspend fun handleOrderItemDelivery(")
+
+        assertTrue(purchase.contains("shouldRecoverManualOutBeforeIncomingOrder()"))
+        assertTrue(purchase.contains("ensureActionGroupReadyForOrderDispatch("))
+        assertTrue(purchase.contains("避免无意义等待"))
     }
 
     @Test

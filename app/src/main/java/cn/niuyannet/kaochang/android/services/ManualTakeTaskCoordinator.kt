@@ -12,6 +12,10 @@ internal class ManualTakeTaskCoordinator(
     private val lock = Any()
     private var activeTask: Deferred<Boolean>? = null
 
+    fun hasActiveTask(): Boolean = synchronized(lock) {
+        activeTask?.isActive == true
+    }
+
     fun start(block: suspend () -> Boolean): Deferred<Boolean>? = synchronized(lock) {
         if (activeTask?.isActive == true) {
             return@synchronized null

@@ -224,13 +224,14 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                         val moveStatus = config.moveStatus
                         val onlineStatus = config.onlineStatus
                         val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+                        val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder()
                         if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(
                                 moveStatus = moveStatus,
                                 onlineStatus = onlineStatus,
                                 actionGroupBusy = actionGroupBusy,
                                 errorStatus = config.errorStatus,
                                 inspectionMode = config.inspectionMode
-                            )
+                            ) && !manualOutRecoveryPending
                         ) {
                             logBusyOrderRejected(orderNo, moveStatus, onlineStatus, actionGroupBusy)
                             OrderStateManager.recordBusyIgnored(orderNo)

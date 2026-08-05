@@ -191,6 +191,29 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val checkInterval = 1000L
                 var waited = 0L
                 var preDeliveryReady = false
+                val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder()
+                val manualOutRecoveryFailed = if (manualOutRecoveryPending) {
+                    val recovered = runCatching {
+                        KaoChangOperate.ensureActionGroupReadyForOrderDispatch(
+                            "订单入口恢复残留维护手动取肠：orderNo=$safeOrderNo"
+                        )
+                    }.getOrElse { error ->
+                        LogUtils.e(
+                            "【订单流转】订单入口恢复残留维护手动取肠异常：" +
+                                "orderNo=$safeOrderNo，error=${error.message ?: error.javaClass.simpleName}"
+                        )
+                        false
+                    }
+                    if (!recovered) {
+                        LogUtils.w(
+                            "【订单流转】订单入口恢复残留维护手动取肠未通过，直接结束本单，" +
+                                "避免无意义等待：orderNo=$safeOrderNo"
+                        )
+                    }
+                    !recovered
+                } else {
+                    false
+                }
                 var lastWaitLogAt = -10_000L
                 var lastWaitSignature = ""
 
@@ -199,9 +222,9 @@ abstract class OrderActivity: BaseSauceDetection() {
                 // 0 = 空闲，2 = 正在执行取肠/出餐动作。
                 var appState = AppConfig.getAppConfig().moveStatus
                 var actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
-                var maxWaitTime = OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(appState)
+                var maxWaitTime = if (manualOutRecoveryFailed) 0L else OrderMoveStatusPolicy.waitTimeoutMsForBlockingAction(appState)
                     ?: fallbackMaxWaitTime
-                while ((appState != 0 || actionGroupBusy) && waited < maxWaitTime) {
+                while (!manualOutRecoveryFailed && (appState != 0 || actionGroupBusy) && waited < maxWaitTime) {
                     delay(checkInterval)
                     appState = AppConfig.getAppConfig().moveStatus
                     actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()

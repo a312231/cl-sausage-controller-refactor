@@ -431,6 +431,18 @@ object KaoChangOperate {
         )
     }
 
+    fun shouldRecoverManualOutBeforeIncomingOrder(): Boolean {
+        val config = AppConfig.getAppConfig()
+        return ManualOutOrderRecoveryPolicy.shouldRecoverBeforeOrder(
+            moveStatus = config.moveStatus,
+            onlineStatus = config.onlineStatus,
+            errorStatus = config.errorStatus,
+            inspectionMode = config.inspectionMode,
+            sessionType = actionGroupSessionStore.load()?.type,
+            manualTakeTaskActive = manualTakeTaskCoordinator.hasActiveTask()
+        )
+    }
+
     fun isActionGroupIdleForMoveStatusRecovery(): Boolean {
         return actionGroupSessionStore.load() == null &&
             panMoveJournalStore.load() == null &&
@@ -928,13 +940,14 @@ object KaoChangOperate {
     fun acceptIncomingOrderForMechanicalDispatch(orderNo: String): IncomingOrderMechanicalAdmission {
         return withFaultHeatTransitionLock {
             val config = AppConfig.getAppConfig()
+            val manualOutRecoveryPending = shouldRecoverManualOutBeforeIncomingOrder()
             if (!OrderMoveStatusPolicy.canAcceptIncomingOrder(
                     moveStatus = config.moveStatus,
                     onlineStatus = config.onlineStatus,
                     actionGroupBusy = isActionGroupBusyForOrderGate(),
                     errorStatus = config.errorStatus,
                     inspectionMode = config.inspectionMode
-                )
+                ) && !manualOutRecoveryPending
             ) {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
