@@ -280,10 +280,11 @@ class SupplementRecoverySafetySourceTest {
         val formalEnd = source.indexOf("internal fun applySuccessfulTakePanState", formalStart)
         val formal = source.substring(formalStart, formalEnd)
         val formalFailure = formal.substring(
-            formal.indexOf("if (takeResult == TakeSausageResult.ERROR)"),
+            formal.indexOf("if (takeResult == TakeSausageResult.ERROR ||"),
             formal.indexOf("when (takeResult)")
         )
         assertTrue("正式OUT失败不得清session", !formalFailure.contains("actionGroupSessionStore.clear()"))
+        assertTrue("出餐证据不明也必须保留session", formalFailure.contains("TakeSausageResult.EVIDENCE_UNKNOWN"))
         assertTrue("OUT finally只能在会话已收口后清moveStatus", formal.contains("actionGroupSessionStore.load()?.sessionId"))
     }
 

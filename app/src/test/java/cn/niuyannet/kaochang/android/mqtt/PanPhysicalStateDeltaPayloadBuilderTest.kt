@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.mqtt
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -42,6 +43,8 @@ class PanPhysicalStateDeltaPayloadBuilderTest {
         assertEquals("in7 已落盘", payload.getString("reason"))
         assertEquals("unit-test", payload.getString("source"))
         assertNotNull(payload.getString("fullStateHash"))
+        assertEquals(listOf<Int>(), payload.getJSONArray("sellablePositions")?.toList())
+        assertNotNull(payload.getString("sellableRulesSignature"))
 
         val changedPans = payload.getJSONArray("changedPans")
         assertEquals(1, changedPans.size)
@@ -121,6 +124,68 @@ class PanPhysicalStateDeltaPayloadBuilderTest {
             changedAt = 1779034500000L
         )
         assertNotEquals(payloadA.getString("fullStateHash"), changedPayload.getString("fullStateHash"))
+    }
+
+    @Test
+    fun build_shouldKeepRawFullStateHashStableWhenSellableProjectionFieldsAreAdded() {
+        val now = 1_000_000L
+        val pan1 = pan(1, status = 2, hasSausage = true, tasteCode = "A", productId = 101).apply {
+            holdingTime = now - 1_000L
+            closeTime = 60_000L
+        }
+        val stock1 = box(1, num = 12, tasteCode = "A", productId = "101")
+        val rulesAllowingPan = AppConfigBean().apply {
+            modeType = 1
+            transitionMode = 1
+        }
+        val rulesDiscardingPan = AppConfigBean().apply {
+            modeType = 1
+            transitionMode = 1
+            pendingDiscardPositions.add(1)
+        }
+
+        val allowingPayload = PanPhysicalStateDeltaPayloadBuilder.build(
+            deviceCode = "device-001",
+            panDeltaSeq = 204L,
+            eventId = "event-204",
+            baseSnapshotSequence = 1234L,
+            baseSnapshotHash = "base-hash",
+            allPans = listOf(pan1),
+            allStocks = listOf(stock1),
+            changedPans = emptyList(),
+            changedStocks = emptyList(),
+            reason = "rule-only",
+            source = "unit-test",
+            changedAt = now,
+            config = rulesAllowingPan
+        )
+        val discardingPayload = PanPhysicalStateDeltaPayloadBuilder.build(
+            deviceCode = "device-001",
+            panDeltaSeq = 205L,
+            eventId = "event-205",
+            baseSnapshotSequence = 1234L,
+            baseSnapshotHash = "base-hash",
+            allPans = listOf(pan1),
+            allStocks = listOf(stock1),
+            changedPans = emptyList(),
+            changedStocks = emptyList(),
+            reason = "rule-only",
+            source = "unit-test",
+            changedAt = now,
+            config = rulesDiscardingPan
+        )
+
+        assertEquals(
+            PanPhysicalStateDeltaPayloadBuilder.buildFullStateHash(listOf(pan1), listOf(stock1)),
+            allowingPayload.getString("fullStateHash")
+        )
+        assertEquals(allowingPayload.getString("fullStateHash"), discardingPayload.getString("fullStateHash"))
+        assertEquals(listOf(1), allowingPayload.getJSONArray("sellablePositions").toList())
+        assertEquals(emptyList<Int>(), discardingPayload.getJSONArray("sellablePositions").toList())
+        assertNotEquals(
+            allowingPayload.getString("sellableRulesSignature"),
+            discardingPayload.getString("sellableRulesSignature")
+        )
     }
 
     private fun pan(

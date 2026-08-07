@@ -901,36 +901,32 @@ object HighCurrentTrafficMode {
         listBox: List<KaoPanBox>,
         reason: String
     ): Boolean {
-        val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
-        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
-        val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, list)
-        val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
-        val sausageCount = list1_21.count { it.isHasSausage }
-        val alreadySausages1_9 = list1_9.filter { it.isHasSausage }
+        val initialList1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
+        val initialList1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
+        val sausageCount = initialList1_21.count { it.isHasSausage }
+        val alreadySausages1_9 = initialList1_9.filter { it.isHasSausage }
         if (alreadySausages1_9.size < sausageCount) {
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
-            val remainingSausages = TrafficModeHelper.sortByHoldingAgeThenPosition(
-                list10_21.filter { it.isHasSausage }
-            )
-            val remainingPositions1_9 = list1_9.filter { !it.isHasSausage }
             var movedAny = false
-            remainingSausages.forEachIndexed { index, kaoPan ->
-                if (index < remainingPositions1_9.size) {
-                    val targetPan = remainingPositions1_9[index]
-                    LogUtils.i(
-                        TAG,
-                        "【并发切换】高转低/残留收拢：烤盘${kaoPan.positionSn} -> 烤盘${targetPan.positionSn}，holdingTime=${kaoPan.holdingTime}"
-                    )
-                    val moved = KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
-                    if (!moved) {
-                        LogUtils.w(
-                            TAG,
-                            "【并发切换】高转低/残留收拢搬移失败，保留源盘等待下轮：sourcePan=${kaoPan.positionSn}，targetPan=${targetPan.positionSn}"
-                        )
-                    } else {
-                        movedAny = true
-                    }
+            while (true) {
+                if (SupplementPauseController.shouldPauseForOrder()) {
+                    LogUtils.i(TAG, "【并发切换】订单已进入等待，高转低收拢在当前单盘收口后让出")
+                    break
                 }
+                val latestPans = KaoPanHelper.getKaoPanList()
+                val kaoPan = TrafficModeHelper.sortByHoldingAgeThenPosition(
+                    TrafficModeHelper.getTrafficModePositions(10, 21, latestPans)
+                        .filter { it.isHasSausage }
+                ).firstOrNull() ?: break
+                val targetPan = TrafficModeHelper.getTrafficModePositions(1, 9, latestPans)
+                    .firstOrNull { !it.isHasSausage } ?: break
+                LogUtils.i(
+                    TAG,
+                    "【并发切换】高转低/残留收拢：烤盘${kaoPan.positionSn} -> 烤盘${targetPan.positionSn}，holdingTime=${kaoPan.holdingTime}"
+                )
+                val moved = KaoChangOperate.moveKaoPanToKaoPan(kaoPan, targetPan)
+                if (!moved) break
+                movedAny = true
             }
             if (!movedAny) {
                 KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
@@ -940,6 +936,12 @@ object HighCurrentTrafficMode {
                 )
             }
         }
+
+        val latestPans = KaoPanHelper.getKaoPanList()
+        val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, latestPans)
+        val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, latestPans)
+        val list10_21 = TrafficModeHelper.getTrafficModePositions(10, 21, latestPans)
+        val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, latestPans)
 
         val remaining10_21 = list10_21.filter { it.isHasSausage }
         if (remaining10_21.isNotEmpty()) {

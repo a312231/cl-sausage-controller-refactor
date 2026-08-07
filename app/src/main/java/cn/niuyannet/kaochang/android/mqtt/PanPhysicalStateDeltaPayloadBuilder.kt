@@ -1,8 +1,10 @@
 package cn.niuyannet.kaochang.android.mqtt
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.SellablePanPhysicalStateProjection
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONArray
 import com.alibaba.fastjson.JSONObject
@@ -24,9 +26,12 @@ object PanPhysicalStateDeltaPayloadBuilder {
         changedStocks: List<KaoPanBox>,
         reason: String,
         source: String,
-        changedAt: Long
+        changedAt: Long,
+        config: AppConfigBean = AppConfigBean()
     ): JSONObject {
         val fullStateHash = buildFullStateHash(allPans, allStocks)
+        val sellablePositions = SellablePanPhysicalStateProjection.sellablePositions(allPans, config, changedAt)
+        val sellableRulesSignature = SellablePanPhysicalStateProjection.rulesSignature(config)
         return orderedJson().apply {
             put("messageType", MqttProtocol.TYPE_PAN_STATE_DELTA)
             put("deviceCode", deviceCode)
@@ -42,6 +47,8 @@ object PanPhysicalStateDeltaPayloadBuilder {
             put("changedPans", pansToArray(changedPans))
             put("changedStocks", stocksToArray(changedStocks))
             put("fullStateHash", fullStateHash)
+            put("sellablePositions", sellablePositions)
+            put("sellableRulesSignature", sellableRulesSignature)
         }
     }
 

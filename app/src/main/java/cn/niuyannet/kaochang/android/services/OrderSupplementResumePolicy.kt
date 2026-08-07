@@ -2,6 +2,9 @@ package cn.niuyannet.kaochang.android.services
 
 enum class OrderExecutionOutcome {
     SUCCESS,
+    NO_DISPATCH,
+    EVIDENCE_UNKNOWN,
+    MECHANICAL_FAILED,
     FAILED,
     UNKNOWN
 }
@@ -15,10 +18,17 @@ object OrderSupplementResumePolicy {
         }
 
     fun shouldResume(outcome: OrderExecutionOutcome): Boolean =
-        outcome == OrderExecutionOutcome.SUCCESS
+        outcome == OrderExecutionOutcome.SUCCESS || outcome == OrderExecutionOutcome.NO_DISPATCH
 
     fun shouldEnterMaintenance(
         outcome: OrderExecutionOutcome,
         supplementResumeSucceeded: Boolean = true
-    ): Boolean = outcome != OrderExecutionOutcome.SUCCESS || !supplementResumeSucceeded
+    ): Boolean = when (outcome) {
+        OrderExecutionOutcome.SUCCESS,
+        OrderExecutionOutcome.NO_DISPATCH -> !supplementResumeSucceeded
+        OrderExecutionOutcome.EVIDENCE_UNKNOWN,
+        OrderExecutionOutcome.MECHANICAL_FAILED,
+        OrderExecutionOutcome.FAILED,
+        OrderExecutionOutcome.UNKNOWN -> true
+    }
 }

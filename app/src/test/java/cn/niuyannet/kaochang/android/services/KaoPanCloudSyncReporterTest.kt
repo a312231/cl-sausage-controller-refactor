@@ -86,6 +86,7 @@ class KaoPanCloudSyncReporterTest {
         target.isHasSausage = true
         target.status = 2
         target.holdingTime = source.holdingTime
+        target.closeTime = source.closeTime
         target.taste = source.taste
         source.isHasSausage = false
         source.status = 0
@@ -149,7 +150,8 @@ class KaoPanCloudSyncReporterTest {
             this.positionSn = positionSn
             this.isHasSausage = true
             this.status = 2
-            this.holdingTime = 1000L
+            this.holdingTime = System.currentTimeMillis() - 1_000L
+            this.closeTime = 60_000L
             this.taste = Taste(tasteCode)
         }
 

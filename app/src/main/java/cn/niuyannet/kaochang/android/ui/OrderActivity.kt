@@ -19,6 +19,8 @@ import cn.niuyannet.kaochang.android.services.OrderSupplementResumePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventCompensationPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
+import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
+import cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
@@ -46,7 +48,12 @@ abstract class OrderActivity: BaseSauceDetection() {
 
     private data class DeliveryResult(
         val success: Boolean,
-        val deliveredCount: Int
+        val deliveredCount: Int,
+        val outcome: OrderExecutionOutcome = if (success) {
+            OrderExecutionOutcome.SUCCESS
+        } else {
+            OrderExecutionOutcome.MECHANICAL_FAILED
+        }
     )
 
     private data class MoveStatusNormalizationResult(
@@ -190,7 +197,7 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val fallbackMaxWaitTime = 240_000L
                 val checkInterval = 1000L
                 var waited = 0L
-                var preDeliveryReady = false
+                var preDeliveryClaim: OrderDeliveryClaim? = null
                 val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder(safeOrderNo)
                 val manualOutRecoveryFailed = if (manualOutRecoveryPending) {
                     val recovered = runCatching {
@@ -256,9 +263,9 @@ abstract class OrderActivity: BaseSauceDetection() {
                 else {
                     // 机械臂开始执行当前订单，本地动作状态置为 2。
                     // 只有 moveStatus=2 才允许后续继续执行单根出餐。
-                    preDeliveryReady = KaoChangOperate.tryClaimOrderDeliveryMoveStatus()
+                    preDeliveryClaim = KaoChangOperate.tryClaimOrderDeliveryMoveStatus(safeOrderNo)
                     appState = AppConfig.getAppConfig().moveStatus
-                    if (!preDeliveryReady) {
+                    if (preDeliveryClaim == null) {
                         LogUtils.w(
                             "【订单流转】锁内重新检查后未能接管出餐，停止本单动作：" +
                                 "moveStatus=${OrderMoveStatusPolicy.describe(appState)}"
@@ -280,10 +287,18 @@ abstract class OrderActivity: BaseSauceDetection() {
                 )
                 var deliveredTotal = 0
                 var orderCompleted = true
-                if (!preDeliveryReady) {
+                if (preDeliveryClaim == null) {
                     orderCompleted = false
+                    orderOutcome = OrderExecutionOutcome.NO_DISPATCH
                     goodsList.forEach { item ->
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
+                        reportOrderEvent(
+                            orderNo,
+                            item.id,
+                            item.productId,
+                            item.tasteCode,
+                            5,
+                            OrderFailureMetadata.DEVICE_BUSY_NO_DISPATCH
+                        )
                     }
                 } else {
                     for (item in goodsList) {
@@ -296,29 +311,36 @@ abstract class OrderActivity: BaseSauceDetection() {
                         deliveredTotal += result.deliveredCount
                         if (!result.success) {
                             orderCompleted = false
+                            orderOutcome = result.outcome
                             break
                         }
                     }
                 }
                 orderCompleted = orderCompleted && deliveredTotal == totalCount
-                orderOutcome = OrderSupplementResumePolicy.completedOutcome(
-                    deliveredTotal = deliveredTotal,
-                    totalCount = totalCount
-                )
+                if (orderCompleted && deliveredTotal == totalCount) {
+                    orderOutcome = OrderExecutionOutcome.SUCCESS
+                } else if (orderOutcome == OrderExecutionOutcome.UNKNOWN) {
+                    orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                }
                 orderCompleted = orderCompleted && OrderSupplementResumePolicy.shouldResume(orderOutcome)
                 if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
                 // 当前订单动作结束后，本地动作状态恢复为空闲；如果本单没有拿到出餐控制权，
                 // 不能清掉补肠/搬盘/丢弃等其他动作的 moveStatus。
-                if (preDeliveryReady && OrderSupplementResumePolicy.shouldResume(orderOutcome)) {
-                    KaoChangOperate.clearOrderMoveStatusIfRecoverySafe("订单动作完成：$safeOrderNo")
+                if (OrderSupplementResumePolicy.shouldResume(orderOutcome)) {
+                    preDeliveryClaim?.let { claim ->
+                        KaoChangOperate.releaseOrderDeliveryMoveStatus(claim, "订单动作完成：$safeOrderNo")
+                    }
                 }
                 withContext(Dispatchers.Main) {
                     val config = AppConfig.getAppConfig()
                     val status = config.onlineStatus
                     // 订单动作结束后，如果设备仍停留在 4（工作中），主动收口到 1（运营中）或 3（维护中）。
                     if (status == 4){
-                        val nextStatus = if (orderCompleted && config.errorStatus == 0) 1 else 3
+                        val nextStatus = if (
+                            !OrderSupplementResumePolicy.shouldEnterMaintenance(orderOutcome) &&
+                            config.errorStatus == 0
+                        ) 1 else 3
                         config.onlineStatus = nextStatus
                         LogUtils.i(
                             "【状态切换】订单结束后设备状态收口：onlineStatus（设备营业状态）=" +
@@ -341,11 +363,11 @@ abstract class OrderActivity: BaseSauceDetection() {
                 }
                 normalCloseoutCompleted = true
             } catch (cancelled: CancellationException) {
-                orderOutcome = OrderExecutionOutcome.UNKNOWN
+                orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
                 LogUtils.e("【订单流转】整单处理被取消，结果保持 UNKNOWN 并保留机械恢复证据：orderNo=$safeOrderNo")
                 throw cancelled
             } catch (e: Exception) {
-                orderOutcome = OrderExecutionOutcome.UNKNOWN
+                orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
                 LogUtils.e(
                     "【订单流转】整单处理异常，结果保持 UNKNOWN 并保留机械恢复证据：" +
                         "orderNo=$safeOrderNo，error=${e.message ?: e.javaClass.simpleName}"
@@ -466,8 +488,15 @@ abstract class OrderActivity: BaseSauceDetection() {
                         "finalMoveStatus=${OrderMoveStatusPolicy.describe(moveStatusResult.finalStatus)}，" +
                         "waitedMs=${moveStatusResult.waitedMs}，reason=${moveStatusResult.reason}"
                 )
-                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-                return DeliveryResult(false, deliveredCount)
+                reportOrderEvent(
+                    orderNo,
+                    item.id,
+                    item.productId,
+                    item.tasteCode,
+                    5,
+                    OrderFailureMetadata.DEVICE_BUSY_NO_DISPATCH
+                )
+                return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.NO_DISPATCH)
             }
 
             var failureEventReported = false
@@ -479,8 +508,15 @@ abstract class OrderActivity: BaseSauceDetection() {
                 stage = "出餐前状态检查"
             )
             if (!readinessBeforeModbus.canStartDelivery) {
-                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-                return DeliveryResult(false, deliveredCount)
+                reportOrderEvent(
+                    orderNo,
+                    item.id,
+                    item.productId,
+                    item.tasteCode,
+                    5,
+                    OrderFailureMetadata.DEVICE_BUSY_NO_DISPATCH
+                )
+                return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.NO_DISPATCH)
             }
 
             try {
@@ -497,7 +533,15 @@ abstract class OrderActivity: BaseSauceDetection() {
                         modbusAddress = config.modbusAddress
                     )
                     LogUtils.e("【订单流转】禁止下发 out1：$diagnosticMessage")
-                    throw IllegalStateException("出餐前检查未通过：$diagnosticMessage")
+                    reportOrderEvent(
+                        orderNo,
+                        item.id,
+                        item.productId,
+                        item.tasteCode,
+                        ActionGroupOrderStatus.ERROR,
+                        OrderFailureMetadata.DEVICE_BUSY_NO_DISPATCH
+                    )
+                    return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.NO_DISPATCH)
                 }
                 val readinessAfterModbus = evaluateSingleDeliveryReadiness(
                     orderNo = orderNo,
@@ -507,10 +551,16 @@ abstract class OrderActivity: BaseSauceDetection() {
                     stage = "Modbus恢复检查后"
                 )
                 if (!readinessAfterModbus.canStartDelivery) {
-                    reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-                    return DeliveryResult(false, deliveredCount)
+                    reportOrderEvent(
+                        orderNo,
+                        item.id,
+                        item.productId,
+                        item.tasteCode,
+                        5,
+                        OrderFailureMetadata.DEVICE_BUSY_NO_DISPATCH
+                    )
+                    return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.NO_DISPATCH)
                 }
-                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 1)
                 val orderContext = ActionGroupOrderContext(
                     orderNo = orderNo,
                     itemId = item.id,
@@ -558,8 +608,51 @@ abstract class OrderActivity: BaseSauceDetection() {
                         LogUtils.w("【订单流转】本轮出餐按 4F 完成收口，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
+                    KaoChangOperate.TakeSausageResult.NO_SELLABLE_STOCK -> {
+                        reportOrderEvent(
+                            orderNo,
+                            item.id,
+                            item.productId,
+                            item.tasteCode,
+                            ActionGroupOrderStatus.ERROR,
+                            OrderFailureMetadata.NO_SELLABLE_STOCK
+                        )
+                        return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.NO_DISPATCH)
+                    }
+
+                    KaoChangOperate.TakeSausageResult.NO_DISPATCH -> {
+                        reportOrderEvent(
+                            orderNo,
+                            item.id,
+                            item.productId,
+                            item.tasteCode,
+                            ActionGroupOrderStatus.ERROR,
+                            OrderFailureMetadata.DEVICE_BUSY_NO_DISPATCH
+                        )
+                        return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.NO_DISPATCH)
+                    }
+
+                    KaoChangOperate.TakeSausageResult.EVIDENCE_UNKNOWN -> {
+                        reportOrderEvent(
+                            orderNo,
+                            item.id,
+                            item.productId,
+                            item.tasteCode,
+                            ActionGroupOrderStatus.ERROR,
+                            OrderFailureMetadata.EVIDENCE_UNKNOWN
+                        )
+                        return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.EVIDENCE_UNKNOWN)
+                    }
+
                     KaoChangOperate.TakeSausageResult.ERROR -> {
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.ERROR))
+                        reportOrderEvent(
+                            orderNo,
+                            item.id,
+                            item.productId,
+                            item.tasteCode,
+                            ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.ERROR),
+                            OrderFailureMetadata.MECHANICAL_FAILED
+                        )
                         failureEventReported = true
                         LogUtils.e("【出餐】第$currentIndex/${totalCount}根失败：订单号=$orderNo，原因=动作组返回失败")
                         LogUtils.e("【订单流转】单根出餐失败，已触发 Java 订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}")
@@ -570,8 +663,15 @@ abstract class OrderActivity: BaseSauceDetection() {
                 LogUtils.e("【失败原因】第$currentIndex/${totalCount}根出餐失败：${e.message ?: "未知原因"}")
                 LogUtils.e("【订单流转】处理单根烤肠时发生异常：${e.message}")
                 if (!failureEventReported) {
-                    reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-                    LogUtils.e("【订单流转】单根出餐异常，已补充触发订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}")
+                    reportOrderEvent(
+                        orderNo,
+                        item.id,
+                        item.productId,
+                        item.tasteCode,
+                        5,
+                        OrderFailureMetadata.EVIDENCE_UNKNOWN
+                    )
+                    LogUtils.e("【订单流转】单根出餐异常且 out1 证据不明，已补充触发订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}")
                 }
                 LogUtils.e("【设备状态】单根出餐异常，已切到维护中并准备上报：${e.message}")
                 withContext(Dispatchers.Main) {
@@ -586,15 +686,30 @@ abstract class OrderActivity: BaseSauceDetection() {
                     )
                     syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
                 }
-                return DeliveryResult(false, deliveredCount)
+                return DeliveryResult(
+                    false,
+                    deliveredCount,
+                    if (failureEventReported) {
+                        OrderExecutionOutcome.MECHANICAL_FAILED
+                    } else {
+                        OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                    }
+                )
             }
         }
 
         if (deliveredCount < item.quantity) {
             LogUtils.e("【订单流转】商品项未全部履约完成：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
             LogUtils.e("【订单流转】商品项履约失败，已触发订单事件入队 status=5：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-            return DeliveryResult(false, deliveredCount)
+            reportOrderEvent(
+                orderNo,
+                item.id,
+                item.productId,
+                item.tasteCode,
+                5,
+                OrderFailureMetadata.EVIDENCE_UNKNOWN
+            )
+            return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.EVIDENCE_UNKNOWN)
         }
 
         return DeliveryResult(true, deliveredCount)
@@ -677,9 +792,9 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
 
         if (OrderMoveStatusPolicy.shouldNormalizeToDelivering(currentStatus) && !actionGroupBusy) {
-            val claimed = KaoChangOperate.tryClaimOrderDeliveryMoveStatus()
+            val claimed = KaoChangOperate.tryClaimOrderDeliveryMoveStatus(orderNo)
             currentStatus = AppConfig.getAppConfig().moveStatus
-            if (!claimed) {
+            if (claimed == null) {
                 return MoveStatusNormalizationResult(
                     canContinue = false,
                     initialStatus = initialStatus,
@@ -866,7 +981,14 @@ abstract class OrderActivity: BaseSauceDetection() {
      * 上报订单事件到服务端（MQTT），并在发送失败时记录错误日志。
      * MQTT 发送失败不阻断出餐流程，但必须记录以便排查订单状态不同步问题。
      */
-    protected fun reportOrderEvent(orderNo: String, itemId: Int, productId: Int, tasteCode: String, status: Int): Boolean {
+    protected fun reportOrderEvent(
+        orderNo: String,
+        itemId: Int,
+        productId: Int,
+        tasteCode: String,
+        status: Int,
+        failureMetadata: OrderFailureMetadata? = null
+    ): Boolean {
         val eventDesc = orderEventStatusText(status)
         val payload = com.alibaba.fastjson.JSONObject().apply {
             put("order_no", orderNo)
@@ -874,6 +996,11 @@ abstract class OrderActivity: BaseSauceDetection() {
             put("product_id", productId)
             put("taste_code", tasteCode)
             put("status", status)
+            if (status == ActionGroupOrderStatus.ERROR && failureMetadata != null) {
+                put("failure_reason", failureMetadata.failureReason.name)
+                put("delivery_evidence", failureMetadata.deliveryEvidence.name)
+                failureMetadata.out1Dispatched?.let { put("out1_dispatched", it) }
+            }
         }
         val ok = SendServerHelper.publishServiceUpdateOrder(payload)
         if (!ok) {
@@ -891,7 +1018,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                         tasteCode = tasteCode
                     ),
                     panNo = 0,
-                    source = "正式出餐 status=5 MQTT 发送队列拒绝"
+                    source = "正式出餐 status=5 MQTT 发送队列拒绝",
+                    failureMetadata = failureMetadata
                 )
             }
         } else {

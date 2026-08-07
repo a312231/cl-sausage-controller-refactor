@@ -60,4 +60,16 @@ class OrderSupplementResumePolicyTest {
             )
         )
     }
+
+    @Test
+    fun noDispatch_shouldResumeWithoutMaintenance() {
+        assertTrue(OrderSupplementResumePolicy.shouldResume(OrderExecutionOutcome.NO_DISPATCH))
+        assertFalse(OrderSupplementResumePolicy.shouldEnterMaintenance(OrderExecutionOutcome.NO_DISPATCH))
+    }
+
+    @Test
+    fun evidenceUnknown_shouldRetainEvidenceAndEnterMaintenance() {
+        assertFalse(OrderSupplementResumePolicy.shouldResume(OrderExecutionOutcome.EVIDENCE_UNKNOWN))
+        assertTrue(OrderSupplementResumePolicy.shouldEnterMaintenance(OrderExecutionOutcome.EVIDENCE_UNKNOWN))
+    }
 }

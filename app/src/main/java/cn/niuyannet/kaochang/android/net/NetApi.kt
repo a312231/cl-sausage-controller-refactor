@@ -384,6 +384,9 @@ object NetApi {
         snapshotHash: String? = null,
         snapshotReason: String? = null,
         forceFullSnapshot: Boolean = false,
+        physicalPanDeltaSeq: Long,
+        sellablePositions: List<Int>,
+        sellableRulesSignature: String,
         callback: ((code: Int, content: String?) -> Unit)? = null
     ) {
         ensureEndpointUrlsFresh()
@@ -398,6 +401,9 @@ object NetApi {
         snapshotHash?.let { json["snapshotHash"] = it }
         snapshotReason?.let { json["snapshotReason"] = it }
         json["forceFullSnapshot"] = forceFullSnapshot
+        json["physicalPanDeltaSeq"] = physicalPanDeltaSeq
+        json["sellablePositions"] = sellablePositions
+        json["sellableRulesSignature"] = sellableRulesSignature
         val snapshotContext = buildSnapshotContext(deviceCode, sequence, reportTime, kaoPanList, stockList)
         LogUtils.d("【网络请求】开始上报设备数据快照：$snapshotContext")
         OkGo.post<String>(reportSnapshot_url)

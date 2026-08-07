@@ -16,6 +16,7 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.services.HighConcurrencyResidualDrainEvaluator
 import cn.niuyannet.kaochang.android.services.HighToLowEmptyResidualHelper
 import cn.niuyannet.kaochang.android.services.SnapshotProjectionHash
+import cn.niuyannet.kaochang.android.services.SellablePanPhysicalStateProjection
 import cn.niuyannet.kaochang.android.services.TakeStatusRevisionMergePolicy
 import cn.niuyannet.kaochang.android.services.TakeStatusIntentRegistry
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
@@ -1226,7 +1227,8 @@ object DataManagementAPI {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val kaoPanPayload = JSON.toJSONString(kaoPanList)
         val kaoPanCount = kaoPanList.size
-        val pendingDiscardPositions = AppConfig.getAppConfig().pendingDiscardPositions
+        val snapshotConfig = AppConfig.getAppConfig()
+        val pendingDiscardPositions = snapshotConfig.pendingDiscardPositions
         val warmingCount = kaoPanList.count { KaoPanHelper.isSellable(it, pendingDiscardPositions) }
         val bakingCount = kaoPanList.count { it.isHasSausage && it.status == 1 }
 
@@ -1246,12 +1248,22 @@ object DataManagementAPI {
         }
         val sequence = CloudSnapshotSequenceStore.nextSequence()
         val reportTime = System.currentTimeMillis()
+        val physicalPanDeltaSeq = PanPhysicalStateDeltaSequenceStore.currentSequence()
+        val sellablePositions = SellablePanPhysicalStateProjection.sellablePositions(
+            kaoPanList,
+            snapshotConfig,
+            reportTime
+        )
+        val sellableRulesSignature = SellablePanPhysicalStateProjection.rulesSignature(snapshotConfig)
         val snapshotPayload = JSONObject()
         snapshotPayload["sequence"] = sequence
         snapshotPayload["reportTime"] = reportTime
         snapshotPayload["kaoPanList"] = kaoPanPayload
         snapshotPayload["stockList"] = stockPayload
         snapshotPayload["snapshotHash"] = effectiveSnapshotHash
+        snapshotPayload["physicalPanDeltaSeq"] = physicalPanDeltaSeq
+        snapshotPayload["sellablePositions"] = sellablePositions
+        snapshotPayload["sellableRulesSignature"] = sellableRulesSignature
         snapshotReason?.let { snapshotPayload["snapshotReason"] = it }
         snapshotPayload["forceFullSnapshot"] = forceFullSnapshot
         val snapshotSummary =
@@ -1271,7 +1283,10 @@ object DataManagementAPI {
             reportTime = reportTime,
             snapshotHash = effectiveSnapshotHash,
             snapshotReason = snapshotReason,
-            forceFullSnapshot = forceFullSnapshot
+            forceFullSnapshot = forceFullSnapshot,
+            physicalPanDeltaSeq = physicalPanDeltaSeq,
+            sellablePositions = sellablePositions,
+            sellableRulesSignature = sellableRulesSignature
         ) { code, content ->
             if (code != 0) {
                 recordCloudSyncFailure(

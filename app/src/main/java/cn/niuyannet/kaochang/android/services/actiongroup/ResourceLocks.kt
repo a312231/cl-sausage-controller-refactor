@@ -127,9 +127,16 @@ data class ActionGroupSession(
     val panPlacementApplied: Boolean = false,
     val pausedForOrder: Boolean = false,
     val resumeAfterAction: String? = null,
+    val out1DispatchEvidence: Out1DispatchEvidence? = null,
     val mechanicalClaimState: MechanicalClaimState? = null,
     val mechanicalClaimRevision: Long = 0L
 )
+
+enum class Out1DispatchEvidence {
+    PREPARED,
+    NOT_DISPATCHED_CONFIRMED,
+    DISPATCHED
+}
 
 enum class ActionGroupSessionType {
     IN_SUPPLEMENT,

@@ -43,7 +43,7 @@ class ActionGroupModbusRecoveryLockingSourceTest {
             source = source,
             ensureActionName = "出餐动作组恢复检查",
             recoverReason = "正式出餐入口前恢复检查",
-            returnText = "return TakeSausageResult.ERROR"
+            returnText = "return TakeSausageResult.NO_DISPATCH"
         )
     }
 

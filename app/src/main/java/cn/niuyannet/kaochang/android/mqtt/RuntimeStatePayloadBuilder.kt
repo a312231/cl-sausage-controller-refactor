@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.mqtt
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
+import cn.niuyannet.kaochang.android.services.SellablePanPhysicalStateProjection
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 
@@ -14,7 +15,8 @@ internal object RuntimeStatePayloadBuilder {
         source: String,
         reportedAt: Long,
         lowerPlatformSnapshot: LowerPlatformEpisodeReducer.StateSnapshot =
-            LowerPlatformEpisodeReducer.snapshot(config)
+            LowerPlatformEpisodeReducer.snapshot(config),
+        sellableRulesSignature: String = SellablePanPhysicalStateProjection.rulesSignature(config)
     ): JSONObject {
         val payload = JSONObject()
         val lowerPlatform = lowerPlatformSnapshot
@@ -43,6 +45,7 @@ internal object RuntimeStatePayloadBuilder {
         payload["foodSafetyAlertCode"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertCode(config)
         payload["foodSafetyAlertReason"] = RuntimeStateSignatureBuilder.reportableFoodSafetyAlertReason(config)
         payload["pendingDiscardPositions"] = config.pendingDiscardPositions
+        payload["sellableRulesSignature"] = sellableRulesSignature
         if (config.errorStatus != 0) {
             config.errorCode?.takeIf { it.isNotBlank() }?.let { payload["errorCode"] = it }
             config.errorCategory?.takeIf { it.isNotBlank() }?.let { payload["errorCategory"] = it }

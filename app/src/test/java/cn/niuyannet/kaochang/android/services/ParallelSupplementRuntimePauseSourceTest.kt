@@ -62,7 +62,7 @@ class ParallelSupplementRuntimePauseSourceTest {
         val orderCompletion = functionBlock(
             operate,
             "suspend fun clearSupplementPauseAndResume",
-            "fun clearOrderMoveStatusIfRecoverySafe"
+            "fun releaseOrderDeliveryMoveStatus"
         )
 
         assertTrue(orderCompletion.contains("allowRuntimeDefer = true"))

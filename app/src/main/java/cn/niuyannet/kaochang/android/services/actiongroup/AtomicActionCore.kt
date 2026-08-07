@@ -84,7 +84,10 @@ sealed class AtomicActionResult {
     data object Success : AtomicActionResult()
     data class Failed(val errorCode: Int, val message: String) : AtomicActionResult()
     data class Timeout(val message: String) : AtomicActionResult()
-    data class ModbusError(val message: String) : AtomicActionResult()
+    data class ModbusError(
+        val message: String,
+        val commandDispatched: Boolean? = null
+    ) : AtomicActionResult()
 }
 
 interface AtomicModbusGateway {
@@ -271,7 +274,8 @@ class AtomicActionExecutor(
                             spec = spec,
                             infoValue = infoValue,
                             extraParts = listOf("异常信息=${writeInfo.message}")
-                        )
+                        ),
+                        commandDispatched = false
                     ),
                     startedAtMs = startedAtMs
                 )
@@ -297,7 +301,8 @@ class AtomicActionExecutor(
                             spec = spec,
                             commandValue = AtomicActionCodes.RUNNING,
                             extraParts = listOf("异常信息=${writeCommand.message}")
-                        )
+                        ),
+                        commandDispatched = false
                     ),
                     startedAtMs = startedAtMs
                 )

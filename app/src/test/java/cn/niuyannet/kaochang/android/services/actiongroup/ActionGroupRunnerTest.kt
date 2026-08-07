@@ -10,6 +10,33 @@ import org.junit.Test
 class ActionGroupRunnerTest {
 
     @Test
+    fun outRunner_shouldExposeOut1DispatchLifecycle() = runBlocking {
+        val events = mutableListOf<String>()
+        val client = object : AtomicActionClient {
+            override suspend fun execute(
+                spec: AtomicActionSpec,
+                infoValue: Int,
+                onCommandDispatched: (suspend () -> Unit)?,
+                onRunningConfirmed: (suspend () -> Unit)?
+            ): AtomicActionResult {
+                if (spec == AtomicActions.out1) {
+                    onCommandDispatched?.invoke()
+                }
+                return AtomicActionResult.Success
+            }
+        }
+
+        val result = OutActionGroupRunner(client).run(
+            sourcePanNo = 3,
+            onActionCommandWritten = { events += "written:$it" },
+            onActionCommandNotDispatched = { events += "not-dispatched:$it" }
+        )
+
+        assertEquals(ActionGroupResult.Success, result)
+        assertEquals(listOf("written:out1"), events)
+    }
+
+    @Test
     fun inRunner_shouldPersistActionCheckpointBeforeCommandExecution() = runBlocking {
         val checkpoints = mutableListOf<String>()
         val client = object : AtomicActionClient {

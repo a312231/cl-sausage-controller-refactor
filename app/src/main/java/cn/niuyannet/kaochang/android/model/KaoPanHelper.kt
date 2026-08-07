@@ -127,11 +127,21 @@ object KaoPanHelper {
      * pendingDiscardPositions（待丢弃烤盘位）里的烤盘即使 status=2（保温可售）
      * 且 holdingTime>0，也不能再被二维码、订单、云端快照视为可售。
      */
-    fun isSellable(kaoPan: KaoPan, pendingDiscardPositions: Collection<Int> = emptyList()): Boolean {
-        return kaoPan.isHasSausage &&
-            kaoPan.status == KaoPan.STATUS_SELLABLE_KEEP_WARM &&
-            kaoPan.holdingTime > 0L &&
-            kaoPan.positionSn !in pendingDiscardPositions
+    fun isSellable(
+        kaoPan: KaoPan,
+        pendingDiscardPositions: Collection<Int> = emptyList(),
+        nowMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        if (!kaoPan.isHasSausage ||
+            kaoPan.status != KaoPan.STATUS_SELLABLE_KEEP_WARM ||
+            kaoPan.holdingTime <= 0L ||
+            kaoPan.closeTime <= 0L ||
+            kaoPan.positionSn in pendingDiscardPositions
+        ) {
+            return false
+        }
+        val elapsedMs = nowMs - kaoPan.holdingTime
+        return elapsedMs >= 0L && elapsedMs <= kaoPan.closeTime
     }
 
     fun pendingDiscardPositionsOrEmpty(): Collection<Int> {

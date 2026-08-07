@@ -61,4 +61,19 @@ class ActionGroupOrderEventTest {
         assertEquals(ActionGroupOrderStatus.ERROR, parsed.status)
         assertEquals("KC202604280001", parsed.orderContext.orderNo)
     }
+
+    @Test
+    fun buildPayload_shouldCarryTypedNoDispatchEvidence() {
+        val payload = ActionGroupOrderEventPayloadBuilder.build(
+            ActionGroupOrderContext("KC-NO-DISPATCH", 1, 2, "hot"),
+            status = ActionGroupOrderStatus.ERROR,
+            failureReason = OrderFailureReason.NO_SELLABLE_STOCK,
+            deliveryEvidence = DeliveryEvidence.NOT_DISPATCHED,
+            out1Dispatched = false
+        )
+
+        assertEquals("NO_SELLABLE_STOCK", payload.getString("failure_reason"))
+        assertEquals("NOT_DISPATCHED", payload.getString("delivery_evidence"))
+        assertEquals(false, payload.getBoolean("out1_dispatched"))
+    }
 }

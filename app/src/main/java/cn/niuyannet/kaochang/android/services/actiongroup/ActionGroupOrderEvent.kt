@@ -18,17 +18,33 @@ data class PendingActionGroupOrderEvent(
     val status: Int = 0,
     val panNo: Int = 0,
     val discarded: Boolean = false,
+    val failureReason: OrderFailureReason? = null,
+    val deliveryEvidence: DeliveryEvidence? = null,
+    val out1Dispatched: Boolean? = null,
     val createdAtMs: Long = System.currentTimeMillis()
 )
 
 object ActionGroupOrderEventPayloadBuilder {
-    fun build(orderContext: ActionGroupOrderContext, status: Int): JSONObject {
+    fun build(
+        orderContext: ActionGroupOrderContext,
+        status: Int,
+        failureReason: OrderFailureReason? = null,
+        deliveryEvidence: DeliveryEvidence? = null,
+        out1Dispatched: Boolean? = null
+    ): JSONObject {
         return JSONObject().apply {
             put("order_no", orderContext.orderNo)
             put("item_id", orderContext.itemId)
             put("product_id", orderContext.productId)
             put("taste_code", orderContext.tasteCode)
             put("status", status)
+            if (status == ActionGroupOrderStatus.ERROR && failureReason != null) {
+                put("failure_reason", failureReason.name)
+                put("delivery_evidence", deliveryEvidence?.name)
+                if (out1Dispatched != null) {
+                    put("out1_dispatched", out1Dispatched)
+                }
+            }
         }
     }
 }

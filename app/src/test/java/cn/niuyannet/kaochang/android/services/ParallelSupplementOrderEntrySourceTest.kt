@@ -30,7 +30,7 @@ class ParallelSupplementOrderEntrySourceTest {
         assertTrue(admission.contains("requestSupplementPauseForOrder(orderNo)"))
 
         val clearStart = operate.indexOf("suspend fun clearSupplementPauseAndResume(")
-        val clearEnd = operate.indexOf("fun clearOrderMoveStatusIfRecoverySafe", clearStart)
+        val clearEnd = operate.indexOf("fun releaseOrderDeliveryMoveStatus", clearStart)
         val clear = operate.substring(clearStart, clearEnd)
         assertTrue(clear.contains("isPausedForDifferentOrder(orderNo)"))
     }
@@ -40,14 +40,21 @@ class ParallelSupplementOrderEntrySourceTest {
         val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
 
         assertFalse(order.contains("AppConfig.getAppConfig().moveStatus = 0"))
-        assertTrue(order.contains("KaoChangOperate.clearOrderMoveStatusIfRecoverySafe("))
+        assertTrue(order.contains("KaoChangOperate.releaseOrderDeliveryMoveStatus("))
+        assertTrue(order.contains("preDeliveryClaim"))
     }
 
     @Test
-    fun orderMoveStatusTakeover_shouldUseOneLockBackedHelperAtBothWriteSites() {
+    fun orderMoveStatusTakeover_shouldUseDurableOrderClaimAtBothWriteSites() {
         val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
 
-        assertEquals(2, "KaoChangOperate.tryClaimOrderDeliveryMoveStatus()".toRegex().findAll(order).count())
+        assertEquals(2, "KaoChangOperate.tryClaimOrderDeliveryMoveStatus".toRegex().findAll(order).count())
+        assertTrue(order.contains("tryClaimOrderDeliveryMoveStatus(safeOrderNo)"))
+        assertTrue(order.contains("tryClaimOrderDeliveryMoveStatus(orderNo)"))
+        assertTrue(operate.contains("private val orderDeliveryClaimStore = OrderDeliveryClaimStore()"))
+        assertTrue(operate.contains("claimOrderDeliveryMove("))
+        assertTrue(operate.contains("releaseOrderDeliveryMove("))
         assertFalse(order.contains("AppConfig.getAppConfig().moveStatus = 2"))
         assertFalse(order.contains("config.moveStatus = OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING"))
     }
@@ -60,7 +67,8 @@ class ParallelSupplementOrderEntrySourceTest {
         val block = order.substring(start, end)
 
         assertTrue(block.contains("var orderOutcome = OrderExecutionOutcome.UNKNOWN"))
-        assertTrue(block.contains("OrderSupplementResumePolicy.completedOutcome("))
+        assertTrue(block.contains("orderOutcome = OrderExecutionOutcome.SUCCESS"))
+        assertTrue(block.contains("orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN"))
         assertTrue(block.contains("OrderSupplementResumePolicy.shouldResume(orderOutcome)"))
         assertTrue(
             block.contains(
@@ -120,7 +128,7 @@ class ParallelSupplementOrderEntrySourceTest {
     fun corruptedParallelEvidence_shouldFailClosedBeforeLegacyResume() {
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val start = operate.indexOf("suspend fun clearSupplementPauseAndResume")
-        val end = operate.indexOf("fun clearOrderMoveStatusIfRecoverySafe", start)
+        val end = operate.indexOf("fun releaseOrderDeliveryMoveStatus", start)
         val block = operate.substring(start, end)
 
         assertTrue(block.contains("is DurableEvidenceReadResult.Corrupted ->"))

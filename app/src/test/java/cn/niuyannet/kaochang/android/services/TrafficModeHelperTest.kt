@@ -1,12 +1,31 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TrafficModeHelperTest {
+
+    @Before
+    fun setUpAppConfig() {
+        val field = AppConfig::class.java.getDeclaredField("appConfigBean")
+        field.isAccessible = true
+        field.set(AppConfig, AppConfigBean())
+    }
+
+    @Test
+    fun purchaseSellEnd_shouldMatchBusinessMatrix() {
+        assertEquals(9, TrafficModeHelper.purchaseSellEnd(modeType = 1, transitionMode = 0, highConcurrencyResidualDrain = 0))
+        assertEquals(9, TrafficModeHelper.purchaseSellEnd(modeType = 2, transitionMode = 1, highConcurrencyResidualDrain = 0))
+        assertEquals(21, TrafficModeHelper.purchaseSellEnd(modeType = 2, transitionMode = 0, highConcurrencyResidualDrain = 0))
+        assertEquals(21, TrafficModeHelper.purchaseSellEnd(modeType = 2, transitionMode = 2, highConcurrencyResidualDrain = 0))
+        assertEquals(21, TrafficModeHelper.purchaseSellEnd(modeType = 1, transitionMode = 0, highConcurrencyResidualDrain = 1))
+    }
 
     @Test
     fun findSupplyBoxesByTaste_shouldReturnSameTasteStockBoxesByDescendingPosition() {
@@ -55,13 +74,14 @@ class TrafficModeHelperTest {
 
     @Test
     fun selectSellCandidate_shouldUseOldestHoldingTimestampFirst() {
+        val nowMs = 100_000L
         val pans = listOf(
             sellablePan(positionSn = 12, holdingTime = 3000L),
             sellablePan(positionSn = 8, holdingTime = 1000L),
             sellablePan(positionSn = 3, holdingTime = 2000L)
         )
 
-        val result = TrafficModeHelper.selectSellCandidate(pans, "A", 104)
+        val result = TrafficModeHelper.selectSellCandidate(pans, "A", 104, nowMs)
 
         assertEquals(8, result?.positionSn)
     }
@@ -178,6 +198,7 @@ class TrafficModeHelperTest {
             isHasSausage = true
             status = 2
             this.holdingTime = holdingTime
+            closeTime = 200_000L
             taste = Taste().apply {
                 tasteCode = "A"
                 productId = 104

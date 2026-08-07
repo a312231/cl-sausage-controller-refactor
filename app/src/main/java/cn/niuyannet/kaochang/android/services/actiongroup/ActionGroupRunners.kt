@@ -87,6 +87,8 @@ class OutActionGroupRunner(
         sourcePanNo: Int,
         resumeFromRunningState: Boolean = false,
         enableVoiceReminder: Boolean = true,
+        onActionCommandWritten: (String) -> Unit = {},
+        onActionCommandNotDispatched: (String) -> Unit = {},
         onWindowOpened: suspend () -> Unit = {},
         windowOpenBufferMs: Long = 1_000L
     ): ActionGroupResult {
@@ -112,6 +114,17 @@ class OutActionGroupRunner(
             operationLogContext = operationLogContext,
             operationLogger = operationLogger,
             failureLogger = failureLogger,
+            onActionCommandWritten = { actionName ->
+                if (actionName == AtomicActions.out1.name) {
+                    onActionCommandWritten(actionName)
+                }
+            },
+            onActionCommandNotDispatched = { actionName ->
+                if (actionName == AtomicActions.out1.name) {
+                    onActionCommandNotDispatched(actionName)
+                }
+            },
+            actionLifecycleHooksEnabled = false,
             enableVoiceReminder = enableVoiceReminder,
             onWindowOpened = onWindowOpened,
             windowOpenBufferMs = windowOpenBufferMs
@@ -163,6 +176,7 @@ private suspend fun executeSteps(
     failureLogger: (String) -> Unit,
     onCurrentActionChanged: (String) -> Unit = {},
     onActionCommandWritten: (String) -> Unit = {},
+    onActionCommandNotDispatched: (String) -> Unit = {},
     onActionRunningConfirmed: (String) -> Unit = {},
     onActionTerminalConfirmed: (String, AtomicActionResult) -> Unit = { _, _ -> },
     actionLifecycleHooksEnabled: Boolean = false,
@@ -195,7 +209,11 @@ private suspend fun executeSteps(
             val atomicResult = client.execute(
                 step.spec,
                 step.infoValue,
-                onCommandDispatched = if (actionLifecycleHooksEnabled || dispatchHook != null) {
+                onCommandDispatched = if (
+                    actionLifecycleHooksEnabled ||
+                    dispatchHook != null ||
+                    step.spec == AtomicActions.out1
+                ) {
                     {
                         onActionCommandWritten(step.spec.name)
                         dispatchHook?.invoke()
@@ -223,6 +241,12 @@ private suspend fun executeSteps(
                 onActionRunningConfirmed,
                 onActionTerminalConfirmed
             )
+        }
+        if (result is ActionGroupResult.Failed &&
+            result.actionName == AtomicActions.out1.name &&
+            (result.result as? AtomicActionResult.ModbusError)?.commandDispatched == false
+        ) {
+            onActionCommandNotDispatched(step.spec.name)
         }
         val elapsedMs = (System.currentTimeMillis() - stepStartedAtMs).coerceAtLeast(0L)
         logger(

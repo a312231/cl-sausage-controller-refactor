@@ -613,9 +613,30 @@ class AtomicActionExecutorTest {
 
         assertTrue(result is AtomicActionResult.ModbusError)
         val message = (result as AtomicActionResult.ModbusError).message
+        assertEquals(false, result.commandDispatched)
         assertTrue(message.startsWith("初判责任=上位机写入下位机信息寄存器失败"))
         assertTrue(message.contains("信息寄存器=412"))
         assertTrue(message.contains("信息值=8"))
+    }
+
+    @Test
+    fun execute_shouldMarkCommandWriteFailureAsConfirmedNotDispatched() = runBlocking {
+        val gateway = object : AtomicModbusGateway {
+            override suspend fun readRegister(address: Int): AtomicReadResult =
+                AtomicReadResult.Success(AtomicActionCodes.IDLE)
+
+            override suspend fun writeRegister(address: Int, value: Int): AtomicIoResult =
+                if (address == AtomicActions.out1.commandRegister) {
+                    AtomicIoResult.Failure("command write failed")
+                } else {
+                    AtomicIoResult.Success
+                }
+        }
+
+        val result = AtomicActionExecutor(gateway, logger = {}).execute(AtomicActions.out1, infoValue = 3)
+
+        assertTrue(result is AtomicActionResult.ModbusError)
+        assertEquals(false, (result as AtomicActionResult.ModbusError).commandDispatched)
     }
 
     @Test

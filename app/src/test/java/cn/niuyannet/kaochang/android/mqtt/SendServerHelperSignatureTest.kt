@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
+import cn.niuyannet.kaochang.android.services.SellablePanPhysicalStateProjection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -131,6 +132,26 @@ class SendServerHelperSignatureTest {
         assertEquals(6L, payload.getLongValue("lowerPlatformAggregateVersion"))
         assertEquals("generation-device-001", payload.getString("lowerPlatformGeneration"))
         assertEquals("evt-isolated", payload.getJSONArray("lowerPlatformEpisodes").getJSONObject(0).getString("eventId"))
+    }
+
+    @Test
+    fun buildRuntimeStatePayload_shouldIncludeSellableRulesSignature() {
+        val config = baseConfig().apply {
+            pendingDiscardPositions.addAll(listOf(21, 7, 21))
+        }
+
+        val payload = RuntimeStatePayloadBuilder.build(
+            deviceCode = "device-001",
+            runtimeSeq = 101L,
+            config = config,
+            source = "runtime_state:test",
+            reportedAt = 123L
+        )
+
+        assertEquals(
+            SellablePanPhysicalStateProjection.rulesSignature(config),
+            payload.getString("sellableRulesSignature")
+        )
     }
 
     @Test

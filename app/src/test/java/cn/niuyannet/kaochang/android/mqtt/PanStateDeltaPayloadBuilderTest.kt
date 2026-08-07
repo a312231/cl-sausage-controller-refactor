@@ -44,7 +44,8 @@ class PanStateDeltaPayloadBuilderTest {
             this.positionSn = positionSn
             this.isHasSausage = true
             this.status = 2
-            this.holdingTime = 1000L
+            this.holdingTime = System.currentTimeMillis() - 1_000L
+            this.closeTime = 60_000L
             this.taste = Taste(1, tasteCode, "原味", productId, "烤肠")
         }
 }

@@ -37,7 +37,7 @@ class OrderSupplementResumeFailureSourceTest {
             .substringBefore("catch (e: Exception)")
         val exceptionCatch = purchaseBlock.substringAfter("catch (e: Exception)")
             .substringBefore("} finally {")
-        assertTrue(cancellationCatch.contains("orderOutcome = OrderExecutionOutcome.UNKNOWN"))
-        assertTrue(exceptionCatch.contains("orderOutcome = OrderExecutionOutcome.UNKNOWN"))
+        assertTrue(cancellationCatch.contains("orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN"))
+        assertTrue(exceptionCatch.contains("orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN"))
     }
 }

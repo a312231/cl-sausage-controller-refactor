@@ -589,11 +589,8 @@ class MaintenanceFragment : Fragment() {
         ) {
             return true
         }
-        val actionGroupIdle = KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
-        if (MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings, actionGroupIdle)) {
-            val oldMoveStatus = config.moveStatus
-            config.moveStatus = 0
-            AppConfig.saveAppConfig(config)
+        val oldMoveStatus = config.moveStatus
+        if (KaoChangOperate.clearMoveStatusForLegacy201Recovery(statusReadings)) {
             LogUtils.w(
                 "【维护操作】检测到本地机械状态与下位机空闲状态不一致，已自动收口：" +
                     "reason=$reason，moveStatus（机械动作状态）=$oldMoveStatus->0，" +
@@ -601,6 +598,7 @@ class MaintenanceFragment : Fragment() {
             )
             return true
         }
+        val actionGroupIdle = KaoChangOperate.isActionGroupIdleForMoveStatusRecovery()
         val runtimeSnapshot = KaoChangOperate.actionGroupRuntimeSnapshotForLog()
         val blockedState = "${config.moveStatus}|$statusReadings|$actionGroupIdle|$runtimeSnapshot"
         if (blockedLogGate.evaluate(blockedState, System.currentTimeMillis()) != null) {

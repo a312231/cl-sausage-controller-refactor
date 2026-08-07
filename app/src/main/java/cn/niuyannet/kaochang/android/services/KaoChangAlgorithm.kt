@@ -1243,37 +1243,40 @@ object KaoChangAlgorithm {
         deliveryIndex: Int? = null,
         deliveryTotal: Int? = null
     ): KaoChangOperate.TakeSausageResult {
-        val kaoPanList = KaoPanHelper.getKaoPanList()
-        val config = AppConfig.getAppConfig()
-        val expandedSellRangeForPurchase = TrafficModeHelper.shouldUseExpandedSellRangeForPurchase(
-            config.modeType,
-            config.transitionMode,
-            config.highConcurrencyResidualDrain
-        )
-        val targetKaoPan: KaoPan? = if (!expandedSellRangeForPurchase) {
-            TrafficModeHelper.selectSellCandidate(
-                TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList),
+        repeat(2) { attempt ->
+            val kaoPanList = KaoPanHelper.getKaoPanList()
+            val config = AppConfig.getAppConfig()
+            val sellEnd = TrafficModeHelper.purchaseSellEnd(
+                config.modeType,
+                config.transitionMode,
+                config.highConcurrencyResidualDrain
+            )
+            val targetKaoPan = TrafficModeHelper.selectSellCandidate(
+                TrafficModeHelper.getTrafficModePositions(1, sellEnd, kaoPanList),
                 tasteCode,
                 productId
             )
-        } else {
-            TrafficModeHelper.selectSellCandidate(
-                TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList),
-                tasteCode,
-                productId
-            )
-        }
-
-        if (targetKaoPan != null) {
+            if (targetKaoPan == null) {
+                logW(
+                    LOG_DEVICE,
+                    "收到出货订单失败：当前没有找到可售烤肠 [口味=$tasteCode, 商品=$productId]，" +
+                        "scan=${attempt + 1}/2"
+                )
+                return@repeat
+            }
             logD(
                 LOG_ALGORITHM,
-                "收到出货订单：口味=$tasteCode，商品=$productId，已调度托盘 ID=${targetKaoPan.id}，烤盘位=${targetKaoPan.positionSn}，holdingTime=${targetKaoPan.holdingTime}"
+                "收到出货订单：口味=$tasteCode，商品=$productId，已调度托盘 ID=${targetKaoPan.id}，" +
+                    "烤盘位=${targetKaoPan.positionSn}，holdingTime=${targetKaoPan.holdingTime}，scan=${attempt + 1}/2"
             )
-            return KaoChangOperate.takeSausageResult(targetKaoPan, orderContext, deliveryIndex, deliveryTotal)
-        } else {
-            logW(LOG_DEVICE, "收到出货订单失败：当前没有找到可售烤肠 [口味=$tasteCode, 商品=$productId]")
+            when (val result = KaoChangOperate.takeSausageResult(targetKaoPan, orderContext, deliveryIndex, deliveryTotal)) {
+                KaoChangOperate.TakeSausageResult.NO_SELLABLE_STOCK -> {
+                    if (attempt == 0) return@repeat
+                }
+                else -> return result
+            }
         }
-        return KaoChangOperate.TakeSausageResult.ERROR
+        return KaoChangOperate.TakeSausageResult.NO_SELLABLE_STOCK
     }
 
     /**

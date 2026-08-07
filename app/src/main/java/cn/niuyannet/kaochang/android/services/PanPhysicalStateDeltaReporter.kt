@@ -88,12 +88,23 @@ object PanPhysicalStateDeltaReporter {
         )
     }
 
+    fun reportRulesChanged(reason: String, source: String): Boolean {
+        return report(
+            changedPanNos = emptyList(),
+            changedStockNos = emptyList(),
+            reason = reason,
+            source = source,
+            allowEmptyChanges = true
+        )
+    }
+
     private fun report(
         changedPanNos: List<Int>,
         changedStockNos: List<Int>,
         reason: String,
-        source: String
-    ) {
+        source: String,
+        allowEmptyChanges: Boolean = false
+    ): Boolean {
         val allPans = snapshotSource.getKaoPanList()
         val allStocks = snapshotSource.getKaoPanBoxList()
         val changedPans = changedPanNos.mapNotNull { panNo ->
@@ -102,14 +113,14 @@ object PanPhysicalStateDeltaReporter {
         val changedStocks = changedStockNos.mapNotNull { stockNo ->
             allStocks.firstOrNull { it.positionSn == stockNo }
         }
-        if (changedPans.isEmpty() && changedStocks.isEmpty()) {
+        if (!allowEmptyChanges && changedPans.isEmpty() && changedStocks.isEmpty()) {
             logger.invoke(
                 "【$LOG_SYNC】跳过物理状态增量：当前快照中找不到变化对象，" +
                     "reason=$reason，source=$source，changedPanNos=$changedPanNos，changedStockNos=$changedStockNos"
             )
-            return
+            return false
         }
-        publisher.invoke(
+        return publisher.invoke(
             allPans,
             allStocks,
             changedPans,

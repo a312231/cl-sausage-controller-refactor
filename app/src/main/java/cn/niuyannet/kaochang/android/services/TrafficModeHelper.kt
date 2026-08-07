@@ -13,6 +13,16 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 object TrafficModeHelper {
     private const val TAG = "KaoChangAlgorithm"
 
+    fun purchaseSellEnd(
+        modeType: Int,
+        transitionMode: Int,
+        highConcurrencyResidualDrain: Int
+    ): Int = when {
+        transitionMode == 1 -> 9
+        modeType == 2 || transitionMode == 2 || highConcurrencyResidualDrain == 1 -> 21
+        else -> 9
+    }
+
     /**
      * 可售候选排序：先卖 holdingTime（进入保温时间）最早的烤肠，同时间按烤盘位升序。
      * 这里仅负责排序，不负责过滤生肠或待丢弃烤盘；调用方必须先用 KaoPanHelper.isSellable 做可售判定。
@@ -34,11 +44,16 @@ object TrafficModeHelper {
         return list.filter { it.positionSn in start..end }.sortedBy { it.positionSn }
     }
 
-    fun selectSellCandidate(list: List<KaoPan>, tasteCode: String, productId: Int): KaoPan? {
+    fun selectSellCandidate(
+        list: List<KaoPan>,
+        tasteCode: String,
+        productId: Int,
+        nowMs: Long = System.currentTimeMillis()
+    ): KaoPan? {
         val pendingDiscardPositions = KaoPanHelper.pendingDiscardPositionsOrEmpty()
         return list
             .filter {
-                KaoPanHelper.isSellable(it, pendingDiscardPositions) &&
+                KaoPanHelper.isSellable(it, pendingDiscardPositions, nowMs) &&
                     it.taste.tasteCode == tasteCode &&
                     it.taste.productId == productId
             }

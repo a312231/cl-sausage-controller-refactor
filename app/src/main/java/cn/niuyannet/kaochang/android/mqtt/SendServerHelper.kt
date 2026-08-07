@@ -7,6 +7,8 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.services.KaoPanCloudSyncReporter
 import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
+import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
+import cn.niuyannet.kaochang.android.services.SellablePanPhysicalStateProjection
 import cn.niuyannet.kaochang.android.services.SourceBoxPositionPolicy
 import cn.niuyannet.kaochang.android.services.SnapshotSyncPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupTelemetry
@@ -41,6 +43,7 @@ object SendServerHelper {
     private val panStateDeltaAckHandler = Handler(Looper.getMainLooper())
     private val pendingPanStateDeltaAcks = ConcurrentHashMap<Long, PanStateDeltaPublishSnapshot>()
     private val pendingPanPhysicalStateDeltaAcks = ConcurrentHashMap<Long, PanPhysicalStateDeltaPublishSnapshot>()
+    private val sellableRulesPhysicalDeltaDeduper = SellableRulesPhysicalDeltaDeduper()
     private val consumableEventAckHandler = Handler(Looper.getMainLooper())
     private val pendingConsumableEventAcks = ConcurrentHashMap<String, ConsumableEventPublishSnapshot>()
     private val actionGroupTelemetryAckHandler = Handler(Looper.getMainLooper())
@@ -238,6 +241,13 @@ object SendServerHelper {
         ackListener: RuntimeStateAckCallbackRegistry.Listener? = null
     ): Boolean {
         val config = AppConfig.getAppConfig()
+        val sellableRulesSignature = SellablePanPhysicalStateProjection.rulesSignature(config)
+        sellableRulesPhysicalDeltaDeduper.publishIfChanged(sellableRulesSignature) {
+            PanPhysicalStateDeltaReporter.reportRulesChanged(
+                reason = "sellable_rules_changed",
+                source = "$source:sellable_rules"
+            )
+        }
         val frozenLowerPlatform = lowerPlatformSnapshot ?: LowerPlatformEpisodeReducer.snapshot(config)
         val now = System.currentTimeMillis()
         val stateSignature = buildRuntimeStateSignature(config, frozenLowerPlatform)
@@ -248,7 +258,8 @@ object SendServerHelper {
             config = config,
             source = source,
             reportedAt = now,
-            lowerPlatformSnapshot = frozenLowerPlatform
+            lowerPlatformSnapshot = frozenLowerPlatform,
+            sellableRulesSignature = sellableRulesSignature
         )
         if (ackListener != null) {
             val registered = runtimeStateAckCallbackRegistry.register(
@@ -457,7 +468,8 @@ object SendServerHelper {
             changedStocks = changedStocks,
             reason = reason,
             source = source,
-            changedAt = now
+            changedAt = now,
+            config = AppConfig.getAppConfig()
         )
         val ok = VMMqttHelper.publishService(
             TopicMessage().apply {

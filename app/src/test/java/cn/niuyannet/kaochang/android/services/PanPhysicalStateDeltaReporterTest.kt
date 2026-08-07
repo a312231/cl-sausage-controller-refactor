@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PanPhysicalStateDeltaReporterTest {
@@ -142,6 +143,32 @@ class PanPhysicalStateDeltaReporterTest {
         assertEquals(listOf(17), captured!!.changedStocks.map { it.positionSn })
         assertEquals("action_completion:in:box=17:pan=13", captured!!.reason)
         assertEquals("action_completion_in", captured!!.source)
+    }
+
+    @Test
+    fun reportRulesChanged_shouldPublishRuleOnlyDeltaWhenRawChangedListsAreEmpty() {
+        val pan1 = pan(1, hasSausage = true)
+        var captured: PublishCall? = null
+
+        PanPhysicalStateDeltaReporter.withDependenciesForTest(
+            snapshotSource = testSource(pans = listOf(pan1), boxes = emptyList()),
+            publisher = { allPans, allStocks, changedPans, changedStocks, reason, source ->
+                captured = PublishCall(allPans, allStocks, changedPans, changedStocks, reason, source)
+                true
+            }
+        ) {
+            val published = PanPhysicalStateDeltaReporter.reportRulesChanged(
+                reason = "sellable_rules_changed",
+                source = "runtime_state:test"
+            )
+            assertTrue("rule-only physical delta must have a dedicated reporter entry", published)
+        }
+
+        assertEquals(listOf(1), captured!!.allPans.map { it.positionSn })
+        assertEquals(emptyList<Int>(), captured!!.changedPans.map { it.positionSn })
+        assertEquals(emptyList<Int>(), captured!!.changedStocks.map { it.positionSn })
+        assertEquals("sellable_rules_changed", captured!!.reason)
+        assertEquals("runtime_state:test", captured!!.source)
     }
 
     private data class PublishCall(

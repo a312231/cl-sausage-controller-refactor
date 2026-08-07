@@ -52,6 +52,10 @@ import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveClaimRes
 import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveReleaseResult
 import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveStatusStore
 import cn.niuyannet.kaochang.android.services.actiongroup.NonParallelSupplementOrderHandoffCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
+import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaimRecovery
+import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaimStore
+import cn.niuyannet.kaochang.android.services.actiongroup.Out1DispatchEvidence
 import cn.niuyannet.kaochang.android.services.actiongroup.OutActionGroupRunner
 import cn.niuyannet.kaochang.android.services.actiongroup.PrefetchSupplementPlanner
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceLocks
@@ -68,6 +72,9 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalCheckpointResult
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalMutation
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPhysicalStateCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.claimOrderDeliveryMove
+import cn.niuyannet.kaochang.android.services.actiongroup.releaseOrderDeliveryMove
+import cn.niuyannet.kaochang.android.services.actiongroup.restoreClaimedOrderMoveStatusIfNeeded
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrderGatePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrderPauseSafety
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchLaneCheckpoint
@@ -233,6 +240,7 @@ object KaoChangOperate {
         key = SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION
     )
     private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
+    private val orderDeliveryClaimStore = OrderDeliveryClaimStore()
     private val panMoveJournalStore = SharedPreferencePanMoveJournalStore()
     private val supplementBatchIntentRepository =
         SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
@@ -527,28 +535,21 @@ object KaoChangOperate {
      * 订单接管出餐的唯一 moveStatus=2 写入口。
      * 只在锁内重新读取状态和动作组忙闲，避免补肠收口把订单接管状态覆盖回 0。
      */
-    fun tryClaimOrderDeliveryMoveStatus(): Boolean = withFaultHeatTransitionLock {
-        val config = AppConfig.getAppConfig()
-        when (config.moveStatus) {
-            OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING -> true
-            OrderMoveStatusPolicy.MOVE_STATUS_IDLE -> {
-                if (isActionGroupBusyForOrderGate()) {
-                    false
-                } else {
-                    try {
-                        mechanicalMoveStatusStore.saveDurable(OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING)
-                        true
-                    } catch (error: Throwable) {
-                        logW(
-                            LOG_ORDER,
-                            "订单接管出餐写入 moveStatus=2 失败，保持空闲：${error.message ?: error.javaClass.simpleName}"
-                        )
-                        false
-                    }
-                }
-            }
-            else -> false
+    fun tryClaimOrderDeliveryMoveStatus(orderNo: String): OrderDeliveryClaim? {
+        val claim = claimOrderDeliveryMove(
+            orderNo = orderNo,
+            transitionLock = faultHeatTransitionLock,
+            claimStore = orderDeliveryClaimStore,
+            moveStore = mechanicalMoveStatusStore
+        ) { !isActionGroupBusyForOrderGate() }
+        if (claim == null) {
+            logW(
+                LOG_ORDER,
+                "订单未能取得出餐 owner：orderNo=$orderNo，" +
+                    "moveStatus=${AppConfig.getAppConfig().moveStatus}"
+            )
         }
+        return claim
     }
 
     fun shouldRecoverManualOutBeforeIncomingOrder(orderNo: String? = null): Boolean {
@@ -571,6 +572,50 @@ object KaoChangOperate {
     }
 
     fun isActionGroupIdleForMoveStatusRecovery(): Boolean {
+        return withFaultHeatTransitionLock {
+            val orderClaimRecovery = restoreClaimedOrderMoveStatusIfNeeded(
+                transitionLock = faultHeatTransitionLock,
+                claimStore = orderDeliveryClaimStore,
+                moveStore = mechanicalMoveStatusStore
+            )
+            if (orderClaimRecovery == OrderDeliveryClaimRecovery.RESTORED) {
+                logW(LOG_ORDER, "订单 claim 恢复了异常归零的 moveStatus=2，旧自动收口保持阻断")
+            }
+            orderClaimRecovery == OrderDeliveryClaimRecovery.NO_CLAIM &&
+                isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim()
+        }
+    }
+
+    /**
+     * 旧 201 空闲恢复只能在现有短临界区内重查订单 owner 后写 0。
+     * 这避免“检查空闲后订单取得 owner、旧恢复又把 2 清成 0”的竞态。
+     */
+    fun clearMoveStatusForLegacy201Recovery(statusReadings: List<Int>): Boolean =
+        withFaultHeatTransitionLock {
+            val orderClaimRecovery = restoreClaimedOrderMoveStatusIfNeeded(
+                transitionLock = faultHeatTransitionLock,
+                claimStore = orderDeliveryClaimStore,
+                moveStore = mechanicalMoveStatusStore
+            )
+            if (orderClaimRecovery != OrderDeliveryClaimRecovery.NO_CLAIM ||
+                !MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(
+                    statusReadings,
+                    isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim()
+                )
+            ) {
+                return@withFaultHeatTransitionLock false
+            }
+            if (mechanicalMoveStatusStore.load() == 0) {
+                return@withFaultHeatTransitionLock true
+            }
+            runCatching { mechanicalMoveStatusStore.saveDurable(0) }
+                .onFailure { error ->
+                    logW(LOG_ACTION, "旧 201 空闲恢复写入 moveStatus=0 失败：${error.message}")
+                }
+                .isSuccess
+        }
+
+    private fun isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim(): Boolean {
         return actionGroupSessionStore.load() == null &&
             panMoveJournalStore.load() == null &&
             discardJournalStore.load() == null &&
@@ -1194,15 +1239,27 @@ object KaoChangOperate {
         return resumed || SupplementPauseController.isPausedForDifferentOrder(orderNo)
     }
 
-    fun clearOrderMoveStatusIfRecoverySafe(reason: String): Boolean {
-        if (hasBlockingSupplementPrefetchEvidence()) {
-            logW(LOG_ORDER, "订单收尾保留双 lane 恢复证据和 moveStatus：reason=$reason")
-            return false
+    fun releaseOrderDeliveryMoveStatus(claim: OrderDeliveryClaim, reason: String): Boolean {
+        val released = releaseOrderDeliveryMove(
+            claim = claim,
+            transitionLock = faultHeatTransitionLock,
+            claimStore = orderDeliveryClaimStore,
+            moveStore = mechanicalMoveStatusStore
+        ) {
+            actionGroupSessionStore.load() == null &&
+                panMoveJournalStore.load() == null &&
+                discardJournalStore.load() == null &&
+                !hasBlockingSupplementPrefetchEvidence() &&
+                actionGroupLocks.isIdle()
         }
-        val config = AppConfig.getAppConfig()
-        config.moveStatus = 0
-        AppConfig.saveAppConfig(config)
-        return true
+        if (!released) {
+            logW(
+                LOG_ORDER,
+                "订单 owner/revision 条件释放失败，保留 moveStatus=2：" +
+                    "reason=$reason，owner=${claim.owner}，revision=${claim.revision}"
+            )
+        }
+        return released
     }
 
     private fun restoreParallelSupplementBusyMoveStatus() {
@@ -1871,6 +1928,9 @@ object KaoChangOperate {
     enum class TakeSausageResult {
         TAKEN_BY_USER,
         DISCARDED,
+        NO_SELLABLE_STOCK,
+        NO_DISPATCH,
+        EVIDENCE_UNKNOWN,
         ERROR
     }
 
@@ -1894,8 +1954,9 @@ object KaoChangOperate {
         Thread.sleep(500L)
         val second = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status)
         val statusReadings = listOf(first, second)
-        val actionGroupIdle = isActionGroupIdleForMoveStatusRecovery()
-        if (!MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(statusReadings, actionGroupIdle)) {
+        val oldMoveStatus = config.moveStatus
+        if (!clearMoveStatusForLegacy201Recovery(statusReadings)) {
+            val actionGroupIdle = isActionGroupIdleForMoveStatusRecovery()
             logW(
                 LOG_ACTION,
                 "跳过本地机械状态自动收口：reason=$reason，" +
@@ -1905,9 +1966,6 @@ object KaoChangOperate {
             )
             return false
         }
-        val oldMoveStatus = config.moveStatus
-        config.moveStatus = 0
-        AppConfig.saveAppConfig(config)
         logW(
             LOG_ACTION,
             "检测到本地机械状态残留，已按下位机连续空闲状态自动收口：" +
@@ -2486,14 +2544,18 @@ object KaoChangOperate {
         orderContext: ActionGroupOrderContext,
         status: Int,
         panNo: Int,
-        discarded: Boolean
+        discarded: Boolean,
+        failureMetadata: cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata? = null
     ) {
         actionGroupOrderEventStore.save(
             PendingActionGroupOrderEvent(
                 orderContext = orderContext,
                 status = status,
                 panNo = panNo,
-                discarded = discarded
+                discarded = discarded,
+                failureReason = failureMetadata?.failureReason,
+                deliveryEvidence = failureMetadata?.deliveryEvidence,
+                out1Dispatched = failureMetadata?.out1Dispatched
             )
         )
         logW(
@@ -2506,14 +2568,21 @@ object KaoChangOperate {
     fun reportActionGroupOrderTerminalEvent(
         orderContext: ActionGroupOrderContext,
         status: Int,
-        source: String
+        source: String,
+        failureMetadata: cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata? = null
     ): Boolean {
         if (!orderContext.isValid()) {
             logE(LOG_ORDER, "动作组订单终态上报失败：订单上下文不完整，source=$source，orderContext=$orderContext")
             return false
         }
         val ok = SendServerHelper.publishServiceUpdateOrder(
-            ActionGroupOrderEventPayloadBuilder.build(orderContext, status)
+            ActionGroupOrderEventPayloadBuilder.build(
+                orderContext = orderContext,
+                status = status,
+                failureReason = failureMetadata?.failureReason,
+                deliveryEvidence = failureMetadata?.deliveryEvidence,
+                out1Dispatched = failureMetadata?.out1Dispatched
+            )
         )
         if (ok) {
             logD(
@@ -2537,10 +2606,31 @@ object KaoChangOperate {
         return ok
     }
 
+    private fun reportActionGroupOrderStartedEvent(orderContext: ActionGroupOrderContext, panNo: Int) {
+        if (!orderContext.isValid()) return
+        val ok = SendServerHelper.publishServiceUpdateOrder(
+            ActionGroupOrderEventPayloadBuilder.build(orderContext, ActionGroupOrderStatus.DELIVERING)
+        )
+        if (ok) {
+            logD(
+                LOG_ORDER,
+                "out1 命令已下发，开始夹取事件已入队：orderNo=${orderContext.orderNo}，" +
+                    "itemId=${orderContext.itemId}，panNo=$panNo"
+            )
+        } else {
+            logE(
+                LOG_ORDER,
+                "out1 命令已下发，但开始夹取事件入队失败：orderNo=${orderContext.orderNo}，" +
+                    "itemId=${orderContext.itemId}，panNo=$panNo"
+            )
+        }
+    }
+
     fun savePendingOrderErrorEventAndTryFlush(
         orderContext: ActionGroupOrderContext,
         panNo: Int,
-        source: String
+        source: String,
+        failureMetadata: cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata? = null
     ): Boolean {
         if (!orderContext.isValid()) {
             logE(LOG_ORDER, "出餐失败订单终态补偿保存失败：订单上下文不完整，source=$source，orderContext=$orderContext")
@@ -2550,7 +2640,8 @@ object KaoChangOperate {
             orderContext = orderContext,
             status = ActionGroupOrderStatus.ERROR,
             panNo = panNo,
-            discarded = false
+            discarded = false,
+            failureMetadata = failureMetadata
         )
         return flushPendingActionGroupOrderEvent(source)
     }
@@ -2565,7 +2656,15 @@ object KaoChangOperate {
         return reportActionGroupOrderTerminalEvent(
             orderContext = pending.orderContext,
             status = pending.status,
-            source = "动作组恢复补偿:$reason"
+            source = "动作组恢复补偿:$reason",
+            failureMetadata = pending.failureReason?.let { failureReason ->
+                cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata(
+                    failureReason = failureReason,
+                    deliveryEvidence = pending.deliveryEvidence
+                        ?: cn.niuyannet.kaochang.android.services.actiongroup.DeliveryEvidence.UNKNOWN,
+                    out1Dispatched = pending.out1Dispatched
+                )
+            }
         )
     }
 
@@ -8047,10 +8146,10 @@ object KaoChangOperate {
                 "正式出餐入口前 Modbus 重连 3 次仍失败，设备进入维护：stage=正式出餐",
                 FaultCode.MODBUS_COMM_DROP
             )
-            return TakeSausageResult.ERROR
+            return TakeSausageResult.NO_DISPATCH
         }
         if (!ensureActionGroupReadyForOrderDispatch("正式出餐入口前恢复检查")) {
-            return TakeSausageResult.ERROR
+            return TakeSausageResult.NO_DISPATCH
         }
         var appState = AppConfig.getAppConfig().moveStatus
         var waitedMs = 0L
@@ -8060,7 +8159,7 @@ object KaoChangOperate {
                 val reason = "正式出餐入口等待当前机械动作安全收口超时或不可抢占：" +
                     "moveStatus=$appState，waitedMs=$waitedMs/$maxWaitMs"
                 enterActionGroupMaintenance(reason, FaultCode.ACTION_BUSY_TIMEOUT)
-                return TakeSausageResult.ERROR
+                return TakeSausageResult.NO_DISPATCH
             }
             delay(2000)
             waitedMs += 2000
@@ -8091,7 +8190,8 @@ object KaoChangOperate {
                         orderId = orderContext?.orderNo,
                         orderContext = orderContext,
                         currentAction = null,
-                        resourceMask = lockMask
+                        resourceMask = lockMask,
+                        out1DispatchEvidence = Out1DispatchEvidence.PREPARED
                     )
                 ),
                 allowedMoveStatuses = setOf(appState),
@@ -8099,7 +8199,7 @@ object KaoChangOperate {
                 requireSupplementGate = false
             )
         ) {
-            return TakeSausageResult.ERROR
+            return TakeSausageResult.NO_DISPATCH
         }
         try {
             if (!isActionGroupEnabledOrEnterMaintenance("正式出餐")) {
@@ -8110,7 +8210,7 @@ object KaoChangOperate {
                     expectedMoveStatus = 2,
                     idleMoveStatus = if (acquiredByThisCall) 0 else 2
                 )
-                return TakeSausageResult.ERROR
+                return TakeSausageResult.NO_DISPATCH
             }
 
             if (!actionGroupLocks.tryAcquire(lockMask, owner)) {
@@ -8126,7 +8226,47 @@ object KaoChangOperate {
                     "出餐动作组资源忙，拒绝下发：sourcePan=${kaoPan.positionSn}，" +
                         "need=${ResourceLocks.describe(lockMask)}，held=${actionGroupLocks.snapshot()}"
                 )
-                return TakeSausageResult.ERROR
+                return TakeSausageResult.NO_DISPATCH
+            }
+
+            val latestPan = KaoPanHelper.getKaoPanList()
+                .firstOrNull { it.positionSn == kaoPan.positionSn }
+            val latestConfig = AppConfig.getAppConfig()
+            val purchaseSellEnd = TrafficModeHelper.purchaseSellEnd(
+                latestConfig.modeType,
+                latestConfig.transitionMode,
+                latestConfig.highConcurrencyResidualDrain
+            )
+            val stillSellable = latestPan != null &&
+                latestPan.positionSn <= purchaseSellEnd &&
+                latestPan.taste?.tasteCode == orderContext?.tasteCode &&
+                latestPan.taste?.productId == orderContext?.productId &&
+                KaoPanHelper.isSellable(
+                    latestPan,
+                    KaoPanHelper.pendingDiscardPositionsOrEmpty()
+                )
+            if (!stillSellable) {
+                val released = releaseMechanicalMove(
+                    "正式出餐 out1 前候选失效",
+                    owner,
+                    actionGroupClaimOwnerStore(),
+                    expectedMoveStatus = 2,
+                    idleMoveStatus = 2
+                )
+                actionGroupLocks.release(owner)
+                if (!released) {
+                    enterActionGroupMaintenance(
+                        "正式出餐 out1 前候选失效，但本次 OUT owner 未能精确释放：owner=$owner",
+                        preserveMoveStatus = true
+                    )
+                    return TakeSausageResult.EVIDENCE_UNKNOWN
+                }
+                logW(
+                    LOG_ORDER,
+                    "正式出餐 out1 前最终复核失败，未下发机械命令：" +
+                        "orderNo=${orderContext?.orderNo}，pan=${kaoPan.positionSn}，sellEnd=$purchaseSellEnd"
+                )
+                return TakeSausageResult.NO_SELLABLE_STOCK
             }
 
             var outPanClearedByTelemetry = false
@@ -8171,6 +8311,40 @@ object KaoChangOperate {
                     .run(
                         sourcePanNo = kaoPan.positionSn,
                         enableVoiceReminder = true,
+                        onActionCommandWritten = { actionName ->
+                            val current = requireNotNull(actionGroupSessionStore.load()) {
+                                "out1 已写命令但动作会话不存在"
+                            }
+                            check(current.sessionId == owner && current.currentAction == actionName) {
+                                "out1 已写命令但 owner/action 已变化"
+                            }
+                            actionGroupSessionStore.save(
+                                current.copy(
+                                    out1DispatchEvidence = Out1DispatchEvidence.DISPATCHED,
+                                    checkpointVersion = current.checkpointVersion + 1L
+                                )
+                            )
+                            orderContext?.let {
+                                reportActionGroupOrderStartedEvent(it, kaoPan.positionSn)
+                            }
+                        },
+                        onActionCommandNotDispatched = { actionName ->
+                            val current = requireNotNull(actionGroupSessionStore.load()) {
+                                "out1 写失败但动作会话不存在"
+                            }
+                            check(current.sessionId == owner && current.currentAction == actionName) {
+                                "out1 写失败但 owner/action 已变化"
+                            }
+                            check(current.out1DispatchEvidence == Out1DispatchEvidence.PREPARED) {
+                                "out1 写失败时 dispatch evidence 已变化"
+                            }
+                            actionGroupSessionStore.save(
+                                current.copy(
+                                    out1DispatchEvidence = Out1DispatchEvidence.NOT_DISPATCHED_CONFIRMED,
+                                    checkpointVersion = current.checkpointVersion + 1L
+                                )
+                            )
+                        },
                         onWindowOpened = {
                             OrderProcessingStageBridge.publish(OrderProcessingStage.READY_TO_TAKE)
                             if (voiceReminderPending) {
@@ -8200,12 +8374,46 @@ object KaoChangOperate {
                 ActionGroupResult.Discarded -> TakeSausageResult.TAKEN_BY_USER
                 is ActionGroupResult.Failed -> {
                     kaoPan.cmdStatusTake = atomicFailureCode(actionGroupResult)
-                    markActionGroupFailure("正式出餐", actionGroupResult)
-                    TakeSausageResult.ERROR
+                    val evidence = actionGroupSessionStore.load()
+                        ?.takeIf { it.sessionId == owner }
+                        ?.out1DispatchEvidence
+                    when {
+                        actionGroupResult.result is AtomicActionResult.Failed &&
+                            evidence == Out1DispatchEvidence.DISPATCHED -> {
+                            markActionGroupFailure("正式出餐", actionGroupResult)
+                            TakeSausageResult.ERROR
+                        }
+                        evidence == Out1DispatchEvidence.NOT_DISPATCHED_CONFIRMED ->
+                            TakeSausageResult.NO_DISPATCH
+                        else -> TakeSausageResult.EVIDENCE_UNKNOWN
+                    }
                 }
             }
 
-            if (takeResult == TakeSausageResult.ERROR) {
+            if (takeResult == TakeSausageResult.NO_DISPATCH) {
+                val released = releaseMechanicalMove(
+                    "正式出餐确认未下发",
+                    owner,
+                    actionGroupClaimOwnerStore(),
+                    expectedMoveStatus = 2,
+                    idleMoveStatus = 2
+                )
+                if (released) {
+                    actionGroupLocks.release(owner)
+                } else {
+                    enterActionGroupMaintenance(
+                        "正式出餐确认未下发，但本次 OUT owner 未能精确释放：owner=$owner",
+                        preserveMoveStatus = true
+                    )
+                    return TakeSausageResult.EVIDENCE_UNKNOWN
+                }
+                KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
+                return takeResult
+            }
+
+            if (takeResult == TakeSausageResult.ERROR ||
+                takeResult == TakeSausageResult.EVIDENCE_UNKNOWN
+            ) {
                 KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
                 return takeResult
             }
@@ -8217,6 +8425,9 @@ object KaoChangOperate {
                 TakeSausageResult.DISCARDED -> LogUtils.w(
                     "【出餐】${deliveryPrefix}完成：历史丢弃结果已按 4F 履约完成收口，来源烤盘=${kaoPan.positionSn}，订单号=${orderContext?.orderNo ?: "无订单上下文"}"
                 )
+                TakeSausageResult.NO_SELLABLE_STOCK,
+                TakeSausageResult.NO_DISPATCH,
+                TakeSausageResult.EVIDENCE_UNKNOWN,
                 TakeSausageResult.ERROR -> Unit
             }
 
