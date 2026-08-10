@@ -19,7 +19,7 @@ class ManualRecoverySourceGuardTest {
     @Test
     fun manualRecoveryCloseout_shouldUseCasAndPreciseOwnerRelease() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
-        val body = extractFunctionBody(source, "fun confirmManualDeviceRecoveryResidue")
+        val body = extractFunctionBody(source, "fun confirmManualDeviceRecoveryResidueLocked")
 
         assertTrue("双 lane 会话必须按 sessionId + revision CAS 清理", body.contains("clearIfRevision"))
         assertTrue("人工恢复不得清空全局资源锁", !body.contains("actionGroupLocks.clear"))
@@ -33,6 +33,45 @@ class ManualRecoverySourceGuardTest {
             body.indexOf("confirmManualSafetyPreservingRemainingTargets") in 0 until body.indexOf("val persistIdle")
         )
         assertTrue("无订单号 session 也必须能按当前暂停解除", body.contains("currentOrderNo()?.let"))
+    }
+
+    @Test
+    fun genericManualRecovery_shouldRejectGuardedEpisodeInsideTransitionLock() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val wrapper = extractFunctionBody(source, "fun confirmManualDeviceRecoveryResidue")
+        val body = extractFunctionBody(source, "fun confirmManualDeviceRecoveryResidueLocked")
+
+        assertTrue("普通恢复的状态处理必须复用 faultHeatTransitionLock", wrapper.contains("withFaultHeatTransitionLock"))
+        assertTrue("持锁 helper 必须校验调用方持有统一锁", body.contains("Thread.holdsLock(faultHeatTransitionLock)"))
+        assertTrue("普通恢复必须显式拒绝 guarded episode", body.contains("hasOpenGuardedIsolation"))
+        assertTrue(
+            "guarded 门禁必须先于 moveStatus 清零",
+            body.indexOf("hasOpenGuardedIsolation") in 0 until body.indexOf("val persistIdle")
+        )
+    }
+
+    @Test
+    fun maintenanceIsolationConfirmation_shouldUseDedicatedGuardedCloseoutEntry() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val clickBody = extractFunctionBody(source, "binding.btnConfirmSupplementSafety.setOnClickListener")
+
+        assertTrue(clickBody.contains("confirmGuardedSerialSupplementFailureRecovery"))
+    }
+
+    @Test
+    fun dedicatedGuardedRecovery_shouldRequireTwoFreshLowerBoardIdleSnapshots() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "fun confirmGuardedSerialSupplementFailureRecovery")
+
+        assertTrue(body.contains("buildActionGroupRecoveryResidueEvidence"))
+        assertTrue(body.contains("delay(500L)"))
+        assertTrue(body.contains("ManualDeviceRecoveryCloseoutPolicy.evaluate"))
+        assertTrue(body.contains("firstEvidence"))
+        assertTrue(body.contains("secondEvidence"))
+        assertTrue(
+            "下位机证据必须先取得，再进入短状态锁提交",
+            body.indexOf("firstEvidence") in 0 until body.indexOf("withFaultHeatTransitionLock")
+        )
     }
 
     @Test

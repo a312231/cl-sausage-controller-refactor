@@ -99,6 +99,10 @@ class SupplementRecoverySafetySourceTest {
         assertTrue(closeoutBlock.contains("SupplementFailureCloseoutPolicy.canAutoRelease"))
         assertTrue(closeoutBlock.contains("releaseOwnerKeepingMoveStatus"))
         assertTrue(closeoutBlock.contains("releaseIfOwned"))
+        assertTrue(
+            "claim/session CAS 必须先于资源释放",
+            closeoutBlock.indexOf("val claimRelease") in 0 until closeoutBlock.indexOf("releaseIfOwned")
+        )
     }
 
     @Test

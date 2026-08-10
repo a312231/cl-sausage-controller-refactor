@@ -160,6 +160,32 @@ class LowerPlatformEpisodeReducerTest {
     }
 
     @Test
+    fun openGuardedIsolationKey_shouldComeOnlyFromPersistedOpenEpisode() {
+        val config = AppConfigBean()
+        LowerPlatformEpisodeReducer.openGuardedIsolation(
+            config = config,
+            actionName = "in2",
+            reason = "等待人工精确收口",
+            details = LowerPlatformEpisodeDetails(
+                closeoutGuarded = true,
+                closeoutSessionId = "in:8:14",
+                closeoutClaimRevision = 7L,
+                closeoutActionName = "in2"
+            ),
+            occurredAt = 1_000L
+        )
+
+        assertTrue(LowerPlatformEpisodeReducer.hasOpenGuardedIsolation(config))
+        assertEquals(
+            cn.niuyannet.kaochang.android.services.actiongroup.GuardedSupplementCloseoutKey("in:8:14", 7L, "in2"),
+            LowerPlatformEpisodeReducer.singleOpenGuardedIsolationKey(config)
+        )
+        LowerPlatformEpisodeReducer.recoverGuardedIsolationIfKey(config, "in:8:14", 7L, "in2", 2_000L)
+        assertFalse(LowerPlatformEpisodeReducer.hasOpenGuardedIsolation(config))
+        assertEquals(null, LowerPlatformEpisodeReducer.singleOpenGuardedIsolationKey(config))
+    }
+
+    @Test
     fun normalize_shouldDropInvalidAndBoundRecoveredHistoryWhileKeepingOpenEpisodes() {
         val config = AppConfigBean()
         LowerPlatformEpisodeReducer.openSupplyDegraded(config, listOf(3), "active", 1L)
@@ -259,6 +285,34 @@ class LowerPlatformEpisodeReducerTest {
 
         assertEquals(tx.snapshot.aggregateVersion, persistedVersion)
         assertEquals("tx", tx.snapshot.episodes.single().reason)
+    }
+
+    @Test
+    fun transaction_shouldRollbackLowerPlatformMemoryWhenDurablePersistFails() {
+        val config = AppConfigBean()
+        LowerPlatformEpisodeReducer.openGuardedIsolation(
+            config = config,
+            actionName = "in2",
+            reason = "open",
+            details = LowerPlatformEpisodeDetails(
+                closeoutGuarded = true,
+                closeoutSessionId = "in:8:14",
+                closeoutClaimRevision = 7L,
+                closeoutActionName = "in2"
+            ),
+            occurredAt = 1_000L
+        )
+        val before = LowerPlatformEpisodeReducer.snapshot(config)
+
+        val failure = runCatching {
+            LowerPlatformEpisodeReducer.transaction(config, persist = { error("disk failed") }) {
+                LowerPlatformEpisodeReducer.recoverGuardedIsolationIfKey(config, "in:8:14", 7L, "in2")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        assertEquals(before, LowerPlatformEpisodeReducer.snapshot(config))
+        assertTrue(LowerPlatformEpisodeReducer.hasOpenGuardedIsolation(config))
     }
 
     @Test

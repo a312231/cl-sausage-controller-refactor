@@ -51,6 +51,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveClaimCoo
 import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveClaimResult
 import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveReleaseResult
 import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalMoveStatusStore
+import cn.niuyannet.kaochang.android.services.actiongroup.GuardedSupplementCloseoutCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.GuardedSupplementCloseoutResult
 import cn.niuyannet.kaochang.android.services.actiongroup.NonParallelSupplementOrderHandoffCoordinator
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaimRecovery
@@ -3114,9 +3116,28 @@ object KaoChangOperate {
         reason: String,
         hasProcessingOrder: Boolean
     ): ManualDeviceRecoveryCloseoutResult {
+        val evidence = buildActionGroupRecoveryResidueEvidence(reason)
+        return withFaultHeatTransitionLock {
+            confirmManualDeviceRecoveryResidueLocked(reason, hasProcessingOrder, evidence)
+        }
+    }
+
+    private fun confirmManualDeviceRecoveryResidueLocked(
+        reason: String,
+        hasProcessingOrder: Boolean,
+        sampledEvidence: ActionGroupRecoveryResidueEvidence
+    ): ManualDeviceRecoveryCloseoutResult {
+        check(Thread.holdsLock(faultHeatTransitionLock)) { "人工恢复必须持有统一状态锁" }
+        val config = AppConfig.getAppConfig()
+        if (LowerPlatformEpisodeReducer.hasOpenGuardedIsolation(config)) {
+            return ManualDeviceRecoveryCloseoutResult(false, "存在补肠 guarded 残留，请使用下平台专用安全确认入口")
+        }
         val prefetchRead = readSupplementPrefetchEvidence()
         val prefetchSession = (prefetchRead as? DurableEvidenceReadResult.Valid)?.value
-        val evidence = buildActionGroupRecoveryResidueEvidence(reason)
+        val evidence = sampledEvidence.copy(
+            moveStatus = config.moveStatus,
+            session = actionGroupSessionStore.load()
+        )
         val decision = ManualDeviceRecoveryCloseoutPolicy.evaluate(
             evidence = evidence,
             hasProcessingOrder = hasProcessingOrder,
@@ -3182,7 +3203,6 @@ object KaoChangOperate {
             }
         }
 
-        val config = AppConfig.getAppConfig()
         val oldMoveStatus = config.moveStatus
         val persistIdle = {
             config.moveStatus = 0
@@ -3245,6 +3265,104 @@ object KaoChangOperate {
         markActionGroupRecoveryVerified("人工恢复本地残留：$reason")
         logW(LOG_ACTION_GROUP, "人工恢复本地残留完成：reason=$reason，evidence=${evidence.summary()}")
         return ManualDeviceRecoveryCloseoutResult(true, decision.reason)
+    }
+
+    suspend fun confirmGuardedSerialSupplementFailureRecovery(reason: String): ManualDeviceRecoveryCloseoutResult {
+        val firstEvidence = buildActionGroupRecoveryResidueEvidence("$reason:第一次空闲复核")
+        delay(500L)
+        val secondEvidence = buildActionGroupRecoveryResidueEvidence("$reason:第二次空闲复核")
+        return withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            val key = LowerPlatformEpisodeReducer.singleOpenGuardedIsolationKey(config)
+                ?: return@withFaultHeatTransitionLock ManualDeviceRecoveryCloseoutResult(
+                    false,
+                    "没有唯一且有效的补肠 guarded 恢复记录"
+                )
+            val prefetchRead = readSupplementPrefetchEvidence()
+            if (prefetchRead !is DurableEvidenceReadResult.Absent ||
+                panMoveJournalStore.load() != null ||
+                discardJournalStore.load() != null
+            ) {
+                return@withFaultHeatTransitionLock ManualDeviceRecoveryCloseoutResult(
+                    false,
+                    "存在并行补肠或搬盘/丢弃恢复记录，禁止混合收口"
+                )
+            }
+            val currentSession = actionGroupSessionStore.load()
+            val hasProcessingOrder = OrderStateManager.hasProcessingOrder()
+            val evidenceDecision = { evidence: ActionGroupRecoveryResidueEvidence ->
+                ManualDeviceRecoveryCloseoutPolicy.evaluate(
+                    evidence = evidence.copy(
+                        moveStatus = config.moveStatus,
+                        session = currentSession
+                    ),
+                    hasProcessingOrder = hasProcessingOrder,
+                    hasPanMoveJournal = false,
+                    hasDiscardJournal = false,
+                    durableEvidenceCorrupted = false
+                )
+            }
+            val firstDecision = evidenceDecision(firstEvidence)
+            val secondDecision = evidenceDecision(secondEvidence)
+            if (!firstDecision.canCloseout || !secondDecision.canCloseout) {
+                return@withFaultHeatTransitionLock ManualDeviceRecoveryCloseoutResult(
+                    false,
+                    "下位机连续空闲证据不足：${if (!firstDecision.canCloseout) firstDecision.reason else secondDecision.reason}"
+                )
+            }
+            val coordinator = GuardedSupplementCloseoutCoordinator(
+                transitionLock = faultHeatTransitionLock,
+                sessionStore = actionGroupSessionStore,
+                resourceLocks = actionGroupLocks,
+                moveStatusProvider = mechanicalMoveStatusStore::load,
+                guardedEpisodeExists = { expected ->
+                    LowerPlatformEpisodeReducer.singleOpenGuardedIsolationKey(config) == expected
+                },
+                closeEpisode = { expected ->
+                    LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
+                        LowerPlatformEpisodeReducer.recoverGuardedIsolationIfKey(
+                            config,
+                            expected.sessionId,
+                            expected.claimRevision,
+                            expected.actionName
+                        )
+                    }.value
+                }
+            )
+            when (val result = coordinator.close(key) {
+                when (val moveStatus = mechanicalMoveStatusStore.load()) {
+                    OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING ->
+                        mechanicalMoveClaimCoordinator(actionGroupCloseoutClaimOwnerStore(key.actionName)).release(
+                            owner = key.sessionId,
+                            expectedMoveStatus = OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING,
+                            idleMoveStatus = OrderMoveStatusPolicy.MOVE_STATUS_IDLE,
+                            expectedRevision = key.claimRevision
+                        )
+                    OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING ->
+                        mechanicalMoveClaimCoordinator(actionGroupCloseoutClaimOwnerStore(key.actionName))
+                            .releaseOwnerKeepingMoveStatus(
+                                owner = key.sessionId,
+                                expectedMoveStatuses = setOf(OrderMoveStatusPolicy.MOVE_STATUS_DELIVERING),
+                                expectedRevision = key.claimRevision
+                            )
+                    else -> MechanicalMoveReleaseResult.Rejected(
+                        "当前 moveStatus=${moveStatusDesc(moveStatus)} 不允许 guarded 收口"
+                    )
+                }
+            }) {
+                GuardedSupplementCloseoutResult.Closed -> {
+                    serialSupplementFailureProof = null
+                    lastActionGroupRecoveryFailureReason = null
+                    markActionGroupRecoveryVerified("人工精确恢复补肠 guarded 残留：$reason")
+                    publishRuntimeStateWithHttpFallback("人工精确恢复补肠 guarded 残留")
+                    ManualDeviceRecoveryCloseoutResult(true, "已精确释放补肠 session、资源和隔离记录")
+                }
+                is GuardedSupplementCloseoutResult.Rejected -> {
+                    logW(LOG_ACTION_GROUP, "人工精确恢复补肠 guarded 残留被拒绝：${result.reason}")
+                    ManualDeviceRecoveryCloseoutResult(false, result.reason)
+                }
+            }
+        }
     }
 
     fun getLastActionGroupRecoveryFailureReason(): String? = lastActionGroupRecoveryFailureReason
@@ -4181,15 +4299,6 @@ object KaoChangOperate {
                     "expected=${ResourceLocks.describe(proof.resourceMask)}，actual=${ResourceLocks.describe(ownedMask)}"
             )
         }
-        when (actionGroupLocks.releaseIfOwned(proof.owner, proof.resourceMask)) {
-            ResourceReleaseResult.RELEASED -> Unit
-            ResourceReleaseResult.ALREADY_ABSENT -> return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Maintenance(
-                "补肠失败收口发现资源在复核后已被其他路径释放，拒绝继续清理：owner=${proof.owner}"
-            )
-            ResourceReleaseResult.MASK_MISMATCH -> return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Maintenance(
-                "补肠失败收口资源释放失败：owner=${proof.owner}，expected=${ResourceLocks.describe(proof.resourceMask)}"
-            )
-        }
         val moveStatus = mechanicalMoveStatusStore.load()
         val claimRelease = when (moveStatus) {
             OrderMoveStatusPolicy.MOVE_STATUS_SUPPLEMENTING ->
@@ -4217,6 +4326,16 @@ object KaoChangOperate {
         if (actionGroupSessionStore.load() != null) {
             return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Maintenance(
                 "补肠失败收口 claim/session 原子 CAS 后仍有会话残留"
+            )
+        }
+        when (actionGroupLocks.releaseIfOwned(proof.owner, proof.resourceMask)) {
+            ResourceReleaseResult.RELEASED -> Unit
+            ResourceReleaseResult.ALREADY_ABSENT -> return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Maintenance(
+                "补肠失败收口 claim/session 已清，但资源 owner 在提交前消失：owner=${proof.owner}"
+            )
+            ResourceReleaseResult.MASK_MISMATCH -> return@withFaultHeatTransitionLock SerialSupplementFailureCloseoutResult.Maintenance(
+                "补肠失败收口 claim/session 已清，但资源释放失败：owner=${proof.owner}，" +
+                    "expected=${ResourceLocks.describe(proof.resourceMask)}"
             )
         }
         val episodeClosed = LowerPlatformEpisodeReducer.transaction(

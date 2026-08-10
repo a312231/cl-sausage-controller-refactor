@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.services.actiongroup.GuardedSupplementCloseoutKey
 import java.util.UUID
 
 data class LowerPlatformEpisodeDetails(
@@ -68,10 +69,16 @@ object LowerPlatformEpisodeReducer {
         persist: (AppConfigBean) -> Unit,
         mutation: () -> T
     ): TransactionResult<T> {
-        val value = mutation()
-        normalize(config)
-        persist(config)
-        return TransactionResult(value, snapshot(config))
+        val before = snapshot(config)
+        return try {
+            val value = mutation()
+            normalize(config)
+            persist(config)
+            TransactionResult(value, snapshot(config))
+        } catch (error: Throwable) {
+            restore(config, before)
+            throw error
+        }
     }
 
     @Synchronized
@@ -332,6 +339,29 @@ object LowerPlatformEpisodeReducer {
     }
 
     @Synchronized
+    fun hasOpenGuardedIsolation(config: AppConfigBean): Boolean =
+        config.lowerPlatformEpisodes.any {
+            it.lifecycle == LIFECYCLE_OPEN &&
+                it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+                it.closeoutGuarded
+        }
+
+    @Synchronized
+    fun singleOpenGuardedIsolationKey(config: AppConfigBean): GuardedSupplementCloseoutKey? {
+        val guarded = config.lowerPlatformEpisodes.filter {
+            it.lifecycle == LIFECYCLE_OPEN &&
+                it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+                it.closeoutGuarded
+        }
+        if (guarded.size != 1) return null
+        val episode = guarded.single()
+        val sessionId = episode.closeoutSessionId.takeIf { it.isNotBlank() } ?: return null
+        val claimRevision = episode.closeoutClaimRevision.takeIf { it > 0L } ?: return null
+        val actionName = episode.closeoutActionName.takeIf { it in setOf("in1", "in2", "in3") } ?: return null
+        return GuardedSupplementCloseoutKey(sessionId, claimRevision, actionName)
+    }
+
+    @Synchronized
     fun reduceStatus(config: AppConfigBean): String {
         val activeTypes = config.lowerPlatformEpisodes.asSequence()
             .filter { it.lifecycle == LIFECYCLE_OPEN }
@@ -409,6 +439,42 @@ object LowerPlatformEpisodeReducer {
         occurrenceCount, recoveredAt, requiresManualConfirm,
         closeoutGuarded, closeoutSessionId, closeoutClaimRevision, closeoutActionName
     )
+
+    private fun restore(config: AppConfigBean, snapshot: StateSnapshot) {
+        config.lowerPlatformGeneration = snapshot.generation
+        config.lowerPlatformAggregateVersion = snapshot.aggregateVersion
+        config.lowerPlatformStatus = snapshot.status
+        config.lowerPlatformIsolationActionName = snapshot.isolationActionName
+        config.supplementEnabled = snapshot.supplementEnabled
+        config.orderBlockReason = snapshot.orderBlockReason
+        config.lowerPlatformEpisodes = snapshot.episodes.map { episode ->
+            AppConfigBean.LowerPlatformEpisodeBean().apply {
+                eventId = episode.eventId
+                revision = episode.revision
+                faultType = episode.faultType
+                lifecycle = episode.lifecycle
+                actionName = episode.actionName
+                actionLabel = episode.actionLabel
+                errorCode = episode.errorCode
+                rawResult = episode.rawResult
+                reason = episode.reason
+                sourceBoxNo = episode.sourceBoxNo
+                tasteCode = episode.tasteCode
+                targetPanNo = episode.targetPanNo
+                batchId = episode.batchId
+                batchType = episode.batchType
+                firstOccurredAt = episode.firstOccurredAt
+                lastOccurredAt = episode.lastOccurredAt
+                occurrenceCount = episode.occurrenceCount
+                recoveredAt = episode.recoveredAt
+                requiresManualConfirm = episode.requiresManualConfirm
+                closeoutGuarded = episode.closeoutGuarded
+                closeoutSessionId = episode.closeoutSessionId
+                closeoutClaimRevision = episode.closeoutClaimRevision
+                closeoutActionName = episode.closeoutActionName
+            }
+        }.toCollection(ArrayList())
+    }
 
     private fun incrementAggregateVersion(config: AppConfigBean) {
         if (config.lowerPlatformAggregateVersion == Long.MAX_VALUE) {

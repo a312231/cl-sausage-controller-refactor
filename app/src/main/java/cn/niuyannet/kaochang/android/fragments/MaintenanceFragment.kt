@@ -1202,12 +1202,25 @@ class MaintenanceFragment : Fragment() {
                             "当前隔离动作=$isolationActionName"
                     )
                     .setPositiveButton("已确认安全") { _, _ ->
-                        val ok = LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction("维护人员现场确认下平台隔离")
-                        if (ok) {
-                            ToastUtils.showShort("已恢复下平台自动调度")
-                            updateManualSupplementConfirmButtonVisibility()
-                        } else {
-                            ToastUtils.showShort("当前没有可恢复的下平台隔离状态")
+                        lifecycleScope.launch {
+                            val guardedResult = withContext(Dispatchers.IO) {
+                                KaoChangOperate.confirmGuardedSerialSupplementFailureRecovery(
+                                    "维护人员现场确认下平台隔离"
+                                )
+                            }
+                            val recovered = if (guardedResult.ok) {
+                                true
+                            } else {
+                                LowerPlatformRuntimeStateReporter.confirmLowerPlatformIsolationAfterManualAction(
+                                    "维护人员现场确认下平台隔离"
+                                )
+                            }
+                            if (recovered) {
+                                ToastUtils.showShort("已恢复下平台自动调度")
+                                updateManualSupplementConfirmButtonVisibility()
+                            } else {
+                                ToastUtils.showShort("恢复失败：${guardedResult.reason}")
+                            }
                         }
                     }
                     .setNegativeButton("取消", null)
