@@ -63,22 +63,15 @@ class SupplementRecoverySafetySourceTest {
     }
 
     @Test
-    fun singleSupplementFailure_shouldClearOnlyConfirmedPickFailureFallbackBeforePublishing() {
+    fun singleSupplementFailure_shouldNeverAutoClearLegacyPickFailureFallback() {
         val source = operateSource()
         val start = source.indexOf("private suspend fun moveSausageToKaoPanDetailed(")
         val isolationPublish = source.indexOf("markLowerPlatformIsolatedRuntimeState(", start)
         val end = source.indexOf("/**\n     * 烤盘间搬移", start)
         val block = source.substring(start, end)
         val safeFallback = block.indexOf("val canClearFailedSession =")
-        val ownerFencedRelease = block.indexOf("releaseSupplementMoveClaimIfOwned(", safeFallback)
-
-        assertTrue("必须先限定只有in2取肠失败且允许切箱才可清恢复证据", safeFallback >= 0)
-        assertTrue(block.substring(safeFallback).contains("failureActionName == \"in2\""))
-        assertTrue(block.substring(safeFallback).contains("failureCode == AtomicActionCodes.IR_PICK_FAILED"))
-        assertTrue(block.substring(safeFallback).contains("allowPickFailureFallback"))
-        assertTrue("in2切箱必须确认原始结果就是明确IR_PICK_FAILED", block.substring(safeFallback).contains("rawIrPickFailure"))
-        assertTrue("安全切箱失败必须通过 owner 条件释放清 session/moveStatus", ownerFencedRelease > safeFallback)
-        assertTrue("安全切箱必须调用带资源 mask 的收口 helper", block.substring(ownerFencedRelease).contains("resourceMask"))
+        assertTrue("旧E5不得自动释放恢复证据", safeFallback >= 0)
+        assertTrue(block.substring(safeFallback).contains("val canClearFailedSession = false"))
 
         val failureTail = source.substring(isolationPublish, source.indexOf("if (moveSuccess && supplementStateApplied)", isolationPublish))
         assertTrue(

@@ -48,7 +48,22 @@ class SupplementFailureCloseoutPolicyTest {
         )
         assertFalse(
             SupplementFailureCloseoutPolicy.canAutoRelease(
-                base.copy(actionName = "in2", rawResult = AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "pick"))
+                base.copy(
+                    actionName = "in2",
+                    rawResult = AtomicActionResult.Failed(AtomicActionCodes.IR_PICK_FAILED, "pick")
+                )
+            )
+        )
+        assertTrue(
+            SupplementFailureCloseoutPolicy.canAutoRelease(
+                base.copy(
+                    actionName = "in2",
+                    rawResult = AtomicActionResult.Failed(
+                        AtomicActionCodes.IR_PICK_FAILED,
+                        "pick",
+                        freshExecutionObserved = true
+                    )
+                )
             )
         )
         assertFalse(

@@ -44,7 +44,8 @@ class ParallelSupplementRuntimePauseSourceTest {
         assertTrue(enable.contains("isActionGroupRecoveryBlocked()"))
 
         val resume = functionBlock(operate, "suspend fun resumeParallelSupplementForRuntimeRecovery", "private fun supplementPipelineOutcome")
-        assertTrue(resume.contains("handleParallelSupplementResumePreparation("))
+        assertTrue(resume.contains("已有双 lane 会话仅允许人工恢复"))
+        assertTrue(!resume.contains("handleParallelSupplementResumePreparation("))
 
         val resumeOnce = functionBlock(
             operate,
@@ -174,36 +175,30 @@ class ParallelSupplementRuntimePauseSourceTest {
     }
 
     @Test
-    fun startupRecoveryIdle_shouldReleaseTheForceAcquiredOwner() {
+    fun startupRecovery_shouldRetainPersistedDoubleLaneOwnerForManualRecovery() {
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val recovery = functionBlock(
             operate,
             "suspend fun recoverActionGroupStateAfterModbusReady",
             "private fun recoverPanMoveJournalAfterModbusReady"
         )
-        val idle = recovery.substring(
-            recovery.indexOf("SupplementPrefetchRecoveryResult.Idle"),
-            recovery.indexOf("is SupplementPrefetchRecoveryResult.PausedForOrder")
-        )
-
-        assertTrue(idle.contains("actionGroupLocks.release(doubleLaneSession.sessionId)"))
+        assertTrue(recovery.contains("已有双 lane 会话仅允许人工恢复"))
+        assertTrue(!recovery.contains("actionGroupLocks.release(doubleLaneSession.sessionId)"))
+        assertTrue(!recovery.contains("actionGroupLocks.forceAcquire"))
     }
 
     @Test
-    fun runtimeResumePreparationFailure_shouldRetainTheOwnedLockForMaintenance() {
+    fun runtimeResume_shouldFailClosedWithoutAcquiringOrPreparing() {
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val resume = functionBlock(
             operate,
             "suspend fun resumeParallelSupplementForRuntimeRecovery",
             "private fun supplementPipelineOutcome"
         )
-        val preparation = resume.substring(
-            resume.indexOf("val preparation = runCatching"),
-            resume.indexOf("handleParallelSupplementResumePreparation(")
-        )
-
-        assertTrue(preparation.contains("enterActionGroupMaintenance"))
-        assertTrue(!preparation.contains("actionGroupLocks.release(session.sessionId)"))
+        assertTrue(resume.contains("enterActionGroupMaintenance"))
+        assertTrue(resume.contains("已有双 lane 会话仅允许人工恢复"))
+        assertTrue(!resume.contains("actionGroupLocks.tryAcquire"))
+        assertTrue(!resume.contains("handleParallelSupplementResumePreparation("))
     }
 
     @Test

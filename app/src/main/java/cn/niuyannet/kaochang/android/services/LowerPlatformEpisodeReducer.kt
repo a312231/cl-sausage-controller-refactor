@@ -12,7 +12,11 @@ data class LowerPlatformEpisodeDetails(
     val batchType: String? = null,
     val errorCode: String? = null,
     val rawResult: String? = null,
-    val requiresManualConfirm: Boolean = false
+    val requiresManualConfirm: Boolean = false,
+    val closeoutGuarded: Boolean = false,
+    val closeoutSessionId: String? = null,
+    val closeoutClaimRevision: Long? = null,
+    val closeoutActionName: String? = null
 )
 
 object LowerPlatformEpisodeReducer {
@@ -39,7 +43,11 @@ object LowerPlatformEpisodeReducer {
         val lastOccurredAt: Long,
         val occurrenceCount: Int,
         val recoveredAt: Long?,
-        val requiresManualConfirm: Boolean
+        val requiresManualConfirm: Boolean,
+        val closeoutGuarded: Boolean,
+        val closeoutSessionId: String,
+        val closeoutClaimRevision: Long,
+        val closeoutActionName: String
     )
 
     data class StateSnapshot(
@@ -185,6 +193,58 @@ object LowerPlatformEpisodeReducer {
     }
 
     @Synchronized
+    fun openGuardedIsolation(
+        config: AppConfigBean,
+        actionName: String,
+        reason: String,
+        occurredAt: Long = System.currentTimeMillis(),
+        details: LowerPlatformEpisodeDetails
+    ) {
+        val sessionId = details.closeoutSessionId.orEmpty()
+        val claimRevision = details.closeoutClaimRevision ?: 0L
+        val closeoutAction = details.closeoutActionName ?: actionName
+        val existing = config.lowerPlatformEpisodes.firstOrNull {
+            it.lifecycle == LIFECYCLE_OPEN &&
+                it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+                it.closeoutGuarded && it.closeoutSessionId == sessionId &&
+                it.closeoutClaimRevision == claimRevision && it.closeoutActionName == closeoutAction
+        }
+        if (existing == null) {
+            config.lowerPlatformEpisodes.add(AppConfigBean.LowerPlatformEpisodeBean().apply {
+                eventId = UUID.randomUUID().toString()
+                faultType = AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+                lifecycle = LIFECYCLE_OPEN
+                this.actionName = actionName
+                actionLabel = actionLabel(actionName)
+                errorCode = details.errorCode.orEmpty()
+                rawResult = details.rawResult.orEmpty()
+                this.reason = reason
+                sourceBoxNo = details.sourceBoxNo
+                targetPanNo = details.targetPanNo
+                tasteCode = details.tasteCode.orEmpty()
+                batchId = details.batchId.orEmpty()
+                batchType = details.batchType.orEmpty()
+                firstOccurredAt = occurredAt
+                lastOccurredAt = occurredAt
+                occurrenceCount = 1
+                requiresManualConfirm = true
+                closeoutGuarded = true
+                closeoutSessionId = sessionId
+                closeoutClaimRevision = claimRevision
+                closeoutActionName = closeoutAction
+            })
+        } else {
+            existing.revision += 1L
+            existing.lastOccurredAt = occurredAt
+            existing.occurrenceCount += 1
+            existing.reason = reason
+            existing.errorCode = details.errorCode.orEmpty()
+            existing.rawResult = details.rawResult.orEmpty()
+        }
+        changed(config)
+    }
+
+    @Synchronized
     fun recoverSupplyBox(config: AppConfigBean, sourceBoxNo: Int, recoveredAt: Long = System.currentTimeMillis()): Boolean {
         val episodes = config.lowerPlatformEpisodes.filter {
             it.lifecycle == LIFECYCLE_OPEN &&
@@ -237,7 +297,7 @@ object LowerPlatformEpisodeReducer {
     @Synchronized
     fun recoverIsolation(config: AppConfigBean, recoveredAt: Long = System.currentTimeMillis()): Boolean {
         val episodes = config.lowerPlatformEpisodes.filter {
-            it.lifecycle == LIFECYCLE_OPEN && it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED
+            it.lifecycle == LIFECYCLE_OPEN && it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED && !it.closeoutGuarded
         }
         if (episodes.isEmpty()) return false
         episodes.forEach {
@@ -246,6 +306,27 @@ object LowerPlatformEpisodeReducer {
             it.recoveredAt = recoveredAt
             it.lastOccurredAt = recoveredAt
         }
+        changed(config)
+        return true
+    }
+
+    @Synchronized
+    fun recoverGuardedIsolationIfKey(
+        config: AppConfigBean,
+        sessionId: String,
+        claimRevision: Long,
+        actionName: String,
+        recoveredAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        val episode = config.lowerPlatformEpisodes.firstOrNull {
+            it.lifecycle == LIFECYCLE_OPEN && it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+                it.closeoutGuarded && it.closeoutSessionId == sessionId &&
+                it.closeoutClaimRevision == claimRevision && it.closeoutActionName == actionName
+        } ?: return false
+        episode.lifecycle = LIFECYCLE_RECOVERED
+        episode.revision += 1L
+        episode.recoveredAt = recoveredAt
+        episode.lastOccurredAt = recoveredAt
         changed(config)
         return true
     }
@@ -325,7 +406,8 @@ object LowerPlatformEpisodeReducer {
     private fun AppConfigBean.LowerPlatformEpisodeBean.toSnapshot(): EpisodeSnapshot = EpisodeSnapshot(
         eventId, revision, faultType, lifecycle, actionName, actionLabel, errorCode, rawResult, reason,
         sourceBoxNo, tasteCode, targetPanNo, batchId, batchType, firstOccurredAt, lastOccurredAt,
-        occurrenceCount, recoveredAt, requiresManualConfirm
+        occurrenceCount, recoveredAt, requiresManualConfirm,
+        closeoutGuarded, closeoutSessionId, closeoutClaimRevision, closeoutActionName
     )
 
     private fun incrementAggregateVersion(config: AppConfigBean) {

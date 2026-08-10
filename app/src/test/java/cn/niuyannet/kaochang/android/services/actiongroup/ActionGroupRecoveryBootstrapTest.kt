@@ -75,12 +75,13 @@ class ActionGroupRecoveryBootstrapTest {
             mechanicalClaimRevision = 1L
         )
         val store = MemorySessionStore(session)
+        val locks = ResourceLocks().apply { tryAcquire(session.resourceMask, session.sessionId) }
         var abandonedOwner: String? = null
 
         val result = ActionGroupRecoveryBootstrap(
             client = FakeClient(),
             sessionStore = store,
-            resourceLocks = ResourceLocks(),
+            resourceLocks = locks,
             abandonPreparedClaim = {
                 abandonedOwner = it.sessionId
                 store.clear()
@@ -91,6 +92,7 @@ class ActionGroupRecoveryBootstrapTest {
         assertTrue(result is ActionGroupRecoveryResult.PreparedClaimAbandoned)
         assertEquals("prepared-in", abandonedOwner)
         assertNull(store.session)
+        assertTrue(locks.isIdle())
     }
 
     @Test
@@ -402,6 +404,39 @@ class ActionGroupRecoveryBootstrapTest {
         assertTrue(result is ActionGroupRecoveryResult.TakeoverFinished)
         assertEquals(ActionGroupResult.Success, (result as ActionGroupRecoveryResult.TakeoverFinished).actionResult)
         assertEquals(listOf("in3:0", "in4:0", "in5:0", "in6:0", "in7:2"), client.calls)
+    }
+
+    @Test
+    fun recover_shouldRecheckAutomaticTakeoverBeforeForceAcquire() = runBlocking {
+        val session = ActionGroupSession(
+            sessionId = "in-prefix-guarded",
+            type = ActionGroupSessionType.IN_SUPPLEMENT,
+            sourceNo = 17,
+            targetNo = 2,
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+        )
+        val store = MemorySessionStore(session)
+        val locks = ResourceLocks()
+        val client = FakeClient(states = mutableMapOf("in1" to COMPLETED))
+        var mutationAttempts = 0
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = client,
+            sessionStore = store,
+            resourceLocks = locks,
+            allowAutomaticTakeover = { true },
+            performAutomaticRecoveryMutation = { _, _ ->
+                mutationAttempts++
+                false
+            }
+        ).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.MaintenanceRequired)
+        assertTrue((result as ActionGroupRecoveryResult.MaintenanceRequired).reason.contains("guarded"))
+        assertTrue(client.calls.isEmpty())
+        assertTrue(locks.isIdle())
+        assertEquals(session, store.session)
+        assertEquals(1, mutationAttempts)
     }
 
     @Test

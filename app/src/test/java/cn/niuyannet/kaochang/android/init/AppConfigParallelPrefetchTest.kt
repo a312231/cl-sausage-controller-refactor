@@ -7,10 +7,10 @@ import org.junit.Test
 class AppConfigParallelPrefetchTest {
 
     @Test
-    fun parallelPrefetchFlag_shouldDefaultToEnabled() {
+    fun parallelPrefetchFlag_shouldDefaultToDisabled() {
         val config = AppConfigBean()
 
-        assertEquals(1, config.enableParallelSupplementPrefetch)
+        assertEquals(0, config.enableParallelSupplementPrefetch)
     }
 
     @Test
@@ -38,7 +38,7 @@ class AppConfigParallelPrefetchTest {
     }
 
     @Test
-    fun remoteParallelPrefetchFlag_shouldKeepCurrentValueForMissingOrInvalidValue() {
+    fun remoteParallelPrefetchFlag_shouldDisableWhenMissingAndIgnoreInvalidValue() {
         listOf<Any?>(null, "1", 1.0, true, -1, 2).forEach { rawValue ->
             val config = AppConfigBean().apply {
                 enableParallelSupplementPrefetch = 1
@@ -49,7 +49,7 @@ class AppConfigParallelPrefetchTest {
 
             AppConfig.applyRemoteParallelSupplementPrefetchConfig(config, remote)
 
-            assertEquals("remote=$rawValue", 1, config.enableParallelSupplementPrefetch)
+            assertEquals("remote=$rawValue", if (rawValue == null) 0 else 1, config.enableParallelSupplementPrefetch)
         }
     }
 

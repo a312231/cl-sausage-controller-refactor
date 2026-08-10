@@ -29,7 +29,8 @@ class ParallelSupplementPipelineWiringSourceTest {
             "private fun recoverPanMoveJournalAfterModbusReady"
         )
 
-        assertTrue(recovery.contains("SupplementPrefetchRecoveryCoordinator("))
+        assertTrue(!recovery.contains("SupplementPrefetchRecoveryCoordinator("))
+        assertTrue(recovery.contains("已有双 lane 会话仅允许人工恢复"))
         assertTrue(!recovery.contains("isParallelSupplementPrefetchEnabled()"))
     }
 
@@ -51,7 +52,7 @@ class ParallelSupplementPipelineWiringSourceTest {
         assertTrue(stopSignal > recovery)
         assertTrue(earlyReturn > stopSignal)
         assertTrue(newPlan > earlyReturn)
-        assertTrue(recoveryBlock.contains("if (stopAfterParallelSessionHandled)"))
+        assertTrue(recoveryBlock.contains("已有双 lane 会话仅允许人工恢复"))
     }
 
     @Test

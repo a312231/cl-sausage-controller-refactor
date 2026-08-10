@@ -82,7 +82,11 @@ sealed class AtomicRegistersReadResult {
 
 sealed class AtomicActionResult {
     data object Success : AtomicActionResult()
-    data class Failed(val errorCode: Int, val message: String) : AtomicActionResult()
+    data class Failed(
+        val errorCode: Int,
+        val message: String,
+        val freshExecutionObserved: Boolean = false
+    ) : AtomicActionResult()
     data class Timeout(val message: String) : AtomicActionResult()
     data class ModbusError(
         val message: String,
@@ -343,6 +347,7 @@ class AtomicActionExecutor(
                         requireFreshStateBeforeSuccess = true,
                         hasAlreadyObservedRunning = false,
                         allowFastCompletedWhenCommandCleared = true,
+                        commandDispatchedByThisCall = commandCallbackFailure == null,
                         onRunningConfirmed = if (commandCallbackFailure == null) onRunningConfirmed else null
                     )
                 }
@@ -356,12 +361,14 @@ class AtomicActionExecutor(
         requireFreshStateBeforeSuccess: Boolean,
         hasAlreadyObservedRunning: Boolean,
         allowFastCompletedWhenCommandCleared: Boolean,
+        commandDispatchedByThisCall: Boolean = false,
         onRunningConfirmed: (suspend () -> Unit)?
     ): AtomicActionResult {
         var lastRunningLogAtMs = 0L
         var hasLoggedRunning = hasAlreadyObservedRunning
         var hasObservedFreshState = !requireFreshStateBeforeSuccess
         var hasObservedRunning = hasAlreadyObservedRunning
+        var freshExecutionObserved = commandDispatchedByThisCall && hasAlreadyObservedRunning
         var hasLoggedStartupWait = false
         var hasLoggedCommandPendingWait = false
         var idleAfterRunningCount = 0
@@ -563,6 +570,9 @@ class AtomicActionExecutor(
                         }
                         code == AtomicActionCodes.RUNNING -> {
                             hasObservedFreshState = true
+                            if (commandDispatchedByThisCall) {
+                                freshExecutionObserved = true
+                            }
                             if (!hasObservedRunning) {
                                 hasObservedRunning = true
                                 emitTelemetry(
@@ -583,6 +593,7 @@ class AtomicActionExecutor(
                                             requireFreshStateBeforeSuccess = false,
                                             hasAlreadyObservedRunning = true,
                                             allowFastCompletedWhenCommandCleared = false,
+                                            commandDispatchedByThisCall = commandDispatchedByThisCall,
                                             onRunningConfirmed = null
                                         )
                                     }
@@ -614,7 +625,8 @@ class AtomicActionExecutor(
                                     resultValue = code,
                                     hasObservedRunning = hasObservedRunning,
                                     extraParts = listOf("错误说明=${messageOf(code)}")
-                                )
+                                ),
+                                freshExecutionObserved = freshExecutionObserved
                             ),
                             startedAtMs
                         )

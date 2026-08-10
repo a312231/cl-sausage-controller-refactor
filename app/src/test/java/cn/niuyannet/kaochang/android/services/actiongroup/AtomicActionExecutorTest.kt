@@ -11,6 +11,47 @@ import org.junit.Test
 class AtomicActionExecutorTest {
 
     @Test
+    fun execute_shouldMarkE5FreshOnlyAfterThisCallDispatchesAndObservesRunning() = runBlocking {
+        val freshGateway = FakeGateway(
+            reads = mapOf(
+                AtomicActions.in2.resultRegister to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IR_PICK_FAILED
+                )
+            )
+        )
+        val fresh = AtomicActionExecutor(freshGateway, logger = {}).execute(AtomicActions.in2)
+        assertTrue(fresh is AtomicActionResult.Failed)
+        assertTrue((fresh as AtomicActionResult.Failed).freshExecutionObserved)
+
+        val staleRunningGateway = FakeGateway(
+            reads = mapOf(
+                AtomicActions.in2.resultRegister to queueOf(
+                    AtomicActionCodes.RUNNING,
+                    AtomicActionCodes.IR_PICK_FAILED
+                )
+            )
+        )
+        val staleRunning = AtomicActionExecutor(staleRunningGateway, logger = {}).execute(AtomicActions.in2)
+        assertTrue(staleRunning is AtomicActionResult.Failed)
+        assertFalse((staleRunning as AtomicActionResult.Failed).freshExecutionObserved)
+        assertTrue(staleRunningGateway.writes.isEmpty())
+
+        val staleErrorGateway = FakeGateway(
+            reads = mapOf(
+                AtomicActions.in2.resultRegister to queueOf(
+                    AtomicActionCodes.IDLE,
+                    AtomicActionCodes.IR_PICK_FAILED
+                )
+            )
+        )
+        val staleError = AtomicActionExecutor(staleErrorGateway, logger = {}).execute(AtomicActions.in2)
+        assertTrue(staleError is AtomicActionResult.Failed)
+        assertFalse((staleError as AtomicActionResult.Failed).freshExecutionObserved)
+    }
+
+    @Test
     fun execute_shouldFinishPollingBeforeRethrowingCommandDispatchCallbackFailure() = runBlocking {
         val events = mutableListOf<String>()
         val gateway = object : AtomicModbusGateway {

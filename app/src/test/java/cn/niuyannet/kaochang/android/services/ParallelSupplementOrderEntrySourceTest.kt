@@ -92,7 +92,34 @@ class ParallelSupplementOrderEntrySourceTest {
         val recoveryStart = operate.indexOf("suspend fun recoverActionGroupStateAfterModbusReady")
         val recoveryEnd = operate.indexOf("private fun recoverPanMoveJournalAfterModbusReady", recoveryStart)
         val recovery = operate.substring(recoveryStart, recoveryEnd)
-        assertTrue(recovery.contains("handleParallelSupplementResumePreparation("))
+        assertFalse(recovery.contains("handleParallelSupplementResumePreparation("))
+    }
+
+    @Test
+    fun persistedParallelRecovery_shouldFailClosedWithoutForceAcquireOrAutoRelease() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("suspend fun recoverActionGroupStateAfterModbusReady")
+        val end = operate.indexOf("private fun recoverPanMoveJournalAfterModbusReady", start)
+        val recovery = operate.substring(start, end)
+        val parallelStart = recovery.indexOf("if (doubleLaneSession != null)")
+        val parallel = recovery.substring(parallelStart, recovery.indexOf("return false", parallelStart) + "return false".length)
+
+        assertFalse(parallel.contains("actionGroupLocks.forceAcquire"))
+        assertFalse(parallel.contains("SupplementPrefetchRecoveryCoordinator("))
+        assertFalse(parallel.contains("config.moveStatus = 0"))
+        assertTrue(parallel.contains("已有双 lane 会话仅允许人工恢复"))
+    }
+
+    @Test
+    fun guardedSupplementResidue_shouldBeRejectedInsideAtomicAdmissionBoundary() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("fun acceptIncomingOrderForMechanicalDispatch")
+        val end = operate.indexOf("fun requestSupplementPauseForOrder", start)
+        val admission = operate.substring(start, end)
+
+        assertTrue(admission.contains("withFaultHeatTransitionLock"))
+        assertTrue(admission.contains("hasGuardedSupplementCloseoutResidue"))
+        assertTrue(admission.indexOf("hasGuardedSupplementCloseoutResidue") < admission.indexOf("OrderStateManager.checkAndAcceptOrder"))
     }
 
     @Test

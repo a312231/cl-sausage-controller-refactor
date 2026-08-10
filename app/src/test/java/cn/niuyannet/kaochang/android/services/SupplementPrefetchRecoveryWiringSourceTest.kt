@@ -10,15 +10,14 @@ class SupplementPrefetchRecoveryWiringSourceTest {
     @Test
     fun doubleLaneRecovery_shouldPrecedePanAndGenericRecovery() {
         val block = functionBlock("suspend fun recoverActionGroupStateAfterModbusReady", "private fun recoverPanMoveJournalAfterModbusReady")
-        val coexistence = block.indexOf("doubleLaneSession != null && panMoveJournal != null")
-        val dedicated = block.indexOf("SupplementPrefetchRecoveryCoordinator(")
+        val failClosed = block.indexOf("if (doubleLaneSession != null)")
         val panRecovery = block.indexOf("recoverPanMoveJournalAfterModbusReady(reason)")
         val generic = block.indexOf("ActionGroupRecoveryBootstrap(")
 
-        assertTrue(coexistence >= 0)
-        assertTrue(block.contains("双 lane 会话与搬盘 journal 同时存在"))
-        assertTrue(dedicated > coexistence)
-        assertTrue(panRecovery > dedicated)
+        assertTrue(failClosed >= 0)
+        assertTrue(block.contains("已有双 lane 会话仅允许人工恢复"))
+        assertTrue(!block.contains("SupplementPrefetchRecoveryCoordinator("))
+        assertTrue(panRecovery > failClosed)
         assertTrue(generic > panRecovery)
     }
 
@@ -128,20 +127,15 @@ class SupplementPrefetchRecoveryWiringSourceTest {
     }
 
     @Test
-    fun cancelledDedicatedRecovery_shouldEnterPreservingMaintenanceBeforeRethrow() {
+    fun persistedDoubleLaneRecovery_shouldFailClosedWithoutAsyncRecovery() {
         val block = functionBlock(
             "suspend fun recoverActionGroupStateAfterModbusReady",
             "private fun recoverPanMoveJournalAfterModbusReady"
         )
-        val dedicated = block.indexOf("SupplementPrefetchRecoveryCoordinator(")
-        val cancellation = block.indexOf("catch (cancellation: CancellationException)", dedicated)
-        val preservingMaintenance = block.indexOf("preserveMoveStatus = true", cancellation)
-        val rethrow = block.indexOf("throw cancellation", preservingMaintenance)
-
-        assertTrue(dedicated >= 0)
-        assertTrue(cancellation > dedicated)
-        assertTrue(preservingMaintenance > cancellation)
-        assertTrue(rethrow > preservingMaintenance)
+        assertTrue(block.contains("已有双 lane 会话仅允许人工恢复"))
+        assertTrue(block.contains("preserveMoveStatus = true"))
+        assertTrue(!block.contains("SupplementPrefetchRecoveryCoordinator("))
+        assertTrue(!block.contains("throw cancellation"))
     }
 
     @Test

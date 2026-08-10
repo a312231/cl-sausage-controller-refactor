@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.mqtt.RuntimeStatePayloadBuilder
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -112,6 +113,50 @@ class LowerPlatformEpisodeReducerTest {
         assertEquals("FAILED(230): 抛肠红外未确认", episode.rawResult)
         assertEquals("抛肠红外未确认", episode.reason)
         assertTrue(episode.requiresManualConfirm)
+    }
+
+    @Test
+    fun guardedIsolation_shouldRequireExactKeyAndGenericRecoveryMustSkipIt() {
+        val config = AppConfigBean()
+        val details = LowerPlatformEpisodeDetails(
+            sourceBoxNo = 8,
+            targetPanNo = 14,
+            errorCode = "0x00E5",
+            closeoutGuarded = true,
+            closeoutSessionId = "in:8:14",
+            closeoutClaimRevision = 7L,
+            closeoutActionName = "in2"
+        )
+
+        LowerPlatformEpisodeReducer.openGuardedIsolation(
+            config = config,
+            actionName = "in2",
+            reason = "本轮E5等待精确收口",
+            details = details,
+            occurredAt = 1_000L
+        )
+
+        assertFalse(LowerPlatformEpisodeReducer.recoverIsolation(config, 2_000L))
+        assertFalse(
+            LowerPlatformEpisodeReducer.recoverGuardedIsolationIfKey(
+                config,
+                sessionId = "wrong",
+                claimRevision = 7L,
+                actionName = "in2",
+                recoveredAt = 2_000L
+            )
+        )
+        assertEquals("OPEN", config.lowerPlatformEpisodes.single().lifecycle)
+        assertTrue(
+            LowerPlatformEpisodeReducer.recoverGuardedIsolationIfKey(
+                config,
+                sessionId = "in:8:14",
+                claimRevision = 7L,
+                actionName = "in2",
+                recoveredAt = 3_000L
+            )
+        )
+        assertEquals("RECOVERED", config.lowerPlatformEpisodes.single().lifecycle)
     }
 
     @Test

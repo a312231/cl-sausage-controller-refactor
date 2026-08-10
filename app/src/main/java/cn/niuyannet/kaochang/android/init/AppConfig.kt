@@ -1148,6 +1148,10 @@ object AppConfig {
         jsonData: JSONObject?
     ) {
         val rawValue = jsonData?.get("enableParallelSupplementPrefetch")
+        if (rawValue == null) {
+            config.enableParallelSupplementPrefetch = 0
+            return
+        }
         if (rawValue is Byte || rawValue is Short || rawValue is Int || rawValue is Long) {
             val normalized = (rawValue as Number).toLong()
             if (normalized == 0L || normalized == 1L) {

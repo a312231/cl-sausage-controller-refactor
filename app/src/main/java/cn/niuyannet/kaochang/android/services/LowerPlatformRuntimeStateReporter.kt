@@ -70,7 +70,11 @@ object LowerPlatformRuntimeStateReporter {
         val previousOrderBlockReason = config.orderBlockReason
         val previousMoveStatus = config.moveStatus
         val tx = LowerPlatformEpisodeReducer.transaction(config, AppConfig::saveAppConfigDurable) {
-            LowerPlatformEpisodeReducer.openIsolated(config, actionName, reason, details = details)
+            if (details.closeoutGuarded) {
+                LowerPlatformEpisodeReducer.openGuardedIsolation(config, actionName, reason, details = details)
+            } else {
+                LowerPlatformEpisodeReducer.openIsolated(config, actionName, reason, details = details)
+            }
             applyLowerPlatformIsolated(config)
             config.lowerPlatformIsolationActionName = actionName
         }
@@ -133,6 +137,9 @@ object LowerPlatformRuntimeStateReporter {
 
     fun confirmLowerPlatformIsolationAfterManualAction(reason: String): Boolean {
         val config = AppConfig.getAppConfig()
+        if (config.lowerPlatformEpisodes.any { it.lifecycle == "OPEN" && it.closeoutGuarded }) {
+            return false
+        }
         if (!shouldRecoverAfterManualLowerPlatformAction(config)) {
             return false
         }
@@ -157,13 +164,11 @@ object LowerPlatformRuntimeStateReporter {
             lowerPlatformIsolationActionName = config.lowerPlatformIsolationActionName,
             supplementEnabled = config.supplementEnabled
         )
-        val recoveredEpisode = LowerPlatformEpisodeReducer.recoverIsolation(config)
-        config.lowerPlatformStatus = if (recoveredEpisode) {
-            LowerPlatformEpisodeReducer.reduceStatus(config)
-        } else {
-            AppConfigBean.LOWER_PLATFORM_STATUS_NORMAL
+        LowerPlatformEpisodeReducer.recoverIsolation(config)
+        config.lowerPlatformStatus = LowerPlatformEpisodeReducer.reduceStatus(config)
+        if (config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
+            config.lowerPlatformIsolationActionName = ""
         }
-        config.lowerPlatformIsolationActionName = ""
         config.supplementEnabled = if (config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED) {
             AppConfigBean.SUPPLEMENT_ENABLED_NO
         } else {

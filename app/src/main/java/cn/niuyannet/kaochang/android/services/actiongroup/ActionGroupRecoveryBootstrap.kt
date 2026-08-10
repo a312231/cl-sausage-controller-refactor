@@ -52,8 +52,17 @@ class ActionGroupRecoveryBootstrap(
         }
     },
     private val abandonPreparedClaim: (ActionGroupSession) -> Boolean = clearSessionIfCurrent,
-    private val moveStatusProvider: () -> Int = { 0 }
+    private val moveStatusProvider: () -> Int = { 0 },
+    private val allowAutomaticTakeover: () -> Boolean = { true },
+    private val recheckAutomaticTakeover: (ActionGroupSession) -> Boolean = { allowAutomaticTakeover() },
+    private val performAutomaticRecoveryMutation: (ActionGroupSession, () -> Unit) -> Boolean = { _, mutation ->
+        mutation()
+        true
+    }
 ) {
+    private fun automaticTakeoverAllowed(session: ActionGroupSession): Boolean =
+        recheckAutomaticTakeover(session)
+
     suspend fun recover(): ActionGroupRecoveryResult {
         val reader = client as? AtomicActionStateReader
             ?: return ActionGroupRecoveryResult.MaintenanceRequired("动作组恢复失败：AtomicActionClient 不支持读取结果寄存器")
@@ -65,6 +74,11 @@ class ActionGroupRecoveryBootstrap(
                 "动作组恢复失败：读取 ${failed.spec.name} 结果寄存器 ${failed.spec.resultRegister} 失败：$message"
             )
         }
+        if (!allowAutomaticTakeover()) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组自动恢复被当前 guarded 收口门禁阻止，需人工精确恢复"
+            )
+        }
 
         val terminalFailures = states.filter { state ->
             val value = (state.value as AtomicReadResult.Success).value
@@ -74,7 +88,9 @@ class ActionGroupRecoveryBootstrap(
             val failedState = terminalFailures.single()
             val code = (failedState.value as AtomicReadResult.Success).value
             val session = sessionStore.load()
-            if (session != null && closeKnownIsolatedTerminalFailure(session, failedState.spec.name, code)) {
+            if (session != null && automaticTakeoverAllowed(session) &&
+                closeKnownIsolatedTerminalFailure(session, failedState.spec.name, code)
+            ) {
                 logger(
                     "动作组恢复识别到已持久化下平台隔离终态，统一安全收口本地补肠会话：" +
                         "sessionId=${session.sessionId}，action=${failedState.spec.name}，" +
@@ -107,12 +123,21 @@ class ActionGroupRecoveryBootstrap(
                 }
                 if (session.mechanicalClaimState == MechanicalClaimState.PREPARED) {
                     if (sessionValues.all { it == AtomicActionCodes.IDLE }) {
-                        if (!abandonPreparedClaim(session)) {
+                        if (!automaticTakeoverAllowed(session)) {
+                            return ActionGroupRecoveryResult.MaintenanceRequired(
+                                "动作组自动恢复在放弃 PREPARED 会话前被 guarded 收口门禁阻止，需人工精确恢复"
+                            )
+                        }
+                        var abandonAllowed = true
+                        val abandonSucceeded = performAutomaticRecoveryMutation(session) {
+                            abandonAllowed = abandonPreparedClaim(session)
+                            if (abandonAllowed) resourceLocks.release(session.sessionId)
+                        }
+                        if (!abandonAllowed || !abandonSucceeded) {
                             return ActionGroupRecoveryResult.MaintenanceRequired(
                                 "动作组 PREPARED 会话安全放弃失败，保持忙态：sessionId=${session.sessionId}"
                             )
                         }
-                        resourceLocks.release(session.sessionId)
                         return ActionGroupRecoveryResult.PreparedClaimAbandoned(session)
                     }
                     return ActionGroupRecoveryResult.MaintenanceRequired(
@@ -121,7 +146,14 @@ class ActionGroupRecoveryBootstrap(
                     )
                 }
                 if (sessionValues.all { it == AtomicActionCodes.COMPLETED }) {
-                    resourceLocks.release(session.sessionId)
+                    if (!automaticTakeoverAllowed(session)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "动作组自动恢复在释放已完成会话资源前被 guarded 收口门禁阻止，保持忙态"
+                        )
+                    }
+                    if (!performAutomaticRecoveryMutation(session) { resourceLocks.release(session.sessionId) }) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复释放已完成会话资源被 guarded 收口门禁阻止，保持忙态")
+                    }
                     logger(
                         "动作组恢复完成：按结果寄存器=0x0002（完成）推断本会话已完成，" +
                             "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
@@ -136,13 +168,29 @@ class ActionGroupRecoveryBootstrap(
                                 "states=${formatSessionStates(sessionSteps, sessionValues)}"
                         )
                     }
+                    if (!automaticTakeoverAllowed(session)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "动作组自动恢复在 forceAcquire 前被 guarded 收口门禁阻止，需人工精确恢复"
+                        )
+                    }
+                    var mutationAllowed = true
                     val claimFailure = runCatching {
-                        resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+                        mutationAllowed = performAutomaticRecoveryMutation(session) {
+                            resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+                        }
                     }.exceptionOrNull()
+                    if (!mutationAllowed) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复 forceAcquire 被 guarded 收口门禁阻止，需人工精确恢复")
+                    }
                     if (claimFailure != null) {
                         return ActionGroupRecoveryResult.MaintenanceRequired(
                             "动作组恢复资源 owner 冲突，拒绝清理其他 owner：" +
                                 "sessionId=${session.sessionId}，error=${claimFailure.message}"
+                        )
+                    }
+                    if (!automaticTakeoverAllowed(session)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "动作组自动恢复在续作前被 guarded 收口门禁阻止，保持资源现场"
                         )
                     }
                     logger(
@@ -150,20 +198,36 @@ class ActionGroupRecoveryBootstrap(
                             "已识别连续完成前缀，resourceLocks=${resourceLocks.snapshot()}"
                     )
                     val actionResult = runSession(session, resumeFromRunningState = true)
-                    resourceLocks.release(session.sessionId)
+                    if (!automaticTakeoverAllowed(session)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "动作组自动恢复在续作结束后被 guarded 收口门禁阻止，保持资源现场"
+                        )
+                    }
+                    if (!performAutomaticRecoveryMutation(session) { resourceLocks.release(session.sessionId) }) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复释放续作资源被 guarded 收口门禁阻止，保持资源现场")
+                    }
                     logger(
                         "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"
                     )
                     return ActionGroupRecoveryResult.TakeoverFinished(session, actionResult)
                 }
                 if (session.type == ActionGroupSessionType.OUT_SELL || session.type == ActionGroupSessionType.OUT_MANUAL) {
-                    if (!clearSessionIfCurrent(session)) {
+                    if (!automaticTakeoverAllowed(session)) {
+                        return ActionGroupRecoveryResult.MaintenanceRequired(
+                            "出餐动作组自动收口在清理旧会话前被 guarded 收口门禁阻止，保持忙态"
+                        )
+                    }
+                    var clearAllowed = true
+                    val clearSucceeded = performAutomaticRecoveryMutation(session) {
+                        clearAllowed = clearSessionIfCurrent(session)
+                        if (clearAllowed) resourceLocks.release(session.sessionId)
+                    }
+                    if (!clearAllowed || !clearSucceeded) {
                         return ActionGroupRecoveryResult.MaintenanceRequired(
                             "出餐动作组旧会话发生 owner/revision 变化，拒绝清理新会话：" +
                                 "sessionId=${session.sessionId}，revision=${session.mechanicalClaimRevision}"
                         )
                     }
-                    resourceLocks.release(session.sessionId)
                     val reason = "出餐动作组旧会话已收口：本地仍存在动作会话但下位机结果寄存器全部空闲，" +
                         "按下位机空闲状态解除本地会话锁，sessionId=${session.sessionId}，type=${session.type}，" +
                         "sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
@@ -217,13 +281,29 @@ class ActionGroupRecoveryBootstrap(
             )
         }
 
+        if (!automaticTakeoverAllowed(session)) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组自动恢复在 forceAcquire 前被 guarded 收口门禁阻止，需人工精确恢复"
+            )
+        }
+        var mutationAllowed = true
         val claimFailure = runCatching {
-            resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+            mutationAllowed = performAutomaticRecoveryMutation(session) {
+                resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
+            }
         }.exceptionOrNull()
+        if (!mutationAllowed) {
+            return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复 forceAcquire 被 guarded 收口门禁阻止，需人工精确恢复")
+        }
         if (claimFailure != null) {
             return ActionGroupRecoveryResult.MaintenanceRequired(
                 "动作组恢复资源 owner 冲突，拒绝清理其他 owner：" +
                     "sessionId=${session.sessionId}，error=${claimFailure.message}"
+            )
+        }
+        if (!automaticTakeoverAllowed(session)) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组自动恢复在续作前被 guarded 收口门禁阻止，保持资源现场"
             )
         }
         logger(
@@ -231,7 +311,14 @@ class ActionGroupRecoveryBootstrap(
                 "runningAction=${runningStates.first().spec.name}，resourceLocks=${resourceLocks.snapshot()}"
         )
         val actionResult = runSession(session, resumeFromRunningState = true)
-        resourceLocks.release(session.sessionId)
+        if (!automaticTakeoverAllowed(session)) {
+            return ActionGroupRecoveryResult.MaintenanceRequired(
+                "动作组自动恢复在续作结束后被 guarded 收口门禁阻止，保持资源现场"
+            )
+        }
+        if (!performAutomaticRecoveryMutation(session) { resourceLocks.release(session.sessionId) }) {
+            return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复释放续作资源被 guarded 收口门禁阻止，保持资源现场")
+        }
         logger(
             "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"
         )

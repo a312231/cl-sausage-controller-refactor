@@ -39,11 +39,13 @@ object SupplementFailureCloseoutPolicy {
             return false
         }
         val failed = evidence.rawResult as? AtomicActionResult.Failed ?: return false
-        if (failed.errorCode == AtomicActionCodes.IR_PICK_FAILED ||
-            LowerPlatformIsolationPolicy.isUnsafeLiftTerminalError(failed.errorCode)
-        ) {
+        if (LowerPlatformIsolationPolicy.isUnsafeLiftTerminalError(failed.errorCode)) {
             return false
         }
+        if (evidence.actionName == "in2" &&
+            failed.errorCode == AtomicActionCodes.IR_PICK_FAILED &&
+            !failed.freshExecutionObserved
+        ) return false
         if (evidence.boxDeductionApplied ||
             evidence.panPlacementApplied ||
             evidence.physicalBoxDeducted ||
