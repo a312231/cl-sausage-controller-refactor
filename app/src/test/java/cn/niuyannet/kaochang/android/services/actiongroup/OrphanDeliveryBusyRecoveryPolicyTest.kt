@@ -14,6 +14,15 @@ class OrphanDeliveryBusyRecoveryPolicyTest {
     }
 
     @Test
+    fun physicalIdleSnapshots_canBeReusedForManualClaimCloseout() {
+        val decision = OrphanDeliveryBusyRecoveryPolicy.evaluateIdleSnapshots(
+            listOf(idleSnapshot(), idleSnapshot())
+        )
+
+        assertTrue(decision.reason, decision.canRecover)
+    }
+
+    @Test
     fun completedResult_rejectsRecovery() {
         val decision = OrphanDeliveryBusyRecoveryPolicy.evaluate(
             2,

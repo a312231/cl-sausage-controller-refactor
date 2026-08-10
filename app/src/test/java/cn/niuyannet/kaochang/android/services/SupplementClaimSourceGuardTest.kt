@@ -44,6 +44,18 @@ class SupplementClaimSourceGuardTest {
     }
 
     @Test
+    fun confirmedOutFailure_shouldReleaseOnlyMatchingSessionAndResources() {
+        val take = functionBody("takeSausageResult")
+        val closeout = functionBody("closeConfirmedFailedOutSession")
+
+        assertTrue(take.contains("actionGroupResult.result is AtomicActionResult.Failed"))
+        assertTrue(take.contains("closeConfirmedFailedOutSession"))
+        assertTrue(closeout.contains("expectedRevision = failedSession.mechanicalClaimRevision"))
+        assertTrue(closeout.contains("actionGroupLocks.releaseIfOwned(owner, failedSession.resourceMask)"))
+        assertFalse(closeout.contains("actionGroupLocks.clear()"))
+    }
+
+    @Test
     fun promotedPrefetchContinuation_shouldStayInsideExistingSingleFlightAttempt() {
         val entry = functionBody("resumePreparedParallelSupplement")
         val finish = functionBody("finishParallelSupplementResume")

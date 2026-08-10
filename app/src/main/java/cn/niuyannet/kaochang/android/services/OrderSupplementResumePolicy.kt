@@ -20,6 +20,15 @@ object OrderSupplementResumePolicy {
     fun shouldResume(outcome: OrderExecutionOutcome): Boolean =
         outcome == OrderExecutionOutcome.SUCCESS || outcome == OrderExecutionOutcome.NO_DISPATCH
 
+    fun shouldReleaseClaim(outcome: OrderExecutionOutcome): Boolean = when (outcome) {
+        OrderExecutionOutcome.SUCCESS,
+        OrderExecutionOutcome.NO_DISPATCH,
+        OrderExecutionOutcome.MECHANICAL_FAILED -> true
+        OrderExecutionOutcome.EVIDENCE_UNKNOWN,
+        OrderExecutionOutcome.FAILED,
+        OrderExecutionOutcome.UNKNOWN -> false
+    }
+
     fun shouldEnterMaintenance(
         outcome: OrderExecutionOutcome,
         supplementResumeSucceeded: Boolean = true

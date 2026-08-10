@@ -406,7 +406,7 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
         assertTrue("维护烤盘页面必须引入 physical delta reporter", source.contains("PanPhysicalStateDeltaReporter"))
         assertOrder(
             source,
-            "KaoPanHelper.clearKaoPan()\n                    KaoPanHelper.init()",
+            "KaoPanHelper.clearKaoPan()\n                KaoPanHelper.init()",
             "PanPhysicalStateDeltaReporter.reportPansChanged(",
             "维护清空/重置烤盘必须在本地烤盘重建后发布物理增量"
         )

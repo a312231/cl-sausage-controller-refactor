@@ -119,24 +119,28 @@ object OrderStateManager {
      */
     @Synchronized
     fun markAsFinished(orderNo: String) {
-        if (orderNo.isBlank()) return
-        LogUtils.d("【订单状态机】终态锁定 (FINISHED)：orderNo=$orderNo")
-        val stateObj = OrderState(orderNo, STATE_FINISHED, System.currentTimeMillis())
-        memoryStates.remove(orderNo)
-        saveTerminalState(stateObj)
+        if (markAsFinishedDurable(orderNo)) {
+            memoryStates.remove(orderNo)
+        }
     }
+
+    @Synchronized
+    fun markAsFinishedDurable(orderNo: String): Boolean =
+        persistTerminalStateDurable(orderNo, STATE_FINISHED, "FINISHED")
 
     /**
      * 标记交易报废。
      */
     @Synchronized
     fun markAsFailed(orderNo: String) {
-        if (orderNo.isBlank()) return
-        LogUtils.e("【订单状态机】报废锁定 (FAILED)：orderNo=$orderNo")
-        val stateObj = OrderState(orderNo, STATE_FAILED, System.currentTimeMillis())
-        memoryStates.remove(orderNo)
-        saveTerminalState(stateObj)
+        if (markAsFailedDurable(orderNo)) {
+            memoryStates.remove(orderNo)
+        }
     }
+
+    @Synchronized
+    fun markAsFailedDurable(orderNo: String): Boolean =
+        persistTerminalStateDurable(orderNo, STATE_FAILED, "FAILED")
 
     // ============================================
     // =              内部持久化和清理            =
@@ -159,11 +163,20 @@ object OrderStateManager {
         return null
     }
 
-    private fun saveTerminalState(stateObj: OrderState) {
-        val sp = getSp() ?: return
-        try {
-            sp.edit().putString(stateObj.orderNo, JSON.toJSONString(stateObj)).apply()
-        } catch (_: Exception) {}
+    private fun persistTerminalStateDurable(orderNo: String, state: Int, label: String): Boolean {
+        if (orderNo.isBlank()) return false
+        val stateObj = OrderState(orderNo, state, System.currentTimeMillis())
+        val saved = try {
+            getSp()?.edit()?.putString(orderNo, JSON.toJSONString(stateObj))?.commit() == true
+        } catch (_: Exception) {
+            false
+        }
+        if (saved) {
+            LogUtils.d("【订单状态机】终态已同步落盘 ($label)：orderNo=$orderNo")
+        } else {
+            LogUtils.e("【订单状态机】终态同步落盘失败 ($label)，保留 PROCESSING：orderNo=$orderNo")
+        }
+        return saved
     }
 
     /**

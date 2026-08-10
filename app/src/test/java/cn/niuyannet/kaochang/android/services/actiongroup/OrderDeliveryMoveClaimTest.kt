@@ -73,7 +73,7 @@ class OrderDeliveryMoveClaimTest {
     }
 
     @Test
-    fun restoreClaimedOrderMoveStatus_shouldRecoverCrashWindowAndKeepOwner() {
+    fun restoreClaimedOrderMoveStatus_shouldKeepClaimWithoutResurrectingMoveStatus() {
         val fixture = fixture()
         val claim = requireNotNull(
             claimOrderDeliveryMove(
@@ -86,39 +86,76 @@ class OrderDeliveryMoveClaimTest {
 
         // 模拟 releaseOwned 已写 0、尚未来得及清 owner 的进程崩溃。
         fixture.moveStore.status = 0
+        val saveCountBeforeRecovery = fixture.moveStore.saveCount
 
         val recovery = restoreClaimedOrderMoveStatusIfNeeded(
             transitionLock = fixture.transitionLock,
-            claimStore = fixture.claimStore,
-            moveStore = fixture.moveStore
+            claimStore = fixture.claimStore
         )
 
-        assertEquals(OrderDeliveryClaimRecovery.RESTORED, recovery)
-        assertEquals(2, fixture.moveStore.status)
+        assertEquals(OrderDeliveryClaimRecovery.CLAIM_PRESENT, recovery)
+        assertEquals(0, fixture.moveStore.status)
+        assertEquals(saveCountBeforeRecovery, fixture.moveStore.saveCount)
         assertEquals(claim.owner, fixture.claimStore.load()?.owner)
         assertEquals(claim.revision, fixture.claimStore.load()?.revision)
     }
 
     @Test
-    fun restoreClaimedOrderMoveStatus_shouldFailClosedWhenDurableRestoreFails() {
+    fun closeOrderDeliveryMoveForMaintenance_shouldClearOnlyExactClaim() {
         val fixture = fixture()
-        claimOrderDeliveryMove(
-            orderNo = "CL1",
-            transitionLock = fixture.transitionLock,
-            claimStore = fixture.claimStore,
-            moveStore = fixture.moveStore
-        ) { true }
-        fixture.moveStore.status = 0
-        fixture.moveStore.failOnSaveStatus = 2
-
-        val recovery = restoreClaimedOrderMoveStatusIfNeeded(
-            transitionLock = fixture.transitionLock,
-            claimStore = fixture.claimStore,
-            moveStore = fixture.moveStore
+        val claim = requireNotNull(
+            claimOrderDeliveryMove(
+                orderNo = "CL1",
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
         )
 
-        assertEquals(OrderDeliveryClaimRecovery.FAILED, recovery)
+        val staleClaim = claim.copy(revision = claim.revision + 1L)
+        assertTrue(
+            !closeOrderDeliveryMoveForMaintenance(
+                claim = staleClaim,
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
+        )
+        assertEquals(2, fixture.moveStore.status)
+
+        assertTrue(
+            closeOrderDeliveryMoveForMaintenance(
+                claim = claim,
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
+        )
         assertEquals(0, fixture.moveStore.status)
+        assertNull(fixture.claimStore.load())
+    }
+
+    @Test
+    fun closeOrderDeliveryMoveForMaintenance_shouldRespectSafetyGate() {
+        val fixture = fixture()
+        val claim = requireNotNull(
+            claimOrderDeliveryMove(
+                orderNo = "CL1",
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
+        )
+
+        val closed = closeOrderDeliveryMoveForMaintenance(
+            claim = claim,
+            transitionLock = fixture.transitionLock,
+            claimStore = fixture.claimStore,
+            moveStore = fixture.moveStore
+        ) { false }
+
+        assertTrue(!closed)
+        assertEquals(2, fixture.moveStore.status)
         assertEquals("order:CL1", fixture.claimStore.load()?.owner)
     }
 
@@ -143,10 +180,12 @@ class OrderDeliveryMoveClaimTest {
 
     private class FakeMoveStore(var status: Int = 0) : MechanicalMoveStatusStore {
         var failOnSaveStatus: Int? = null
+        var saveCount: Int = 0
 
         override fun load(): Int = status
 
         override fun saveDurable(moveStatus: Int) {
+            saveCount++
             if (moveStatus == failOnSaveStatus) {
                 throw IllegalStateException("move save failed")
             }

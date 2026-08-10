@@ -16,7 +16,6 @@ data class OrderDeliveryClaim(
 enum class OrderDeliveryClaimRecovery {
     NO_CLAIM,
     CLAIM_PRESENT,
-    RESTORED,
     FAILED
 }
 
@@ -34,7 +33,15 @@ class OrderDeliveryClaimStore(
         val raw = readRaw()
         if (raw.isNullOrBlank()) return null
         return try {
-            JSON.parseObject(raw, OrderDeliveryClaim::class.java)
+            JSON.parseObject(raw, OrderDeliveryClaim::class.java).also { claim ->
+                check(
+                    claim.orderNo.isNotBlank() &&
+                        claim.owner == OWNER_PREFIX + claim.orderNo &&
+                        claim.state != null &&
+                        claim.revision > 0L &&
+                        claim.createdAtMs > 0L
+                ) { "订单出餐 claim 字段非法" }
+            }
         } catch (error: Throwable) {
             throw IllegalStateException("订单出餐 claim 损坏，拒绝按无 owner 处理", error)
         }
@@ -159,40 +166,45 @@ internal fun releaseOrderDeliveryMove(
     ) is MechanicalMoveReleaseResult.Released
 }
 
-/**
- * 修复 release 中“先写 moveStatus=0、后清 owner”的进程崩溃窗口。
- * 仅在 durable owner 已确认 CLAIMED 且 moveStatus 已异常归零时恢复订单忙态；
- * 其他状态不猜测、不覆盖，交给既有恢复链路处理。
- */
-internal fun restoreClaimedOrderMoveStatusIfNeeded(
+internal fun closeOrderDeliveryMoveForMaintenance(
+    claim: OrderDeliveryClaim,
     transitionLock: Any,
     claimStore: OrderDeliveryClaimStore,
     moveStore: MechanicalMoveStatusStore,
-    claimedMoveStatus: Int = 2
-): OrderDeliveryClaimRecovery = synchronized(transitionLock) {
-    val claim = try {
+    canRelease: () -> Boolean
+): Boolean = synchronized(transitionLock) {
+    if (!canRelease()) return@synchronized false
+    val current = try {
         claimStore.load()
     } catch (_: Throwable) {
-        return@synchronized OrderDeliveryClaimRecovery.FAILED
-    } ?: return@synchronized OrderDeliveryClaimRecovery.NO_CLAIM
+        return@synchronized false
+    }
+    if (current?.owner != claim.owner || current.revision != claim.revision) {
+        return@synchronized false
+    }
+    MechanicalMoveClaimCoordinator(
+        transitionLock = transitionLock,
+        ownerStore = claimStore,
+        moveStore = moveStore
+    ).release(
+        owner = claim.owner,
+        expectedMoveStatuses = setOf(0, 2),
+        idleMoveStatus = 0,
+        expectedRevision = claim.revision
+    ) is MechanicalMoveReleaseResult.Released
+}
 
-    if (claim.state != MechanicalClaimState.CLAIMED) {
-        return@synchronized OrderDeliveryClaimRecovery.CLAIM_PRESENT
-    }
-    val currentMoveStatus = try {
-        moveStore.load()
-    } catch (_: Throwable) {
-        return@synchronized OrderDeliveryClaimRecovery.FAILED
-    }
-    if (currentMoveStatus == claimedMoveStatus) {
-        return@synchronized OrderDeliveryClaimRecovery.CLAIM_PRESENT
-    }
-    if (currentMoveStatus != 0) {
-        return@synchronized OrderDeliveryClaimRecovery.CLAIM_PRESENT
-    }
+/** claim 存在时只阻断旧自动归零路径，不再猜测并复活 moveStatus。 */
+internal fun restoreClaimedOrderMoveStatusIfNeeded(
+    transitionLock: Any,
+    claimStore: OrderDeliveryClaimStore
+): OrderDeliveryClaimRecovery = synchronized(transitionLock) {
     try {
-        moveStore.saveDurable(claimedMoveStatus)
-        OrderDeliveryClaimRecovery.RESTORED
+        if (claimStore.load() == null) {
+            OrderDeliveryClaimRecovery.NO_CLAIM
+        } else {
+            OrderDeliveryClaimRecovery.CLAIM_PRESENT
+        }
     } catch (_: Throwable) {
         OrderDeliveryClaimRecovery.FAILED
     }

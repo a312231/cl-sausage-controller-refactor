@@ -78,6 +78,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalChec
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalMutation
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPhysicalStateCoordinator
 import cn.niuyannet.kaochang.android.services.actiongroup.claimOrderDeliveryMove
+import cn.niuyannet.kaochang.android.services.actiongroup.closeOrderDeliveryMoveForMaintenance
 import cn.niuyannet.kaochang.android.services.actiongroup.releaseOrderDeliveryMove
 import cn.niuyannet.kaochang.android.services.actiongroup.restoreClaimedOrderMoveStatusIfNeeded
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchOrderGatePolicy
@@ -149,6 +150,7 @@ private const val ACTION_GROUP_FAILURE_REASON_MAX_LENGTH = 300
  * - “201=2”只表示设备忙，不等价于通信断开。
  */
 object KaoChangOperate {
+    private const val ORDER_CLAIM_MAINTENANCE_STATUS = 3
     private const val LOG_ORDER = "订单履约"
     private const val LOG_ACTION = "动作执行"
     private const val LOG_WINDOW = "窗口收尾"
@@ -602,12 +604,8 @@ object KaoChangOperate {
         return withFaultHeatTransitionLock {
             val orderClaimRecovery = restoreClaimedOrderMoveStatusIfNeeded(
                 transitionLock = faultHeatTransitionLock,
-                claimStore = orderDeliveryClaimStore,
-                moveStore = mechanicalMoveStatusStore
+                claimStore = orderDeliveryClaimStore
             )
-            if (orderClaimRecovery == OrderDeliveryClaimRecovery.RESTORED) {
-                logW(LOG_ORDER, "订单 claim 恢复了异常归零的 moveStatus=2，旧自动收口保持阻断")
-            }
             orderClaimRecovery == OrderDeliveryClaimRecovery.NO_CLAIM &&
                 isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim()
         }
@@ -621,8 +619,7 @@ object KaoChangOperate {
         withFaultHeatTransitionLock {
             val orderClaimRecovery = restoreClaimedOrderMoveStatusIfNeeded(
                 transitionLock = faultHeatTransitionLock,
-                claimStore = orderDeliveryClaimStore,
-                moveStore = mechanicalMoveStatusStore
+                claimStore = orderDeliveryClaimStore
             )
             if (orderClaimRecovery != OrderDeliveryClaimRecovery.NO_CLAIM ||
                 !MoveStatusRecoveryPolicy.canRecoverIdleFromLegacy201(
@@ -643,7 +640,8 @@ object KaoChangOperate {
         }
 
     private fun isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim(): Boolean {
-        return actionGroupSessionStore.load() == null &&
+        return actionGroupSessionStore.readEvidence() is DurableEvidenceReadResult.Absent &&
+            pausedSupplementSessionStore.readEvidence() is DurableEvidenceReadResult.Absent &&
             panMoveJournalStore.load() == null &&
             discardJournalStore.load() == null &&
             !hasBlockingSupplementPrefetchEvidence() &&
@@ -654,6 +652,110 @@ object KaoChangOperate {
         val recovered: Boolean,
         val reason: String
     )
+
+    data class OrderClaimMaintenanceCloseoutResult(
+        val ok: Boolean,
+        val reason: String
+    )
+
+    fun currentOrderDeliveryClaimForMaintenance(): OrderDeliveryClaim? = orderDeliveryClaimStore.load()
+
+    suspend fun closeStaleOrderDeliveryClaimForMaintenance(
+        claim: OrderDeliveryClaim,
+        reason: String
+    ): OrderClaimMaintenanceCloseoutResult {
+        if (OrderStateManager.hasProcessingOrder()) {
+            return OrderClaimMaintenanceCloseoutResult(
+                false,
+                "当前进程仍有订单在处理中，请先结束订单流程或重启上位机"
+            )
+        }
+        val callerContext = coroutineContext
+        val config = AppConfig.getAppConfig()
+        val previousOnlineStatus = config.onlineStatus
+        val previousIsEnable = config.isEnable
+        config.onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS
+        config.isEnable = 0
+        try {
+            AppConfig.saveAppConfigDurable(config)
+        } catch (error: Throwable) {
+            config.onlineStatus = previousOnlineStatus
+            config.isEnable = previousIsEnable
+            return OrderClaimMaintenanceCloseoutResult(false, "维护状态同步落盘失败：${error.message}")
+        }
+        HomeUiRefreshBridge.requestRefresh("order_claim:maintenance")
+        publishRuntimeStateWithHttpFallback("订单 claim 人工收口进入维护")
+
+        val precheck = withFaultHeatTransitionLock { staleOrderClaimCloseoutRejection(claim) }
+        if (precheck != null) return OrderClaimMaintenanceCloseoutResult(false, precheck)
+
+        val snapshots = listOf(
+            readOrphanDeliveryBusySnapshot(),
+            run {
+                delay(500L)
+                readOrphanDeliveryBusySnapshot()
+            }
+        )
+        callerContext.ensureActive()
+        val idleDecision = OrphanDeliveryBusyRecoveryPolicy.evaluateIdleSnapshots(snapshots)
+        if (!idleDecision.canRecover) {
+            return OrderClaimMaintenanceCloseoutResult(false, idleDecision.reason)
+        }
+
+        val closed = withFaultHeatTransitionLock {
+            callerContext.ensureActive()
+            if (staleOrderClaimCloseoutRejection(claim) != null) {
+                return@withFaultHeatTransitionLock false
+            }
+            if (!OrderStateManager.markAsFailedDurable(claim.orderNo)) {
+                return@withFaultHeatTransitionLock false
+            }
+            closeOrderDeliveryMoveForMaintenance(
+                claim = claim,
+                transitionLock = faultHeatTransitionLock,
+                claimStore = orderDeliveryClaimStore,
+                moveStore = mechanicalMoveStatusStore
+            ) {
+                true
+            }
+        }
+        if (!closed) {
+            return OrderClaimMaintenanceCloseoutResult(false, "订单号或本地恢复证据已变化，claim 保持阻断")
+        }
+
+        OrderStateManager.releaseProcessing(claim.orderNo)
+        runCatching { SupplementPauseController.clearOrderPause(claim.orderNo) }
+            .onFailure { error ->
+                logW(LOG_ORDER, "订单 claim 已释放，但清理订单暂停失败：orderNo=${claim.orderNo}，${error.message}")
+            }
+        logW(LOG_ORDER, "维护人员已精确收口订单 claim：orderNo=${claim.orderNo}，reason=$reason")
+        runCatching { publishRuntimeStateWithHttpFallback("订单 claim 人工收口完成") }
+            .onFailure { error ->
+                logW(LOG_ORDER, "订单 claim 已释放，但状态上报失败：orderNo=${claim.orderNo}，${error.message}")
+            }
+        return OrderClaimMaintenanceCloseoutResult(true, "订单 ${claim.orderNo} 的残留占用已释放")
+    }
+
+    private fun staleOrderClaimCloseoutRejection(claim: OrderDeliveryClaim): String? {
+        val config = AppConfig.getAppConfig()
+        if (config.onlineStatus != 3 || config.isEnable != 0) return "设备尚未进入维护或算法未关闭"
+        if (OrderStateManager.hasProcessingOrder()) return "当前进程仍有订单在处理中，请先结束订单流程或重启上位机"
+        val current = orderDeliveryClaimStore.load()
+        if (current?.owner != claim.owner || current.revision != claim.revision) return "订单 claim 已变化"
+        if (actionGroupSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的动作组会话"
+        if (pausedSupplementSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的暂停补肠会话"
+        if (readSupplementPrefetchEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的双 lane 预取证据"
+        if (panMoveJournalStore.load() != null) return "存在搬盘 journal"
+        if (discardJournalStore.load() != null) return "存在丢弃 journal"
+        if (!actionGroupLocks.isIdle()) return "动作组资源仍被占用"
+        val pauseOrderNo = SupplementPauseController.currentOrderNo()
+        if (!pauseOrderNo.isNullOrBlank() && pauseOrderNo != claim.orderNo) return "另一个订单正在等待机械动作"
+        return null
+    }
+
+    fun clearSettledOrderPause(orderNo: String) {
+        SupplementPauseController.clearOrderPause(orderNo)
+    }
 
     /**
      * 待丢弃烤盘不能一直被无 owner 的历史出餐忙态卡住。这里绝不收口订单 claim、会话、库存或下位机寄存器。
@@ -2903,6 +3005,16 @@ object KaoChangOperate {
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
         }
+        val initialClaimBlockReason = withFaultHeatTransitionLock {
+            automaticRecoveryOrderClaimBlockReason()
+        }
+        if (initialClaimBlockReason != null) {
+            enterActionGroupMaintenance(
+                "订单出餐 claim 阻断通用动作组恢复：$initialClaimBlockReason，reason=$reason",
+                preserveMoveStatus = true
+            )
+            return false
+        }
         discardJournalStore.load()?.let { journal ->
             enterActionGroupMaintenance(
                 "发现未收口丢弃 journal，物理结果未知，拒绝进入通用动作组恢复：" +
@@ -2989,7 +3101,9 @@ object KaoChangOperate {
             recheckAutomaticTakeover = { expectedSession ->
                 withFaultHeatTransitionLock {
                     val config = AppConfig.getAppConfig()
-                    if (hasGuardedSupplementCloseoutResidue(config)) {
+                    if (automaticRecoveryOrderClaimBlockReason() != null ||
+                        hasGuardedSupplementCloseoutResidue(config)
+                    ) {
                         false
                     } else {
                         val currentSession = actionGroupSessionStore.load()
@@ -3005,7 +3119,8 @@ object KaoChangOperate {
                 withFaultHeatTransitionLock {
                     val config = AppConfig.getAppConfig()
                     val currentSession = actionGroupSessionStore.load()
-                    val allowed = !hasGuardedSupplementCloseoutResidue(config) &&
+                    val allowed = automaticRecoveryOrderClaimBlockReason() == null &&
+                        !hasGuardedSupplementCloseoutResidue(config) &&
                         currentSession != null &&
                         currentSession.sessionId == expectedSession.sessionId &&
                         currentSession.mechanicalClaimRevision == expectedSession.mechanicalClaimRevision &&
@@ -3023,18 +3138,29 @@ object KaoChangOperate {
         return when (result) {
             ActionGroupRecoveryResult.Idle -> {
                 lastActionGroupRecoveryFailureReason = null
-                val config = AppConfig.getAppConfig()
-                if (config.moveStatus in listOf(1, 2)) {
-                    if (AutoMechanicalDispatchPolicy.shouldPreserveDeliveringMoveStatusDuringRecovery(config.onlineStatus, config.moveStatus)) {
-                        logW(
-                            LOG_ACTION_GROUP,
-                            "动作组恢复：下位机无执行中动作，但整单仍在出餐中，保留 moveStatus=2（取肠/出餐中），防止自动调度插队，reason=$reason"
-                        )
-                    } else {
-                        config.moveStatus = 0
-                        AppConfig.saveAppConfig(config)
-                        logW(LOG_ACTION_GROUP, "动作组恢复：下位机无执行中动作，已清理本地 moveStatus=${config.moveStatus}，reason=$reason")
+                val idleClaimBlockReason = withFaultHeatTransitionLock {
+                    automaticRecoveryOrderClaimBlockReason()?.let { return@withFaultHeatTransitionLock it }
+                    val config = AppConfig.getAppConfig()
+                    if (config.moveStatus in listOf(1, 2)) {
+                        if (AutoMechanicalDispatchPolicy.shouldPreserveDeliveringMoveStatusDuringRecovery(config.onlineStatus, config.moveStatus)) {
+                            logW(
+                                LOG_ACTION_GROUP,
+                                "动作组恢复：下位机无执行中动作，但整单仍在出餐中，保留 moveStatus=2（取肠/出餐中），防止自动调度插队，reason=$reason"
+                            )
+                        } else {
+                            config.moveStatus = 0
+                            AppConfig.saveAppConfig(config)
+                            logW(LOG_ACTION_GROUP, "动作组恢复：下位机无执行中动作，已清理本地 moveStatus=${config.moveStatus}，reason=$reason")
+                        }
                     }
+                    null
+                }
+                if (idleClaimBlockReason != null) {
+                    enterActionGroupMaintenance(
+                        "订单出餐 claim 在动作组恢复期间出现，拒绝清理忙态：$idleClaimBlockReason，reason=$reason",
+                        preserveMoveStatus = true
+                    )
+                    return false
                 }
                 flushPendingActionGroupOrderEvent(reason)
                 markActionGroupRecoveryVerified(reason)
@@ -3117,6 +3243,14 @@ object KaoChangOperate {
                 handled
             }
         }
+    }
+
+    private fun automaticRecoveryOrderClaimBlockReason(): String? = try {
+        orderDeliveryClaimStore.load()?.let { claim ->
+            "orderNo=${claim.orderNo}，owner=${claim.owner}，revision=${claim.revision}"
+        }
+    } catch (error: Throwable) {
+        "claim 读取失败或损坏：${error.message}"
     }
 
     private fun recoverPanMoveJournalAfterModbusReady(reason: String): Boolean {
@@ -8459,6 +8593,30 @@ object KaoChangOperate {
      * - 历史兼容的 Discarded 结果也按 TAKEN_BY_USER/status=2 收口；当前 300/400 主流程不应再主动产生该结果
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
+    private fun closeConfirmedFailedOutSession(owner: String): Boolean = withFaultHeatTransitionLock {
+        val failedSession = actionGroupSessionStore.load()?.takeIf {
+            it.sessionId == owner &&
+                it.type == ActionGroupSessionType.OUT_SELL &&
+                it.mechanicalClaimState == MechanicalClaimState.CLAIMED &&
+                it.out1DispatchEvidence == Out1DispatchEvidence.DISPATCHED
+        } ?: return@withFaultHeatTransitionLock false
+        if (actionGroupLocks.ownedMask(owner) != failedSession.resourceMask) {
+            logW(LOG_ORDER, "已确认出餐失败但资源 owner/mask 不匹配，保留恢复证据：owner=$owner")
+            return@withFaultHeatTransitionLock false
+        }
+        val released = mechanicalMoveClaimCoordinator(actionGroupClaimOwnerStore()).release(
+            owner = owner,
+            expectedMoveStatuses = setOf(2),
+            idleMoveStatus = 2,
+            expectedRevision = failedSession.mechanicalClaimRevision
+        ) is MechanicalMoveReleaseResult.Released
+        if (!released) {
+            logW(LOG_ORDER, "已确认出餐失败但 OUT 会话未能精确收口：owner=$owner")
+            return@withFaultHeatTransitionLock false
+        }
+        actionGroupLocks.releaseIfOwned(owner, failedSession.resourceMask) != ResourceReleaseResult.MASK_MISMATCH
+    }
+
     suspend fun takeSausageResult(
         kaoPan: KaoPan,
         orderContext: ActionGroupOrderContext? = null,
@@ -8709,9 +8867,18 @@ object KaoChangOperate {
                         ?.out1DispatchEvidence
                     when {
                         actionGroupResult.result is AtomicActionResult.Failed &&
+                            actionGroupResult.result.freshExecutionObserved &&
                             evidence == Out1DispatchEvidence.DISPATCHED -> {
                             markActionGroupFailure("正式出餐", actionGroupResult)
-                            TakeSausageResult.ERROR
+                            if (closeConfirmedFailedOutSession(owner)) {
+                                TakeSausageResult.ERROR
+                            } else {
+                                enterActionGroupMaintenance(
+                                    "正式出餐已确认失败，但 OUT 会话或资源未能精确释放：owner=$owner",
+                                    preserveMoveStatus = true
+                                )
+                                TakeSausageResult.EVIDENCE_UNKNOWN
+                            }
                         }
                         evidence == Out1DispatchEvidence.NOT_DISPATCHED_CONFIRMED ->
                             TakeSausageResult.NO_DISPATCH

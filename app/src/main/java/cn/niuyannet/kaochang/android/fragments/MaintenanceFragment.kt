@@ -44,6 +44,7 @@ import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnCoordinator
 import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnPlanner
 import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.services.SupplementBatchType
+import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
@@ -64,6 +65,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -895,83 +897,25 @@ class MaintenanceFragment : Fragment() {
         binding.btnClearAll.setOnClickListener {
             if (clearPanCooldownJob?.isActive == true) return@setOnClickListener
 
-            AdminOperationLogger.i(
-                action = "清空烤盘",
-                page = AdminOperationLogger.PAGE_PAN,
-                result = AdminOperationLogger.RESULT_START,
-                detail = "说明=将关闭烤肠算法并等待机械臂空闲"
-            )
-            setMaintenanceActionButtonsEnabled(false)
-            binding.tvCooldownHint.text = "正在清空烤盘"
-            disableAlgorithmForMaintenance("点击清空烤盘")
-
-            clearPanCooldownJob = lifecycleScope.launch {
-                val adminBusy = beginAdminBusy("维护页清空烤盘")
-                try {
-                    val idleReady = waitUntilMachineIdleOrTimeout(
-                        reason = "维护页点击清空烤盘等待空闲",
-                        waitingText = "等待机械动作完成后清空烤盘",
-                        update = {
-                            binding.tvCooldownHint.text = it
-                        },
-                        allowSupplementPrefetchAbandon = true
-                    )
-                    if (!idleReady) {
-                        AdminOperationLogger.w(
-                            action = "清空烤盘",
-                            page = AdminOperationLogger.PAGE_PAN,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = "失败原因=等待机械臂空闲超时"
-                        )
-                        binding.tvCooldownHint.text = ""
-                        setMaintenanceActionButtonsEnabled(true)
-                        ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
-                        clearPanCooldownJob = null
-                        return@launch
-                    }
-                    if (KaoChangOperate.isActionGroupRecoveryBlocked()) {
-                        binding.tvCooldownHint.text = ""
-                        setMaintenanceActionButtonsEnabled(true)
-                        ToastUtils.showShort("存在未收口的动作恢复记录，请先完成恢复后再清空烤盘")
-                        clearPanCooldownJob = null
-                        return@launch
-                    }
-                    KaoPanHelper.getKaoPanList()
-                        .filter { it.positionSn in 1..21 && it.isHasSausage }
-                        .map { it.positionSn }
-                        .forEach { positionSn ->
-                            LowToHighDemandGate.recordNonDemandEmpty(positionSn, "manual_clear")
-                        }
-                    KaoPanHelper.clearKaoPan()
-                    KaoPanHelper.init()
-                    PanPhysicalStateDeltaReporter.reportPansChanged(
-                        changedPans = KaoPanHelper.getKaoPanList(),
-                        reason = "maintenance_pan_clear:all",
-                        source = "maintenance_pan_clear_all"
-                    )
-                    FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击清空烤盘")
-                    KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
-                    KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
-                    clearRuntimeStateAfterManualPanReset("点击清空烤盘")
-                    AdminOperationLogger.i(
-                        action = "清空烤盘",
-                        page = AdminOperationLogger.PAGE_PAN,
-                        result = AdminOperationLogger.RESULT_DONE,
-                        detail = "烤肠算法开关=关闭，说明=进入15秒防重复操作冷却"
-                    )
-                    finishMaintenanceAction()
-                    clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
-                        setMaintenanceActionButtonsEnabled(true)
-                        binding.btnClearAll.text = "清空烤盘"
-                        binding.tvCooldownHint.text = ""
-                        clearPanCooldownJob = null
-                    }
-                } finally {
-                    endAdminBusy(adminBusy)
+            val claim = runCatching { KaoChangOperate.currentOrderDeliveryClaimForMaintenance() }
+                .getOrElse { error ->
+                    ToastUtils.showLong("订单 claim 读取失败，拒绝清盘：${error.message}")
+                    return@setOnClickListener
                 }
+            if (claim != null) {
+                AlertDialog.Builder(requireContext())
+                    .setTitle("确认收口订单 ${claim.orderNo}")
+                    .setMessage(
+                        "检测到该订单仍占用出餐状态。确认后将关闭算法、连续两次核对下位机完全空闲，" +
+                            "再把订单标记为失败并精确释放该订单占用。\n\n请先确认现场没有正在执行的机械动作。"
+                    )
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("确认收口并清盘") { _, _ -> performClearAll(claim) }
+                    .show()
+            } else {
+                performClearAll(null)
             }
         }
-
         binding.swKzAlgorithm.setOnCheckedChangeListener { buttonView, isChecked ->
             fun restoreSwitchControls() {
                 val currentBinding = _binding ?: return
@@ -1372,6 +1316,137 @@ class MaintenanceFragment : Fragment() {
                         .show()
                 }
                 else -> ToastUtils.showShort("当前不能建立回搬目标，请刷新后重试")
+            }
+        }
+    }
+
+    private fun performClearAll(staleClaim: OrderDeliveryClaim?) {
+        if (clearPanCooldownJob?.isActive == true) return
+        if (staleClaim != null && OrderStateManager.hasProcessingOrder()) {
+            ToastUtils.showLong("当前订单仍在处理中，请先结束订单流程或重启上位机")
+            return
+        }
+
+        AdminOperationLogger.i(
+            action = "清空烤盘",
+            page = AdminOperationLogger.PAGE_PAN,
+            result = AdminOperationLogger.RESULT_START,
+            detail = "说明=将关闭烤肠算法并等待机械臂空闲"
+        )
+        setMaintenanceActionButtonsEnabled(false)
+        binding.tvCooldownHint.text = "正在清空烤盘"
+        disableAlgorithmForMaintenance("点击清空烤盘")
+
+        clearPanCooldownJob = lifecycleScope.launch {
+            val adminBusy = beginAdminBusy("维护页清空烤盘")
+            try {
+                val staleClaimClosed = if (staleClaim != null) {
+                    binding.tvCooldownHint.text = "正在核对并释放订单 ${staleClaim.orderNo}"
+                    val closeout = withContext(Dispatchers.IO) {
+                        KaoChangOperate.closeStaleOrderDeliveryClaimForMaintenance(
+                            staleClaim,
+                            "维护页确认后清空烤盘"
+                        )
+                    }
+                    if (!closeout.ok) {
+                        AdminOperationLogger.w(
+                            action = "清空烤盘",
+                            page = AdminOperationLogger.PAGE_PAN,
+                            result = AdminOperationLogger.RESULT_FAIL,
+                            detail = "订单=${staleClaim.orderNo}，失败原因=${closeout.reason}"
+                        )
+                        binding.tvCooldownHint.text = ""
+                        setMaintenanceActionButtonsEnabled(true)
+                        ToastUtils.showLong("订单占用未释放：${closeout.reason}")
+                        clearPanCooldownJob = null
+                        return@launch
+                    }
+                    true
+                } else {
+                    false
+                }
+                val idleReady = staleClaimClosed || waitUntilMachineIdleOrTimeout(
+                    reason = "维护页点击清空烤盘等待空闲",
+                    waitingText = "等待机械动作完成后清空烤盘",
+                    update = { binding.tvCooldownHint.text = it },
+                    allowSupplementPrefetchAbandon = true
+                )
+                if (!idleReady) {
+                    AdminOperationLogger.w(
+                        action = "清空烤盘",
+                        page = AdminOperationLogger.PAGE_PAN,
+                        result = AdminOperationLogger.RESULT_FAIL,
+                        detail = "失败原因=等待机械臂空闲超时"
+                    )
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("设备当前机械状态未归零，请先检查下位机连接或恢复状态")
+                    clearPanCooldownJob = null
+                    return@launch
+                }
+                if (!staleClaimClosed && KaoChangOperate.isActionGroupRecoveryBlocked()) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showShort("存在未收口的动作恢复记录，请先完成恢复后再清空烤盘")
+                    clearPanCooldownJob = null
+                    return@launch
+                }
+                KaoPanHelper.getKaoPanList()
+                    .filter { it.positionSn in 1..21 && it.isHasSausage }
+                    .map { it.positionSn }
+                    .forEach { positionSn ->
+                        LowToHighDemandGate.recordNonDemandEmpty(positionSn, "manual_clear")
+                    }
+                KaoPanHelper.clearKaoPan()
+                KaoPanHelper.init()
+                PanPhysicalStateDeltaReporter.reportPansChanged(
+                    changedPans = KaoPanHelper.getKaoPanList(),
+                    reason = "maintenance_pan_clear:all",
+                    source = "maintenance_pan_clear_all"
+                )
+                FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击清空烤盘")
+                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
+                KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
+                clearRuntimeStateAfterManualPanReset("点击清空烤盘")
+                AdminOperationLogger.i(
+                    action = "清空烤盘",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_DONE,
+                    detail = if (staleClaimClosed) {
+                        "烤肠算法开关=关闭，订单=${staleClaim?.orderNo}，说明=订单残留已精确释放"
+                    } else {
+                        "烤肠算法开关=关闭，说明=进入15秒防重复操作冷却"
+                    }
+                )
+                finishMaintenanceAction()
+                if (staleClaimClosed) {
+                    setMaintenanceActionButtonsEnabled(true)
+                    binding.btnClearAll.text = "清空烤盘"
+                    binding.tvCooldownHint.text = ""
+                    clearPanCooldownJob = null
+                } else {
+                    clearPanCooldownJob = startMaintenanceCooldown(target = "clear") {
+                        setMaintenanceActionButtonsEnabled(true)
+                        binding.btnClearAll.text = "清空烤盘"
+                        binding.tvCooldownHint.text = ""
+                        clearPanCooldownJob = null
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AdminOperationLogger.w(
+                    action = "清空烤盘",
+                    page = AdminOperationLogger.PAGE_PAN,
+                    result = AdminOperationLogger.RESULT_FAIL,
+                    detail = "异常=${error.message ?: error.javaClass.simpleName}"
+                )
+                binding.tvCooldownHint.text = ""
+                setMaintenanceActionButtonsEnabled(true)
+                ToastUtils.showLong("清空烤盘异常，未确认的占用保持不变：${error.message}")
+                clearPanCooldownJob = null
+            } finally {
+                endAdminBusy(adminBusy)
             }
         }
     }

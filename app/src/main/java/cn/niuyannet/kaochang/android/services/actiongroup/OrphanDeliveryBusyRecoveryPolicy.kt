@@ -43,6 +43,12 @@ object OrphanDeliveryBusyRecoveryPolicy {
         snapshots: List<OrphanDeliveryBusySnapshot>
     ): OrphanDeliveryBusyRecoveryDecision {
         if (moveStatus != 2) return reject("当前 moveStatus=$moveStatus，不是孤儿出餐忙态")
+        return evaluateIdleSnapshots(snapshots)
+    }
+
+    fun evaluateIdleSnapshots(
+        snapshots: List<OrphanDeliveryBusySnapshot>
+    ): OrphanDeliveryBusyRecoveryDecision {
         if (snapshots.size != 2) return reject("必须连续读取两次下位机空闲快照，实际=${snapshots.size}次")
         snapshots.forEachIndexed { index, snapshot ->
             val prefix = "第${index + 1}次快照"

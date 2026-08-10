@@ -72,4 +72,14 @@ class OrderSupplementResumePolicyTest {
         assertFalse(OrderSupplementResumePolicy.shouldResume(OrderExecutionOutcome.EVIDENCE_UNKNOWN))
         assertTrue(OrderSupplementResumePolicy.shouldEnterMaintenance(OrderExecutionOutcome.EVIDENCE_UNKNOWN))
     }
+
+    @Test
+    fun onlySettledOutcomes_shouldReleaseOrderClaim() {
+        assertTrue(OrderSupplementResumePolicy.shouldReleaseClaim(OrderExecutionOutcome.SUCCESS))
+        assertTrue(OrderSupplementResumePolicy.shouldReleaseClaim(OrderExecutionOutcome.NO_DISPATCH))
+        assertTrue(OrderSupplementResumePolicy.shouldReleaseClaim(OrderExecutionOutcome.MECHANICAL_FAILED))
+        assertFalse(OrderSupplementResumePolicy.shouldReleaseClaim(OrderExecutionOutcome.EVIDENCE_UNKNOWN))
+        assertFalse(OrderSupplementResumePolicy.shouldReleaseClaim(OrderExecutionOutcome.FAILED))
+        assertFalse(OrderSupplementResumePolicy.shouldReleaseClaim(OrderExecutionOutcome.UNKNOWN))
+    }
 }

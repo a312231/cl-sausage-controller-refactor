@@ -25,6 +25,7 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStageBridge
+import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.customview.customView
 import com.alibaba.fastjson.JSON
@@ -183,6 +184,9 @@ abstract class OrderActivity: BaseSauceDetection() {
         KaoChangOperate.requestSupplementPauseForOrder(safeOrderNo)
         var orderOutcome = OrderExecutionOutcome.UNKNOWN
         var normalCloseoutCompleted = false
+        var preDeliveryClaim: OrderDeliveryClaim? = null
+        var orderClaimReleased = false
+        var orderCloseoutCommitted = false
         OrderProcessingStageBridge.publish(
             if (AppConfig.getAppConfig().moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
                 OrderProcessingStage.SUPPLEMENTING
@@ -197,7 +201,6 @@ abstract class OrderActivity: BaseSauceDetection() {
                 val fallbackMaxWaitTime = 240_000L
                 val checkInterval = 1000L
                 var waited = 0L
-                var preDeliveryClaim: OrderDeliveryClaim? = null
                 val manualOutRecoveryPending = KaoChangOperate.shouldRecoverManualOutBeforeIncomingOrder(safeOrderNo)
                 val manualOutRecoveryFailed = if (manualOutRecoveryPending) {
                     val recovered = runCatching {
@@ -322,16 +325,37 @@ abstract class OrderActivity: BaseSauceDetection() {
                 } else if (orderOutcome == OrderExecutionOutcome.UNKNOWN) {
                     orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
                 }
-                orderCompleted = orderCompleted && OrderSupplementResumePolicy.shouldResume(orderOutcome)
-                if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
+                val terminalStatePersisted = when (orderOutcome) {
+                    OrderExecutionOutcome.SUCCESS -> OrderStateManager.markAsFinishedDurable(safeOrderNo)
+                    OrderExecutionOutcome.MECHANICAL_FAILED -> OrderStateManager.markAsFailedDurable(safeOrderNo)
+                    else -> true
+                }
+                if (!terminalStatePersisted) {
+                    orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                    orderCompleted = false
+                }
 
                 // 当前订单动作结束后，本地动作状态恢复为空闲；如果本单没有拿到出餐控制权，
                 // 不能清掉补肠/搬盘/丢弃等其他动作的 moveStatus。
-                if (OrderSupplementResumePolicy.shouldResume(orderOutcome)) {
-                    preDeliveryClaim?.let { claim ->
-                        KaoChangOperate.releaseOrderDeliveryMoveStatus(claim, "订单动作完成：$safeOrderNo")
+                if (terminalStatePersisted && OrderSupplementResumePolicy.shouldReleaseClaim(orderOutcome)) {
+                    orderClaimReleased = preDeliveryClaim?.let { claim ->
+                        KaoChangOperate.releaseOrderDeliveryMoveStatus(claim, "订单动作收口：$safeOrderNo，outcome=$orderOutcome")
+                    } ?: true
+                    if (!orderClaimReleased && preDeliveryClaim != null) {
+                        orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                        orderCompleted = false
+                    } else if (orderClaimReleased && orderOutcome == OrderExecutionOutcome.MECHANICAL_FAILED) {
+                        runCatching { KaoChangOperate.clearSettledOrderPause(safeOrderNo) }
+                            .onFailure { error ->
+                                LogUtils.e(
+                                    "【订单流转】机械失败已释放 claim，但清理订单暂停失败：" +
+                                        "orderNo=$safeOrderNo，error=${error.message ?: error.javaClass.simpleName}"
+                                )
+                            }
                     }
                 }
+                orderCloseoutCommitted = terminalStatePersisted && orderClaimReleased
+                orderCompleted = orderCompleted && OrderSupplementResumePolicy.shouldResume(orderOutcome)
                 withContext(Dispatchers.Main) {
                     val config = AppConfig.getAppConfig()
                     val status = config.onlineStatus
@@ -363,15 +387,40 @@ abstract class OrderActivity: BaseSauceDetection() {
                 }
                 normalCloseoutCompleted = true
             } catch (cancelled: CancellationException) {
-                orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
-                LogUtils.e("【订单流转】整单处理被取消，结果保持 UNKNOWN 并保留机械恢复证据：orderNo=$safeOrderNo")
+                if (!orderCloseoutCommitted) {
+                    orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                    LogUtils.e("【订单流转】整单处理被取消，结果保持 UNKNOWN 并保留机械恢复证据：orderNo=$safeOrderNo")
+                } else {
+                    LogUtils.e("【订单流转】订单收口已提交，后续流程被取消，不回滚订单结果：orderNo=$safeOrderNo")
+                }
                 throw cancelled
             } catch (e: Exception) {
-                orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
-                LogUtils.e(
-                    "【订单流转】整单处理异常，结果保持 UNKNOWN 并保留机械恢复证据：" +
-                        "orderNo=$safeOrderNo，error=${e.message ?: e.javaClass.simpleName}"
-                )
+                if (!orderCloseoutCommitted) {
+                    orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                    LogUtils.e(
+                        "【订单流转】整单处理异常，结果保持 UNKNOWN 并保留机械恢复证据：" +
+                            "orderNo=$safeOrderNo，error=${e.message ?: e.javaClass.simpleName}"
+                    )
+                } else {
+                    LogUtils.e(
+                        "【订单流转】订单收口已提交，后续状态或界面同步异常，不回滚订单结果：" +
+                            "orderNo=$safeOrderNo，error=${e.message ?: e.javaClass.simpleName}"
+                    )
+                    try {
+                        withContext(Dispatchers.Main) {
+                            hideProcessingDialog()
+                            setDataToView()
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (cleanupError: Exception) {
+                        LogUtils.e(
+                            "【订单流转】订单已收口，但异常后的界面清理仍失败：" +
+                                "orderNo=$safeOrderNo，error=${cleanupError.message ?: cleanupError.javaClass.simpleName}"
+                        )
+                    }
+                    normalCloseoutCompleted = true
+                }
             } finally {
                 try {
                     var supplementResumeSucceeded = true
@@ -433,7 +482,12 @@ abstract class OrderActivity: BaseSauceDetection() {
                     supplementResumeCancellation?.let { throw it }
                 } finally {
                     KaoChangOperate.releaseManualOutOrderRecovery(safeOrderNo)
-                    cn.niuyannet.kaochang.android.utils.OrderStateManager.releaseProcessing(safeOrderNo)
+                    if (preDeliveryClaim == null) {
+                        orderClaimReleased = true
+                    }
+                    if (orderClaimReleased) {
+                        OrderStateManager.releaseProcessing(safeOrderNo)
+                    }
                 }
             }
         }

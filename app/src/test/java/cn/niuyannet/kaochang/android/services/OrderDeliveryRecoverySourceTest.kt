@@ -77,6 +77,60 @@ class OrderDeliveryRecoverySourceTest {
         assertFalse("维护页旧恢复不得锁外直接清零", maintenanceLegacyRecovery.contains("config.moveStatus = 0"))
     }
 
+    @Test
+    fun legacyRecovery_shouldRequireAbsentActionAndPausedEvidence() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val idleCheck = functionBlock(
+            operate,
+            "private fun isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim()",
+            "data class OrphanDeliveryBusyRecoveryResult("
+        )
+
+        assertTrue(
+            "损坏的动作组会话不得按无会话清零",
+            idleCheck.contains("actionGroupSessionStore.readEvidence() is DurableEvidenceReadResult.Absent")
+        )
+        assertTrue(
+            "损坏或残留的暂停补肠会话不得按空闲清零",
+            idleCheck.contains("pausedSupplementSessionStore.readEvidence() is DurableEvidenceReadResult.Absent")
+        )
+        assertFalse(
+            "旧 201 空闲判断不得继续使用把损坏证据吞成 null 的 load()",
+            idleCheck.contains("actionGroupSessionStore.load() == null")
+        )
+    }
+
+    @Test
+    fun genericRecovery_shouldBlockOrderClaimBeforeRecoveryMutation() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val recovery = functionBlock(
+            operate,
+            "suspend fun recoverActionGroupStateAfterModbusReady(",
+            "private fun automaticRecoveryOrderClaimBlockReason()"
+        )
+        val claimGate = recovery.indexOf("automaticRecoveryOrderClaimBlockReason()")
+        val discardJournal = recovery.indexOf("discardJournalStore.load()")
+        val panMoveRecovery = recovery.indexOf("recoverPanMoveJournalAfterModbusReady(reason)")
+        val bootstrap = recovery.indexOf("ActionGroupRecoveryBootstrap(")
+
+        assertTrue("通用恢复必须先读取订单 claim", claimGate >= 0)
+        assertTrue("订单 claim 门禁必须早于丢弃 journal 恢复路径", claimGate < discardJournal)
+        assertTrue("订单 claim 门禁必须早于搬盘恢复", claimGate < panMoveRecovery)
+        assertTrue("订单 claim 门禁必须早于动作组接管", claimGate < bootstrap)
+        assertTrue(
+            "动作组接管写入前必须在既有短锁内重查订单 claim",
+            recovery.contains("automaticRecoveryOrderClaimBlockReason() == null")
+        )
+        assertTrue(
+            "Idle 清理 moveStatus 前必须再次在既有短锁内重查订单 claim",
+            recovery.contains("val idleClaimBlockReason = withFaultHeatTransitionLock")
+        )
+    }
+
     private fun functionBlock(source: String, startMarker: String, endMarker: String): String {
         val start = source.indexOf(startMarker)
         assertTrue("缺少函数：$startMarker", start >= 0)
