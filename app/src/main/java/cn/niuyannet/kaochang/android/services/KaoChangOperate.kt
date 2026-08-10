@@ -59,6 +59,9 @@ import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaimReco
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaimStore
 import cn.niuyannet.kaochang.android.services.actiongroup.Out1DispatchEvidence
 import cn.niuyannet.kaochang.android.services.actiongroup.OutActionGroupRunner
+import cn.niuyannet.kaochang.android.services.actiongroup.OrphanDeliveryBusyRecoveryPolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.OrphanDeliveryBusyRegisterState
+import cn.niuyannet.kaochang.android.services.actiongroup.OrphanDeliveryBusySnapshot
 import cn.niuyannet.kaochang.android.services.actiongroup.PrefetchSupplementPlanner
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceLocks
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
@@ -105,8 +108,10 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.coroutineContext
 
 internal fun formatActionGroupFailureReasonForUpload(
     actionName: String,
@@ -643,6 +648,140 @@ object KaoChangOperate {
             discardJournalStore.load() == null &&
             !hasBlockingSupplementPrefetchEvidence() &&
             actionGroupLocks.isIdle()
+    }
+
+    data class OrphanDeliveryBusyRecoveryResult(
+        val recovered: Boolean,
+        val reason: String
+    )
+
+    /**
+     * 待丢弃烤盘不能一直被无 owner 的历史出餐忙态卡住。这里绝不收口订单 claim、会话、库存或下位机寄存器。
+     */
+    suspend fun recoverOrphanDeliveryBusyForPendingDiscard(): OrphanDeliveryBusyRecoveryResult {
+        val callerContext = coroutineContext
+        val initialConfig = AppConfig.getAppConfig()
+        if (initialConfig.pendingDiscardPositions.isEmpty()) {
+            return OrphanDeliveryBusyRecoveryResult(false, "没有待丢弃烤盘")
+        }
+        if (initialConfig.moveStatus != 2) {
+            return OrphanDeliveryBusyRecoveryResult(false, "moveStatus=${initialConfig.moveStatus}，无需孤儿出餐忙态恢复")
+        }
+        val precheckRejection = withFaultHeatTransitionLock { orphanDeliveryBusyRecoveryLocalRejection() }
+        if (precheckRejection != null) {
+            return OrphanDeliveryBusyRecoveryResult(false, precheckRejection)
+        }
+
+        val firstSnapshot = readOrphanDeliveryBusySnapshot()
+        delay(500L)
+        val secondSnapshot = readOrphanDeliveryBusySnapshot()
+        callerContext.ensureActive()
+        val snapshotDecision = OrphanDeliveryBusyRecoveryPolicy.evaluate(
+            moveStatus = initialConfig.moveStatus,
+            snapshots = listOf(firstSnapshot, secondSnapshot)
+        )
+        if (!snapshotDecision.canRecover) {
+            return OrphanDeliveryBusyRecoveryResult(false, snapshotDecision.reason)
+        }
+
+        return withFaultHeatTransitionLock {
+            callerContext.ensureActive()
+            val rejection = orphanDeliveryBusyRecoveryLocalRejection()
+            if (rejection != null) {
+                return@withFaultHeatTransitionLock OrphanDeliveryBusyRecoveryResult(false, rejection)
+            }
+            val lockedDecision = OrphanDeliveryBusyRecoveryPolicy.evaluate(
+                moveStatus = mechanicalMoveStatusStore.load(),
+                snapshots = listOf(firstSnapshot, secondSnapshot)
+            )
+            if (!lockedDecision.canRecover) {
+                return@withFaultHeatTransitionLock OrphanDeliveryBusyRecoveryResult(false, lockedDecision.reason)
+            }
+            try {
+                mechanicalMoveStatusStore.saveDurable(0)
+                logW(
+                    LOG_ORDER,
+                    "待丢弃烤盘恢复无 owner 出餐忙态成功：moveStatus=2->0，" +
+                        "pending=${AppConfig.getAppConfig().pendingDiscardPositions}"
+                )
+                OrphanDeliveryBusyRecoveryResult(true, "下位机连续空闲且本地无订单/动作证据")
+            } catch (error: Throwable) {
+                logW(LOG_ORDER, "待丢弃烤盘恢复无 owner 出餐忙态写入失败，保持阻断：${error.message}")
+                OrphanDeliveryBusyRecoveryResult(false, "moveStatus 耐久写入失败")
+            }
+        }
+    }
+
+    private fun orphanDeliveryBusyRecoveryLocalRejection(): String? {
+        return try {
+            orphanDeliveryBusyRecoveryLocalRejectionSafely()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            logW(LOG_ORDER, "孤儿出餐忙态本地证据读取异常，拒绝恢复：${error.message}")
+            "本地恢复证据读取异常"
+        }
+    }
+
+    private fun orphanDeliveryBusyRecoveryLocalRejectionSafely(): String? {
+        val config = AppConfig.getAppConfig()
+        if (config.pendingDiscardPositions.isEmpty()) return "待丢弃烤盘已变化"
+        if (!actionGroupRecoveryVerified) return "动作组恢复尚未验证"
+        if (config.moveStatus != 2) return "moveStatus 已变化为${config.moveStatus}"
+        if (config.onlineStatus != 1 || config.isEnable != 1 ||
+            config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL ||
+            config.inspectionMode != AppConfigBean.INSPECTION_MODE_NORMAL
+        ) {
+            return "设备不处于正常自动调度状态"
+        }
+        if (LowerPlatformEpisodeReducer.hasOpenGuardedIsolation(config)) return "存在下平台 guarded 隔离"
+        if (OrderStateManager.hasProcessingOrder()) return "存在处理中订单"
+        if (SupplementPauseController.shouldPauseForOrder()) return "订单正在等待机械出餐"
+        val orderClaim = try {
+            orderDeliveryClaimStore.load()
+        } catch (error: Throwable) {
+            logW(LOG_ORDER, "订单出餐 claim 损坏，拒绝恢复孤儿出餐忙态：${error.message}")
+            return "订单出餐 claim 损坏"
+        }
+        if (orderClaim != null) return "存在订单出餐 claim"
+        if (actionGroupSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) {
+            return "存在或损坏的动作组会话"
+        }
+        if (pausedSupplementSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) {
+            return "存在或损坏的暂停补肠会话"
+        }
+        if (readSupplementPrefetchEvidence() !is DurableEvidenceReadResult.Absent) return "存在双 lane 预取证据"
+        if (panMoveJournalStore.load() != null) return "存在搬盘 journal"
+        if (discardJournalStore.load() != null) return "存在丢弃 journal"
+        if (!actionGroupLocks.isIdle()) return "动作组资源锁未释放"
+        return null
+    }
+
+    private fun readOrphanDeliveryBusySnapshot(): OrphanDeliveryBusySnapshot {
+        val modbusConnected = VMModbusHelper.connectStatus()
+        if (!modbusConnected) {
+            return OrphanDeliveryBusySnapshot(
+                modbusConnected = false,
+                legacyActionStatus201 = null,
+                commandStates = emptyList(),
+                resultStates = emptyList()
+            )
+        }
+        val status201 = readHoldingRegisters(action_address_status, 1)?.singleOrNull()
+        val commandStates = mutableListOf<OrphanDeliveryBusyRegisterState>()
+        val resultStates = mutableListOf<OrphanDeliveryBusyRegisterState>()
+        ActionGroupRecoveryBootstrap.allSpecs.forEach { spec ->
+            val pair = readHoldingRegisters(spec.commandRegister, 2)
+            if (pair?.size == 2) {
+                commandStates += OrphanDeliveryBusyRegisterState(spec.name, spec.commandRegister, pair[0])
+                resultStates += OrphanDeliveryBusyRegisterState(spec.name, spec.resultRegister, pair[1])
+            } else {
+                val error = "寄存器${spec.commandRegister}/${spec.resultRegister}读取失败"
+                commandStates += OrphanDeliveryBusyRegisterState(spec.name, spec.commandRegister, null, error)
+                resultStates += OrphanDeliveryBusyRegisterState(spec.name, spec.resultRegister, null, error)
+            }
+        }
+        return OrphanDeliveryBusySnapshot(modbusConnected, status201, commandStates, resultStates)
     }
 
     fun abandonSupplementPrefetchForManualPanClear(

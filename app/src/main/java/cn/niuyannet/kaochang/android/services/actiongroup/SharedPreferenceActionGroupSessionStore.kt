@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceCodec
+import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
@@ -22,6 +24,24 @@ class SharedPreferenceActionGroupSessionStore(
             null
         }
     }
+
+    /**
+     * 自动恢复场景必须区分“确实不存在”和“本地证据损坏”；保留 load() 的兼容行为给旧调用方。
+     */
+    fun readEvidence(): DurableEvidenceReadResult<ActionGroupSession> =
+        DurableEvidenceCodec.read(
+            raw = PreferenceUtils.getStringPreference(file, key, null),
+            parser = { raw -> JSON.parseObject(raw, ActionGroupSession::class.java) },
+            validator = ::isValid
+        )
+
+    private fun isValid(session: ActionGroupSession): Boolean =
+        session.sessionId.isNotBlank() &&
+            session.sourceNo > 0 &&
+            session.resourceMask >= 0 &&
+            session.startedAtMs >= 0L &&
+            session.mechanicalClaimRevision >= 0L &&
+            runCatching { session.type.name }.isSuccess
 
     override fun save(session: ActionGroupSession) {
         check(PreferenceUtils.saveStringPreferenceDurable(file, key, JSON.toJSONString(session))) {

@@ -6,6 +6,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 
 /**
  * 过保与待丢弃扫描器。
@@ -15,6 +16,7 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
  */
 object OverKeepWarmDiscardScanner {
     private const val TAG = "KaoChangAlgorithm"
+    private val mechanicalBlockedLogGate = RepeatedLogGate(summaryIntervalMs = 5 * 60 * 1000L)
 
     data class ScanResult(
         val markedPositions: List<Int>,
@@ -77,14 +79,14 @@ object OverKeepWarmDiscardScanner {
             )
         }
 
+        if (markedPositions.isEmpty()) {
+            mechanicalBlockedLogGate.reset()
+        }
+
         val gate = evaluateMechanicalGate(AppConfig.getAppConfig(), allowMechanicalAction)
         if (!gate.canStart) {
             if (markedPositions.isNotEmpty()) {
-                LogUtils.w(
-                    TAG,
-                    "【丢弃流程】已完成可售阻断，但暂不执行机械丢弃：source=$source，" +
-                        "positions=$markedPositions，reason=${gate.reason}"
-                )
+                logMechanicalBlocked(source, markedPositions, gate.reason)
             }
             return ScanResult(
                 markedPositions = markedPositions,
@@ -93,6 +95,7 @@ object OverKeepWarmDiscardScanner {
                 mechanicalBlockedReason = gate.reason
             )
         }
+        mechanicalBlockedLogGate.reset()
 
         val attempted = mutableListOf<Int>()
         val successful = mutableListOf<Int>()
@@ -138,6 +141,18 @@ object OverKeepWarmDiscardScanner {
             attemptedPositions = attempted,
             successfulPositions = successful,
             mechanicalBlockedReason = null
+        )
+    }
+
+    private fun logMechanicalBlocked(source: String, positions: List<Int>, reason: String) {
+        val state = "source=$source;positions=$positions;reason=$reason"
+        val decision = mechanicalBlockedLogGate.evaluate(state, System.currentTimeMillis()) ?: return
+        val phase = if (decision.stateChanged) "初次或状态变化" else "5分钟汇总"
+        val suppressed = if (decision.suppressedCount > 0) "，期间抑制=${decision.suppressedCount}次重复日志" else ""
+        LogUtils.w(
+            TAG,
+            "【丢弃流程】已完成可售阻断，但暂不执行机械丢弃：source=$source，" +
+                "positions=$positions，reason=$reason，log=$phase$suppressed"
         )
     }
 

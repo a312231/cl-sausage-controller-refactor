@@ -71,6 +71,8 @@ object KaoChangAlgorithm {
     private var lastAutoDispatchBlockSnapshot: String? = null
     private var lastFaultHeatDiagnosticLogKey: String? = null
     private val faultCloseoutLogGate = RepeatedLogGate(summaryIntervalMs = null)
+    private var orphanDeliveryBusyRecoveryCandidate: String? = null
+    private var lastOrphanDeliveryBusyRecoveryAttemptAtMs: Long = 0L
     private var lastStableHighOldLowHeatDiagnosticKey: String? = null
     var isEnabled = false
 
@@ -905,9 +907,19 @@ object KaoChangAlgorithm {
         refreshActiveBakingTimeBeforeMaturityCheck(config, kaoPanList)
         settleOldLowHeatSourcesBeforePendingDiscard(config, kaoPanList)
         if (config.pendingDiscardPositions.isNotEmpty()) {
+            val recovery = if (shouldAttemptOrphanDeliveryBusyRecovery(config)) {
+                KaoChangOperate.recoverOrphanDeliveryBusyForPendingDiscard()
+            } else {
+                null
+            }
+            if (recovery?.recovered == true) {
+                publishRuntimeStateOrFallback("orphan_delivery_busy_recovered_for_pending_discard")
+                SendServerHelper.publishAvailableState("orphan_delivery_busy_recovered_for_pending_discard")
+            }
             OverKeepWarmDiscardScanner.scanAndDiscard(1..33, "pending_discard_priority")
             return
         }
+        resetOrphanDeliveryBusyRecoveryAttempt()
         settleMaturedZonesBeforeDispatch(config, kaoPanList)
         normalizeOldLowHeatSourcesBeforeAvailabilityProjection(config, kaoPanList)
 
@@ -1004,6 +1016,28 @@ object KaoChangAlgorithm {
                 )
             }
         }
+    }
+
+    private fun shouldAttemptOrphanDeliveryBusyRecovery(config: AppConfigBean): Boolean {
+        if (config.moveStatus != 2) {
+            resetOrphanDeliveryBusyRecoveryAttempt()
+            return false
+        }
+        val candidate = "pending=${config.pendingDiscardPositions.sorted()};online=${config.onlineStatus};" +
+            "enable=${config.isEnable};error=${config.errorStatus};inspection=${config.inspectionMode}"
+        if (candidate != orphanDeliveryBusyRecoveryCandidate) {
+            orphanDeliveryBusyRecoveryCandidate = candidate
+            lastOrphanDeliveryBusyRecoveryAttemptAtMs = 0L
+        }
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastOrphanDeliveryBusyRecoveryAttemptAtMs < 60_000L) return false
+        lastOrphanDeliveryBusyRecoveryAttemptAtMs = nowMs
+        return true
+    }
+
+    private fun resetOrphanDeliveryBusyRecoveryAttempt() {
+        orphanDeliveryBusyRecoveryCandidate = null
+        lastOrphanDeliveryBusyRecoveryAttemptAtMs = 0L
     }
 
     private fun settleMaturedZonesBeforeDispatch(
