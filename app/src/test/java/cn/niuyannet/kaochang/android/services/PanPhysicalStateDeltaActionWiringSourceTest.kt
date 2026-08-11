@@ -7,6 +7,43 @@ import org.junit.Test
 class PanPhysicalStateDeltaActionWiringSourceTest {
 
     @Test
+    fun maturedZoneKeepWarm_shouldPublishPhysicalDeltaAfterPanStateIsSaved() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        val body = extractFunctionBody(source, "private fun settleMaturedZonesBeforeDispatch(")
+
+        assertOrder(
+            body,
+            "KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())",
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "整区成熟转保温的物理增量必须在本地烤盘保存后发布"
+        )
+        assertTrue("整区成熟转保温必须仅上报实际变化盘位", body.contains("settlements.flatMap { it.positions }"))
+        assertTrue("整区成熟转保温必须使用专用 source", body.contains("source = \"matured_zone_keep_warm\""))
+        assertOrder(
+            body,
+            "runCatching {",
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "整区成熟转保温物理增量必须隔离同步异常"
+        )
+        assertOrder(
+            body,
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "}.onFailure { error ->",
+            "整区成熟转保温物理增量异常必须记录后继续调度"
+        )
+        assertTrue(
+            "整区成熟转保温物理增量异常必须等待现有快照补偿",
+            body.contains("整区成熟已完成，物理增量上报异常，等待快照补偿")
+        )
+        assertOrder(
+            body,
+            "}.onFailure { error ->",
+            "KaoPanCloudSyncReporter.uploadIfSellableStateChanged(",
+            "整区成熟转保温必须在物理增量异常隔离后继续可售投影同步"
+        )
+    }
+
+    @Test
     fun supplementReducer_shouldPublishPhysicalDeltaOnlyAfterLocalStateIsSaved() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val body = extractBetween(

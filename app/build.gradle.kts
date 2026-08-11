@@ -22,8 +22,8 @@ android {
         applicationId = "cn.niuyannet.kaochang.android"
         minSdk = 24
         targetSdk = 34
-        versionCode = 285
-        versionName = "2.5.35"
+        versionCode = 286
+        versionName = "2.5.36"
         ndk {
             moduleName = "jssc"
             abiFilters.add("armeabi-v7a")

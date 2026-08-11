@@ -1066,6 +1066,15 @@ object KaoChangAlgorithm {
             }"
         )
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        runCatching {
+            PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                changedPanPositions = settlements.flatMap { it.positions },
+                reason = "机械门禁前整区成熟转保温",
+                source = "matured_zone_keep_warm"
+            )
+        }.onFailure { error ->
+            logW(LOG_ALGORITHM, "整区成熟已完成，物理增量上报异常，等待快照补偿：${error.message}")
+        }
         KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
             beforeSellable,
             KaoPanHelper.getKaoPanList(),
