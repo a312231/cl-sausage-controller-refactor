@@ -663,83 +663,167 @@ object KaoChangOperate {
     suspend fun closeStaleOrderDeliveryClaimForMaintenance(
         claim: OrderDeliveryClaim,
         reason: String
+    ): OrderClaimMaintenanceCloseoutResult = closeStaleOrderDeliveryClaim(
+        claim = claim,
+        reason = reason,
+        enterMaintenance = true
+    )
+
+    private suspend fun tryAutoCloseStaleOrderDeliveryClaim(
+        reason: String
+    ): OrderClaimMaintenanceCloseoutResult? {
+        val claim = try {
+            withFaultHeatTransitionLock { orderDeliveryClaimStore.load() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return OrderClaimMaintenanceCloseoutResult(false, "订单 claim 读取失败或损坏：${error.message}")
+        } ?: return null
+        return closeStaleOrderDeliveryClaim(
+            claim = claim,
+            reason = reason,
+            enterMaintenance = false
+        )
+    }
+
+    private suspend fun closeStaleOrderDeliveryClaim(
+        claim: OrderDeliveryClaim,
+        reason: String,
+        enterMaintenance: Boolean
     ): OrderClaimMaintenanceCloseoutResult {
-        if (OrderStateManager.hasProcessingOrder()) {
+        if (!OrderStateManager.canCloseStaleClaim(claim.orderNo)) {
             return OrderClaimMaintenanceCloseoutResult(
                 false,
-                "当前进程仍有订单在处理中，请先结束订单流程或重启上位机"
+                "存在其他处理中订单，或当前订单尚无耐久终态"
             )
         }
         val callerContext = coroutineContext
-        val config = AppConfig.getAppConfig()
-        val previousOnlineStatus = config.onlineStatus
-        val previousIsEnable = config.isEnable
-        config.onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS
-        config.isEnable = 0
-        try {
-            AppConfig.saveAppConfigDurable(config)
-        } catch (error: Throwable) {
-            config.onlineStatus = previousOnlineStatus
-            config.isEnable = previousIsEnable
-            return OrderClaimMaintenanceCloseoutResult(false, "维护状态同步落盘失败：${error.message}")
+        if (enterMaintenance) {
+            val config = AppConfig.getAppConfig()
+            val previousOnlineStatus = config.onlineStatus
+            val previousIsEnable = config.isEnable
+            config.onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS
+            config.isEnable = 0
+            try {
+                AppConfig.saveAppConfigDurable(config)
+            } catch (error: Throwable) {
+                config.onlineStatus = previousOnlineStatus
+                config.isEnable = previousIsEnable
+                return OrderClaimMaintenanceCloseoutResult(false, "维护状态同步落盘失败：${error.message}")
+            }
+            HomeUiRefreshBridge.requestRefresh("order_claim:maintenance")
+            publishRuntimeStateWithHttpFallback("订单 claim 人工收口进入维护")
         }
-        HomeUiRefreshBridge.requestRefresh("order_claim:maintenance")
-        publishRuntimeStateWithHttpFallback("订单 claim 人工收口进入维护")
 
-        val precheck = withFaultHeatTransitionLock { staleOrderClaimCloseoutRejection(claim) }
+        val precheck = withFaultHeatTransitionLock {
+            staleOrderClaimCloseoutRejectionSafely(claim, requireMaintenance = enterMaintenance)
+        }
         if (precheck != null) return OrderClaimMaintenanceCloseoutResult(false, precheck)
 
-        val snapshots = listOf(
-            readOrphanDeliveryBusySnapshot(),
-            run {
-                delay(500L)
-                readOrphanDeliveryBusySnapshot()
-            }
-        )
+        val snapshots = try {
+            listOf(
+                readOrphanDeliveryBusySnapshot(),
+                run {
+                    delay(500L)
+                    readOrphanDeliveryBusySnapshot()
+                }
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            logW(LOG_ORDER, "订单 claim 收口读取下位机状态失败：orderNo=${claim.orderNo}，${error.message}")
+            return OrderClaimMaintenanceCloseoutResult(
+                false,
+                "订单 claim 收口读取下位机状态失败：${error.message}"
+            )
+        }
         callerContext.ensureActive()
         val idleDecision = OrphanDeliveryBusyRecoveryPolicy.evaluateIdleSnapshots(snapshots)
         if (!idleDecision.canRecover) {
             return OrderClaimMaintenanceCloseoutResult(false, idleDecision.reason)
         }
 
+        var atomicCommitError: Exception? = null
         val closed = withFaultHeatTransitionLock {
             callerContext.ensureActive()
-            if (staleOrderClaimCloseoutRejection(claim) != null) {
+            if (staleOrderClaimCloseoutRejectionSafely(claim, requireMaintenance = enterMaintenance) != null) {
                 return@withFaultHeatTransitionLock false
             }
-            if (!OrderStateManager.markAsFailedDurable(claim.orderNo)) {
-                return@withFaultHeatTransitionLock false
-            }
+            val terminalState = OrderStateManager.ensureTerminalForStaleCloseoutDurable(claim.orderNo)
+                ?: return@withFaultHeatTransitionLock false
             closeOrderDeliveryMoveForMaintenance(
                 claim = claim,
                 transitionLock = faultHeatTransitionLock,
                 claimStore = orderDeliveryClaimStore,
-                moveStore = mechanicalMoveStatusStore
+                moveStore = mechanicalMoveStatusStore,
+                commitIdleAndClearClaim = {
+                    try {
+                        orderDeliveryClaimStore.commitIdleMoveStatusAndClearIfCurrent(
+                            expected = claim,
+                            orderFailed = terminalState == OrderStateManager.STATE_FAILED
+                        )
+                    } catch (error: Exception) {
+                        atomicCommitError = error
+                        throw error
+                    }
+                }
             ) {
                 true
             }
         }
         if (!closed) {
+            atomicCommitError?.let { error ->
+                logW(LOG_ORDER, "订单 claim 原子收口提交异常：orderNo=${claim.orderNo}，${error.message}")
+                return OrderClaimMaintenanceCloseoutResult(
+                    false,
+                    "订单 claim 原子收口提交异常：${error.message}"
+                )
+            }
             return OrderClaimMaintenanceCloseoutResult(false, "订单号或本地恢复证据已变化，claim 保持阻断")
         }
 
         OrderStateManager.releaseProcessing(claim.orderNo)
+        manualOutOrderRecoveryCoordinator.release(claim.orderNo)
         runCatching { SupplementPauseController.clearOrderPause(claim.orderNo) }
             .onFailure { error ->
                 logW(LOG_ORDER, "订单 claim 已释放，但清理订单暂停失败：orderNo=${claim.orderNo}，${error.message}")
             }
-        logW(LOG_ORDER, "维护人员已精确收口订单 claim：orderNo=${claim.orderNo}，reason=$reason")
-        runCatching { publishRuntimeStateWithHttpFallback("订单 claim 人工收口完成") }
+        HomeUiRefreshBridge.requestRefresh("order_claim:closed")
+        val closeoutSource = if (enterMaintenance) "维护人员" else "自动恢复"
+        logE(LOG_ORDER, "$closeoutSource 已精确收口残留订单 claim：orderNo=${claim.orderNo}，reason=$reason")
+        runCatching { publishRuntimeStateWithHttpFallback("订单 claim ${closeoutSource}收口完成") }
             .onFailure { error ->
                 logW(LOG_ORDER, "订单 claim 已释放，但状态上报失败：orderNo=${claim.orderNo}，${error.message}")
             }
-        return OrderClaimMaintenanceCloseoutResult(true, "订单 ${claim.orderNo} 的残留占用已释放")
+        return OrderClaimMaintenanceCloseoutResult(true, "订单 ${claim.orderNo} 的残留占用已整体释放")
     }
 
-    private fun staleOrderClaimCloseoutRejection(claim: OrderDeliveryClaim): String? {
+    private fun staleOrderClaimCloseoutRejectionSafely(
+        claim: OrderDeliveryClaim,
+        requireMaintenance: Boolean
+    ): String? {
+        return try {
+            staleOrderClaimCloseoutRejection(claim, requireMaintenance)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            logW(LOG_ORDER, "订单 claim 收口读取本地证据失败：orderNo=${claim.orderNo}，${error.message}")
+            "订单 claim 收口读取本地证据失败：${error.message}"
+        }
+    }
+
+    private fun staleOrderClaimCloseoutRejection(
+        claim: OrderDeliveryClaim,
+        requireMaintenance: Boolean
+    ): String? {
         val config = AppConfig.getAppConfig()
-        if (config.onlineStatus != 3 || config.isEnable != 0) return "设备尚未进入维护或算法未关闭"
-        if (OrderStateManager.hasProcessingOrder()) return "当前进程仍有订单在处理中，请先结束订单流程或重启上位机"
+        if (requireMaintenance && (config.onlineStatus != 3 || config.isEnable != 0)) {
+            return "设备尚未进入维护或算法未关闭"
+        }
+        if (config.moveStatus !in setOf(0, 2)) return "moveStatus=${config.moveStatus} 不是订单出餐状态"
+        if (!OrderStateManager.canCloseStaleClaim(claim.orderNo)) {
+            return "存在其他处理中订单，或当前订单尚无耐久终态"
+        }
         val current = orderDeliveryClaimStore.load()
         if (current?.owner != claim.owner || current.revision != claim.revision) return "订单 claim 已变化"
         if (actionGroupSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的动作组会话"
@@ -3005,6 +3089,17 @@ object KaoChangOperate {
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
         }
+        val autoClaimCloseout = tryAutoCloseStaleOrderDeliveryClaim("$reason:claim-only自动收口")
+        if (autoClaimCloseout != null) {
+            if (!autoClaimCloseout.ok) {
+                enterActionGroupMaintenance(
+                    "订单出餐 claim 自动收口失败：${autoClaimCloseout.reason}，reason=$reason",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+            logW(LOG_ORDER, "订单出餐 claim 自动收口完成：${autoClaimCloseout.reason}，reason=$reason")
+        }
         val initialClaimBlockReason = withFaultHeatTransitionLock {
             automaticRecoveryOrderClaimBlockReason()
         }
@@ -3389,6 +3484,17 @@ object KaoChangOperate {
         reason: String,
         hasProcessingOrder: Boolean
     ): ManualDeviceRecoveryCloseoutResult {
+        val orderClaim = try {
+            withFaultHeatTransitionLock { orderDeliveryClaimStore.load() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return ManualDeviceRecoveryCloseoutResult(false, "订单 claim 读取失败或损坏：${error.message}")
+        }
+        if (orderClaim != null) {
+            val closeout = closeStaleOrderDeliveryClaimForMaintenance(orderClaim, reason)
+            return ManualDeviceRecoveryCloseoutResult(closeout.ok, closeout.reason)
+        }
         val evidence = buildActionGroupRecoveryResidueEvidence(reason)
         return withFaultHeatTransitionLock {
             confirmManualDeviceRecoveryResidueLocked(reason, hasProcessingOrder, evidence)

@@ -78,21 +78,21 @@ class OrderSupplementResumeFailureSourceTest {
         assertTrue(closeout.contains("readOrphanDeliveryBusySnapshot()"))
         assertTrue(closeout.contains("delay(500L)"))
         assertTrue(closeout.contains("evaluateIdleSnapshots(snapshots)"))
-        assertTrue(closeout.contains("OrderStateManager.markAsFailedDurable(claim.orderNo)"))
+        assertTrue(closeout.contains("OrderStateManager.ensureTerminalForStaleCloseoutDurable(claim.orderNo)"))
         assertTrue(closeout.contains("closeOrderDeliveryMoveForMaintenance("))
         assertTrue(closeout.contains("OrderStateManager.releaseProcessing(claim.orderNo)"))
         assertFalse(closeout.contains("operateScope.launch"))
         assertFalse(closeout.contains("while ("))
-        assertTrue(rejection.contains("OrderStateManager.hasProcessingOrder()"))
+        assertTrue(rejection.contains("OrderStateManager.canCloseStaleClaim(claim.orderNo)"))
         assertTrue(delivery.contains("freshExecutionObserved"))
         assertTrue(
-            closeout.indexOf("OrderStateManager.hasProcessingOrder()") in
+            closeout.indexOf("OrderStateManager.canCloseStaleClaim(claim.orderNo)") in
                 0 until closeout.indexOf("config.onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS")
         )
         assertTrue(maintenance.contains("确认收口订单 ${'$'}{claim.orderNo}"))
         assertTrue(maintenance.contains("staleClaimClosed || waitUntilMachineIdleOrTimeout("))
         val processingCheck = clearAll.indexOf(
-            "if (staleClaim != null && OrderStateManager.hasProcessingOrder())"
+            "if (staleClaim != null && !OrderStateManager.canCloseStaleClaim(staleClaim.orderNo))"
         )
         val disableAlgorithm = clearAll.indexOf("disableAlgorithmForMaintenance(\"点击清空烤盘\")")
         assertTrue(processingCheck in 0 until disableAlgorithm)

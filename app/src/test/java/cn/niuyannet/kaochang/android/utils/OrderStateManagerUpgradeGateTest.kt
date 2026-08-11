@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.utils
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -40,6 +42,51 @@ class OrderStateManagerUpgradeGateTest {
         )
         assertTrue(OrderStateManager.hasRecentBusyOrder(windowMs = 5_000L))
         assertFalse(OrderStateManager.hasRecentBusyOrder(windowMs = 0L))
+    }
+
+    @Test
+    fun staleCloseout_shouldPreserveExistingTerminalStateAndOnlyFillMissingFailure() {
+        assertNull(staleOrderCloseoutTerminalStateToPersist(OrderStateManager.STATE_FINISHED))
+        assertNull(staleOrderCloseoutTerminalStateToPersist(OrderStateManager.STATE_FAILED))
+        assertEquals(
+            OrderStateManager.STATE_FAILED,
+            staleOrderCloseoutTerminalStateToPersist(OrderStateManager.STATE_RECEIVED_BUT_BUSY)
+        )
+        assertEquals(OrderStateManager.STATE_FAILED, staleOrderCloseoutTerminalStateToPersist(null))
+    }
+
+    @Test
+    fun staleClaimCloseout_shouldOnlyAcceptMatchingProcessingWithDurableTerminal() {
+        assertTrue(staleOrderClaimProcessingCanClose(emptySet(), "order-1", null))
+        assertTrue(
+            staleOrderClaimProcessingCanClose(
+                setOf("order-1"),
+                "order-1",
+                OrderStateManager.STATE_FINISHED
+            )
+        )
+        assertTrue(
+            staleOrderClaimProcessingCanClose(
+                setOf("order-1"),
+                "order-1",
+                OrderStateManager.STATE_FAILED
+            )
+        )
+        assertFalse(staleOrderClaimProcessingCanClose(setOf("order-1"), "order-1", null))
+        assertFalse(
+            staleOrderClaimProcessingCanClose(
+                setOf("order-2"),
+                "order-1",
+                OrderStateManager.STATE_FINISHED
+            )
+        )
+        assertFalse(
+            staleOrderClaimProcessingCanClose(
+                setOf("order-1", "order-2"),
+                "order-1",
+                OrderStateManager.STATE_FINISHED
+            )
+        )
     }
 
     @Suppress("UNCHECKED_CAST")

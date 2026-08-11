@@ -545,6 +545,7 @@ object AppConfig {
         return true
     }
 
+    @Synchronized
     fun saveAppConfig(appConfigBean: AppConfigBean) {
         appConfigBean.apiBaseUrl = normalizeApiBaseUrl(appConfigBean.apiBaseUrl)
         syncHomeQrHiddenFields(appConfigBean)
@@ -553,6 +554,7 @@ object AppConfig {
         PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(appConfigBean))
     }
 
+    @Synchronized
     fun saveAppConfigDurable(appConfigBean: AppConfigBean) {
         appConfigBean.apiBaseUrl = normalizeApiBaseUrl(appConfigBean.apiBaseUrl)
         syncHomeQrHiddenFields(appConfigBean)
@@ -565,6 +567,33 @@ object AppConfig {
                 JSON.toJSONString(appConfigBean)
             )
         ) { "关键运行态同步落盘失败" }
+    }
+
+    @Synchronized
+    fun saveOrderClaimCloseoutDurable(claimKey: String, nextOnlineStatus: Int): Boolean {
+        val current = getAppConfig()
+        val next = JSON.parseObject(JSON.toJSONString(current), AppConfigBean::class.java)
+        next.moveStatus = 0
+        next.onlineStatus = nextOnlineStatus
+        next.apiBaseUrl = normalizeApiBaseUrl(next.apiBaseUrl)
+        syncHomeQrHiddenFields(next)
+        alignRestStatusSource(next)
+        val saved = PreferenceUtils.saveStringPreferencesDurable(
+            Sp_File_URL,
+            mapOf(
+                KEY_APP_CONFIG_JSON to JSON.toJSONString(next),
+                claimKey to ""
+            )
+        )
+        if (saved) {
+            current.moveStatus = next.moveStatus
+            current.onlineStatus = next.onlineStatus
+            current.apiBaseUrl = next.apiBaseUrl
+            current.homeQrHidden = next.homeQrHidden
+            current.scanBlockStatus = next.scanBlockStatus
+            current.restStatusSource = next.restStatusSource
+        }
+        return saved
     }
 
     fun hasValidDeviceConfig(): Boolean {

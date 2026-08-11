@@ -19,6 +19,7 @@ import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.io.StreamCorruptedException;
 import java.util.List;
+import java.util.Map;
 
 import cn.niuyannet.kaochang.android.MyApp;
 
@@ -154,6 +155,16 @@ public class PreferenceUtils {
     public static boolean saveStringPreferenceDurable(String file, String key, String value) {
         SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
         return sp.edit().putString(key, value).commit();
+    }
+
+    /** 同一次 commit 持久化多个关联字符串状态，避免只写入其中一部分。 */
+    public static boolean saveStringPreferencesDurable(String file, Map<String, String> values) {
+        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences.Editor editor = sp.edit();
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            editor.putString(entry.getKey(), entry.getValue());
+        }
+        return editor.commit();
     }
 
     /**

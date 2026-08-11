@@ -131,6 +131,132 @@ class OrderDeliveryRecoverySourceTest {
         )
     }
 
+    @Test
+    fun genericAndManualRecovery_shouldUseSameClaimOnlyCloseoutBeforeGenericMoveStatusCleanup() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val genericRecovery = functionBlock(
+            operate,
+            "suspend fun recoverActionGroupStateAfterModbusReady(",
+            "private fun automaticRecoveryOrderClaimBlockReason()"
+        )
+        val manualRecovery = functionBlock(
+            operate,
+            "suspend fun confirmManualDeviceRecoveryResidue(",
+            "private fun confirmManualDeviceRecoveryResidueLocked("
+        )
+
+        val autoCloseout = genericRecovery.indexOf("tryAutoCloseStaleOrderDeliveryClaim(")
+        val claimBlock = genericRecovery.indexOf("automaticRecoveryOrderClaimBlockReason()")
+        val manualClaimCloseout = manualRecovery.indexOf("closeStaleOrderDeliveryClaimForMaintenance(")
+        val manualGenericCloseout = manualRecovery.indexOf("confirmManualDeviceRecoveryResidueLocked(")
+        assertTrue("自动claim收口必须先于通用claim阻断", autoCloseout >= 0 && autoCloseout < claimBlock)
+        assertTrue(
+            "恢复正常状态必须复用同一个订单claim收口入口",
+            manualClaimCloseout >= 0
+        )
+        assertTrue(
+            "恢复正常状态必须先处理claim，再进入无claim的通用收口",
+            manualClaimCloseout < manualGenericCloseout
+        )
+    }
+
+    @Test
+    fun claimCloseout_shouldPersistClaimMoveAndWorkingStatusTogether() {
+        val claimStore = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/actiongroup/OrderDeliveryClaim.kt"
+        )
+        val appConfig = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/init/AppConfig.kt"
+        )
+        val preferences = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/utils/PreferenceUtils.java"
+        )
+
+        val claimCommit = functionBlock(
+            claimStore,
+            "fun commitIdleMoveStatusAndClearIfCurrent(",
+            "private fun save(claim: OrderDeliveryClaim)"
+        )
+        val appCommit = functionBlock(
+            appConfig,
+            "fun saveOrderClaimCloseoutDurable(",
+            "fun hasValidDeviceConfig()"
+        )
+
+        assertTrue(claimCommit.contains("AppConfig.saveOrderClaimCloseoutDurable("))
+        assertTrue(appCommit.contains("next.moveStatus = 0"))
+        assertTrue(appCommit.contains("next.onlineStatus = nextOnlineStatus"))
+        assertTrue(appCommit.contains("KEY_APP_CONFIG_JSON to JSON.toJSONString(next)"))
+        assertTrue(appCommit.contains("claimKey to \"\""))
+        assertTrue(appCommit.contains("PreferenceUtils.saveStringPreferencesDurable("))
+        assertTrue("关联状态必须由同一个Editor.commit提交", preferences.contains("return editor.commit();"))
+        assertTrue(appConfig.contains("@Synchronized\n    fun saveAppConfig("))
+        assertTrue(appConfig.contains("@Synchronized\n    fun saveAppConfigDurable("))
+        assertTrue(appConfig.contains("@Synchronized\n    fun saveOrderClaimCloseoutDurable("))
+        assertFalse("原子收口不能替换全局bean并留下旧引用", appCommit.contains("this.appConfigBean = next"))
+        assertTrue(appCommit.contains("current.moveStatus = next.moveStatus"))
+        assertTrue(appCommit.contains("current.onlineStatus = next.onlineStatus"))
+    }
+
+    @Test
+    fun claimCloseout_shouldPreserveTerminalOrderAndReleaseMatchingEphemeralState() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val closeout = functionBlock(
+            operate,
+            "private suspend fun closeStaleOrderDeliveryClaim(",
+            "private fun staleOrderClaimCloseoutRejectionSafely("
+        )
+
+        assertTrue(
+            "已有FINISHED终态不能被自动收口降级为FAILED",
+            closeout.contains("OrderStateManager.ensureTerminalForStaleCloseoutDurable(claim.orderNo)")
+        )
+        assertTrue(closeout.contains("OrderStateManager.releaseProcessing(claim.orderNo)"))
+        assertTrue(closeout.contains("SupplementPauseController.clearOrderPause(claim.orderNo)"))
+        assertTrue(closeout.contains("manualOutOrderRecoveryCoordinator.release(claim.orderNo)"))
+    }
+
+    @Test
+    fun claimCloseout_shouldRejectCorruptedOrderTerminalEvidence() {
+        val orderState = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/utils/OrderStateManager.kt"
+        )
+
+        assertTrue(orderState.contains("getPersistedOrderStateForStaleCloseout(orderNo)"))
+        assertTrue(orderState.contains("订单耐久终态损坏，拒绝 claim 自动收口"))
+        assertTrue(orderState.contains("state.state == STATE_FINISHED || state.state == STATE_FAILED"))
+        assertTrue(orderState.contains("catch (error: IllegalStateException)"))
+    }
+
+    @Test
+    fun claimAutoCloseout_shouldConvertEvidenceAndModbusExceptionsToFailClosedResults() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val closeout = functionBlock(
+            operate,
+            "private suspend fun closeStaleOrderDeliveryClaim(",
+            "private fun staleOrderClaimCloseoutRejection("
+        )
+
+        assertTrue(
+            "本地证据解析异常必须转为拒绝原因",
+            closeout.contains("staleOrderClaimCloseoutRejectionSafely(")
+        )
+        assertTrue(
+            "Modbus快照读取异常必须转为拒绝原因",
+            closeout.contains("订单 claim 收口读取下位机状态失败")
+        )
+        assertTrue(
+            "原子commit异常必须保持阻断",
+            closeout.contains("订单 claim 原子收口提交异常")
+        )
+    }
+
     private fun functionBlock(source: String, startMarker: String, endMarker: String): String {
         val start = source.indexOf(startMarker)
         assertTrue("缺少函数：$startMarker", start >= 0)

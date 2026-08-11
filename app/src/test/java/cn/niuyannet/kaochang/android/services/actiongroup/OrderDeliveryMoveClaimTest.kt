@@ -118,7 +118,8 @@ class OrderDeliveryMoveClaimTest {
                 claim = staleClaim,
                 transitionLock = fixture.transitionLock,
                 claimStore = fixture.claimStore,
-                moveStore = fixture.moveStore
+                moveStore = fixture.moveStore,
+                commitIdleAndClearClaim = fixture.commitIdleAndClearClaim
             ) { true }
         )
         assertEquals(2, fixture.moveStore.status)
@@ -128,11 +129,14 @@ class OrderDeliveryMoveClaimTest {
                 claim = claim,
                 transitionLock = fixture.transitionLock,
                 claimStore = fixture.claimStore,
-                moveStore = fixture.moveStore
+                moveStore = fixture.moveStore,
+                commitIdleAndClearClaim = fixture.commitIdleAndClearClaim
             ) { true }
         )
         assertEquals(0, fixture.moveStore.status)
         assertNull(fixture.claimStore.load())
+        assertEquals(1, fixture.atomicCloseoutCount())
+        assertEquals(1, fixture.moveStore.saveCount)
     }
 
     @Test
@@ -151,16 +155,75 @@ class OrderDeliveryMoveClaimTest {
             claim = claim,
             transitionLock = fixture.transitionLock,
             claimStore = fixture.claimStore,
-            moveStore = fixture.moveStore
+            moveStore = fixture.moveStore,
+            commitIdleAndClearClaim = fixture.commitIdleAndClearClaim
         ) { false }
 
         assertTrue(!closed)
         assertEquals(2, fixture.moveStore.status)
         assertEquals("order:CL1", fixture.claimStore.load()?.owner)
+        assertEquals(0, fixture.atomicCloseoutCount())
     }
 
-    private fun fixture(moveStore: FakeMoveStore = FakeMoveStore()): Fixture {
+    @Test
+    fun closeOrderDeliveryMoveForMaintenance_shouldKeepClaimAndMoveStatusWhenAtomicCommitFails() {
+        val fixture = fixture(atomicCloseoutSucceeds = false)
+        val claim = requireNotNull(
+            claimOrderDeliveryMove(
+                orderNo = "CL1",
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
+        )
+
+        val closed = closeOrderDeliveryMoveForMaintenance(
+            claim = claim,
+            transitionLock = fixture.transitionLock,
+            claimStore = fixture.claimStore,
+            moveStore = fixture.moveStore,
+            commitIdleAndClearClaim = fixture.commitIdleAndClearClaim
+        ) { true }
+
+        assertTrue(!closed)
+        assertEquals(2, fixture.moveStore.status)
+        assertEquals(claim, fixture.claimStore.load())
+        assertEquals(1, fixture.atomicCloseoutCount())
+    }
+
+    @Test
+    fun closeOrderDeliveryMoveForMaintenance_shouldKeepClaimAndMoveStatusWhenAtomicCommitThrows() {
+        val fixture = fixture(atomicCloseoutThrows = true)
+        val claim = requireNotNull(
+            claimOrderDeliveryMove(
+                orderNo = "CL1",
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
+        )
+
+        val closed = closeOrderDeliveryMoveForMaintenance(
+            claim = claim,
+            transitionLock = fixture.transitionLock,
+            claimStore = fixture.claimStore,
+            moveStore = fixture.moveStore,
+            commitIdleAndClearClaim = fixture.commitIdleAndClearClaim
+        ) { true }
+
+        assertTrue(!closed)
+        assertEquals(2, fixture.moveStore.status)
+        assertEquals(claim, fixture.claimStore.load())
+        assertEquals(1, fixture.atomicCloseoutCount())
+    }
+
+    private fun fixture(
+        moveStore: FakeMoveStore = FakeMoveStore(),
+        atomicCloseoutSucceeds: Boolean = true,
+        atomicCloseoutThrows: Boolean = false
+    ): Fixture {
         var raw: String? = null
+        var atomicCloseoutCount = 0
         val newStore = {
             OrderDeliveryClaimStore(
                 readRaw = { raw },
@@ -168,14 +231,34 @@ class OrderDeliveryMoveClaimTest {
                 nowMs = { 1_000L }
             )
         }
-        return Fixture(Any(), newStore(), moveStore, newStore)
+        val store = newStore()
+        return Fixture(
+            transitionLock = Any(),
+            claimStore = store,
+            moveStore = moveStore,
+            newStore = newStore,
+            commitIdleAndClearClaim = {
+                atomicCloseoutCount++
+                if (atomicCloseoutThrows) {
+                    throw IllegalStateException("atomic closeout failed")
+                }
+                if (atomicCloseoutSucceeds) {
+                    moveStore.status = 0
+                    raw = ""
+                }
+                atomicCloseoutSucceeds
+            },
+            atomicCloseoutCount = { atomicCloseoutCount }
+        )
     }
 
     private data class Fixture(
         val transitionLock: Any,
         val claimStore: OrderDeliveryClaimStore,
         val moveStore: FakeMoveStore,
-        val newStore: () -> OrderDeliveryClaimStore
+        val newStore: () -> OrderDeliveryClaimStore,
+        val commitIdleAndClearClaim: () -> Boolean,
+        val atomicCloseoutCount: () -> Int
     )
 
     private class FakeMoveStore(var status: Int = 0) : MechanicalMoveStatusStore {

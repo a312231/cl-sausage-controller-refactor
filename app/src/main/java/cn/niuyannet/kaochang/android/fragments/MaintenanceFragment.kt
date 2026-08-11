@@ -1322,8 +1322,8 @@ class MaintenanceFragment : Fragment() {
 
     private fun performClearAll(staleClaim: OrderDeliveryClaim?) {
         if (clearPanCooldownJob?.isActive == true) return
-        if (staleClaim != null && OrderStateManager.hasProcessingOrder()) {
-            ToastUtils.showLong("当前订单仍在处理中，请先结束订单流程或重启上位机")
+        if (staleClaim != null && !OrderStateManager.canCloseStaleClaim(staleClaim.orderNo)) {
+            ToastUtils.showLong("存在其他处理中订单，或当前订单尚未形成可安全收口的终态")
             return
         }
 

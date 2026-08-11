@@ -90,6 +90,26 @@ object OrderStateManager {
         return memoryStates.values.any { it.state == STATE_ACCEPTED_PROCESSING }
     }
 
+    @Synchronized
+    fun canCloseStaleClaim(orderNo: String): Boolean {
+        if (orderNo.isBlank()) return false
+        cleanExpiredStatesInMemory()
+        val durableState = try {
+            getPersistedOrderStateForStaleCloseout(orderNo)?.state
+        } catch (error: IllegalStateException) {
+            LogUtils.e("【订单状态机】${error.message}：orderNo=$orderNo")
+            return false
+        }
+        val processingOrderNos = memoryStates.values
+            .filter { it.state == STATE_ACCEPTED_PROCESSING }
+            .mapTo(linkedSetOf()) { it.orderNo }
+        return staleOrderClaimProcessingCanClose(
+            processingOrderNos = processingOrderNos,
+            claimOrderNo = orderNo,
+            durableState = durableState
+        )
+    }
+
     fun hasRecentBusyOrder(windowMs: Long): Boolean {
         if (windowMs <= 0L) {
             return false
@@ -142,6 +162,21 @@ object OrderStateManager {
     fun markAsFailedDurable(orderNo: String): Boolean =
         persistTerminalStateDurable(orderNo, STATE_FAILED, "FAILED")
 
+    @Synchronized
+    fun ensureTerminalForStaleCloseoutDurable(orderNo: String): Int? {
+        val existingState = try {
+            getPersistedOrderStateForStaleCloseout(orderNo)?.state
+        } catch (error: IllegalStateException) {
+            LogUtils.e("【订单状态机】${error.message}：orderNo=$orderNo")
+            return null
+        }
+        val terminalState = staleOrderCloseoutTerminalStateToPersist(existingState)
+            ?: return existingState
+        return terminalState.takeIf {
+            persistTerminalStateDurable(orderNo, terminalState, "FAILED_STALE_CLOSEOUT")
+        }
+    }
+
     // ============================================
     // =              内部持久化和清理            =
     // ============================================
@@ -150,6 +185,10 @@ object OrderStateManager {
         val memory = memoryStates[orderNo]
         if (memory != null) return memory
 
+        return getPersistedOrderState(orderNo)
+    }
+
+    private fun getPersistedOrderState(orderNo: String): OrderState? {
         val sp = getSp() ?: return null
         val jsonStr = sp.getString(orderNo, null) ?: return null
         try {
@@ -161,6 +200,23 @@ object OrderStateManager {
             return stateObj
         } catch (_: Exception) {}
         return null
+    }
+
+    /** claim 仍存在时不套用24小时清理；合法历史终态仍用于防止 FINISHED 被降级。 */
+    private fun getPersistedOrderStateForStaleCloseout(orderNo: String): OrderState? {
+        val sp = getSp() ?: return null
+        val jsonStr = sp.getString(orderNo, null) ?: return null
+        return try {
+            JSON.parseObject(jsonStr, OrderState::class.java).also { state ->
+                check(
+                    state.orderNo == orderNo &&
+                        (state.state == STATE_FINISHED || state.state == STATE_FAILED) &&
+                        state.timestamp > 0L
+                ) { "订单耐久终态字段非法" }
+            }
+        } catch (error: Exception) {
+            throw IllegalStateException("订单耐久终态损坏，拒绝 claim 自动收口", error)
+        }
     }
 
     private fun persistTerminalStateDurable(orderNo: String, state: Int, label: String): Boolean {
@@ -231,4 +287,21 @@ object OrderStateManager {
             null
         }
     }
+}
+
+internal fun staleOrderCloseoutTerminalStateToPersist(existingState: Int?): Int? = when (existingState) {
+    OrderStateManager.STATE_FINISHED,
+    OrderStateManager.STATE_FAILED -> null
+    else -> OrderStateManager.STATE_FAILED
+}
+
+internal fun staleOrderClaimProcessingCanClose(
+    processingOrderNos: Set<String>,
+    claimOrderNo: String,
+    durableState: Int?
+): Boolean {
+    if (processingOrderNos.isEmpty()) return true
+    if (processingOrderNos != setOf(claimOrderNo)) return false
+    return durableState == OrderStateManager.STATE_FINISHED ||
+        durableState == OrderStateManager.STATE_FAILED
 }

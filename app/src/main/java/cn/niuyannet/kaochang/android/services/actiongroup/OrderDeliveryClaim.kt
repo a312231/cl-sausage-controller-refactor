@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.services.actiongroup
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
 
@@ -89,6 +90,25 @@ class OrderDeliveryClaimStore(
         return true
     }
 
+    fun commitIdleMoveStatusAndClearIfCurrent(
+        expected: OrderDeliveryClaim,
+        orderFailed: Boolean
+    ): Boolean {
+        val current = load() ?: return false
+        if (current.owner != expected.owner || current.revision != expected.revision) return false
+        val config = AppConfig.getAppConfig()
+        return AppConfig.saveOrderClaimCloseoutDurable(
+            claimKey = KEY_ORDER_DELIVERY_CLAIM,
+            nextOnlineStatus = orderClaimCloseoutOnlineStatus(
+                onlineStatus = config.onlineStatus,
+                errorStatus = config.errorStatus,
+                inspectionMode = config.inspectionMode,
+                isEnable = config.isEnable,
+                orderFailed = orderFailed
+            )
+        )
+    }
+
     private fun save(claim: OrderDeliveryClaim) {
         check(writeRaw(JSON.toJSONString(claim))) {
             "订单出餐 claim 同步落盘失败：owner=${claim.owner}, revision=${claim.revision}"
@@ -171,6 +191,7 @@ internal fun closeOrderDeliveryMoveForMaintenance(
     transitionLock: Any,
     claimStore: OrderDeliveryClaimStore,
     moveStore: MechanicalMoveStatusStore,
+    commitIdleAndClearClaim: () -> Boolean,
     canRelease: () -> Boolean
 ): Boolean = synchronized(transitionLock) {
     if (!canRelease()) return@synchronized false
@@ -182,16 +203,32 @@ internal fun closeOrderDeliveryMoveForMaintenance(
     if (current?.owner != claim.owner || current.revision != claim.revision) {
         return@synchronized false
     }
-    MechanicalMoveClaimCoordinator(
-        transitionLock = transitionLock,
-        ownerStore = claimStore,
-        moveStore = moveStore
-    ).release(
-        owner = claim.owner,
-        expectedMoveStatuses = setOf(0, 2),
-        idleMoveStatus = 0,
-        expectedRevision = claim.revision
-    ) is MechanicalMoveReleaseResult.Released
+    if (moveStore.load() !in setOf(0, 2)) return@synchronized false
+    try {
+        commitIdleAndClearClaim()
+    } catch (_: Exception) {
+        false
+    }
+}
+
+internal fun orderClaimCloseoutOnlineStatus(
+    onlineStatus: Int,
+    errorStatus: Int,
+    inspectionMode: Int,
+    isEnable: Int,
+    orderFailed: Boolean
+): Int {
+    if (orderFailed) return 3
+    if (onlineStatus != 4) return onlineStatus
+    return if (
+        errorStatus == AppConfigBean.ERROR_STATUS_NORMAL &&
+        inspectionMode == AppConfigBean.INSPECTION_MODE_NORMAL &&
+        isEnable == 1
+    ) {
+        1
+    } else {
+        3
+    }
 }
 
 /** claim 存在时只阻断旧自动归零路径，不再猜测并复活 moveStatus。 */
