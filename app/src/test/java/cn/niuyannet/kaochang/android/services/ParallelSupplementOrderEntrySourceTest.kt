@@ -45,6 +45,20 @@ class ParallelSupplementOrderEntrySourceTest {
     }
 
     @Test
+    fun completedOrderClaimRelease_shouldNotWaitForPausedParallelSupplementEvidence() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("fun releaseOrderDeliveryMoveStatus")
+        val end = operate.indexOf("private fun restoreParallelSupplementBusyMoveStatus", start)
+        val release = operate.substring(start, end)
+
+        assertTrue(release.contains("actionGroupSessionStore.load() == null"))
+        assertTrue(release.contains("panMoveJournalStore.load() == null"))
+        assertTrue(release.contains("discardJournalStore.load() == null"))
+        assertTrue(release.contains("actionGroupLocks.isIdle()"))
+        assertFalse(release.contains("hasBlockingSupplementPrefetchEvidence()"))
+    }
+
+    @Test
     fun orderMoveStatusTakeover_shouldUseDurableOrderClaimAtBothWriteSites() {
         val order = source("app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderActivity.kt")
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")

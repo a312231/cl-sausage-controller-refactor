@@ -1597,7 +1597,6 @@ object KaoChangOperate {
             actionGroupSessionStore.load() == null &&
                 panMoveJournalStore.load() == null &&
                 discardJournalStore.load() == null &&
-                !hasBlockingSupplementPrefetchEvidence() &&
                 actionGroupLocks.isIdle()
         }
         if (!released) {
