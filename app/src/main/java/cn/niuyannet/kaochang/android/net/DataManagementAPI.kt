@@ -48,8 +48,12 @@ object DataManagementAPI {
             current
         },
         criticalSection = object : TakeStatusCriticalSection {
-            override fun <T> run(action: () -> T): T = KaoPanHelper.withKaoPanBoxTableLock(action)
-        }
+            override fun <T> run(action: () -> T): T =
+                KaoChangOperate.withFaultHeatTransitionLock {
+                    KaoPanHelper.withKaoPanBoxTableLock(action)
+                }
+        },
+        admissionAllowed = { !KaoChangOperate.hasPendingEmergencyResetRecovery() }
     )
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val LOG_SYNC = "云端同步"
@@ -520,7 +524,27 @@ object DataManagementAPI {
             )
         }
 
+        return KaoChangOperate.withFaultHeatTransitionLock {
         val currentConfigBeforeApply = AppConfig.getAppConfig()
+        if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+            logW(
+                "远端运行时控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "reason=emergency_reset_recovery_pending"
+            )
+            return@withFaultHeatTransitionLock RuntimeControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = "emergency_reset_recovery_pending",
+                onlineStatus = currentConfigBeforeApply.onlineStatus,
+                supplyStatus = currentConfigBeforeApply.supplyStatus,
+                homeQrHidden = currentConfigBeforeApply.homeQrHidden,
+                inspectionMode = currentConfigBeforeApply.inspectionMode,
+                isEnable = currentConfigBeforeApply.isEnable,
+                restStatusSource = currentConfigBeforeApply.restStatusSource,
+                configVersion = currentConfigBeforeApply.configVersion
+            )
+        }
         val faultRestoreRejectReason = RemoteRuntimeControlGuard.rejectFaultLatchedRestoreReason(
             snapshot = AppConfig.FaultRuntimeSnapshot.from(currentConfigBeforeApply),
             requestedOnlineStatus = readRequestedInt(runtimePatch, "onlineStatus"),
@@ -538,7 +562,7 @@ object DataManagementAPI {
                     "requestedErrorStatus=${requestedErrorStatus ?: "缺省"}，" +
                     "requestedIsEnable=${runtimePatch.get("isEnable") ?: "缺省"}"
             )
-            return RuntimeControlApplyResult(
+            return@withFaultHeatTransitionLock RuntimeControlApplyResult(
                 controlSeq = controlSeq,
                 applied = false,
                 changed = false,
@@ -567,7 +591,7 @@ object DataManagementAPI {
                     "onlineStatus（设备营业状态）=${onlineStatusText(currentConfigBeforeApply.onlineStatus)}，" +
                     "isEnable（烤肠算法开关）=${formatDiffValue("isEnable", currentConfigBeforeApply.isEnable)}"
             )
-            return RuntimeControlApplyResult(
+            return@withFaultHeatTransitionLock RuntimeControlApplyResult(
                 controlSeq = controlSeq,
                 applied = false,
                 changed = false,
@@ -603,7 +627,7 @@ object DataManagementAPI {
                 "远端运行时控制未应用：source=$source，controlSeq=$controlSeq，reason=$reason，" +
                     "rejectedFields=${(patchResult.rejectedFields + patchResult.unknownFields).joinToString(",")}"
             )
-            return RuntimeControlApplyResult(
+            return@withFaultHeatTransitionLock RuntimeControlApplyResult(
                 controlSeq = controlSeq,
                 applied = false,
                 changed = false,
@@ -727,7 +751,7 @@ object DataManagementAPI {
                 "highConcurrencyResidualDrain（高并发残留消化态）=${previousHighConcurrencyResidualDrain}->${currentConfig.highConcurrencyResidualDrain}，" +
                 "restStatusSource（休息中来源）=${restStatusSourceText(previousRestStatusSource)}->${restStatusSourceText(currentConfig.restStatusSource)}"
         )
-        return RuntimeControlApplyResult(
+        RuntimeControlApplyResult(
             controlSeq = controlSeq,
             applied = applied,
             changed = changed,
@@ -743,6 +767,7 @@ object DataManagementAPI {
             rejectedFields = rejectedFields,
             normalizedFields = patchResult.normalizedFields
         )
+        }
     }
 
     fun applyRemoteConcurrencyControl(
@@ -785,7 +810,23 @@ object DataManagementAPI {
             )
         }
 
+        return KaoChangOperate.withFaultHeatTransitionLock {
         val currentConfigBeforeApply = AppConfig.getAppConfig()
+        if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+            logW(
+                "远端并发控制已忽略：source=$source，controlSeq=$controlSeq，" +
+                    "reason=emergency_reset_recovery_pending"
+            )
+            return@withFaultHeatTransitionLock ConcurrencyControlApplyResult(
+                controlSeq = controlSeq,
+                applied = false,
+                changed = false,
+                reason = "emergency_reset_recovery_pending",
+                modeType = currentConfigBeforeApply.modeType,
+                transitionMode = currentConfigBeforeApply.transitionMode,
+                overrodeConflictingTransition = false
+            )
+        }
         if (controlSeq > 0 && lastAppliedConcurrencyControlSeq >= 0 && controlSeq <= lastAppliedConcurrencyControlSeq) {
             logW(
                 "远端并发控制已忽略：source=$source，controlSeq=$controlSeq，" +
@@ -793,7 +834,7 @@ object DataManagementAPI {
                     "modeType（并发模式）=${formatDiffValue("modeType", currentConfigBeforeApply.modeType)}，" +
                     "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", currentConfigBeforeApply.transitionMode)}"
             )
-            return ConcurrencyControlApplyResult(
+            return@withFaultHeatTransitionLock ConcurrencyControlApplyResult(
                 controlSeq = controlSeq,
                 applied = false,
                 changed = false,
@@ -885,7 +926,7 @@ object DataManagementAPI {
                 "targetMode（并发切换目标）=${transitionTargetText(currentConfig.transitionMode)}，" +
                 "highConcurrencyResidualDrain（高并发残留消化态）=$previousResidualDrain->${currentConfig.highConcurrencyResidualDrain}"
         )
-        return ConcurrencyControlApplyResult(
+        ConcurrencyControlApplyResult(
             controlSeq = controlSeq,
             applied = true,
             changed = changed,
@@ -894,6 +935,7 @@ object DataManagementAPI {
             transitionMode = currentConfig.transitionMode,
             overrodeConflictingTransition = resolvedTarget.overrodeConflictingTransition
         )
+        }
     }
 
     internal fun resolveConcurrencyResidualDrain(
@@ -924,7 +966,17 @@ object DataManagementAPI {
         logPrefix: String = LOG_SYNC,
         onResult: ((success: Boolean, stockCount: Int) -> Unit)? = null
     ) {
+        if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+            logW("[$logPrefix] 紧急复位恢复待收口，跳过云端库存拉取")
+            onResult?.invoke(false, KaoPanHelper.getKaoPanBoxList().size)
+            return
+        }
         NetApi.getStockData { code, content ->
+            if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                logW("[$logPrefix] 紧急复位 fence 已建立，丢弃迟到的云端库存响应")
+                onResult?.invoke(false, KaoPanHelper.getKaoPanBoxList().size)
+                return@getStockData
+            }
             if (code == 0) {
                 val json = JSON.parseObject(content)
                 if (ApiResponseCompat.isSuccessful(json)) {
@@ -947,7 +999,12 @@ object DataManagementAPI {
                         }
                         remoteBoxes.add(kaoPanBox)
                     }
-                    val boxesRequiringPush = KaoPanHelper.withKaoPanBoxTableLock {
+                    val boxesRequiringPush: List<Pair<KaoPanBox, Long>>? =
+                        KaoChangOperate.withFaultHeatTransitionLock {
+                        if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                            return@withFaultHeatTransitionLock null
+                        }
+                        KaoPanHelper.withKaoPanBoxTableLock {
                         val localBoxByPosition = KaoPanHelper.getKaoPanBoxList().associateBy { it.positionSn }
                         val pendingPushes = mutableListOf<Pair<KaoPanBox, Long>>()
                         remoteBoxes.forEach { remoteBox ->
@@ -967,6 +1024,12 @@ object DataManagementAPI {
                         }
                         KaoPanHelper.saveKaoPanBoxListDurable(remoteBoxes)
                         pendingPushes
+                    }
+                    }
+                    if (boxesRequiringPush == null) {
+                        logW("[$logPrefix] 紧急复位 fence 已建立，禁止迟到库存响应落盘")
+                        onResult?.invoke(false, KaoPanHelper.getKaoPanBoxList().size)
+                        return@getStockData
                     }
                     boxesRequiringPush.forEach { (box, observedGeneration) ->
                         updateTakeStatusAutomaticallyIfUnchanged(box, observedGeneration)
@@ -1354,9 +1417,17 @@ object DataManagementAPI {
     }
 
     fun getDeviceInfo() {
+        if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+            logW("$LOG_SYNC 紧急复位恢复待收口，跳过云端全量配置拉取")
+            return
+        }
         refreshProductCatalog(force = false, logPrefix = "$LOG_SYNC-product-catalog")
 
         NetApi.getDeviceInfo(AppConfig.getDeviceId()) deviceInfoCallback@{ code, content ->
+            if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                logW("$LOG_SYNC 紧急复位 fence 已建立，丢弃迟到的云端全量配置响应")
+                return@deviceInfoCallback
+            }
             if (code != 0) {
                 logE("设备配置获取失败：code=$code, content=$content")
                 return@deviceInfoCallback
@@ -1380,6 +1451,10 @@ object DataManagementAPI {
                 return@deviceInfoCallback
             }
 
+            val applyResult: Boolean? = KaoChangOperate.withFaultHeatTransitionLock configApply@{
+            if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                return@configApply null
+            }
             val appConfigBean = AppConfig.getAppConfig()
             val previousOnlineStatus = appConfigBean.onlineStatus
             val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
@@ -1416,7 +1491,7 @@ object DataManagementAPI {
 
             val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, LOG_SYNC)
             if (!mergeResult.applied) {
-                return@deviceInfoCallback
+                return@configApply false
             }
 
             val mergedConfig = AppConfig.getAppConfig()
@@ -1521,6 +1596,15 @@ object DataManagementAPI {
                 )
             }
             refreshStockData(logPrefix = "$LOG_SYNC-stock-after-config")
+            true
+            }
+            if (applyResult == null) {
+                logW("$LOG_SYNC 紧急复位 fence 已建立，禁止迟到的云端全量配置落盘")
+                return@deviceInfoCallback
+            }
+            if (!applyResult) {
+                return@deviceInfoCallback
+            }
         }
     }
 
@@ -1581,6 +1665,11 @@ object DataManagementAPI {
         logPrefix: String = "$LOG_SYNC-home",
         onResult: ((result: RemoteDeviceStateRefreshResult) -> Unit)? = null
     ) {
+        if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+            logW("$logPrefix 紧急复位恢复待收口，跳过云端运行态拉取")
+            onResult?.invoke(currentRemoteDeviceStateRefreshResult())
+            return
+        }
         val appConfigBean = AppConfig.getAppConfig()
         val oldStatus = appConfigBean.status
         val oldOnlineStatus = appConfigBean.onlineStatus
@@ -1603,6 +1692,11 @@ object DataManagementAPI {
         val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
 
         NetApi.getDeviceInfo(AppConfig.getDeviceId()) refreshStateCallback@{ code, content ->
+            if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                logW("$logPrefix 紧急复位 fence 已建立，丢弃迟到的云端运行态响应")
+                onResult?.invoke(currentRemoteDeviceStateRefreshResult())
+                return@refreshStateCallback
+            }
             if (code != 0) {
                 logE("$logPrefix 失败：HTTP请求失败，code=$code, content=$content")
                 onResult?.invoke(
@@ -1656,21 +1750,23 @@ object DataManagementAPI {
                 return@refreshStateCallback
             }
 
+            val atomicResult: RemoteDeviceStateRefreshResult? =
+                KaoChangOperate.withFaultHeatTransitionLock stateApply@{
+            if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                return@stateApply null
+            }
             val mergeResult = AppConfig.mergeRemoteConfig(json.getJSONObject("data"), content, logPrefix)
             if (!mergeResult.applied) {
-                onResult?.invoke(
-                    RemoteDeviceStateRefreshResult(
-                        success = false,
-                        changed = false,
-                        onlineStatus = oldOnlineStatus,
-                        supplyStatus = oldSupplyStatus,
-                        homeQrHidden = oldHomeQrHidden,
-                        inspectionMode = oldInspectionMode,
-                        isEnable = previousIsEnable,
-                        restStatusSource = previousRestStatusSource
-                    )
+                return@stateApply RemoteDeviceStateRefreshResult(
+                    success = false,
+                    changed = false,
+                    onlineStatus = oldOnlineStatus,
+                    supplyStatus = oldSupplyStatus,
+                    homeQrHidden = oldHomeQrHidden,
+                    inspectionMode = oldInspectionMode,
+                    isEnable = previousIsEnable,
+                    restStatusSource = previousRestStatusSource
                 )
-                return@refreshStateCallback
             }
 
             val mergedConfig = AppConfig.getAppConfig()
@@ -1735,18 +1831,23 @@ object DataManagementAPI {
                 )
             }
 
-            onResult?.invoke(
-                RemoteDeviceStateRefreshResult(
-                    success = true,
-                    changed = changed,
-                    onlineStatus = mergedConfig.onlineStatus,
-                    supplyStatus = mergedConfig.supplyStatus,
-                    homeQrHidden = mergedConfig.homeQrHidden,
-                    inspectionMode = mergedConfig.inspectionMode,
-                    isEnable = AppConfig.getAlgorithmEnableFlag(),
-                    restStatusSource = AppConfig.normalizeRestStatusSource(mergedConfig.restStatusSource)
-                )
+            RemoteDeviceStateRefreshResult(
+                success = true,
+                changed = changed,
+                onlineStatus = mergedConfig.onlineStatus,
+                supplyStatus = mergedConfig.supplyStatus,
+                homeQrHidden = mergedConfig.homeQrHidden,
+                inspectionMode = mergedConfig.inspectionMode,
+                isEnable = AppConfig.getAlgorithmEnableFlag(),
+                restStatusSource = AppConfig.normalizeRestStatusSource(mergedConfig.restStatusSource)
             )
+            }
+            if (atomicResult == null) {
+                logW("$logPrefix 紧急复位 fence 已建立，禁止迟到的云端运行态落盘")
+                onResult?.invoke(currentRemoteDeviceStateRefreshResult())
+                return@refreshStateCallback
+            }
+            onResult?.invoke(atomicResult)
         }
     }
 
@@ -1754,6 +1855,20 @@ object DataManagementAPI {
         refreshRemoteDeviceState { result ->
             onResult?.invoke(result.changed)
         }
+    }
+
+    private fun currentRemoteDeviceStateRefreshResult(): RemoteDeviceStateRefreshResult {
+        val config = AppConfig.getAppConfig()
+        return RemoteDeviceStateRefreshResult(
+            success = true,
+            changed = false,
+            onlineStatus = config.onlineStatus,
+            supplyStatus = config.supplyStatus,
+            homeQrHidden = config.homeQrHidden,
+            inspectionMode = config.inspectionMode,
+            isEnable = config.isEnable,
+            restStatusSource = AppConfig.normalizeRestStatusSource(config.restStatusSource)
+        )
     }
 
     fun uploadDeviceInfo(

@@ -31,4 +31,15 @@ class ManualOutOrderRecoveryCoordinatorTest {
         assertTrue(coordinator.isReservedFor("order-1"))
         assertFalse(coordinator.tryReserve("order-2"))
     }
+
+    @Test
+    fun emergencyReset_shouldClearAnyPreResetReservation() {
+        val coordinator = ManualOutOrderRecoveryCoordinator()
+        assertTrue(coordinator.tryReserve("order-1"))
+
+        coordinator.clearForEmergencyReset()
+
+        assertFalse(coordinator.isReservedFor("order-1"))
+        assertTrue(coordinator.tryReserve("order-2"))
+    }
 }

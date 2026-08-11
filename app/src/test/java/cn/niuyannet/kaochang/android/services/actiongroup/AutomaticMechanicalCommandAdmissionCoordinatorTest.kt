@@ -87,11 +87,31 @@ class AutomaticMechanicalCommandAdmissionCoordinatorTest {
         assertTrue(checkpointSaved)
     }
 
+    @Test
+    fun emergencyResetFence_shouldRejectAutomaticAndManualCommandIntent() {
+        var checkpointSaved = false
+        val coordinator = coordinator(
+            emergencyResetPending = { true },
+            saveIntent = {
+                checkpointSaved = true
+                true
+            }
+        )
+
+        val automatic = coordinator.admit("move:1", expectedMoveStatus = 3, automatic = true)
+        val manual = coordinator.admit("move:1", expectedMoveStatus = 3, automatic = false)
+
+        assertTrue(automatic is AutomaticMechanicalCommandAdmissionResult.Rejected)
+        assertTrue(manual is AutomaticMechanicalCommandAdmissionResult.Rejected)
+        assertFalse(checkpointSaved)
+    }
+
     private fun coordinator(
         lock: Any = Any(),
         orderPending: () -> Boolean = { false },
         currentOwner: () -> String? = { "move:1" },
         currentMoveStatus: () -> Int = { 3 },
+        emergencyResetPending: () -> Boolean = { false },
         saveIntent: () -> Boolean = { true }
     ) = AutomaticMechanicalCommandAdmissionCoordinator(
         transitionLock = lock,
@@ -99,6 +119,7 @@ class AutomaticMechanicalCommandAdmissionCoordinatorTest {
         currentOwner = currentOwner,
         currentMoveStatus = currentMoveStatus,
         automaticCommandAllowed = { true },
+        emergencyResetRecoveryPending = emergencyResetPending,
         saveCommandIntent = saveIntent
     )
 }

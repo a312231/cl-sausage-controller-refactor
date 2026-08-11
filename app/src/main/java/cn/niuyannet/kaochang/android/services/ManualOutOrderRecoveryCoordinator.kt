@@ -27,4 +27,10 @@ internal class ManualOutOrderRecoveryCoordinator {
             }
         }
     }
+
+    fun clearForEmergencyReset() {
+        synchronized(lock) {
+            reservedOrderNo = null
+        }
+    }
 }

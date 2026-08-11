@@ -118,6 +118,7 @@ object VMModbusHelper {
     var modbusMaster: ModbusMaster? = null
     var isLunXun = true
     var isDebug = false
+    private val emergencyResetMechanicalWriteGate = EmergencyResetMechanicalWriteGate()
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lunXunJob: Job? = null
     private const val RECENT_RECONNECT_RESULT_REUSE_MS = 2_000L
@@ -646,7 +647,40 @@ object VMModbusHelper {
         }
     }
 
-    fun writeSingleRegister(serverAddress: Int, startAddress: Int, value: Int): ModbusOperationResult {
+    fun writeSingleRegister(serverAddress: Int, startAddress: Int, value: Int): ModbusOperationResult =
+        emergencyResetMechanicalWriteGate.executeWrite(
+            address = startAddress,
+            rejected = {
+                ModbusOperationResult(
+                    ModbusOperationStatus.BUSY,
+                    "紧急复位恢复待收口，拒绝机械寄存器写入 [$startAddress]=$value"
+                )
+            }
+        ) {
+            writeSingleRegisterRaw(serverAddress, startAddress, value)
+        }
+
+    fun writeEmergencyResetAndBlockMechanicalCommands(
+        serverAddress: Int,
+        resetRegister: Int,
+        resetValue: Int
+    ): ModbusOperationResult = emergencyResetMechanicalWriteGate.blockAndExecuteEmergencyReset {
+        writeSingleRegisterRaw(serverAddress, resetRegister, resetValue)
+    }
+
+    fun clearEmergencyResetMechanicalWriteBlock() {
+        emergencyResetMechanicalWriteGate.clearAfterRecovery()
+    }
+
+    fun blockMechanicalWritesForPendingEmergencyReset() {
+        emergencyResetMechanicalWriteGate.blockMechanicalCommands()
+    }
+
+    private fun writeSingleRegisterRaw(
+        serverAddress: Int,
+        startAddress: Int,
+        value: Int
+    ): ModbusOperationResult {
         if (isDebug) {
             return ModbusOperationResult(ModbusOperationStatus.SUCCESS)
         }

@@ -12,6 +12,7 @@ class AutomaticMechanicalCommandAdmissionCoordinator(
     private val currentOwner: () -> String?,
     private val currentMoveStatus: () -> Int,
     private val automaticCommandAllowed: () -> Boolean,
+    private val emergencyResetRecoveryPending: () -> Boolean = { false },
     private val saveCommandIntent: () -> Boolean
 ) {
     fun admit(
@@ -19,6 +20,11 @@ class AutomaticMechanicalCommandAdmissionCoordinator(
         expectedMoveStatus: Int,
         automatic: Boolean
     ): AutomaticMechanicalCommandAdmissionResult = synchronized(transitionLock) {
+        if (runCatching(emergencyResetRecoveryPending).getOrDefault(true)) {
+            return@synchronized AutomaticMechanicalCommandAdmissionResult.Rejected(
+                "紧急复位恢复待收口，禁止下发机械命令"
+            )
+        }
         if (automatic && orderPending()) {
             return@synchronized AutomaticMechanicalCommandAdmissionResult.Rejected("订单已进入等待")
         }

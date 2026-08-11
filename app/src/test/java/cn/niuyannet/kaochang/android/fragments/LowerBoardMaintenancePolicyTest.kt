@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.fragments
 
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -102,6 +103,40 @@ class LowerBoardMaintenancePolicyTest {
     }
 
     @Test
+    fun emergencyReset_shouldRequireAdminConfirmationAndFenceThe999Write() {
+        val fragment = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/fragments/TestFragment.kt"
+        )
+        val confirmBody = extractFunctionBody(fragment, "private fun emergencyResetLowerBoardSystem()")
+        val executeBody = extractFunctionBody(fragment, "private fun executeEmergencyResetLowerBoardSystem()")
+        val prepareFence = executeBody.indexOf("KaoChangOperate.prepareEmergencyResetRecoveryFence(")
+        val write999 = executeBody.indexOf("KaoChangOperate.writeEmergencyResetAndBlockMechanicalCommands()")
+        val completeFence = executeBody.indexOf("KaoChangOperate.completeEmergencyResetWrite(")
+        val coldRestart = executeBody.indexOf("EmergencyResetAppRestarter.scheduleAndTerminate(")
+
+        assertTrue("紧急复位必须先弹出管理员确认", confirmBody.contains("确认紧急复位"))
+        assertTrue("确认后才允许进入实际写入流程", confirmBody.contains("executeEmergencyResetLowerBoardSystem()"))
+        assertTrue("必须在 999 写入前建立 fence", prepareFence >= 0 && prepareFence < write999)
+        assertTrue("必须在 999 返回后记录写入结果", completeFence > write999)
+        assertTrue("999 成功后必须安排冷重启", coldRestart > completeFence)
+
+        val operate = sourceFile(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val prepareBody = extractFunctionBody(operate, "fun prepareEmergencyResetRecoveryFence(")
+        val completeBody = extractFunctionBody(operate, "fun completeEmergencyResetWrite(")
+        assertTrue(prepareBody.contains("withFaultHeatTransitionLock"))
+        assertTrue(prepareBody.contains("onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS"))
+        assertTrue(prepareBody.contains("isEnable = 0"))
+        assertTrue(prepareBody.contains("publishRuntimeStateWithHttpFallback"))
+        assertTrue(prepareBody.contains("EmergencyResetRecoveryFence.prepared("))
+        assertTrue("重复紧急复位必须覆盖旧 fence", !prepareBody.contains("emergencyResetRecoveryFenceStore.load()"))
+        assertTrue(!prepareBody.contains("orderDeliveryClaimStore.load()"))
+        assertTrue(!prepareBody.contains("readSupplementPrefetchEvidence()"))
+        assertTrue("999 失败只能保留 PREPARED 待重试，不能误清未知结果栅栏", !completeBody.contains("emergencyResetRecoveryFenceStore.clear()"))
+    }
+
+    @Test
     fun formatMaintenanceRegisterValue_shouldDescribe998And999() {
         assertEquals(
             "0（0x0000，清空 300/400 原子动作寄存器触发寄存器）",
@@ -111,5 +146,27 @@ class LowerBoardMaintenancePolicyTest {
             "1（0x0001，下位机系统软重启触发寄存器）",
             LowerBoardMaintenancePolicy.formatMaintenanceRegisterValue(999, 1)
         )
+    }
+
+    private fun sourceFile(path: String): String {
+        return listOf(File(path), File("..", path)).first { it.exists() }.readText()
+    }
+
+    private fun extractFunctionBody(source: String, signature: String): String {
+        val start = source.indexOf(signature)
+        assertTrue("找不到函数：$signature", start >= 0)
+        val bodyStart = source.indexOf('{', start)
+        assertTrue("找不到函数体：$signature", bodyStart >= 0)
+        var depth = 0
+        for (index in bodyStart until source.length) {
+            when (source[index]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return source.substring(bodyStart + 1, index)
+                }
+            }
+        }
+        throw AssertionError("函数体未闭合：$signature")
     }
 }

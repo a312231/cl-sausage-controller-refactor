@@ -134,6 +134,22 @@ object OrderStateManager {
         }
     }
 
+    /** 紧急复位只释放内存中的执行占用，不写入或删除订单耐久终态。 */
+    @Synchronized
+    fun releaseAllProcessingForEmergencyReset() {
+        val processingOrderNos = memoryStates.values
+            .filter { it.state == STATE_ACCEPTED_PROCESSING }
+            .map { it.orderNo }
+        processingOrderNos.forEach(memoryStates::remove)
+        if (processingOrderNos.isNotEmpty()) {
+            runCatching {
+                LogUtils.w(
+                    "【订单状态机】紧急复位已释放复位前内存 PROCESSING：orderNos=$processingOrderNos"
+                )
+            }
+        }
+    }
+
     /**
      * 标记交易最终完成并向缓存持久化，以抵抗系统杀死重启导致的防重新丢。
      */

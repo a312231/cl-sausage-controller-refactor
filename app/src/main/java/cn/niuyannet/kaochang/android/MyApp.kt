@@ -4,6 +4,7 @@ import android.app.Application
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.parser.ParserConfig
 import com.lzy.okgo.OkGo
@@ -32,8 +33,13 @@ class MyApp: Application() {
         OkGo.getInstance().init(this).setOkHttpClient(builder.build())
         //烤盘初始化 （改到MainActivity中再次初始化）
         //KaoPanHelper.init()
-        //网络数据初始化更新
-        DataManagementAPI.dataSyncServer()
+        // 紧急复位 fence 必须早于任何云端拉取生效，避免旧配置和库存覆盖现场待核对事实。
+        val emergencyResetPending = KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()
+        if (!emergencyResetPending) {
+            DataManagementAPI.dataSyncServer()
+        } else {
+            DataManagementAPI.uploadDeviceInfo(source = "emergency_reset_application_startup")
+        }
         //是否初始化，如果没有初始化就先进行初始化， 否则进行初始化
         ParserConfig.getGlobalInstance().isAutoTypeSupport = true
         //bugly 奔溃记录

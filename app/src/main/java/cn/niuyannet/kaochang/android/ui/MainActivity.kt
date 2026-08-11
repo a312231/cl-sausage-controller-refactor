@@ -138,6 +138,26 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             }
         }
         val shouldStartRuntime = !runtimeStarted
+        val emergencyResetPending = KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()
+        if (emergencyResetPending) {
+            if (shouldStartRuntime) {
+                runtimeStarted = true
+                LogUtils.w("【启动流程】紧急复位恢复待收口，仅启动通信和状态同步：source=$source")
+                ConnectManageHelper.lunStatus {
+                    if (!isFinishing && !isDestroyed) {
+                        setDataToView()
+                        mqttMessage()
+                    }
+                    DataManagementAPI.uploadDeviceInfo(source = "emergency_reset_recovery_startup")
+                    startDeviceStateRefreshLoop()
+                }
+                AppUpdateManager.startAutoChecks(this)
+            }
+            if (syncStatus) {
+                syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
+            }
+            return
+        }
         if (shouldStartRuntime) {
             PowerLossRecoveryGuard.recoverBeforeRuntimeStart(source)
         }

@@ -382,10 +382,10 @@ class MaintenanceFragment : Fragment() {
         binding.tvOnlineStatus.setTextColor(
             ContextCompat.getColor(requireContext(), runtimeStatusColor(display.onlineLevel))
         )
-        binding.btnErroStatus.text = if (KaoChangOperate.pendingDiscardJournalForRecovery() != null) {
-            "核对丢弃残留"
-        } else {
-            display.recoveryButtonText
+        binding.btnErroStatus.text = when {
+            KaoChangOperate.hasPendingEmergencyResetRecovery() -> "核对紧急复位现场"
+            KaoChangOperate.pendingDiscardJournalForRecovery() != null -> "核对丢弃残留"
+            else -> display.recoveryButtonText
         }
     }
 
@@ -408,6 +408,31 @@ class MaintenanceFragment : Fragment() {
                 }
                 .setOnCancelListener {
                     if (continuation.isActive) continuation.resume(null)
+                }
+                .create()
+            continuation.invokeOnCancellation { dialog.dismiss() }
+            dialog.show()
+        }
+
+    private suspend fun confirmEmergencyResetPhysicalSafety(): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            val dialog = AlertDialog.Builder(requireContext())
+                .setTitle("确认紧急复位后的现场安全")
+                .setMessage(
+                    "请现场确认以下事项后再继续：\n\n" +
+                        "1. 机械臂、升降台、滚筒和出餐机构已停止，现场没有悬空烤肠；\n" +
+                        "2. 烤盘实际有无烤肠已与页面逐项核对；\n" +
+                        "3. 烤肠箱实际库存已与页面逐箱核对。\n\n" +
+                        "本次只清除复位前的机械协调状态，App 不会自动修改烤盘、库存、搬盘或丢弃事实。"
+                )
+                .setPositiveButton("现场已核对，继续") { _, _ ->
+                    if (continuation.isActive) continuation.resume(true)
+                }
+                .setNegativeButton("尚未核对") { _, _ ->
+                    if (continuation.isActive) continuation.resume(false)
+                }
+                .setOnCancelListener {
+                    if (continuation.isActive) continuation.resume(false)
                 }
                 .create()
             continuation.invokeOnCancellation { dialog.dismiss() }
@@ -615,7 +640,8 @@ class MaintenanceFragment : Fragment() {
     }
 
     private suspend fun evaluateManualRecoveryHeating(
-        targetOnlineStatus: Int
+        targetOnlineStatus: Int,
+        emergencyResetAdministratorConfirmed: Boolean = false
     ): ManualRecoveryGatePolicy.Decision {
         return withContext(Dispatchers.IO) {
             if (!VMModbusHelper.connectStatus()) {
@@ -633,7 +659,8 @@ class MaintenanceFragment : Fragment() {
             if (beforeCloseout.moveStatus in 0..2) {
                 val closeout = KaoChangOperate.confirmManualDeviceRecoveryResidue(
                     reason = "维护页恢复正常状态",
-                    hasProcessingOrder = OrderStateManager.hasProcessingOrder()
+                    hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
+                    emergencyResetAdministratorConfirmed = emergencyResetAdministratorConfirmed
                 )
                 if (!closeout.ok) {
                     return@withContext ManualRecoveryGatePolicy.Decision(
@@ -1615,7 +1642,9 @@ class MaintenanceFragment : Fragment() {
             binding.tvCooldownHint.text = "正在恢复设备状态"
             viewLifecycleOwner.lifecycleScope.launch {
                 try {
-                    val discardJournal = KaoChangOperate.pendingDiscardJournalForRecovery()
+                    val emergencyResetPendingAtStart = KaoChangOperate.hasPendingEmergencyResetRecovery()
+                    val discardJournal = if (emergencyResetPendingAtStart) null else
+                        KaoChangOperate.pendingDiscardJournalForRecovery()
                     if (discardJournal != null) {
                         val physicalResult = when {
                             discardJournal.checkpoint == DiscardCheckpoint.PREPARED -> null
@@ -1726,7 +1755,21 @@ class MaintenanceFragment : Fragment() {
                     val previousErrorStatus = config.errorStatus
                     val previousIsEnable = config.isEnable
                     val recoveredOnlineStatus = resolveManualRecoveredOnlineStatus(config)
-                    val recoveryDecision = evaluateManualRecoveryHeating(recoveredOnlineStatus)
+                    val emergencyResetPending = emergencyResetPendingAtStart ||
+                        KaoChangOperate.hasPendingEmergencyResetRecovery()
+                    val emergencyResetAdministratorConfirmed = if (emergencyResetPending) {
+                        confirmEmergencyResetPhysicalSafety()
+                    } else {
+                        false
+                    }
+                    if (emergencyResetPending && !emergencyResetAdministratorConfirmed) {
+                        ToastUtils.showLong("已取消现场核对，设备继续保持维护")
+                        return@launch
+                    }
+                    val recoveryDecision = evaluateManualRecoveryHeating(
+                        recoveredOnlineStatus,
+                        emergencyResetAdministratorConfirmed
+                    )
                     if (!recoveryDecision.canRecoverDeviceStatus) {
                         handleManualRecoveryBlocked(
                             targetOnlineStatus = recoveredOnlineStatus,

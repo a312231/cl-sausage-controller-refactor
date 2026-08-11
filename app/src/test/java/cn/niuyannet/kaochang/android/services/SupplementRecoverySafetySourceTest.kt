@@ -8,6 +8,26 @@ import java.io.File
 class SupplementRecoverySafetySourceTest {
 
     @Test
+    fun emergencyResetFence_shouldShortCircuitColdStartRecoveryAndAlgorithmStartup() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/ui/MainActivity.kt")
+        val start = source.indexOf("private fun startRuntimeAfterConfigLoaded(")
+        val end = source.indexOf("override fun onResume", start)
+        val body = source.substring(start, end)
+        val fenceCheck = body.indexOf("KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()")
+        val powerLoss = body.indexOf("PowerLossRecoveryGuard.recoverBeforeRuntimeStart(source)")
+        val businessStart = body.indexOf("recoverBusinessStartIfNeeded")
+        val algorithmStart = body.indexOf("KaoChangAlgorithm.runServer()")
+
+        assertTrue("启动时必须先应用紧急复位 fence", fenceCheck >= 0)
+        assertTrue(fenceCheck < powerLoss)
+        assertTrue(fenceCheck < businessStart)
+        assertTrue(fenceCheck < algorithmStart)
+        assertTrue(body.contains("if (emergencyResetPending)"))
+        assertTrue(body.contains("syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))"))
+        assertTrue(body.contains("return"))
+    }
+
+    @Test
     fun coldStartPowerLossRecovery_shouldRunBeforeBusinessStartCorrection() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/ui/MainActivity.kt")
         val start = source.indexOf("private fun startRuntimeAfterConfigLoaded(")

@@ -75,6 +75,46 @@ class ManualRecoverySourceGuardTest {
     }
 
     @Test
+    fun emergencyResetForceCloseout_shouldClearCoordinationResidueWithoutIdentityMatching() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "fun closeMechanicalStateAfterEmergencyReset")
+
+        assertTrue(body.contains("saveEmergencyResetForceCloseoutDurable"))
+        assertTrue(body.contains("actionGroupLocks.clear()"))
+        assertTrue(body.contains("initialFence.hasCrossedProcessBoundary("))
+        assertTrue(body.contains("VMModbusHelper.clearEmergencyResetMechanicalWriteBlock()"))
+        assertTrue(!body.contains("pendingOrderNo =="))
+        assertTrue(!body.contains("sessionId =="))
+        assertTrue(!body.contains("revision =="))
+        assertTrue(!body.contains("KaoPanHelper"))
+        assertTrue(!body.contains("pendingDiscardPositions"))
+        assertTrue(!body.contains("panMoveJournalStore.clear"))
+        assertTrue(!body.contains("discardJournalStore.clear"))
+    }
+
+    @Test
+    fun emergencyResetForceCloseout_shouldPreserveSupplementBatchFacts() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val body = extractFunctionBody(source, "fun closeMechanicalStateAfterEmergencyReset")
+
+        assertTrue(body.contains("saveEmergencyResetForceCloseoutDurable"))
+        assertTrue(!body.contains("supplementBatchIntentRepository.loadActive()"))
+        assertTrue(!body.contains("markManualConfirmStrategyPrefetchPreserveRemaining"))
+        assertTrue(!body.contains("confirmManualSafetyPreservingRemainingTargets"))
+    }
+
+    @Test
+    fun emergencyResetRecovery_shouldTakePriorityOverPhysicalJournalsWithoutDeletingThem() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
+        val body = extractFunctionBody(source, "binding.btnErroStatus.setOnClickListener")
+        val emergencyCheck = body.indexOf("val emergencyResetPendingAtStart")
+        val discardCheck = body.indexOf("pendingDiscardJournalForRecovery()")
+
+        assertTrue("紧急复位 fence 必须先于丢弃 journal 分流", emergencyCheck >= 0 && emergencyCheck < discardCheck)
+        assertTrue(body.contains("if (emergencyResetPendingAtStart) null else"))
+    }
+
+    @Test
     fun actionGroupBootstrap_shouldNeverClearAllResourceOwners() {
         val source = sourceFile(
             "app/src/main/java/cn/niuyannet/kaochang/android/services/actiongroup/ActionGroupRecoveryBootstrap.kt"

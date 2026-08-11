@@ -40,6 +40,11 @@ object SupplementPauseController {
     fun currentOrderNo(): String? = pauseOrderNo
 
     @Synchronized
+    fun clearForEmergencyReset() {
+        pauseOrderNo = null
+    }
+
+    @Synchronized
     fun isPausedForDifferentOrder(orderNo: String): Boolean =
         !pauseOrderNo.isNullOrBlank() && pauseOrderNo != orderNo
 }

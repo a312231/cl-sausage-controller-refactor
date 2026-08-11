@@ -22,7 +22,8 @@ class TakeStatusUpdateCoordinator(
     private val store: TakeStatusUpdateStore,
     private val criticalSection: TakeStatusCriticalSection = object : TakeStatusCriticalSection {
         override fun <T> run(action: () -> T): T = action()
-    }
+    },
+    private val admissionAllowed: () -> Boolean = { true }
 ) {
     private inner class Operation(
         val positionSn: Int,
@@ -44,10 +45,17 @@ class TakeStatusUpdateCoordinator(
         box: KaoPanBox,
         onResult: ((confirmed: Boolean, authoritative: KaoPanBox?) -> Unit)? = null
     ) {
-        val (token, snapshot) = criticalSection.run {
+        val prepared = runIfAdmitted {
             intentRegistry.beginExplicit(box.positionSn) to box.takeStatusSnapshot()
+        } ?: run {
+            onResult?.invoke(false, null)
+            return
         }
-        send(snapshot, Operation(box.positionSn, token, explicit = true, onResult), retry = false)
+        send(
+            prepared.second,
+            Operation(box.positionSn, prepared.first, explicit = true, onResult),
+            retry = false
+        )
     }
 
     fun <T> updateExplicitlyPrepared(
@@ -56,7 +64,7 @@ class TakeStatusUpdateCoordinator(
         onResult: ((confirmed: Boolean, authoritative: KaoPanBox?) -> Unit)? = null
     ): T {
         val tokenAndPrepared = try {
-            criticalSection.run {
+            runIfAdmitted {
                 intentRegistry.beginExplicitAndRun(positionSn) {
                     val (result, preparedBox) = prepare()
                     result to preparedBox.takeStatusSnapshot()
@@ -65,6 +73,10 @@ class TakeStatusUpdateCoordinator(
         } catch (throwable: Throwable) {
             onResult?.invoke(false, null)
             throw throwable
+        }
+        if (tokenAndPrepared == null) {
+            onResult?.invoke(false, null)
+            error("take status update blocked by recovery fence")
         }
         val (token, prepared) = tokenAndPrepared
         send(
@@ -76,11 +88,11 @@ class TakeStatusUpdateCoordinator(
     }
 
     fun updateAutomaticallyIfUnchanged(box: KaoPanBox, observedGeneration: Long) {
-        val prepared = criticalSection.run {
+        val prepared = runIfAdmitted {
             val token = intentRegistry.beginAutomaticIfUnchanged(
                 positionSn = box.positionSn,
                 observedGeneration = observedGeneration
-            ) ?: return@run null
+            ) ?: return@runIfAdmitted null
             token to box.takeStatusSnapshot()
         } ?: return
         send(
@@ -97,7 +109,8 @@ class TakeStatusUpdateCoordinator(
     ) {
         val attemptConsumed = AtomicBoolean(false)
         try {
-            transport.send(box) callback@{ code, content ->
+            val sent = runIfAdmitted {
+                transport.send(box) callback@{ code, content ->
                 if (!attemptConsumed.compareAndSet(false, true) || operation.terminal.get()) {
                     return@callback
                 }
@@ -116,10 +129,12 @@ class TakeStatusUpdateCoordinator(
                             cmdStatusTake = box.cmdStatusTake
                             takeStatusRevision = authoritative.takeStatusRevision
                         }
-                        val retryToken = intentRegistry.claimRetryIfCurrent(
-                            operation.positionSn,
-                            operation.token
-                        )
+                        val retryToken = runIfAdmitted {
+                            intentRegistry.claimRetryIfCurrent(
+                                operation.positionSn,
+                                operation.token
+                            )
+                        }
                         if (retryToken != null) {
                             operation.token = retryToken
                             send(retryBox, operation, retry = true)
@@ -129,11 +144,11 @@ class TakeStatusUpdateCoordinator(
                         return@callback
                     }
                     var current: KaoPanBox? = null
-                    val applied = criticalSection.run {
+                    val applied = runIfAdmitted {
                         intentRegistry.runIfCurrent(operation.positionSn, operation.token) {
                             current = authoritative?.let(store::applyAuthoritative)
                         }
-                    }
+                    } ?: false
                     if (!applied) {
                         operation.complete(false, authoritative)
                         return@callback
@@ -146,12 +161,21 @@ class TakeStatusUpdateCoordinator(
                 } catch (_: Exception) {
                     operation.complete(false, authoritative)
                 }
+                }
+                true
+            } ?: false
+            if (!sent && attemptConsumed.compareAndSet(false, true)) {
+                operation.complete(false, null)
             }
         } catch (_: Exception) {
             if (attemptConsumed.compareAndSet(false, true)) {
                 operation.complete(false, null)
             }
         }
+    }
+
+    private fun <T> runIfAdmitted(action: () -> T): T? = criticalSection.run {
+        if (admissionAllowed()) action() else null
     }
 
 

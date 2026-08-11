@@ -39,6 +39,10 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AutomaticMechanicalCommandAdmissionCoordinator
 import cn.niuyannet.kaochang.android.services.actiongroup.AutomaticMechanicalCommandAdmissionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.CompletedInActionGroupPipelineTask
+import cn.niuyannet.kaochang.android.services.actiongroup.EmergencyResetForceCloseoutPolicy
+import cn.niuyannet.kaochang.android.services.actiongroup.EmergencyResetRecoveryFence
+import cn.niuyannet.kaochang.android.services.actiongroup.EmergencyResetRecoveryFenceStore
+import cn.niuyannet.kaochang.android.services.actiongroup.EmergencyResetRecoveryPhase
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineActionContext
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineTask
@@ -235,8 +239,9 @@ object KaoChangOperate {
     private val operateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val manualTakeTaskCoordinator = ManualTakeTaskCoordinator(operateScope)
     private val manualOutOrderRecoveryCoordinator = ManualOutOrderRecoveryCoordinator()
-    private val actionGroupLocks = ResourceLocks()
     private val faultHeatTransitionLock = Any()
+    private val emergencyResetRecoveryFenceStore = EmergencyResetRecoveryFenceStore()
+    private val actionGroupLocks = ResourceLocks()
     @Volatile
     private var serialSupplementFailureProof: SerialSupplementFailureProof? = null
     private val actionGroupSessionStore = SharedPreferenceActionGroupSessionStore()
@@ -570,7 +575,9 @@ object KaoChangOperate {
             transitionLock = faultHeatTransitionLock,
             claimStore = orderDeliveryClaimStore,
             moveStore = mechanicalMoveStatusStore
-        ) { !isActionGroupBusyForOrderGate() }
+        ) {
+            !isEmergencyResetRecoveryPending() && !isActionGroupBusyForOrderGate()
+        }
         if (claim == null) {
             logW(
                 LOG_ORDER,
@@ -658,8 +665,95 @@ object KaoChangOperate {
         val reason: String
     )
 
+    private data class EmergencyResetIdleSnapshot(
+        val actionGroupEvidence: ActionGroupRecoveryResidueEvidence,
+        val panMoveResult203: Int?
+    )
+
     fun currentOrderDeliveryClaimForMaintenance(): OrderDeliveryClaim? = orderDeliveryClaimStore.load()
 
+    fun prepareEmergencyResetRecoveryFence(reason: String): EmergencyResetRecoveryFence {
+        val fence = withFaultHeatTransitionLock {
+            KaoChangAlgorithm.disableRoastAlgorithm(reason = reason, syncToServer = false)
+            val config = AppConfig.getAppConfig()
+            config.onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS
+            config.isEnable = 0
+            AppConfig.saveAppConfigDurable(config)
+            HomeUiRefreshBridge.requestRefresh("emergency_reset:maintenance_locked")
+            val now = System.currentTimeMillis().coerceAtLeast(1L)
+            val prepared = EmergencyResetRecoveryFence.prepared(
+                resetId = java.util.UUID.randomUUID().toString(),
+                originProcessInstanceId = AppProcessIdentity.currentId,
+                createdAtMs = now
+            )
+            emergencyResetRecoveryFenceStore.save(prepared)
+            actionGroupRecoveryVerified = false
+            logW(
+                LOG_ACTION_GROUP,
+                "已建立紧急复位恢复栅栏：resetId=${prepared.resetId}，" +
+                    "process=${prepared.originProcessInstanceId}，reason=$reason"
+            )
+            prepared
+        }
+        runCatching { publishRuntimeStateWithHttpFallback("紧急复位已锁定维护") }
+            .onFailure { error ->
+                logW(LOG_ACTION_GROUP, "紧急复位维护态即时上报失败，设备继续保持维护：${error.message}")
+            }
+        return fence
+    }
+
+    fun writeEmergencyResetAndBlockMechanicalCommands(): VMModbusHelper.ModbusOperationResult =
+        VMModbusHelper.writeEmergencyResetAndBlockMechanicalCommands(
+            serverAddress = modbus_address,
+            resetRegister = 999,
+            resetValue = 1
+        )
+
+    fun completeEmergencyResetWrite(
+        preparedFence: EmergencyResetRecoveryFence,
+        writeSucceeded: Boolean,
+        reason: String
+    ): String = withFaultHeatTransitionLock {
+        val current = requireNotNull(emergencyResetRecoveryFenceStore.load()) {
+            "紧急复位恢复栅栏不存在，拒绝确认写入结果"
+        }
+        check(current.matchesReset(preparedFence.resetId) &&
+            current.phase == EmergencyResetRecoveryPhase.PREPARED
+        ) { "紧急复位恢复栅栏已变化，拒绝确认写入结果" }
+        if (!writeSucceeded) {
+            return@withFaultHeatTransitionLock "999 写入失败，恢复栅栏保持待重试状态，设备继续维护"
+        }
+        emergencyResetRecoveryFenceStore.save(current.markResetWritten())
+        logW(
+            LOG_ACTION_GROUP,
+            "紧急复位 999=1 已写入，旧机械协调状态等待人工确认后强制收口：" +
+                "resetId=${current.resetId}，process=${current.originProcessInstanceId}，reason=$reason"
+        )
+        "已建立一次性紧急复位强制恢复栅栏"
+    }
+
+    fun hasPendingEmergencyResetRecovery(): Boolean = isEmergencyResetRecoveryPending()
+
+    fun enforceEmergencyResetRecoveryOnStartup(): Boolean {
+        if (!isEmergencyResetRecoveryPending()) return false
+        VMModbusHelper.blockMechanicalWritesForPendingEmergencyReset()
+        withFaultHeatTransitionLock {
+            val config = AppConfig.getAppConfig()
+            config.onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS
+            config.isEnable = 0
+            AppConfig.saveAppConfigDurable(config)
+            actionGroupRecoveryVerified = false
+        }
+        HomeUiRefreshBridge.requestRefresh("emergency_reset:cold_start_maintenance")
+        return true
+    }
+
+    private fun isEmergencyResetRecoveryPending(): Boolean =
+        try {
+            emergencyResetRecoveryFenceStore.load() != null
+        } catch (_: Throwable) {
+            true
+        }
     suspend fun closeStaleOrderDeliveryClaimForMaintenance(
         claim: OrderDeliveryClaim,
         reason: String
@@ -683,6 +777,122 @@ object KaoChangOperate {
             claim = claim,
             reason = reason,
             enterMaintenance = false
+        )
+    }
+
+    private suspend fun closeMechanicalStateAfterEmergencyReset(
+        administratorConfirmed: Boolean,
+        reason: String
+    ): OrderClaimMaintenanceCloseoutResult? {
+        val initialFence = try {
+            withFaultHeatTransitionLock { emergencyResetRecoveryFenceStore.load() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return OrderClaimMaintenanceCloseoutResult(false, "紧急复位恢复栅栏读取失败：${error.message}")
+        } ?: return null
+        if (initialFence.phase != EmergencyResetRecoveryPhase.RESET_WRITTEN) {
+            return OrderClaimMaintenanceCloseoutResult(false, "紧急复位 999=1 尚未确认写入成功")
+        }
+
+        val callerContext = coroutineContext
+        val snapshots = try {
+            val firstEvidence = buildEmergencyResetIdleSnapshot("$reason:紧急复位后第一次空闲复核")
+            delay(500L)
+            val secondEvidence = buildEmergencyResetIdleSnapshot("$reason:紧急复位后第二次空闲复核")
+            listOf(firstEvidence, secondEvidence)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return OrderClaimMaintenanceCloseoutResult(false, "紧急复位后读取下位机状态失败：${error.message}")
+        }
+        callerContext.ensureActive()
+
+        var rejectionReason = "紧急复位恢复栅栏已变化，设备继续保持维护"
+        val closed = try {
+            withFaultHeatTransitionLock {
+                callerContext.ensureActive()
+                val config = AppConfig.getAppConfig()
+                val currentFence = emergencyResetRecoveryFenceStore.load()
+                val fenceMatches = currentFence?.matchesReset(initialFence.resetId) == true &&
+                    currentFence.phase == EmergencyResetRecoveryPhase.RESET_WRITTEN
+                val processBoundaryCrossed = initialFence.hasCrossedProcessBoundary(
+                    AppProcessIdentity.currentId
+                )
+                val snapshotDecisions = snapshots.map { snapshot ->
+                    ManualDeviceRecoveryCloseoutPolicy.evaluate(
+                        evidence = snapshot.actionGroupEvidence.copy(moveStatus = 0, session = null),
+                        hasProcessingOrder = false,
+                        hasPanMoveJournal = false,
+                        hasDiscardJournal = false,
+                        durableEvidenceCorrupted = false
+                    )
+                }
+                val decision = EmergencyResetForceCloseoutPolicy.evaluate(
+                    administratorConfirmed = administratorConfirmed,
+                    maintenanceLocked =
+                        config.onlineStatus == ORDER_CLAIM_MAINTENANCE_STATUS && config.isEnable == 0,
+                    resetFenceMatches = fenceMatches,
+                    processBoundaryCrossed = fenceMatches && processBoundaryCrossed,
+                    snapshotDecisions = snapshotDecisions,
+                    panMoveResults203 = snapshots.map { it.panMoveResult203 }
+                )
+                if (!decision.allowed) {
+                    rejectionReason = decision.reason
+                    return@withFaultHeatTransitionLock false
+                }
+
+                val committed = AppConfig.saveEmergencyResetForceCloseoutDurable(
+                    claimKey = OrderDeliveryClaimStore.KEY_ORDER_DELIVERY_CLAIM,
+                    actionGroupSessionKey = SharedPreferenceActionGroupSessionStore.KEY_ACTION_GROUP_SESSION,
+                    pausedSupplementSessionKey =
+                        SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION,
+                    prefetchSessionKey =
+                        SharedPreferenceSupplementPrefetchSessionStore.KEY_SUPPLEMENT_PREFETCH_SESSION,
+                    fenceKey = EmergencyResetRecoveryFenceStore.KEY_EMERGENCY_RESET_RECOVERY_FENCE
+                )
+                if (!committed) {
+                    rejectionReason = "紧急复位旧机械协调状态原子清理失败"
+                    return@withFaultHeatTransitionLock false
+                }
+
+                actionGroupLocks.clear()
+                serialSupplementFailureProof = null
+                supplementResumeSingleFlight.exit()
+                true
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return OrderClaimMaintenanceCloseoutResult(
+                false,
+                "紧急复位恢复本地状态清理失败：${error.message}"
+            )
+        }
+        if (!closed) {
+            return OrderClaimMaintenanceCloseoutResult(false, rejectionReason)
+        }
+
+        OrderStateManager.releaseAllProcessingForEmergencyReset()
+        manualOutOrderRecoveryCoordinator.clearForEmergencyReset()
+        SupplementPauseController.clearForEmergencyReset()
+        VMModbusHelper.clearEmergencyResetMechanicalWriteBlock()
+        lastActionGroupRecoveryFailureReason = null
+        markActionGroupRecoveryVerified("人工紧急复位后强制收口：$reason")
+        HomeUiRefreshBridge.requestRefresh("emergency_reset:force_closed")
+        logE(
+            LOG_ACTION_GROUP,
+            "人工紧急复位后已强制清除复位前机械协调状态；烤盘、库存、搬盘和丢弃 journal 保持不变：" +
+                "resetId=${initialFence.resetId}，originProcess=${initialFence.originProcessInstanceId}，" +
+                "currentProcess=${AppProcessIdentity.currentId}，reason=$reason"
+        )
+        runCatching { publishRuntimeStateWithHttpFallback("紧急复位旧机械协调状态已收口") }
+            .onFailure { error ->
+                logW(LOG_ACTION_GROUP, "紧急复位收口完成，但状态上报失败：${error.message}")
+            }
+        return OrderClaimMaintenanceCloseoutResult(
+            true,
+            "紧急复位前的机械协调状态已清理；烤盘和库存未自动修改"
         )
     }
 
@@ -1456,6 +1666,9 @@ object KaoChangOperate {
 
     fun acceptIncomingOrderForMechanicalDispatch(orderNo: String): IncomingOrderMechanicalAdmission {
         return withFaultHeatTransitionLock {
+            if (hasPendingEmergencyResetRecovery()) {
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
+            }
             val config = AppConfig.getAppConfig()
             if (hasGuardedSupplementCloseoutResidue(config)) {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
@@ -3472,6 +3685,16 @@ object KaoChangOperate {
         )
     }
 
+    private suspend fun buildEmergencyResetIdleSnapshot(reason: String): EmergencyResetIdleSnapshot =
+        EmergencyResetIdleSnapshot(
+            actionGroupEvidence = buildActionGroupRecoveryResidueEvidence(reason),
+            panMoveResult203 = if (VMModbusHelper.connectStatus()) {
+                VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move_result)
+            } else {
+                null
+            }
+        )
+
     suspend fun confirmClearActionGroupRecoveryResidue(reason: String): Boolean {
         return confirmManualDeviceRecoveryResidue(
             reason,
@@ -3481,8 +3704,20 @@ object KaoChangOperate {
 
     suspend fun confirmManualDeviceRecoveryResidue(
         reason: String,
-        hasProcessingOrder: Boolean
+        hasProcessingOrder: Boolean,
+        emergencyResetAdministratorConfirmed: Boolean = false
     ): ManualDeviceRecoveryCloseoutResult {
+        val emergencyCloseout = closeMechanicalStateAfterEmergencyReset(
+            administratorConfirmed = emergencyResetAdministratorConfirmed,
+            reason = reason
+        )
+        if (emergencyCloseout != null) {
+            return ManualDeviceRecoveryCloseoutResult(
+                emergencyCloseout.ok,
+                emergencyCloseout.reason
+            )
+        }
+
         val orderClaim = try {
             withFaultHeatTransitionLock { orderDeliveryClaimStore.load() }
         } catch (cancellation: CancellationException) {
@@ -4376,6 +4611,7 @@ object KaoChangOperate {
         currentOwner = { panMoveJournalStore.load()?.moveId },
         currentMoveStatus = mechanicalMoveStatusStore::load,
         automaticCommandAllowed = ::isAutomaticMechanicalCommandStillAllowed,
+        emergencyResetRecoveryPending = ::isEmergencyResetRecoveryPending,
         saveCommandIntent = {
             val current = panMoveJournalStore.load()
             current?.moveId == owner && panMoveJournalStore.saveDurable(
@@ -4393,6 +4629,7 @@ object KaoChangOperate {
         currentOwner = { discardJournalStore.load()?.owner },
         currentMoveStatus = mechanicalMoveStatusStore::load,
         automaticCommandAllowed = ::isAutomaticDiscardStillAllowed,
+        emergencyResetRecoveryPending = ::isEmergencyResetRecoveryPending,
         saveCommandIntent = {
             val current = discardJournalStore.load()
             current?.owner == owner && discardJournalStore.saveDurable(
@@ -4416,7 +4653,9 @@ object KaoChangOperate {
             mechanicalMoveStatusStore
         )
         val result = coordinator.claim(owner, allowedMoveStatuses, claimedMoveStatus) {
-            if (!claimGate()) {
+            if (isEmergencyResetRecoveryPending()) {
+                false
+            } else if (!claimGate()) {
                 false
             } else if (!requireSupplementGate) {
                 true

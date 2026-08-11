@@ -56,7 +56,7 @@ class SharedPreferenceActionGroupSessionStore(
     }
 
     companion object {
-        private const val KEY_ACTION_GROUP_SESSION = "sp_action_group_session_json"
+        const val KEY_ACTION_GROUP_SESSION = "sp_action_group_session_json"
         const val KEY_PAUSED_SUPPLEMENT_SESSION = "sp_paused_supplement_session_json"
     }
 }

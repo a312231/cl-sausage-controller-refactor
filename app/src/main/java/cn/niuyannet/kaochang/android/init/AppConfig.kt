@@ -596,6 +596,47 @@ object AppConfig {
         return saved
     }
 
+    @Synchronized
+    fun saveEmergencyResetForceCloseoutDurable(
+        claimKey: String,
+        actionGroupSessionKey: String,
+        pausedSupplementSessionKey: String,
+        prefetchSessionKey: String,
+        fenceKey: String
+    ): Boolean {
+        val current = getAppConfig()
+        check(current.onlineStatus == 3 && current.isEnable == 0) {
+            "紧急复位强制收口前设备必须保持维护且算法关闭"
+        }
+        val next = JSON.parseObject(JSON.toJSONString(current), AppConfigBean::class.java)
+        next.moveStatus = 0
+        next.isEnable = 0
+        next.apiBaseUrl = normalizeApiBaseUrl(next.apiBaseUrl)
+        syncHomeQrHiddenFields(next)
+        alignRestStatusSource(next)
+        val saved = PreferenceUtils.saveStringPreferencesDurable(
+            Sp_File_URL,
+            mapOf(
+                KEY_APP_CONFIG_JSON to JSON.toJSONString(next),
+                claimKey to "",
+                actionGroupSessionKey to "",
+                pausedSupplementSessionKey to "",
+                prefetchSessionKey to "",
+                fenceKey to ""
+            )
+        )
+        if (saved) {
+            current.moveStatus = next.moveStatus
+            current.onlineStatus = next.onlineStatus
+            current.isEnable = next.isEnable
+            current.apiBaseUrl = next.apiBaseUrl
+            current.homeQrHidden = next.homeQrHidden
+            current.scanBlockStatus = next.scanBlockStatus
+            current.restStatusSource = next.restStatusSource
+        }
+        return saved
+    }
+
     fun hasValidDeviceConfig(): Boolean {
         val config = getAppConfig()
         return !config.deviceCode.isNullOrBlank() &&

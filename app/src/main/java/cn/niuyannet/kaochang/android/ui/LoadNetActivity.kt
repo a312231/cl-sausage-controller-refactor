@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.net.ApiResponseCompat
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.blankj.utilcode.util.ToastUtils
@@ -54,23 +55,40 @@ abstract class LoadNetActivity : BaseActivity() {
                 return@getDeviceInfo
             }
 
-            val previousOnlineStatus = AppConfig.getAppConfig().onlineStatus
-            val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
-            val previousRestStatusSource = AppConfig.normalizeRestStatusSource(AppConfig.getAppConfig().restStatusSource)
-            val mergeResult = AppConfig.mergeRemoteConfig(
-                json.getJSONObject("data"),
-                content,
-                "启动配置",
-                preserveRuntimeConcurrencyState = false
-            )
-            if (mergeResult.applied) {
-                DataManagementAPI.handleRemoteOnlineStatusTransition(
-                    previousOnlineStatus = previousOnlineStatus,
-                    previousIsEnable = previousIsEnable,
-                    previousRestStatusSource = previousRestStatusSource,
-                    mergedConfig = AppConfig.getAppConfig(),
-                    source = "loadDeviceInfo"
+            val mergeResult = KaoChangOperate.withFaultHeatTransitionLock startupApply@{
+                if (KaoChangOperate.hasPendingEmergencyResetRecovery()) {
+                    return@startupApply null
+                }
+                val previousOnlineStatus = AppConfig.getAppConfig().onlineStatus
+                val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
+                val previousRestStatusSource = AppConfig.normalizeRestStatusSource(
+                    AppConfig.getAppConfig().restStatusSource
                 )
+                val result = AppConfig.mergeRemoteConfig(
+                    json.getJSONObject("data"),
+                    content,
+                    "启动配置"
+                )
+                if (result.applied) {
+                    DataManagementAPI.handleRemoteOnlineStatusTransition(
+                        previousOnlineStatus = previousOnlineStatus,
+                        previousIsEnable = previousIsEnable,
+                        previousRestStatusSource = previousRestStatusSource,
+                        mergedConfig = AppConfig.getAppConfig(),
+                        source = "loadDeviceInfo"
+                    )
+                }
+                result
+            }
+            if (mergeResult == null) {
+                KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()
+                binding.mainContent.visibility = View.VISIBLE
+                binding.loadingLayout.visibility = View.GONE
+                binding.emptyLayout.visibility = View.GONE
+                onLoaded?.invoke(true)
+                return@getDeviceInfo
+            }
+            if (mergeResult.applied) {
                 binding.mainContent.visibility = View.VISIBLE
                 binding.loadingLayout.visibility = View.GONE
                 binding.emptyLayout.visibility = View.GONE

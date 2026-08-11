@@ -116,6 +116,97 @@ class TakeStatusUpdateCoordinatorTest {
     }
 
     @Test
+    fun delayedCallback_shouldNotApplyAuthoritativeStateAfterAdmissionCloses() {
+        val transport = FakeTransport()
+        val store = FakeStore(box(status = 229, revision = 7L))
+        var admissionAllowed = true
+        var result: Boolean? = null
+        val coordinator = TakeStatusUpdateCoordinator(
+            TakeStatusIntentRegistry(),
+            transport,
+            store,
+            admissionAllowed = { admissionAllowed }
+        )
+
+        coordinator.updateExplicitly(box(0, 7L)) { confirmed, _ -> result = confirmed }
+        admissionAllowed = false
+        transport.respond(0, accepted(box(0, 8L)))
+
+        assertEquals(0, store.saveCount)
+        assertEquals(false, result)
+    }
+
+    @Test
+    fun conflictCallback_shouldNotRetryAfterAdmissionCloses() {
+        val transport = FakeTransport()
+        val store = FakeStore(box(status = 229, revision = 7L))
+        var admissionAllowed = true
+        var result: Boolean? = null
+        val coordinator = TakeStatusUpdateCoordinator(
+            TakeStatusIntentRegistry(),
+            transport,
+            store,
+            admissionAllowed = { admissionAllowed }
+        )
+
+        coordinator.updateExplicitly(box(0, 7L)) { confirmed, _ -> result = confirmed }
+        admissionAllowed = false
+        transport.respond(0, conflict(box(229, 8L)))
+
+        assertEquals(1, transport.requests.size)
+        assertEquals(0, store.saveCount)
+        assertEquals(false, result)
+    }
+
+    @Test
+    fun closedAdmission_shouldSkipPreparedMutationAndTransport() {
+        val transport = FakeTransport()
+        var prepareCalled = false
+        var callbackCount = 0
+        val coordinator = TakeStatusUpdateCoordinator(
+            TakeStatusIntentRegistry(),
+            transport,
+            FakeStore(box(status = 229, revision = 7L)),
+            admissionAllowed = { false }
+        )
+
+        try {
+            coordinator.updateExplicitlyPrepared(
+                positionSn = 21,
+                prepare = {
+                    prepareCalled = true
+                    Unit to box(0, 7L)
+                }
+            ) { confirmed, _ ->
+                callbackCount += 1
+                assertFalse(confirmed)
+            }
+        } catch (_: IllegalStateException) {
+        }
+
+        assertFalse(prepareCalled)
+        assertEquals(0, transport.requests.size)
+        assertEquals(1, callbackCount)
+    }
+
+    @Test
+    fun closedAdmission_shouldSkipAutomaticTransport() {
+        val transport = FakeTransport()
+        val registry = TakeStatusIntentRegistry()
+        val coordinator = TakeStatusUpdateCoordinator(
+            registry,
+            transport,
+            FakeStore(box(status = 229, revision = 7L)),
+            admissionAllowed = { false }
+        )
+
+        val observedGeneration = registry.observeAutomaticGeneration(21)!!
+        coordinator.updateAutomaticallyIfUnchanged(box(229, 7L), observedGeneration)
+
+        assertEquals(0, transport.requests.size)
+    }
+
+    @Test
     fun currentTokenAction_shouldBlockNewExplicitIntentUntilAtomicStepCompletes() {
         val registry = TakeStatusIntentRegistry()
         val originalToken = registry.beginExplicit(21)

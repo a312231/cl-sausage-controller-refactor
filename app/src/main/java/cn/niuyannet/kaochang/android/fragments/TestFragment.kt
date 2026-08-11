@@ -20,6 +20,7 @@ import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.services.EmergencyResetAppRestarter
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.PanMove203Decision
 import cn.niuyannet.kaochang.android.services.PanMove203Policy
@@ -639,7 +640,22 @@ class TestFragment : Fragment() {
     }
 
     private fun emergencyResetLowerBoardSystem() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("确认紧急复位")
+            .setMessage(
+                "紧急复位会立即写入 999=1，中断当前机械动作并锁定设备维护。\n\n" +
+                    "复位后必须现场确认无悬空烤肠，并核对烤盘和烤肠箱库存；App 不会自动修改这些物理和库存事实。"
+            )
+            .setPositiveButton("确认紧急复位") { _, _ ->
+                executeEmergencyResetLowerBoardSystem()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun executeEmergencyResetLowerBoardSystem() {
         lifecycleScope.launch {
+            val appContext = requireContext().applicationContext
             setLowerBoardMaintenanceButtonsEnabled(false)
             binding.tvAtomicActionResult.text = "正在下发紧急复位 999=1..."
             try {
@@ -654,28 +670,44 @@ class TestFragment : Fragment() {
                         result = AdminOperationLogger.RESULT_START,
                         detail = "绕过空闲检查，直接写入 999=1；moveStatus=${AppConfig.getAppConfig().moveStatus}"
                     )
-                    val writeResult = KaoChangOperate.writeSingleRegister(
-                        LowerBoardMaintenancePolicy.SYSTEM_RESET_REGISTER,
-                        LowerBoardMaintenancePolicy.TRIGGER_VALUE
+                    val preparedFence = KaoChangOperate.prepareEmergencyResetRecoveryFence(
+                        "测试页管理员确认紧急复位"
                     )
+                    val writeResult = KaoChangOperate.writeEmergencyResetAndBlockMechanicalCommands()
                     val detail = "写入状态=${writeResult.status}，写入消息=${writeResult.message ?: "无"}；" +
                         "紧急复位不等待动作空闲，也不做立即回读"
                     if (writeResult.isSuccess) {
+                        val fenceDetail = KaoChangOperate.completeEmergencyResetWrite(
+                            preparedFence = preparedFence,
+                            writeSucceeded = true,
+                            reason = "测试页管理员确认紧急复位"
+                        )
                         AdminOperationLogger.w(
                             action = "下位机紧急复位",
                             page = AdminOperationLogger.PAGE_TEST,
                             result = AdminOperationLogger.RESULT_DONE,
-                            detail = detail
+                            detail = "$detail；$fenceDetail"
                         )
-                        "紧急复位已下发，下位机当前动作将被中断\n请人工复核机械位置、烤肠箱和烤盘状态后再恢复运行"
+                        val restartScheduled = EmergencyResetAppRestarter.scheduleAndTerminate(appContext)
+                        if (restartScheduled) {
+                            "紧急复位已下发，App 正在冷重启"
+                        } else {
+                            "紧急复位已下发，但 App 冷重启安排失败。设备继续保持维护，请再次点击紧急复位重试"
+                        }
                     } else {
+                        val fenceDetail = KaoChangOperate.completeEmergencyResetWrite(
+                            preparedFence = preparedFence,
+                            writeSucceeded = false,
+                            reason = "测试页紧急复位写入失败"
+                        )
                         AdminOperationLogger.e(
                             action = "下位机紧急复位",
                             page = AdminOperationLogger.PAGE_TEST,
                             result = AdminOperationLogger.RESULT_FAIL,
-                            detail = detail
+                            detail = "$detail；$fenceDetail"
                         )
-                        "紧急复位下发失败：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}"
+                        "紧急复位下发失败：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}\n" +
+                            fenceDetail
                     }
                 }
                 binding.tvAtomicActionResult.text = resultText

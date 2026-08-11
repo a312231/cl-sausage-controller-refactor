@@ -1,5 +1,6 @@
 package cn.niuyannet.kaochang.android.services
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -160,6 +161,68 @@ class OrderDeliveryRecoverySourceTest {
             "恢复正常状态必须先处理claim，再进入无claim的通用收口",
             manualClaimCloseout < manualGenericCloseout
         )
+    }
+
+    @Test
+    fun manualRecovery_shouldTryEmergencyResetCloseoutBeforeOrdinaryClaimCloseout() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val manualRecovery = functionBlock(
+            operate,
+            "suspend fun confirmManualDeviceRecoveryResidue(",
+            "private fun confirmManualDeviceRecoveryResidueLocked("
+        )
+        val emergencyCloseout = manualRecovery.indexOf("closeMechanicalStateAfterEmergencyReset(")
+        val ordinaryCloseout = manualRecovery.indexOf("closeStaleOrderDeliveryClaimForMaintenance(")
+
+        assertTrue("人工恢复必须先尝试紧急复位专用收口", emergencyCloseout >= 0)
+        assertTrue("无匹配凭据时才回退普通 claim 收口", emergencyCloseout < ordinaryCloseout)
+    }
+
+    @Test
+    fun emergencyResetCloseout_shouldUseTwoSnapshotsAndAtomicMultiKeyCommit() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val closeout = functionBlock(
+            operate,
+            "private suspend fun closeMechanicalStateAfterEmergencyReset(",
+            "private suspend fun closeStaleOrderDeliveryClaim("
+        )
+        val appConfig = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/init/AppConfig.kt"
+        )
+        val atomicCommit = functionBlock(
+            appConfig,
+            "fun saveEmergencyResetForceCloseoutDurable(",
+            "fun hasValidDeviceConfig()"
+        )
+        val idleSnapshot = functionBlock(
+            operate,
+            "private suspend fun buildEmergencyResetIdleSnapshot(",
+            "suspend fun confirmClearActionGroupRecoveryResidue("
+        )
+
+        assertEquals(
+            2,
+            Regex.escape("buildEmergencyResetIdleSnapshot(").toRegex().findAll(closeout).count()
+        )
+        assertTrue(idleSnapshot.contains("action_address_move_result"))
+        assertTrue(closeout.contains("panMoveResults203 = snapshots.map"))
+        assertTrue(closeout.contains("delay(500L)"))
+        assertTrue(closeout.contains("EmergencyResetForceCloseoutPolicy.evaluate("))
+        assertTrue(closeout.contains("withFaultHeatTransitionLock"))
+        assertTrue(closeout.contains("initialFence.hasCrossedProcessBoundary("))
+        assertTrue(closeout.contains("VMModbusHelper.clearEmergencyResetMechanicalWriteBlock()"))
+        assertTrue(closeout.contains("AppConfig.saveEmergencyResetForceCloseoutDurable("))
+        assertTrue(atomicCommit.contains("KEY_APP_CONFIG_JSON to JSON.toJSONString(next)"))
+        assertTrue(atomicCommit.contains("claimKey to \"\""))
+        assertTrue(atomicCommit.contains("actionGroupSessionKey to \"\""))
+        assertTrue(atomicCommit.contains("pausedSupplementSessionKey to \"\""))
+        assertTrue(atomicCommit.contains("prefetchSessionKey to \"\""))
+        assertTrue(atomicCommit.contains("fenceKey to \"\""))
+        assertTrue(atomicCommit.contains("PreferenceUtils.saveStringPreferencesDurable("))
     }
 
     @Test

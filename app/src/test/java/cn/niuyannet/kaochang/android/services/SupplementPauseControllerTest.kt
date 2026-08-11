@@ -29,4 +29,16 @@ class SupplementPauseControllerTest {
 
         runCatching { SupplementPauseController.clearOrderPause("order-2") }
     }
+
+    @Test
+    fun emergencyReset_shouldClearAnyPreResetPauseOwner() {
+        SupplementPauseController.clearForEmergencyReset()
+        SupplementPauseController.requestPauseForOrder("order-1")
+
+        SupplementPauseController.clearForEmergencyReset()
+
+        assertFalse(SupplementPauseController.shouldPauseForOrder())
+        assertTrue(SupplementPauseController.requestPauseForOrder("order-2"))
+        SupplementPauseController.clearForEmergencyReset()
+    }
 }

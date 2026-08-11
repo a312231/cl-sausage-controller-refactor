@@ -127,7 +127,7 @@ class OrderDeliveryClaimStore(
     }
 
     companion object {
-        private const val KEY_ORDER_DELIVERY_CLAIM = "sp_order_delivery_claim_json"
+        const val KEY_ORDER_DELIVERY_CLAIM = "sp_order_delivery_claim_json"
         const val OWNER_PREFIX = "order:"
     }
 }
