@@ -44,8 +44,8 @@ class ParallelSupplementRuntimePauseSourceTest {
         assertTrue(enable.contains("isActionGroupRecoveryBlocked()"))
 
         val resume = functionBlock(operate, "suspend fun resumeParallelSupplementForRuntimeRecovery", "private fun supplementPipelineOutcome")
-        assertTrue(resume.contains("已有双 lane 会话仅允许人工恢复"))
-        assertTrue(!resume.contains("handleParallelSupplementResumePreparation("))
+        assertTrue(resume.contains("SupplementRuntimeResumeSafetyGate("))
+        assertTrue(resume.contains("handleParallelSupplementResumePreparation("))
 
         val resumeOnce = functionBlock(
             operate,
@@ -188,7 +188,7 @@ class ParallelSupplementRuntimePauseSourceTest {
     }
 
     @Test
-    fun runtimeResume_shouldFailClosedWithoutAcquiringOrPreparing() {
+    fun runtimeResume_shouldVerifySafetyBeforeDelegatingToExistingResumePipeline() {
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val resume = functionBlock(
             operate,
@@ -196,9 +196,10 @@ class ParallelSupplementRuntimePauseSourceTest {
             "private fun supplementPipelineOutcome"
         )
         assertTrue(resume.contains("enterActionGroupMaintenance"))
-        assertTrue(resume.contains("已有双 lane 会话仅允许人工恢复"))
+        assertTrue(resume.contains("SupplementRuntimeResumeSafetyGate("))
+        assertTrue(resume.contains("SupplementRuntimeResumeSafetyResult.Unsafe"))
         assertTrue(!resume.contains("actionGroupLocks.tryAcquire"))
-        assertTrue(!resume.contains("handleParallelSupplementResumePreparation("))
+        assertTrue(resume.contains("handleParallelSupplementResumePreparation("))
     }
 
     @Test

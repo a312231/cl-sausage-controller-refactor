@@ -124,6 +124,24 @@ object SupplementPrefetchResumePlanner {
         return buildReady(session)
     }
 
+    fun prepareRuntimeRecovery(
+        repository: SupplementPrefetchSessionRepository
+    ): SupplementPrefetchResumePreparation {
+        val session = repository.load() ?: return SupplementPrefetchResumePreparation.NoSession
+        if (session.phase != SupplementPipelinePhase.PAUSED_FOR_RUNTIME ||
+            session.barrierState != SupplementBarrierState.OPEN ||
+            session.pendingOrderNo != null ||
+            session.mechanicalClaimState != null
+        ) {
+            return SupplementPrefetchResumePreparation.Unsafe(
+                "双 lane 运行态续作前会话门禁不满足：" +
+                    "phase=${session.phase}，barrier=${session.barrierState}，" +
+                    "pendingOrder=${session.pendingOrderNo}，claim=${session.mechanicalClaimState}"
+            )
+        }
+        return prepareRecovered(repository)
+    }
+
     private fun buildRecoveryDeliveryReady(
         session: SupplementPrefetchPipelineSession,
         lane: SupplementPrefetchLaneCheckpoint

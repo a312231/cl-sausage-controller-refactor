@@ -96,6 +96,41 @@ class SupplementPrefetchResumePlannerTest {
         assertEquals(14, repository.load()?.prefetchLane?.targetPanNo)
     }
 
+    @Test
+    fun prepareRuntimeRecovery_shouldResumeAfterIn2WithoutReplayingPickOrDeduction() {
+        val repository = repository(
+            session(delivery = lane("in2", boxDeducted = true)).copy(
+                phase = SupplementPipelinePhase.PAUSED_FOR_RUNTIME,
+                mechanicalClaimState = null
+            )
+        )
+
+        val result = SupplementPrefetchResumePlanner.prepareRuntimeRecovery(repository)
+
+        assertTrue(result is SupplementPrefetchResumePreparation.Ready)
+        val plan = (result as SupplementPrefetchResumePreparation.Ready).plan
+        assertEquals("in2", plan.resumeAfterAction)
+        assertEquals("in3", SupplementPrefetchResumePlanner.nextActionAfter(plan.resumeAfterAction))
+        assertEquals(5, repository.load()?.deliveryLane?.stockBefore)
+        assertEquals(4, repository.load()?.deliveryLane?.expectedStockAfter)
+        assertTrue(repository.load()?.deliveryLane?.boxDeductionApplied == true)
+        assertEquals(SupplementPipelinePhase.PAUSED_FOR_RUNTIME, repository.load()?.phase)
+    }
+
+    @Test
+    fun prepareRuntimeRecovery_shouldRejectSessionThatIsNotRuntimePaused() {
+        val repository = repository(
+            session(delivery = lane("in3", boxDeducted = true)).copy(
+                phase = SupplementPipelinePhase.RUNNING
+            )
+        )
+
+        val result = SupplementPrefetchResumePlanner.prepareRuntimeRecovery(repository)
+
+        assertTrue(result is SupplementPrefetchResumePreparation.Unsafe)
+        assertEquals(SupplementPipelinePhase.RUNNING, repository.load()?.phase)
+    }
+
     private fun repository(initial: SupplementPrefetchPipelineSession): SupplementPrefetchSessionRepository {
         return SupplementPrefetchSessionRepository(MemoryStore()).also { it.create(initial) }
     }

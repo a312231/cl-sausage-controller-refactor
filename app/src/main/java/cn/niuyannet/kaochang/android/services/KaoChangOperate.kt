@@ -99,6 +99,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchResu
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchResumePlan
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchSessionRepository
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementResumeSingleFlight
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementRuntimeResumeSafetyGate
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementRuntimeResumeSafetyResult
 import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
@@ -1623,11 +1625,52 @@ object KaoChangOperate {
             return false
         }
         return try {
-            enterActionGroupMaintenance(
-                "已有双 lane 会话仅允许人工恢复：运行态恢复禁止自动续作、重新加锁或释放资源，reason=$reason",
-                preserveMoveStatus = true
+            val preparation = runCatching {
+                SupplementPrefetchResumePlanner.prepareRuntimeRecovery(
+                    supplementPrefetchSessionRepository
+                )
+            }.getOrElse { error ->
+                enterActionGroupMaintenance(
+                    "双 lane 运行态自动续作准备失败：reason=$reason，error=${error.message}",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+            if (preparation !is SupplementPrefetchResumePreparation.Ready) {
+                return handleParallelSupplementResumePreparation(
+                    preparation = preparation,
+                    reason = "双 lane 运行态自动续作：$reason",
+                    lockAlreadyOwned = false,
+                    allowRuntimeDefer = false,
+                    singleFlightAlreadyOwned = true
+                )
+            }
+            val reader = createAtomicActionClient() as? AtomicActionStateReader
+            if (reader == null) {
+                enterActionGroupMaintenance(
+                    "双 lane 运行态自动续作缺少动作结果寄存器读取能力：reason=$reason",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+            val safety = SupplementRuntimeResumeSafetyGate(
+                reader = reader,
+                betweenSnapshots = { delay(500L) }
+            ).verify(preparation.plan.resumeAfterAction)
+            if (safety is SupplementRuntimeResumeSafetyResult.Unsafe) {
+                enterActionGroupMaintenance(
+                    "双 lane 运行态自动续作安全复核失败：reason=$reason，detail=${safety.reason}",
+                    preserveMoveStatus = true
+                )
+                return false
+            }
+            handleParallelSupplementResumePreparation(
+                preparation = preparation,
+                reason = "双 lane 运行态自动续作：$reason",
+                lockAlreadyOwned = false,
+                allowRuntimeDefer = false,
+                singleFlightAlreadyOwned = true
             )
-            false
         } finally {
             supplementResumeSingleFlight.exit()
         }
