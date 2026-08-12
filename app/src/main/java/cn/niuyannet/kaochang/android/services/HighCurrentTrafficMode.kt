@@ -477,6 +477,27 @@ object HighCurrentTrafficMode {
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
     }
 
+    private fun reportPlannedPanState(
+        pans: Collection<KaoPan>,
+        reason: String,
+        source: String
+    ) {
+        val changedPositions = pans.map { it.positionSn }.distinct().sorted()
+        if (changedPositions.isEmpty()) {
+            return
+        }
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        runCatching {
+            PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                changedPanPositions = changedPositions,
+                reason = reason,
+                source = source
+            )
+        }.onFailure { error ->
+            LogUtils.w(TAG, "【云端同步】$reason 物理增量上报异常，等待快照补偿：${error.message}")
+        }
+    }
+
     private suspend fun resumeHighInitialization(
         listBox: List<KaoPanBox>,
         list1_21: List<KaoPan>,
@@ -487,6 +508,12 @@ object HighCurrentTrafficMode {
         if (resumeTargets.isEmpty()) {
             return false
         }
+
+        reportPlannedPanState(
+            pans = list1_21,
+            reason = "高并发1~21初始化续补规划已确定",
+            source = "high_initialization_resume_planned"
+        )
 
         KaoChangOperate.heating(1)
         KaoChangOperate.heating(2)
@@ -629,6 +656,11 @@ object HighCurrentTrafficMode {
             }
 
             val movedCount = if (validInitialPlan) {
+                reportPlannedPanState(
+                    pans = list1_21 + list25_33,
+                    reason = "低转高25~33实际数量补肠规划已确定",
+                    source = "low_to_high_high_heat_planned"
+                )
                 KaoChangOperate.heating(3)
                 KaoChangOperate.moveSausagesToKaoPansByTaste(
                     targets,
@@ -1150,6 +1182,12 @@ object HighCurrentTrafficMode {
             }
         }
 
+        reportPlannedPanState(
+            pans = list1_21,
+            reason = "高并发1~21初始化规划已确定",
+            source = "high_initialization_planned"
+        )
+
         KaoChangOperate.moveSausagesToKaoPansByTaste(
             list1_21.map { kaoPan ->
                 KaoChangOperate.SupplementTarget(kaoPan, kaoPan.taste?.tasteCode)
@@ -1194,6 +1232,11 @@ object HighCurrentTrafficMode {
                 )
                 return 0
             }
+            reportPlannedPanState(
+                pans = list1_21 + list25_33,
+                reason = "高并发25~33实际数量补肠规划已确定",
+                source = "high_heat_25_33_planned"
+            )
             KaoChangOperate.heating(3)
             val targets = plannedTargets.map { target ->
                 KaoChangOperate.SupplementTarget(
@@ -1245,6 +1288,12 @@ object HighCurrentTrafficMode {
             )
             return 0
         }
+
+        reportPlannedPanState(
+            pans = list1_21 + list25_33,
+            reason = "高并发25~33未完成批次续补规划已确定",
+            source = "high_heat_25_33_resume_planned"
+        )
 
         KaoChangOperate.heating(3)
         LogUtils.i(
@@ -1473,6 +1522,18 @@ object HighCurrentTrafficMode {
         if (readyPans.isEmpty()) {
             return false
         }
+        if (finishedPans.isNotEmpty()) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            runCatching {
+                PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                    changedPanPositions = readyPans.map { it.positionSn },
+                    reason = "高并发25~33残缺补热批次切换等待回搬保温",
+                    source = "high_partial_heat_matured_keep_warm"
+                )
+            }.onFailure { error ->
+                LogUtils.w(TAG, "【云端同步】高并发残缺补热批次成熟物理增量上报异常，等待快照补偿：${error.message}")
+            }
+        }
         val frontEmptyCount = TrafficModeHelper.getTrafficModePositions(1, 21, list).count { !it.isHasSausage }
         if (!canReturnHighHeatBatchToFront(frontEmptyCount = frontEmptyCount, batchSize = readyPans.size)) {
             LogUtils.i(
@@ -1617,6 +1678,9 @@ object HighCurrentTrafficMode {
         val nowMs = System.currentTimeMillis()
         if (shouldSwitchHighHeatAreaToKeepWarm(list, area, AppConfig.getAppConfig(), nowMs, requireCompleteZone3Batch)) {
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+            val maturedPositions = list
+                .filter { it.isHasSausage && it.startTime > 0L }
+                .map { it.positionSn }
             KaoChangOperate.stopHeating(area)
             KaoChangOperate.keepWarm(area)
             list.forEach { kaoPan ->
@@ -1629,6 +1693,16 @@ object HighCurrentTrafficMode {
                         KaoPan.STATUS_SELLABLE_KEEP_WARM
                     }
                 }
+            }
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            runCatching {
+                PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                    changedPanPositions = maturedPositions,
+                    reason = "高并发${area}区切换保温",
+                    source = "high_area_matured_keep_warm"
+                )
+            }.onFailure { error ->
+                LogUtils.w(TAG, "【云端同步】高并发${area}区成熟物理增量上报异常，等待快照补偿：${error.message}")
             }
             val stateText = if (area == 3) "等待回搬保温不可售" else "保温可售"
             LogUtils.i(TAG, "【加热控制】${area} 区烤肠已全部烤熟，切换为$stateText")

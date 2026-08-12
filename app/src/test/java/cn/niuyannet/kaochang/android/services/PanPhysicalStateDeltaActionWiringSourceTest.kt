@@ -7,6 +7,154 @@ import org.junit.Test
 class PanPhysicalStateDeltaActionWiringSourceTest {
 
     @Test
+    fun periodicMaturityTransitions_shouldPublishPhysicalDeltaAfterSave() {
+        val lowSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/LowCurrentTrafficMode.kt")
+        val lowBody = extractFunctionBody(lowSource, "private fun checkLowHeatEnd(")
+        assertOrder(
+            lowBody,
+            "KaoPanHelper.saveKaoPanList(",
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "低并发前区成熟必须保存后递增物理版本"
+        )
+        assertTrue(lowBody.contains("source = \"low_front_matured_keep_warm\""))
+
+        val highSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt")
+        val highBody = extractFunctionBody(highSource, "private fun checkHighHeatEnd(")
+        assertOrder(
+            highBody,
+            "KaoPanHelper.saveKaoPanList(",
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "高并发各区成熟必须保存后递增物理版本"
+        )
+        assertTrue(highBody.contains("source = \"high_area_matured_keep_warm\""))
+    }
+
+    @Test
+    fun transitionNormalizationAndBakingTimeRefresh_shouldPublishPhysicalDeltaAfterSave() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        listOf(
+            "private fun settleOldLowHeatSourcesBeforePendingDiscard(" to "low_to_high_old_heat_settled",
+            "private fun normalizeOldLowHeatSourcesBeforeAvailabilityProjection(" to "low_to_high_old_heat_normalized",
+            "private fun refreshActiveBakingTimeBeforeMaturityCheck(" to "active_baking_time_refreshed"
+        ).forEach { (functionName, expectedSource) ->
+            val body = extractFunctionBody(source, functionName)
+            assertOrder(
+                body,
+                "KaoPanHelper.saveKaoPanList(",
+                "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+                "$functionName 必须保存后递增物理版本"
+            )
+            assertTrue("$functionName 必须使用专用 source", body.contains("source = \"$expectedSource\""))
+        }
+    }
+
+    @Test
+    fun partialHeatBatchMaturity_shouldPublishPhysicalDeltaBeforeWaitingOrMoving() {
+        val lowSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/LowCurrentTrafficMode.kt")
+        val lowBody = extractFunctionBody(lowSource, "private suspend fun moveFinishedLowHeatPansToFront(")
+        assertOrder(
+            lowBody,
+            "LowHeatSupplementResumePlanner.markFinishedPansKeepWarm(",
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "低并发残缺补热批次成熟必须递增物理版本"
+        )
+        assertTrue(lowBody.contains("source = \"low_partial_heat_matured_keep_warm\""))
+
+        val highSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt")
+        val highBody = extractFunctionBody(highSource, "private suspend fun moveFinishedPartialHighHeatBatchToFront(")
+        assertOrder(
+            highBody,
+            "HighHeatSupplementResumePlanner.markFinishedPartialBatchKeepWarm(",
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "高并发残缺补热批次成熟必须递增物理版本"
+        )
+        assertOrder(
+            highBody,
+            "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+            "if (!canReturnHighHeatBatchToFront(",
+            "高并发残缺批次即使暂无前区空位也必须先同步成熟状态"
+        )
+        assertTrue(highBody.contains("source = \"high_partial_heat_matured_keep_warm\""))
+    }
+
+    @Test
+    fun supplementPlanning_shouldPublishPhysicalDeltaBeforeMechanicalDispatch() {
+        val lowSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/LowCurrentTrafficMode.kt")
+        listOf(
+            "private suspend fun initLowTrafficMode(" to "low_initialization_planned",
+            "private suspend fun resumeLowInitialization(" to "low_initialization_resume_planned",
+            "private suspend fun resumeLowHeatSupplementGroup(" to "low_heat_resume_planned"
+        ).forEach { (functionName, expectedSource) ->
+            val body = extractFunctionBody(lowSource, functionName)
+            assertOrder(
+                body,
+                "\"$expectedSource\"",
+                "KaoChangOperate.moveSausagesToKaoPansByTaste(",
+                "$functionName 必须在机械补肠前同步规划状态"
+            )
+        }
+        val lowHeatBody = extractFunctionBody(lowSource, "private suspend fun addLowHeatSausage(")
+        listOf(
+            "low_heat_13_15_planned",
+            "low_heat_13_15_reservation_settled"
+        ).forEach { expectedSource ->
+            assertTrue("低并发补热规划必须同步 source=$expectedSource", lowHeatBody.contains("\"$expectedSource\""))
+        }
+        val lowHeat16To18Body = extractFunctionBody(lowSource, "private suspend fun addLowHeatSausage16_18(")
+        listOf(
+            "low_heat_16_18_planned",
+            "low_heat_16_18_reservation_settled"
+        ).forEach { expectedSource ->
+            assertTrue("低并发补热规划必须同步 source=$expectedSource", lowHeat16To18Body.contains("\"$expectedSource\""))
+        }
+
+        val highSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt")
+        listOf(
+            "private suspend fun initHighTrafficMode(" to "high_initialization_planned",
+            "private suspend fun resumeHighInitialization(" to "high_initialization_resume_planned",
+            "private suspend fun addHighHeatSausage(" to "high_heat_25_33_planned",
+            "private suspend fun resumeIncompleteHighHeatSupplement(" to "high_heat_25_33_resume_planned"
+        ).forEach { (functionName, expectedSource) ->
+            val body = extractFunctionBody(highSource, functionName)
+            assertOrder(
+                body,
+                "\"$expectedSource\"",
+                "KaoChangOperate.moveSausagesToKaoPansByTaste(",
+                "$functionName 必须在机械补肠前同步规划状态"
+            )
+        }
+        val transitionBody = extractFunctionBody(highSource, "private suspend fun lowTrafficModeTransition(")
+        assertOrder(
+            transitionBody,
+            "\"low_to_high_high_heat_planned\"",
+            "KaoChangOperate.moveSausagesToKaoPansByTaste(",
+            "低转高实际数量补肠必须在机械动作前同步规划状态"
+        )
+    }
+
+    @Test
+    fun supplementPlanningReporter_shouldSaveFirstAndIsolateSyncFailure() {
+        listOf(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/LowCurrentTrafficMode.kt",
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt"
+        ).forEach { path ->
+            val body = extractFunctionBody(sourceFile(path), "private fun reportPlannedPanState(")
+            assertOrder(
+                body,
+                "KaoPanHelper.saveKaoPanList(",
+                "PanPhysicalStateDeltaReporter.reportPanPositionsChanged(",
+                "$path 的规划状态必须先保存再发布物理增量"
+            )
+            assertOrder(
+                body,
+                "runCatching {",
+                "}.onFailure { error ->",
+                "$path 的物理增量异常必须隔离，不能阻塞机械调度"
+            )
+        }
+    }
+
+    @Test
     fun maturedZoneKeepWarm_shouldPublishPhysicalDeltaAfterPanStateIsSaved() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
         val body = extractFunctionBody(source, "private fun settleMaturedZonesBeforeDispatch(")

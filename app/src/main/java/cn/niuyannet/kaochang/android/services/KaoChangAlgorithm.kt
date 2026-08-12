@@ -1216,6 +1216,15 @@ object KaoChangAlgorithm {
             KaoChangOperate.keepWarm(2)
         }
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        runCatching {
+            PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                changedPanPositions = changedPositions,
+                reason = "低转高待丢弃优先前旧低补热源收口",
+                source = "low_to_high_old_heat_settled"
+            )
+        }.onFailure { error ->
+            logW(LOG_ALGORITHM, "旧低补热源收口物理增量上报异常，等待快照补偿：${error.message}")
+        }
         logW(
             LOG_ALGORITHM,
             "【并发切换】低转高待丢弃优先前收口旧低补热源：13~18 已改为等待回搬保温不可售，" +
@@ -1243,6 +1252,15 @@ object KaoChangAlgorithm {
             return false
         }
         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        runCatching {
+            PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                changedPanPositions = normalizedPositions,
+                reason = "低转高可售投影前旧低补热源纠偏",
+                source = "low_to_high_old_heat_normalized"
+            )
+        }.onFailure { error ->
+            logW(LOG_ALGORITHM, "旧低补热源纠偏物理增量上报异常，等待快照补偿：${error.message}")
+        }
         logW(
             LOG_ALGORITHM,
             "【并发切换】低转高可售投影前纠偏旧低补热源：13~18 历史原地保温可售已改为等待回搬不可售，positions=$normalizedPositions"
@@ -1259,11 +1277,27 @@ object KaoChangAlgorithm {
         config: AppConfigBean,
         kaoPanList: List<KaoPan>
     ): Int {
+        val targetBakingTimeMs = config.bakingTime.coerceAtLeast(0).toLong() * 60L * 1000L
+        val changedPositions = kaoPanList
+            .filter { pan ->
+                pan.isHasSausage && pan.status == 1 && pan.startTime > 0L &&
+                    pan.bakingTime != targetBakingTimeMs
+            }
+            .map { it.positionSn }
         val correctedCount = KaoPanHelper.refreshActiveBakingTime(kaoPanList, config.bakingTime)
         if (correctedCount <= 0) {
             return 0
         }
         KaoPanHelper.saveKaoPanList(kaoPanList)
+        runCatching {
+            PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                changedPanPositions = changedPositions,
+                reason = "烤制中烤盘按当前配置回刷烤制时长",
+                source = "active_baking_time_refreshed"
+            )
+        }.onFailure { error ->
+            logW(LOG_ALGORITHM, "烤制时长回刷物理增量上报异常，等待快照补偿：${error.message}")
+        }
         logW(
             LOG_ALGORITHM,
             "【烤制时间同步】调度轮询发现烤制中烤盘仍使用旧烤制时长，已按当前配置回刷：" +

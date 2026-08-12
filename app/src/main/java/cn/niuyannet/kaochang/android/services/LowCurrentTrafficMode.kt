@@ -29,6 +29,17 @@ object LowCurrentTrafficMode {
     private var lastLowInitializationDecisionLog: String? = null
     private var lastLowHeatSupplementGateLog: String? = null
 
+    private fun reportPlannedPanState(pans: Collection<KaoPan>, reason: String, source: String) {
+        val changedPositions = pans.map { it.positionSn }.distinct().sorted()
+        if (changedPositions.isEmpty()) return
+        KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        runCatching {
+            PanPhysicalStateDeltaReporter.reportPanPositionsChanged(changedPositions, reason, source)
+        }.onFailure { error ->
+            LogUtils.w(TAG, "【云端同步】补肠规划物理增量上报异常，等待快照补偿：source=$source，error=${error.message}")
+        }
+    }
+
     private fun modeText(value: Int): String = when (value) {
         1 -> "1(低并发)"
         2 -> "2(高并发)"
@@ -301,6 +312,7 @@ object LowCurrentTrafficMode {
         if (resumeTargets.isEmpty()) {
             return false
         }
+        reportPlannedPanState(list1_9, "低并发初始化续补口味规划", "low_initialization_resume_planned")
 
         KaoChangOperate.heating(1)
         LogUtils.i(
@@ -329,6 +341,11 @@ object LowCurrentTrafficMode {
         if (resumeTargets.isEmpty()) {
             return false
         }
+        reportPlannedPanState(
+            list1_9 + supplementGroup,
+            "低并发${groupName}补热批次续补口味规划",
+            "low_heat_resume_planned"
+        )
 
         TEMPERATURE_OFF = 0
         KaoChangOperate.heating(2)
@@ -449,6 +466,7 @@ object LowCurrentTrafficMode {
                 }
             }
         }
+        reportPlannedPanState(list1_9, "低并发初始化口味规划", "low_initialization_planned")
 
         KaoChangOperate.moveSausagesToKaoPansByTaste(
             list1_9.map { kaoPan ->
@@ -549,6 +567,18 @@ object LowCurrentTrafficMode {
         }
         if (readyPans.isEmpty()) {
             return false
+        }
+        if (finishedPans.isNotEmpty()) {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            runCatching {
+                PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                    changedPanPositions = readyPans.map { it.positionSn },
+                    reason = "低并发${groupName}残缺补热批次切换等待回搬保温",
+                    source = "low_partial_heat_matured_keep_warm"
+                )
+            }.onFailure { error ->
+                LogUtils.w(TAG, "【云端同步】低并发残缺补热批次成熟物理增量上报异常，等待快照补偿：${error.message}")
+            }
         }
 
         LogUtils.i(
@@ -677,6 +707,11 @@ object LowCurrentTrafficMode {
                 )
                 return false
             }
+            reportPlannedPanState(
+                list1_9 + plan.targets.map { it.kaoPan },
+                "低并发13~15补热批次口味规划",
+                "low_heat_13_15_planned"
+            )
             KaoChangOperate.heating(2)
             val targets = plan.targets
             val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
@@ -688,6 +723,11 @@ object LowCurrentTrafficMode {
                 supplementTargets = targets,
                 activeLowHeatIntentTargetPositions = activeTargets,
                 movedCount = movedCount
+            )
+            reportPlannedPanState(
+                plan.frontPans + targets.map { it.kaoPan },
+                "低并发13~15补热批次预留收口",
+                "low_heat_13_15_reservation_settled"
             )
             LogUtils.i(
                 TAG,
@@ -743,6 +783,11 @@ object LowCurrentTrafficMode {
                 )
                 return false
             }
+            reportPlannedPanState(
+                list1_9 + plan.targets.map { it.kaoPan },
+                "低并发16~18补热批次口味规划",
+                "low_heat_16_18_planned"
+            )
             KaoChangOperate.heating(2)
             val targets = plan.targets
             val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(targets)
@@ -754,6 +799,11 @@ object LowCurrentTrafficMode {
                 supplementTargets = targets,
                 activeLowHeatIntentTargetPositions = activeTargets,
                 movedCount = movedCount
+            )
+            reportPlannedPanState(
+                plan.frontPans + targets.map { it.kaoPan },
+                "低并发16~18补热批次预留收口",
+                "low_heat_16_18_reservation_settled"
             )
             LogUtils.i(
                 TAG,
@@ -1069,6 +1119,9 @@ object LowCurrentTrafficMode {
         }
         if (allFinished && heatingCount > 0) {
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
+            val maturedPositions = list
+                .filter { it.isHasSausage && it.startTime > 0L }
+                .map { it.positionSn }
             KaoChangOperate.stopHeating(1)
             KaoChangOperate.keepWarm(1)
             list.forEach { kaoPan ->
@@ -1077,6 +1130,16 @@ object LowCurrentTrafficMode {
                     kaoPan.holdingTime = nowMs
                     kaoPan.status = KaoPan.STATUS_SELLABLE_KEEP_WARM
                 }
+            }
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            runCatching {
+                PanPhysicalStateDeltaReporter.reportPanPositionsChanged(
+                    changedPanPositions = maturedPositions,
+                    reason = "低并发前区1~9切换保温可售",
+                    source = "low_front_matured_keep_warm"
+                )
+            }.onFailure { error ->
+                LogUtils.w(TAG, "【云端同步】低并发前区成熟物理增量上报异常，等待快照补偿：${error.message}")
             }
             LogUtils.i(TAG, "【加热控制】前区 1~9 已全部烤熟，切换为保温状态")
             KaoPanCloudSyncReporter.uploadIfSellableStateChanged(
