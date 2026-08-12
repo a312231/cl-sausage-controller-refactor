@@ -22,6 +22,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.ConsumableStateResponseParser
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.FaultHeatPauseManager
 import cn.niuyannet.kaochang.android.services.KaoPanUiReservationStateBuilder
@@ -37,6 +38,7 @@ import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
 import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.services.ManualFaultRecoveryResult
 import cn.niuyannet.kaochang.android.services.ManualRecoveryCloudConfirmationPolicy
+import cn.niuyannet.kaochang.android.services.ManualRecoveryCloudHttpConfirmation
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
 import cn.niuyannet.kaochang.android.services.LowToHighDemandGate
@@ -746,10 +748,12 @@ class MaintenanceFragment : Fragment() {
             AdminOperationLogger.w(
                 action = "恢复正常状态",
                 page = AdminOperationLogger.PAGE_PAN,
-                result = AdminOperationLogger.RESULT_DONE,
+                result = AdminOperationLogger.RESULT_FAIL,
                 detail = "本机恢复完成，云端确认待补偿，原因=${cloudDecision.reason}，" +
                     "设备营业状态=${onlineStatusText(config.onlineStatus)}，设备故障状态=${config.errorStatus}"
             )
+            ToastUtils.showLong("本机已恢复，后台恢复尚未确认：${cloudDecision.reason}；请再次点击恢复正常状态重试")
+            return true
         }
         ToastUtils.showLong("设备已恢复正常状态；请现场确认后手动开启烤制算法")
         AdminOperationLogger.w(
@@ -808,7 +812,7 @@ class MaintenanceFragment : Fragment() {
             isEnable = currentConfig.isEnable,
             faultPauseActive = FaultHeatPauseManager.shouldSkipBakingCompletion(currentConfig)
         )
-        return ManualRecoveryCloudConfirmationPolicy.evaluate(
+        val mqttDecision = ManualRecoveryCloudConfirmationPolicy.evaluate(
             targetOnlineStatus = targetOnlineStatus,
             ackReceived = ack.received,
             ackApplied = ack.applied,
@@ -816,6 +820,53 @@ class MaintenanceFragment : Fragment() {
             remoteErrorStatus = ack.errorStatus,
             localStateStillRecovered = localStateStillRecovered
         )
+        if (mqttDecision.confirmed || !localStateStillRecovered) {
+            return mqttDecision
+        }
+
+        LogUtils.w(
+            "【维护操作】人工恢复 MQTT 确认未闭环，开始 HTTP 补偿并回读后台状态：" +
+                "mqttReason=${mqttDecision.reason}，targetOnlineStatus=$targetOnlineStatus"
+        )
+        val updateResult = suspendCancellableCoroutine<Pair<Boolean, String?>> { continuation ->
+            DataManagementAPI.uploadDeviceInfo(
+                source = "runtime_state:manual_recovery_http_fallback"
+            ) { code, content ->
+                if (continuation.isActive) {
+                    continuation.resume((code == 0) to content)
+                }
+            }
+        }
+        val verifyResult = suspendCancellableCoroutine<Pair<Boolean, String?>> { continuation ->
+            NetApi.getDeviceInfo(AppConfig.getDeviceId()) { code, content ->
+                if (continuation.isActive) {
+                    continuation.resume((code == 0) to content)
+                }
+            }
+        }
+        val latestConfig = AppConfig.getAppConfig()
+        val localStateStillRecoveredAfterHttp = ManualRecoveryCloudConfirmationPolicy.canRetryCloudOnly(
+            onlineStatus = latestConfig.onlineStatus,
+            targetOnlineStatus = targetOnlineStatus,
+            errorStatus = latestConfig.errorStatus,
+            moveStatus = latestConfig.moveStatus,
+            isEnable = latestConfig.isEnable,
+            faultPauseActive = FaultHeatPauseManager.shouldSkipBakingCompletion(latestConfig)
+        )
+        val httpDecision = ManualRecoveryCloudHttpConfirmation.evaluate(
+            updateTransportSucceeded = updateResult.first,
+            updateResponse = updateResult.second,
+            verifyTransportSucceeded = verifyResult.first,
+            verifyResponse = verifyResult.second,
+            targetOnlineStatus = targetOnlineStatus,
+            localStateStillRecovered = localStateStillRecoveredAfterHttp
+        )
+        if (httpDecision.confirmed) {
+            LogUtils.i("【维护操作】人工恢复 HTTP 补偿闭环成功：${httpDecision.reason}")
+        } else {
+            LogUtils.w("【维护操作】人工恢复 HTTP 补偿闭环失败：${httpDecision.reason}")
+        }
+        return httpDecision
     }
 
     private suspend fun handleManualRecoveryBlocked(

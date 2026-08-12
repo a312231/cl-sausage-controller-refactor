@@ -62,6 +62,10 @@ object PanPhysicalStateBaselineStore {
         if (sequence <= 0L || snapshotHash.isNullOrBlank() || panDeltaSeq == null || panDeltaSeq < 0L) {
             return
         }
+        val currentSequence = storage.getLong(KEY_SEQUENCE, 0L)
+        if (currentSequence > sequence) {
+            return
+        }
         storage.putLong(KEY_SEQUENCE, sequence)
         storage.putString(KEY_HASH, snapshotHash)
         storage.putLong(KEY_PAN_DELTA_SEQ, panDeltaSeq)

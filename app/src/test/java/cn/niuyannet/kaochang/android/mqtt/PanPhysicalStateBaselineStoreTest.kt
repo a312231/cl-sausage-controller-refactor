@@ -40,4 +40,19 @@ class PanPhysicalStateBaselineStoreTest {
             assertNull(PanPhysicalStateBaselineStore.currentBaseline())
         }
     }
+
+    @Test
+    fun recordConfirmedSnapshot_shouldIgnoreLateOlderSnapshotAck() {
+        val storage = PanPhysicalStateBaselineStore.InMemoryStorage()
+
+        PanPhysicalStateBaselineStore.withStorageForTest(storage) {
+            PanPhysicalStateBaselineStore.recordConfirmedSnapshot(200L, "hash-200", 20L)
+            PanPhysicalStateBaselineStore.recordConfirmedSnapshot(199L, "hash-199", 19L)
+
+            val baseline = PanPhysicalStateBaselineStore.currentBaseline()
+            assertEquals(200L, baseline?.sequence)
+            assertEquals("hash-200", baseline?.snapshotHash)
+            assertEquals(20L, baseline?.panDeltaSeq)
+        }
+    }
 }

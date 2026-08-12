@@ -14,6 +14,7 @@ class PhysicalSnapshotSellableProjectionSourceTest {
         assertTrue(body.contains("PanPhysicalStateDeltaSequenceStore.currentSequence()"))
         assertTrue(body.contains("SellablePanPhysicalStateProjection.sellablePositions"))
         assertTrue(body.contains("SellablePanPhysicalStateProjection.rulesSignature"))
+        assertTrue(body.contains("physicalPanDeltaSeq（烤盘物理版本号）=${'$'}physicalPanDeltaSeq"))
         assertTrue(body.contains("physicalPanDeltaSeq = physicalPanDeltaSeq"))
         assertTrue(body.contains("sellablePositions = sellablePositions"))
         assertTrue(body.contains("sellableRulesSignature = sellableRulesSignature"))

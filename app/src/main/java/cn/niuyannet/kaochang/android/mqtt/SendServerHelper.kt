@@ -978,6 +978,11 @@ object SendServerHelper {
     }
 
     private fun triggerPanPhysicalStateDeltaSnapshotFallback(reason: String) {
+        val reservedSequence = PanPhysicalStateDeltaSequenceStore.nextSequence()
+        LogUtils.w(
+            "【烤盘物理增量】HTTP 全量兜底已预留新物理序列：" +
+                "panDeltaSeq=$reservedSequence，reason=$reason"
+        )
         SnapshotSyncPolicy.forceUploadSnapshot(reason)
     }
 

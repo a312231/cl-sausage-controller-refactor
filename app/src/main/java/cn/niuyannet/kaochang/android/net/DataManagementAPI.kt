@@ -1332,6 +1332,7 @@ object DataManagementAPI {
         val snapshotSummary =
                 "sequence（设备快照版本号）=$sequence, " +
                 "reportTime（设备本机上报时间）=$reportTime, " +
+                "physicalPanDeltaSeq（烤盘物理版本号）=$physicalPanDeltaSeq, " +
                 "烤盘总数=$kaoPanCount, 烤制中=$bakingCount, 保温中=$warmingCount, " +
                 "箱位数=$stockItemCount, 物理库存=$physicalStockTotalCount, 自动补肠可用库存=$availableStockTotalCount, " +
                 "snapshotHash=$effectiveSnapshotHash, snapshotReason=$snapshotReason, forceFullSnapshot=$forceFullSnapshot"

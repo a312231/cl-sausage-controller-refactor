@@ -639,6 +639,7 @@ object NetApi {
         json["homeQrHidden"] = config.homeQrHidden
         json["scanBlockStatus"] = config.scanBlockStatus
         json["inspectionMode"] = config.inspectionMode
+        json["moveStatus"] = config.moveStatus
         json["modeType"] = config.modeType
         json["transitionMode"] = config.transitionMode
         json["highConcurrencyResidualDrain"] = config.highConcurrencyResidualDrain

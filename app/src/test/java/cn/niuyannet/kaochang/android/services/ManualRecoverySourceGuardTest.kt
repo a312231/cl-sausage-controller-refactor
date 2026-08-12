@@ -297,15 +297,21 @@ class ManualRecoverySourceGuardTest {
     }
 
     @Test
-    fun manualRecoveryCloudConfirmation_shouldUseFreshRuntimeAckWithoutHttpOverwrite() {
+    fun manualRecoveryCloudConfirmation_shouldUseMqttAckThenHttpUpdateAndReadOnlyVerification() {
         val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt")
         val body = extractFunctionBody(source, "fun confirmManualRecoveryInCloud")
 
         assertTrue("人工恢复必须强制分配新 runtimeSeq", body.contains("forceNewSeq = true"))
         assertTrue("人工恢复必须等待对应 runtime_state_ack", body.contains("ackListener ="))
         assertTrue("页面销毁时必须注销人工恢复 ACK 等待", body.contains("invokeOnCancellation"))
-        assertTrue("人工恢复确认不得用 HTTP 旧正常态覆盖新故障", !body.contains("uploadDeviceInfo"))
-        assertTrue("人工恢复确认不得依赖额外 HTTP 读取", !body.contains("preflightRemoteDeviceState"))
+        val mqttDecision = body.indexOf("ManualRecoveryCloudConfirmationPolicy.evaluate(")
+        val httpUpdate = body.indexOf("DataManagementAPI.uploadDeviceInfo(")
+        val cloudRead = body.indexOf("NetApi.getDeviceInfo(")
+        val httpDecision = body.indexOf("ManualRecoveryCloudHttpConfirmation.evaluate(")
+        assertTrue("必须先处理 MQTT ACK，再进行 HTTP 补偿", mqttDecision >= 0 && mqttDecision < httpUpdate)
+        assertTrue("HTTP 补偿后必须读取后台最终状态", httpUpdate >= 0 && httpUpdate < cloudRead)
+        assertTrue("后台只读复核后才能形成最终确认结论", cloudRead >= 0 && cloudRead < httpDecision)
+        assertTrue("人工恢复 HTTP 复核不得调用会合并远端状态的 refreshRemoteDeviceState", !body.contains("refreshRemoteDeviceState"))
     }
 
     @Test

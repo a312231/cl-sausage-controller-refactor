@@ -88,6 +88,20 @@ class UpdateDeviceInfoPayloadBuilderTest {
     }
 
     @Test
+    fun buildUpdateDeviceInfoPayload_shouldIncludeMoveStatusForManualRecoveryHttpCompensation() {
+        val payload = NetApi.buildUpdateDeviceInfoPayload(
+            deviceCode = "device-001",
+            config = baseConfig().apply {
+                moveStatus = 0
+            },
+            source = "runtime_state:manual_recovery_http_fallback"
+        )
+
+        assertTrue(payload.containsKey("moveStatus"))
+        assertEquals(0, payload.getIntValue("moveStatus"))
+    }
+
+    @Test
     fun buildUpdateDeviceInfoPayload_shouldIncludeLowerPlatformRuntimeFieldsForHttpCompensation() {
         val payload = NetApi.buildUpdateDeviceInfoPayload(
             deviceCode = "device-001",

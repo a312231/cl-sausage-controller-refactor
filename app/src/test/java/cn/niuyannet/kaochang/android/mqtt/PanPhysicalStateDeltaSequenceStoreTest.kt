@@ -31,7 +31,7 @@ class PanPhysicalStateDeltaSequenceStoreTest {
     }
 
     @Test
-    fun resetToServerSequence_shouldAllowHttpBaselineToRecoverAfterLocalPublishGap() {
+    fun resetToServerSequence_shouldNotRewindAfterLateHttpSnapshotAck() {
         val storage = PanPhysicalStateDeltaSequenceStore.InMemoryStorage()
 
         PanPhysicalStateDeltaSequenceStore.withStorageForTest(storage) {
@@ -39,7 +39,8 @@ class PanPhysicalStateDeltaSequenceStoreTest {
             assertEquals(8L, PanPhysicalStateDeltaSequenceStore.nextSequence())
 
             PanPhysicalStateDeltaSequenceStore.resetToServerSequence(7L)
-            assertEquals(8L, PanPhysicalStateDeltaSequenceStore.nextSequence())
+            assertEquals(8L, PanPhysicalStateDeltaSequenceStore.currentSequence())
+            assertEquals(9L, PanPhysicalStateDeltaSequenceStore.nextSequence())
         }
     }
 }

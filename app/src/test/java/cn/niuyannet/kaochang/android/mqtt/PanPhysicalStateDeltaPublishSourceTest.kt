@@ -54,6 +54,9 @@ class PanPhysicalStateDeltaPublishSourceTest {
         val sender = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/mqtt/SendServerHelper.kt")
         val body = extractFunctionBody(sender, "private fun triggerPanPhysicalStateDeltaSnapshotFallback")
 
+        val reserveSequence = body.indexOf("PanPhysicalStateDeltaSequenceStore.nextSequence()")
+        val forceSnapshot = body.indexOf("SnapshotSyncPolicy.forceUploadSnapshot(reason)")
+        assertTrue("物理冲突兜底必须先预留新序列再发全量快照", reserveSequence >= 0 && reserveSequence < forceSnapshot)
         assertTrue("物理状态 HTTP 兜底必须强制全量上传", body.contains("SnapshotSyncPolicy.forceUploadSnapshot(reason)"))
         assertFalse("物理状态 HTTP 兜底不能复用可售投影兜底限频，否则 startTime 修正可能被跳过", body.contains("lastPanStateDeltaHttpFallbackAtMs"))
         assertFalse("物理状态 HTTP 兜底不能被 httpFallbackMinIntervalMs 直接跳过", body.contains("httpFallbackMinIntervalMs"))

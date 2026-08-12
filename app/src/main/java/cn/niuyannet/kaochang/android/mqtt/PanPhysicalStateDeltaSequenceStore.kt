@@ -47,7 +47,7 @@ object PanPhysicalStateDeltaSequenceStore {
         if (serverSeq == null || serverSeq < 0L) {
             return
         }
-        storage.putLong(KEY_SEQUENCE, serverSeq)
+        storage.putLong(KEY_SEQUENCE, maxOf(currentSequence(), serverSeq))
     }
 
     fun withStorageForTest(testStorage: Storage, block: () -> Unit) {
