@@ -16,7 +16,7 @@ import org.junit.Test
 class HighHeatSupplementResumePlannerTest {
 
     @Test
-    fun isCompleteInitialPlan_shouldAcceptNineDistinctTargets() {
+    fun isValidInitialPlan_shouldAcceptFullAndStockLimitedDistinctTargets() {
         val targets = (25..33).mapIndexed { index, source ->
             HighHeatSupplementResumePlanner.ResumeTarget(
                 kaoPan = supplementPan(source, "A", false),
@@ -24,25 +24,45 @@ class HighHeatSupplementResumePlannerTest {
                 returnPositionSn = index + 1
             )
         }
-
-        assertTrue(HighHeatSupplementResumePlanner.isCompleteInitialPlan(targets))
+        (1..9).forEach { stockCount ->
+            assertTrue(
+                "库存为 $stockCount 根时应允许按实际数量启动",
+                HighHeatSupplementResumePlanner.isValidInitialPlan(targets.take(stockCount))
+            )
+        }
     }
 
     @Test
-    fun isCompleteInitialPlan_shouldRejectPartialOrDuplicateReturnTargets() {
-        val partial = (25..31).map { source ->
-            HighHeatSupplementResumePlanner.ResumeTarget(
-                supplementPan(source, "A", false), "A", source - 24
-            )
-        }
-        val duplicate = (25..33).map { source ->
+    fun isValidInitialPlan_shouldRejectEmptyOrUnsafeTargets() {
+        val duplicateReturn = (25..33).map { source ->
             HighHeatSupplementResumePlanner.ResumeTarget(
                 supplementPan(source, "A", false), "A", 1
             )
         }
+        val duplicateSource = (1..2).map { returnPosition ->
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                supplementPan(25, "A", false), "A", returnPosition
+            )
+        }
+        val nonContiguousSource = listOf(
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                supplementPan(25, "A", false), "A", 1
+            ),
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                supplementPan(27, "A", false), "A", 2
+            )
+        )
+        val outOfRange = listOf(
+            HighHeatSupplementResumePlanner.ResumeTarget(
+                supplementPan(24, "A", false), "A", 1
+            )
+        )
 
-        assertFalse(HighHeatSupplementResumePlanner.isCompleteInitialPlan(partial))
-        assertFalse(HighHeatSupplementResumePlanner.isCompleteInitialPlan(duplicate))
+        assertFalse(HighHeatSupplementResumePlanner.isValidInitialPlan(emptyList()))
+        assertFalse(HighHeatSupplementResumePlanner.isValidInitialPlan(duplicateReturn))
+        assertFalse(HighHeatSupplementResumePlanner.isValidInitialPlan(duplicateSource))
+        assertFalse(HighHeatSupplementResumePlanner.isValidInitialPlan(nonContiguousSource))
+        assertFalse(HighHeatSupplementResumePlanner.isValidInitialPlan(outOfRange))
     }
 
     @Before

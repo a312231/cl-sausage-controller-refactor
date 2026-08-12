@@ -152,9 +152,109 @@ internal fun resetHighTrafficSupplementTracking(): HighTrafficSupplementTracking
 
 internal fun shouldResumeIncompleteHighHeatBatch(
     pitCount: Int,
-    hasIncompleteBatch: Boolean
+    hasIncompleteBatch: Boolean,
+    persistedBatchState: PersistedHighHeatBatchState
 ): Boolean {
-    return hasIncompleteBatch && pitCount <= 0
+    return hasIncompleteBatch &&
+        pitCount <= 0 &&
+        persistedBatchState == PersistedHighHeatBatchState.REMAINING
+}
+
+internal enum class PersistedHighHeatBatchState {
+    COMPLETED_OR_TERMINAL,
+    REMAINING,
+    UNTRUSTED
+}
+
+internal fun shouldBlockPendingHighHeatRecovery(
+    activeIntent: SupplementBatchIntent?,
+    persistedBatchState: PersistedHighHeatBatchState
+): Boolean {
+    val remainingTargets = activeIntent?.remainingTargets().orEmpty()
+    val hasPendingHighHeatBatch = remainingTargets.isNotEmpty() &&
+        (
+            activeIntent?.type == SupplementBatchType.HIGH_HEAT_25_33 ||
+                remainingTargets.any {
+                    it.resolvedOriginBatchType() == SupplementBatchType.HIGH_HEAT_25_33
+                }
+            )
+    return hasPendingHighHeatBatch && persistedBatchState == PersistedHighHeatBatchState.UNTRUSTED
+}
+
+internal fun classifyPersistedHighHeatBatch(
+    activeIntent: SupplementBatchIntent?,
+    highHeatPans: List<KaoPan>
+): PersistedHighHeatBatchState {
+    val occupiedSourcePositions = highHeatPans
+        .filter { it.positionSn in 25..33 && it.isHasSausage }
+        .map { it.positionSn }
+        .toSet()
+    val intent = activeIntent ?: return PersistedHighHeatBatchState.UNTRUSTED
+
+    val highHeatTargets = intent.targets
+        .filter {
+            it.resolvedOriginBatchType() == SupplementBatchType.HIGH_HEAT_25_33
+        }
+    if (highHeatTargets.isEmpty()) {
+        return PersistedHighHeatBatchState.UNTRUSTED
+    }
+    if (
+        intent.type == SupplementBatchType.HIGH_HEAT_25_33 &&
+        intent.remainingTargets().any {
+            it.resolvedOriginBatchType() != SupplementBatchType.HIGH_HEAT_25_33
+        }
+    ) {
+        return PersistedHighHeatBatchState.UNTRUSTED
+    }
+
+    val targetPositions = highHeatTargets.map { it.positionSn }
+    val returnPositions = highHeatTargets.map { it.returnPositionSn }
+    val hasConflictingTerminalState = highHeatTargets.any {
+        (it.completed && (it.skippedBySupplyDegrade || it.cancelledByFaultTimeout)) ||
+            (it.skippedBySupplyDegrade && it.cancelledByFaultTimeout)
+    }
+    val activeHeatReturnPositions = intent.targets
+        .filter {
+            !it.skippedBySupplyDegrade &&
+                !it.cancelledByFaultTimeout &&
+                it.returnPositionSn != null &&
+                SupplementBatchIntentRepository.isHeatSupplementBatch(
+                    it.resolvedOriginBatchType() ?: SupplementBatchType.UNKNOWN
+                )
+        }
+        .mapNotNull { it.returnPositionSn }
+    if (
+        targetPositions.any { it !in 25..33 } ||
+        targetPositions.toSet().size != targetPositions.size ||
+        returnPositions.any { it == null || it !in 1..21 } ||
+        returnPositions.filterNotNull().toSet().size != returnPositions.size ||
+        activeHeatReturnPositions.toSet().size != activeHeatReturnPositions.size ||
+        hasConflictingTerminalState
+    ) {
+        return PersistedHighHeatBatchState.UNTRUSTED
+    }
+
+    val completedSourcePositions = highHeatTargets
+        .filter { it.completed }
+        .map { it.positionSn }
+        .toSet()
+    val remainingSourcePositions = highHeatTargets
+        .filter { !it.completed && !it.skippedBySupplyDegrade && !it.cancelledByFaultTimeout }
+        .map { it.positionSn }
+        .toSet()
+    val unrecordedOccupiedPositions = occupiedSourcePositions - completedSourcePositions
+    if (
+        !occupiedSourcePositions.containsAll(completedSourcePositions) ||
+        !remainingSourcePositions.containsAll(unrecordedOccupiedPositions)
+    ) {
+        return PersistedHighHeatBatchState.UNTRUSTED
+    }
+
+    return if (remainingSourcePositions.isNotEmpty()) {
+        PersistedHighHeatBatchState.REMAINING
+    } else {
+        PersistedHighHeatBatchState.COMPLETED_OR_TERMINAL
+    }
 }
 
 internal fun shouldSwitchHighHeatAreaToKeepWarm(

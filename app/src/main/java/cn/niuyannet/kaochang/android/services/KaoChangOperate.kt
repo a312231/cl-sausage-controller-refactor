@@ -5557,6 +5557,36 @@ object KaoChangOperate {
         }
     }
 
+    fun reconcilePendingSupplementTargetsAlreadyOnPans(
+        allowedTypes: Set<SupplementBatchType>,
+        expectedBatchId: String?,
+        reason: String,
+        pans: List<KaoPan> = KaoPanHelper.getKaoPanList()
+    ): Int {
+        val intent = supplementBatchIntentRepository.loadActive() ?: return 0
+        if (expectedBatchId.isNullOrBlank() || intent.batchId != expectedBatchId || intent.type !in allowedTypes) return 0
+
+        val physicalSausagePositions = pans.asSequence()
+            .filter { it.isHasSausage == true }
+            .map { it.positionSn }
+            .toSet()
+        val completedTargetPositions = intent.remainingTargets()
+            .map { it.positionSn }
+            .filter { it in physicalSausagePositions }
+            .distinct()
+        completedTargetPositions.forEach { targetPosition ->
+            supplementBatchIntentRepository.markCompletedFromPhysicalReconciliation(intent.batchId, targetPosition)
+        }
+        if (completedTargetPositions.isNotEmpty()) {
+            logD(
+                LOG_SUPPLEMENT,
+                "补肠目标已实际上盘，补记批次完成状态：reason=$reason，batchId=${intent.batchId}，" +
+                    "type=${SupplementBatchIntentRepository.typeText(intent.type)}，targets=$completedTargetPositions"
+            )
+        }
+        return completedTargetPositions.size
+    }
+
     suspend fun handlePendingSupplementBatchIfAny(
         allowedTypes: Set<SupplementBatchType>,
         reason: String,
@@ -5581,40 +5611,23 @@ object KaoChangOperate {
             )
             return PendingSupplementBatchHandling.BLOCKED
         }
-        if (intent.requiresManualConfirm) {
+        val pans = KaoPanHelper.getKaoPanList()
+        reconcilePendingSupplementTargetsAlreadyOnPans(
+            allowedTypes = allowedTypes,
+            expectedBatchId = intent.batchId,
+            reason = "$reason pending续补前对账",
+            pans = pans
+        )
+        val refreshedIntent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
+        if (refreshedIntent.batchId != intent.batchId || refreshedIntent.type !in allowedTypes) {
             logW(
                 LOG_SUPPLEMENT,
-                "检测到未完成补肠批次仍需人工确认，暂不自动续补：reason=$reason，" +
-                    "batchId=${intent.batchId}，targetPan=${intent.failedTargetPanNo}，action=${intent.failedActionName}，" +
-                    "failure=${intent.failureMessage}"
-            )
-            return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
-        }
-        if (!schedulingEnabled || !boxSupplyAvailable || AppConfig.getAppConfig().errorStatus != 0 || isBeforeCloseWindow) {
-            if (isInitializationBatch(intent.type) && !boxSupplyAvailable) {
-                supplementBatchIntentRepository.clear("${SupplementBatchIntentRepository.typeText(intent.type)}部分开盘收口：烤肠箱无可用库存:$reason")
-                logW(
-                    LOG_SUPPLEMENT,
-                    "${SupplementBatchIntentRepository.typeText(intent.type)}存在未完成补肠批次，但烤肠箱无可用库存，按部分开盘收口，不再阻塞已上盘烤肠成熟检查：" +
-                        "reason=$reason，batchId=${intent.batchId}，remaining=${intent.remainingTargets().map { it.positionSn }}"
-                )
-                return PendingSupplementBatchHandling.NONE
-            }
-            logW(
-                LOG_SUPPLEMENT,
-                "检测到未完成补肠批次但当前不允许续补：reason=$reason，batchId=${intent.batchId}，" +
-                    "schedulingEnabled=$schedulingEnabled，boxSupplyAvailable=$boxSupplyAvailable，" +
-                    "errorStatus=${AppConfig.getAppConfig().errorStatus}，isBeforeCloseWindow=$isBeforeCloseWindow"
+                "物理对账期间活动补肠批次已切换，阻断本轮自动续补：reason=$reason，" +
+                    "expectedBatchId=${intent.batchId}，actualBatchId=${refreshedIntent.batchId}，" +
+                    "actualType=${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}"
             )
             return PendingSupplementBatchHandling.BLOCKED
         }
-        val pans = KaoPanHelper.getKaoPanList()
-        intent.remainingTargets().forEach { target ->
-            if (pans.firstOrNull { it.positionSn == target.positionSn }?.isHasSausage == true) {
-                supplementBatchIntentRepository.markCompleted(intent.batchId, target.positionSn)
-            }
-        }
-        val refreshedIntent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
         if (refreshedIntent.remainingTargets().isEmpty()) {
             logD(
                 LOG_SUPPLEMENT,
@@ -5622,6 +5635,33 @@ object KaoChangOperate {
                     "batchId=${refreshedIntent.batchId}，type=${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}"
             )
             return PendingSupplementBatchHandling.NONE
+        }
+        if (refreshedIntent.requiresManualConfirm) {
+            logW(
+                LOG_SUPPLEMENT,
+                "检测到未完成补肠批次仍需人工确认，暂不自动续补：reason=$reason，" +
+                    "batchId=${refreshedIntent.batchId}，targetPan=${refreshedIntent.failedTargetPanNo}，action=${refreshedIntent.failedActionName}，" +
+                    "failure=${refreshedIntent.failureMessage}"
+            )
+            return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
+        }
+        if (!schedulingEnabled || !boxSupplyAvailable || AppConfig.getAppConfig().errorStatus != 0 || isBeforeCloseWindow) {
+            if (isInitializationBatch(refreshedIntent.type) && !boxSupplyAvailable) {
+                supplementBatchIntentRepository.clear("${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}部分开盘收口：烤肠箱无可用库存:$reason")
+                logW(
+                    LOG_SUPPLEMENT,
+                    "${SupplementBatchIntentRepository.typeText(refreshedIntent.type)}存在未完成补肠批次，但烤肠箱无可用库存，按部分开盘收口，不再阻塞已上盘烤肠成熟检查：" +
+                        "reason=$reason，batchId=${refreshedIntent.batchId}，remaining=${refreshedIntent.remainingTargets().map { it.positionSn }}"
+                )
+                return PendingSupplementBatchHandling.NONE
+            }
+            logW(
+                LOG_SUPPLEMENT,
+                "检测到未完成补肠批次但当前不允许续补：reason=$reason，batchId=${refreshedIntent.batchId}，" +
+                    "schedulingEnabled=$schedulingEnabled，boxSupplyAvailable=$boxSupplyAvailable，" +
+                    "errorStatus=${AppConfig.getAppConfig().errorStatus}，isBeforeCloseWindow=$isBeforeCloseWindow"
+            )
+            return PendingSupplementBatchHandling.BLOCKED
         }
         if (supplementBatchIntentRepository.cancelRemainingHeatTargetsAfterFaultTimeoutIfExpired(
                 types = setOf(refreshedIntent.type),

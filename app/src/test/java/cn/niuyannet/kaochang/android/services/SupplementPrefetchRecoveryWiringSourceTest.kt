@@ -112,16 +112,15 @@ class SupplementPrefetchRecoveryWiringSourceTest {
             "suspend fun handlePendingSupplementBatchIfAny",
             "private fun isInitializationBatch"
         )
-        val manualConfirmGate = block.indexOf("if (intent.requiresManualConfirm)")
+        val occupiedReconcile = block.indexOf("reconcilePendingSupplementTargetsAlreadyOnPans(")
+        val manualConfirmGate = block.indexOf("if (refreshedIntent.requiresManualConfirm)")
         val schedulingGate = block.indexOf("if (!schedulingEnabled || !boxSupplyAvailable")
-        val occupiedReconcile = block.indexOf("markCompleted(intent.batchId")
         val timeoutCancel = block.indexOf("cancelRemainingHeatTargetsAfterFaultTimeoutIfExpired")
         val resumeMove = block.indexOf("moveSausagesToKaoPansByTasteInternal")
 
-        assertTrue(manualConfirmGate >= 0)
+        assertTrue(occupiedReconcile >= 0)
+        assertTrue(manualConfirmGate > occupiedReconcile)
         assertTrue(schedulingGate > manualConfirmGate)
-        assertTrue(occupiedReconcile > schedulingGate)
-        assertTrue(timeoutCancel > occupiedReconcile)
         assertTrue(timeoutCancel > schedulingGate)
         assertTrue(resumeMove > timeoutCancel)
     }

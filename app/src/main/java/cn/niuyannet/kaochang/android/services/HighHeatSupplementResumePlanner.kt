@@ -30,12 +30,15 @@ internal object HighHeatSupplementResumePlanner {
         return supplementGroup.any { it.isHasSausage }
     }
 
-    fun isCompleteInitialPlan(targets: List<ResumeTarget>): Boolean {
-        if (targets.size != 9) return false
-        if (targets.map { it.positionSn }.sorted() != (25..33).toList()) return false
+    fun isValidInitialPlan(targets: List<ResumeTarget>): Boolean {
+        if (targets.isEmpty() || targets.size > 9) return false
+        val sourcePositions = targets.map { it.positionSn }
+        if (sourcePositions.sorted() != (25 until 25 + targets.size).toList()) {
+            return false
+        }
         val returnPositions = targets.map { it.returnPositionSn }
         return returnPositions.all { it != null && it in 1..21 } &&
-            returnPositions.filterNotNull().toSet().size == 9
+            returnPositions.filterNotNull().toSet().size == targets.size
     }
 
     fun isReturnCleared(supplementGroup: List<KaoPan>): Boolean {

@@ -239,34 +239,71 @@ object HighCurrentTrafficMode {
                 checkHighHeatEnd(list1_9, 1)
                 checkHighHeatEnd(list10_21, 2)
                 checkHighHeatEnd(list25_33, 3)
-                KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
-                    types = setOf(
-                        SupplementBatchType.LOW_HEAT_13_15,
-                        SupplementBatchType.LOW_HEAT_16_18,
-                        SupplementBatchType.HIGH_HEAT_25_33
-                    ),
-                    sourcePositionsWithSausage = list
-                        .filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
-                        .filter { it.isHasSausage }
-                        .map { it.positionSn }
-                        .toSet(),
-                    sourcePanStatuses = list.associate { it.positionSn to it.status },
-                    reason = "高并发调度入口检测补热源盘已清空"
+                val preCleanupIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+                val preCleanupBatchState = classifyPersistedHighHeatBatch(
+                    activeIntent = preCleanupIntent,
+                    highHeatPans = list25_33
                 )
+                val blockUntrustedHighHeatRecovery =
+                    shouldBlockPendingHighHeatRecovery(preCleanupIntent, preCleanupBatchState)
+                if (blockUntrustedHighHeatRecovery) {
+                    LogUtils.w(
+                        TAG,
+                        "【高并发补肠】25~33 持久化批次证据不可信，保留 completed binding 并阻断本轮自动续补：" +
+                            "persistedBatchState=$preCleanupBatchState，batchId=${preCleanupIntent?.batchId}"
+                    )
+                } else {
+                    KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+                        types = setOf(
+                            SupplementBatchType.LOW_HEAT_13_15,
+                            SupplementBatchType.LOW_HEAT_16_18,
+                            SupplementBatchType.HIGH_HEAT_25_33
+                        ),
+                        sourcePositionsWithSausage = list
+                            .filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
+                            .filter { it.isHasSausage }
+                            .map { it.positionSn }
+                            .toSet(),
+                        sourcePanStatuses = list.associate { it.positionSn to it.status },
+                        reason = "高并发调度入口检测补热源盘已清空"
+                    )
+                    KaoChangOperate.reconcilePendingSupplementTargetsAlreadyOnPans(
+                        allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                        expectedBatchId = preCleanupIntent?.batchId,
+                        reason = "高并发正常态成熟检查前对账25~33已上盘目标",
+                        pans = list
+                    )
+                }
                 if (schedulingEnabled) {
                     checkHighHeatSausage(list)
                 }
 
-                val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
-                    allowedTypes = setOf(
-                        SupplementBatchType.HIGH_INITIALIZATION_1_21,
-                        SupplementBatchType.HIGH_HEAT_25_33
-                    ),
-                    reason = "高并发正常态调度入口",
-                    boxSupplyAvailable = boxSupplyAvailable,
-                    schedulingEnabled = schedulingEnabled,
-                    isBeforeCloseWindow = isBeforeCloseWindow
+                val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+                val persistedBatchState = classifyPersistedHighHeatBatch(
+                    activeIntent = activeIntent,
+                    highHeatPans = list25_33
                 )
+                val pendingBatchHandling = if (
+                    shouldBlockPendingHighHeatRecovery(activeIntent, persistedBatchState)
+                ) {
+                    LogUtils.w(
+                        TAG,
+                        "【高并发补肠】25~33 持久化批次证据不可信，阻断 pending 自动续补：" +
+                            "persistedBatchState=$persistedBatchState，batchId=${activeIntent?.batchId}"
+                    )
+                    KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
+                } else {
+                    KaoChangOperate.handlePendingSupplementBatchIfAny(
+                        allowedTypes = setOf(
+                            SupplementBatchType.HIGH_INITIALIZATION_1_21,
+                            SupplementBatchType.HIGH_HEAT_25_33
+                        ),
+                        reason = "高并发正常态调度入口",
+                        boxSupplyAvailable = boxSupplyAvailable,
+                        schedulingEnabled = schedulingEnabled,
+                        isBeforeCloseWindow = isBeforeCloseWindow
+                    )
+                }
                 if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     return
@@ -284,7 +321,8 @@ object HighCurrentTrafficMode {
                 } else if (HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)) {
                     val shouldResumeIncompleteBatch = shouldResumeIncompleteHighHeatBatch(
                         pitCount = pitCount,
-                        hasIncompleteBatch = true
+                        hasIncompleteBatch = true,
+                        persistedBatchState = persistedBatchState
                     )
                     val handledFinishedPartialBatch = if (schedulingEnabled) {
                         checkHighHeatSausage(list)
@@ -303,6 +341,7 @@ object HighCurrentTrafficMode {
                         LogUtils.i(
                             TAG,
                             "【高并发补肠】25~33 补热区存在未满批次，本轮不续补：pitCount=$pitCount，" +
+                                "persistedBatchState=$persistedBatchState，" +
                                 "原因=${if (shouldResumeIncompleteBatch) "等待库存/调度条件满足" else "已记录实际批次大小，按当前批次整批烤熟后回搬"}，" +
                                 "boxSupplyAvailable=$boxSupplyAvailable，schedulingEnabled=$schedulingEnabled，errorStatus=${config.errorStatus}，处于停业前收口窗口=$isBeforeCloseWindow"
                         )
@@ -401,6 +440,21 @@ object HighCurrentTrafficMode {
         checkHighHeatEnd(list1_9, 1)
         checkHighHeatEnd(list10_21, 2)
         checkHighHeatEnd(list25_33, 3, requireCompleteZone3Batch = false)
+        val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = activeIntent,
+            highHeatPans = list25_33
+        )
+        val blockUntrustedHighHeatRecovery =
+            shouldBlockPendingHighHeatRecovery(activeIntent, persistedBatchState)
+        if (activeIntent?.type == SupplementBatchType.HIGH_HEAT_25_33 && !blockUntrustedHighHeatRecovery) {
+            KaoChangOperate.reconcilePendingSupplementTargetsAlreadyOnPans(
+                allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                expectedBatchId = activeIntent.batchId,
+                reason = "高并发残留消化成熟检查前对账25~33已上盘目标",
+                pans = list
+            )
+        }
         if (!schedulingEnabled) {
             LogUtils.i(TAG, "【并发残留】残留消化暂停自动搬盘：schedulingEnabled=false")
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
@@ -476,21 +530,41 @@ object HighCurrentTrafficMode {
         val hasStartedHighHeatSupply =
             HighHeatSupplementResumePlanner.hasBatchStarted(list25_33) || pitCount > 0
         val hadStartedHighHeatSupplyBefore = hasStartedHighHeatSupply
-        val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
-            allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
-            reason = "低转高过渡调度入口",
-            boxSupplyAvailable = boxSupplyAvailable,
-            schedulingEnabled = schedulingEnabled,
-            isBeforeCloseWindow = isBeforeCloseWindow
+        val activeIntentBeforePending = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val persistedBatchStateBeforePending = classifyPersistedHighHeatBatch(
+            activeIntent = activeIntentBeforePending,
+            highHeatPans = list25_33
         )
+        val pendingBatchHandling = if (
+            shouldBlockPendingHighHeatRecovery(activeIntentBeforePending, persistedBatchStateBeforePending)
+        ) {
+            LogUtils.w(
+                TAG,
+                "【并发切换】低转高过渡检测到不可信25~33批次证据，阻断 pending 自动续补：" +
+                    "persistedBatchState=$persistedBatchStateBeforePending，batchId=${activeIntentBeforePending?.batchId}"
+            )
+            KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
+        } else {
+            KaoChangOperate.handlePendingSupplementBatchIfAny(
+                allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                reason = "低转高过渡调度入口",
+                boxSupplyAvailable = boxSupplyAvailable,
+                schedulingEnabled = schedulingEnabled,
+                isBeforeCloseWindow = isBeforeCloseWindow
+            )
+        }
         if (pendingBatchHandling == KaoChangOperate.PendingSupplementBatchHandling.RESUMED) {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             return
         }
         val pendingHighHeatBatchBlocksSupplement =
             pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE
-
         val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = activeIntent,
+            highHeatPans = list25_33
+        )
+
         val protectedOldLowHeatReturnPositions = collectProtectedOldLowHeatReturnPositions(
             frontPans = TrafficModeHelper.getTrafficModePositions(1, 9, list),
             oldLowHeatPans = list13_18,
@@ -504,7 +578,11 @@ object HighCurrentTrafficMode {
         val hasIncompleteHighHeatBatch = HighHeatSupplementResumePlanner.hasIncompleteBatch(list25_33)
         if (
             !pendingHighHeatBatchBlocksSupplement &&
-            shouldResumeIncompleteHighHeatBatch(pitCount = pitCount, hasIncompleteBatch = hasIncompleteHighHeatBatch) &&
+            shouldResumeIncompleteHighHeatBatch(
+                pitCount = pitCount,
+                hasIncompleteBatch = hasIncompleteHighHeatBatch,
+                persistedBatchState = persistedBatchState
+            ) &&
             boxSupplyAvailable &&
             schedulingEnabled &&
             !isBeforeCloseWindow
@@ -539,18 +617,18 @@ object HighCurrentTrafficMode {
                     returnPositionSn = target.returnPositionSn
                 )
             }
-            val completeInitialPlan = HighHeatSupplementResumePlanner.isCompleteInitialPlan(plannedTargets)
-            if (!completeInitialPlan) {
+            val validInitialPlan = HighHeatSupplementResumePlanner.isValidInitialPlan(plannedTargets)
+            if (!validInitialPlan) {
                 LogUtils.w(
                     TAG,
-                    "【并发切换】低转高过渡：25~33 未形成完整九目标，跳过新批次，" +
+                    "【并发切换】低转高过渡：25~33 未形成安全有效目标，跳过新批次，" +
                         "plannedSources=${plannedTargets.map { it.positionSn }}，" +
                         "plannedReturns=${plannedTargets.map { it.returnPositionSn }}，" +
                         "frontEmptyCount=$frontEmptyCount，availableStockByTaste=$availableStockByTaste"
                 )
             }
 
-            val movedCount = if (completeInitialPlan) {
+            val movedCount = if (validInitialPlan) {
                 KaoChangOperate.heating(3)
                 KaoChangOperate.moveSausagesToKaoPansByTaste(
                     targets,
@@ -564,7 +642,7 @@ object HighCurrentTrafficMode {
                 val batchResultText = if (partialBatch) {
                     "25~33 本次补肠被订单、供给降级或下平台隔离中断，保留未完成目标等待恢复续补"
                 } else {
-                    "已启动完整高并发补热批次"
+                    "已按当前库存启动高并发补热批次，目标数=${targets.size}"
                 }
                 recordSupplementLaunchOutcome(
                     requestedTargetCount = targets.size,
@@ -854,6 +932,26 @@ object HighCurrentTrafficMode {
             LogUtils.i(TAG, "【并发切换】高转低过渡暂停自动搬盘：schedulingEnabled=false")
             return
         }
+        val pendingHighHeatIntentBeforeReconcile = KaoChangOperate.activeSupplementBatchIntentForUi()
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = pendingHighHeatIntentBeforeReconcile,
+            highHeatPans = list25_33
+        )
+        val blockUntrustedHighHeatRecovery = shouldBlockPendingHighHeatRecovery(
+            activeIntent = pendingHighHeatIntentBeforeReconcile,
+            persistedBatchState = persistedBatchState
+        )
+        if (
+            pendingHighHeatIntentBeforeReconcile?.type == SupplementBatchType.HIGH_HEAT_25_33 &&
+            !blockUntrustedHighHeatRecovery
+        ) {
+            KaoChangOperate.reconcilePendingSupplementTargetsAlreadyOnPans(
+                allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                expectedBatchId = pendingHighHeatIntentBeforeReconcile.batchId,
+                reason = "高转低过渡成熟检查前对账25~33已上盘目标",
+                pans = list
+            )
+        }
         val pendingHighHeatIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
         if (pendingHighHeatIntent?.type == SupplementBatchType.HIGH_HEAT_25_33 &&
             !pendingHighHeatIntent.requiresManualConfirm &&
@@ -862,13 +960,22 @@ object HighCurrentTrafficMode {
             val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
             val isBeforeCloseWindow =
                 KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
-            val pendingBatchHandling = KaoChangOperate.handlePendingSupplementBatchIfAny(
-                allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
-                reason = "高转低过渡恢复25~33已确认未完成批次",
-                boxSupplyAvailable = boxSupplyAvailable,
-                schedulingEnabled = schedulingEnabled,
-                isBeforeCloseWindow = isBeforeCloseWindow
-            )
+            val pendingBatchHandling = if (blockUntrustedHighHeatRecovery) {
+                LogUtils.w(
+                    TAG,
+                    "【并发切换】高转低已确认25~33批次证据不可信，跳过 pending 自动续补并继续成熟收口：" +
+                        "persistedBatchState=$persistedBatchState，batchId=${pendingHighHeatIntent.batchId}"
+                )
+                KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
+            } else {
+                KaoChangOperate.handlePendingSupplementBatchIfAny(
+                    allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
+                    reason = "高转低过渡恢复25~33已确认未完成批次",
+                    boxSupplyAvailable = boxSupplyAvailable,
+                    schedulingEnabled = schedulingEnabled,
+                    isBeforeCloseWindow = isBeforeCloseWindow
+                )
+            }
             if (pendingBatchHandling == KaoChangOperate.PendingSupplementBatchHandling.RESUMED) {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                 return
@@ -1077,10 +1184,10 @@ object HighCurrentTrafficMode {
                 listBox = listBox,
                 committedReturnTasteByPosition = committedReturnTasteByPosition
             )
-            if (!HighHeatSupplementResumePlanner.isCompleteInitialPlan(plannedTargets)) {
+            if (!HighHeatSupplementResumePlanner.isValidInitialPlan(plannedTargets)) {
                 LogUtils.w(
                     TAG,
-                    "【高并发补肠】跳过 25~33 补热区补肠：未形成完整九目标，" +
+                    "【高并发补肠】跳过 25~33 补热区补肠：未形成安全有效目标，" +
                         "plannedSources=${plannedTargets.map { it.positionSn }}，" +
                         "plannedReturns=${plannedTargets.map { it.returnPositionSn }}，" +
                         "frontEmpty=${emptyPositions.size}，zone3Empty=${emptyPositions25_33.size}"

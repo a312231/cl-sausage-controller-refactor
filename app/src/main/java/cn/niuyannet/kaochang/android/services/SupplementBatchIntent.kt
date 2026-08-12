@@ -205,6 +205,26 @@ class SupplementBatchIntentRepository(
     }
 
     fun markCompleted(batchId: String?, targetPanNo: Int) {
+        markCompletedInternal(
+            batchId = batchId,
+            targetPanNo = targetPanNo,
+            preserveFailureEvidence = false
+        )
+    }
+
+    fun markCompletedFromPhysicalReconciliation(batchId: String?, targetPanNo: Int) {
+        markCompletedInternal(
+            batchId = batchId,
+            targetPanNo = targetPanNo,
+            preserveFailureEvidence = true
+        )
+    }
+
+    private fun markCompletedInternal(
+        batchId: String?,
+        targetPanNo: Int,
+        preserveFailureEvidence: Boolean
+    ) {
         if (batchId.isNullOrBlank()) {
             return
         }
@@ -218,18 +238,26 @@ class SupplementBatchIntentRepository(
         }
         target.completed = true
         intent.updatedAtMs = clock()
-        intent.failedActionName = null
-        intent.failedTargetPanNo = null
-        intent.failureMessage = null
-        intent.requiresManualConfirm = false
-        intent.manualConfirmStrategy = ""
+        if (!preserveFailureEvidence) {
+            intent.failedActionName = null
+            intent.failedTargetPanNo = null
+            intent.failureMessage = null
+            intent.requiresManualConfirm = false
+            intent.manualConfirmStrategy = ""
+        }
         if (intent.isComplete()) {
-            if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+            if (shouldRetainCompletedHeatIntentForReturn(intent) ||
+                (preserveFailureEvidence && intent.requiresManualConfirm)
+            ) {
                 saveDurableOrThrow(intent)
-                infoLogger(
-                    "【补肠批次恢复】补热批次已全部上盘，保留回搬绑定直到源盘回搬完成：batchId=$batchId，" +
-                        "returnPositions=${intent.targets.map { it.returnPositionSn }}"
-                )
+                if (shouldRetainCompletedHeatIntentForReturn(intent)) {
+                    infoLogger(
+                        "【补肠批次恢复】补热批次已全部上盘，保留回搬绑定直到源盘回搬完成：batchId=$batchId，" +
+                            "returnPositions=${intent.targets.map { it.returnPositionSn }}"
+                    )
+                } else {
+                    infoLogger("【补肠批次恢复】物理对账已全部上盘，保留批次等待人工确认：batchId=$batchId")
+                }
             } else {
                 clearDurableOrThrow()
                 infoLogger("【补肠批次恢复】补肠批次已全部完成，清除批次意图：batchId=$batchId")
@@ -237,7 +265,8 @@ class SupplementBatchIntentRepository(
         } else {
             saveDurableOrThrow(intent)
             infoLogger(
-                "【补肠批次恢复】补肠批次目标已完成：batchId=$batchId，targetPan=$targetPanNo，" +
+                "【补肠批次恢复】${if (preserveFailureEvidence) "物理对账确认目标已上盘" else "补肠批次目标已完成"}：" +
+                    "batchId=$batchId，targetPan=$targetPanNo，" +
                     "remaining=${intent.remainingTargets().map { it.positionSn }}"
             )
         }
@@ -685,7 +714,9 @@ class SupplementBatchIntentRepository(
     }
 
     private fun shouldClearCompletedIntentOnLoad(intent: SupplementBatchIntent): Boolean {
-        return intent.isComplete() && !shouldRetainCompletedHeatIntentForReturn(intent)
+        return intent.isComplete() &&
+            !intent.requiresManualConfirm &&
+            !shouldRetainCompletedHeatIntentForReturn(intent)
     }
 
     private fun shouldRetainCompletedHeatIntentForReturn(intent: SupplementBatchIntent): Boolean {

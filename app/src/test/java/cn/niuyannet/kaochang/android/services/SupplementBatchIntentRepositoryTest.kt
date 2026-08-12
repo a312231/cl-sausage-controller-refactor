@@ -129,6 +129,54 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun markCompletedFromPhysicalReconciliation_shouldPreserveUnrelatedManualFailure() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            listOf(
+                target(25, "A", returnPositionSn = 1),
+                target(26, "A", returnPositionSn = 2)
+            ),
+            typeOverride = SupplementBatchType.HIGH_HEAT_25_33
+        )!!
+        repository.markFailure(intent.batchId, 26, "in3", "26号盘仍需人工确认", true)
+
+        repository.markCompletedFromPhysicalReconciliation(intent.batchId, 25)
+
+        val saved = store.load()!!
+        assertTrue(saved.targets.first { it.positionSn == 25 }.completed)
+        assertEquals(listOf(26), saved.remainingTargets().map { it.positionSn })
+        assertTrue(saved.requiresManualConfirm)
+        assertEquals(26, saved.failedTargetPanNo)
+        assertEquals("in3", saved.failedActionName)
+        assertEquals("26号盘仍需人工确认", saved.failureMessage)
+        assertEquals(1000L, saved.failureAtMs)
+    }
+
+    @Test
+    fun completedInitializationFromPhysicalReconciliation_shouldRemainActiveUntilManualConfirmation() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val intent = repository.begin(
+            listOf(target(1, "A")),
+            typeOverride = SupplementBatchType.LOW_INITIALIZATION_1_9
+        )!!
+        repository.markFailure(intent.batchId, 1, "in3", "最后一根仍需人工确认", true)
+
+        repository.markCompletedFromPhysicalReconciliation(intent.batchId, 1)
+
+        val active = repository.loadActive()!!
+        assertTrue(active.isComplete())
+        assertTrue(active.requiresManualConfirm)
+        assertEquals(1, active.failedTargetPanNo)
+        assertEquals("in3", active.failedActionName)
+        assertEquals("最后一根仍需人工确认", active.failureMessage)
+
+        repository.confirmManualSafety("人工确认初始化现场安全")
+        assertNull(repository.loadActive())
+    }
+
+    @Test
     fun confirmManualSafety_shouldCancelUnfinishedHeatTargetsAfterTenMinuteFaultTimeout() {
         val store = MemorySupplementBatchIntentStore()
         var now = 1000L

@@ -18,18 +18,113 @@ class HighCurrentTrafficModeSourceTest {
     }
 
     @Test
-    fun newHighHeatBatchEntrypoints_shouldRequireCompletePlanBeforeHeating() {
+    fun newHighHeatBatchEntrypoints_shouldAllowValidStockLimitedPlanBeforeHeating() {
         val source = sourceText()
         val transition = functionBlock(source, "private suspend fun lowTrafficModeTransition(", "/**\n     * 低转高期间")
         val stable = functionBlock(source, "private suspend fun addHighHeatSausage(", "private suspend fun resumeIncompleteHighHeatSupplement(")
 
         listOf(transition, stable).forEach { block ->
-            val guard = block.indexOf("HighHeatSupplementResumePlanner.isCompleteInitialPlan(")
+            val guard = block.indexOf("HighHeatSupplementResumePlanner.isValidInitialPlan(")
             val heating = block.indexOf("KaoChangOperate.heating(3)")
-            assertTrue("新批次必须先检查完整九目标", guard >= 0)
-            assertTrue("完整九目标检查必须早于三区加热", heating > guard)
-            assertFalse("不能只按非空目标启动新批次", block.contains("if (targets.isNotEmpty())"))
+            assertTrue("新批次必须先检查非空且位置关系安全的实际目标", guard >= 0)
+            assertTrue("实际目标安全检查必须早于三区加热", heating > guard)
+            assertFalse("不能继续要求库存凑满完整九目标", block.contains("isCompleteInitialPlan("))
         }
+    }
+
+    @Test
+    fun highHeatResumeEntrypoints_shouldUsePersistedBatchStateAfterRestart() {
+        val source = sourceText()
+        val stable = functionBlock(source, "suspend fun highTrafficMode(", "suspend fun drainHighConcurrencyResidual(")
+        val transition = functionBlock(source, "private suspend fun lowTrafficModeTransition(", "/**\n     * 低转高期间")
+
+        listOf(stable, transition).forEach { block ->
+            val persistedEvidence = block.indexOf("classifyPersistedHighHeatBatch(")
+            val pendingHandler = block.indexOf("handlePendingSupplementBatchIfAny(")
+            val pendingSafetyGate = block.indexOf("shouldBlockPendingHighHeatRecovery(")
+            val resumeDecision = block.indexOf("shouldResumeIncompleteHighHeatBatch(", persistedEvidence)
+            val evidenceArgument = block.indexOf("persistedBatchState =", resumeDecision)
+
+            assertTrue("两个入口都必须分类持久化批次证据", persistedEvidence >= 0)
+            assertTrue("持久化批次分类必须早于 pending handler", pendingHandler > persistedEvidence)
+            assertTrue("pending handler 前必须使用不可信意图阻断门", pendingSafetyGate in (persistedEvidence + 1) until pendingHandler)
+            assertTrue("持久化批次分类必须先于续补判断", resumeDecision > persistedEvidence)
+            assertTrue("续补判断必须显式接收三态持久化证据", evidenceArgument > resumeDecision)
+        }
+
+        val stableEvidence = stable.indexOf("classifyPersistedHighHeatBatch(")
+        val stableSafetyGate = stable.indexOf("shouldBlockPendingHighHeatRecovery(", stableEvidence)
+        val completedBindingCleanup = stable.indexOf("clearCompletedHeatReturnBindingIfSourcesCleared(")
+        val matureCloseout = stable.indexOf("checkHighHeatSausage(list)", stableSafetyGate)
+        assertTrue("稳态入口必须先分类，再决定是否允许清理 completed binding", stableSafetyGate > stableEvidence)
+        assertTrue("不可信批次必须在 completed binding 清理前失败关闭", completedBindingCleanup > stableSafetyGate)
+        assertTrue("不可信批次只能阻断续补，不能阻断既有烤肠成熟收口", matureCloseout > stableSafetyGate)
+    }
+
+    @Test
+    fun stableHighHeat_shouldReconcilePhysicallyLoadedTargetsBeforeMatureReturnAndPendingResume() {
+        val source = sourceText()
+        val stable = functionBlock(source, "suspend fun highTrafficMode(", "suspend fun drainHighConcurrencyResidual(")
+
+        val reconcile = stable.indexOf("reconcilePendingSupplementTargetsAlreadyOnPans(")
+        val matureReturn = stable.indexOf("checkHighHeatSausage(list)", reconcile)
+        val pendingResume = stable.indexOf("handlePendingSupplementBatchIfAny(", reconcile)
+
+        assertTrue("稳态入口必须在成熟回搬前把物理已上盘但落盘滞后的目标对账为 completed", reconcile >= 0)
+        assertTrue("物理上盘对账必须早于25~33成熟回搬，避免回搬后又被判定为 remaining", matureReturn > reconcile)
+        assertTrue("完整 pending 续补仍应位于成熟收口之后，不能因对账前移而阻塞成熟回搬", pendingResume > matureReturn)
+    }
+
+    @Test
+    fun residualDrain_shouldReconcileTrustedPhysicalTargetsBeforeMatureReturnWithoutResumingSupplement() {
+        val source = sourceText()
+        val drain = functionBlock(
+            source,
+            "suspend fun drainHighConcurrencyResidual(",
+            "private suspend fun resumeHighInitialization("
+        )
+
+        val persistedEvidence = drain.indexOf("classifyPersistedHighHeatBatch(")
+        val safetyGate = drain.indexOf("shouldBlockPendingHighHeatRecovery(", persistedEvidence)
+        val reconcile = drain.indexOf("reconcilePendingSupplementTargetsAlreadyOnPans(", safetyGate)
+        val matureReturn = drain.indexOf("checkHighHeatSausage(list)", reconcile)
+
+        assertTrue("残留消化必须先分类持久化25~33批次", persistedEvidence >= 0)
+        assertTrue("残留消化只允许对账可信批次", safetyGate > persistedEvidence)
+        assertTrue("残留消化必须在成熟回搬前补记物理已上盘目标", reconcile in (safetyGate + 1) until matureReturn)
+        assertFalse("残留消化不得因此恢复补肠", drain.contains("handlePendingSupplementBatchIfAny("))
+    }
+
+    @Test
+    fun physicalTargetReconciliation_shouldOnlyPersistCompletionAndBeReusedByPendingHandler() {
+        val source = operateSourceText()
+        val reconcile = functionBlock(
+            source,
+            "fun reconcilePendingSupplementTargetsAlreadyOnPans(",
+            "suspend fun handlePendingSupplementBatchIfAny("
+        )
+        val pendingHandler = functionBlock(
+            source,
+            "suspend fun handlePendingSupplementBatchIfAny(",
+            "private fun isInitializationBatch("
+        )
+
+        assertTrue("对账必须只处理当前允许类型的持久化批次", reconcile.contains("intent.type !in allowedTypes"))
+        assertTrue("对账依据必须是 remaining 目标对应烤盘已实际有肠", reconcile.contains("intent.remainingTargets()") && reconcile.contains("isHasSausage == true"))
+        assertTrue("对账必须绑定分类时看到的同一批次，避免状态切换后误写新批次", reconcile.contains("intent.batchId != expectedBatchId"))
+        assertTrue("物理已上盘目标必须使用保留人工故障证据的 completed 写入", reconcile.contains("supplementBatchIntentRepository.markCompletedFromPhysicalReconciliation("))
+        assertTrue("pending handler 必须复用同一对账方法，避免两套语义漂移", pendingHandler.contains("reconcilePendingSupplementTargetsAlreadyOnPans("))
+        assertTrue("对账后批次若已切换必须失败关闭，不能继续处理新批次", pendingHandler.contains("refreshedIntent.batchId != intent.batchId"))
+        val pendingReconcile = pendingHandler.indexOf("reconcilePendingSupplementTargetsAlreadyOnPans(")
+        val refreshedEmptyCheck = pendingHandler.indexOf("remainingTargets().isEmpty()", pendingReconcile)
+        val manualConfirmationGate = pendingHandler.indexOf("if (refreshedIntent.requiresManualConfirm)")
+        val businessResumeGate = pendingHandler.indexOf("if (!schedulingEnabled || !boxSupplyAvailable")
+        assertTrue("物理事实对账必须早于人工确认门，确认只约束续补机械动作", manualConfirmationGate > pendingReconcile)
+        assertTrue("对账后必须重新读取并先判断是否已全部上盘", refreshedEmptyCheck in (pendingReconcile + 1) until manualConfirmationGate)
+        assertTrue("物理事实对账必须早于库存/调度/故障/停业门，避免被挡住后成熟回搬又重复补肠", businessResumeGate > refreshedEmptyCheck)
+        assertFalse("同步对账不能启动加热", reconcile.contains("heating("))
+        assertFalse("同步对账不能派发搬盘", reconcile.contains("moveKaoPan"))
+        assertFalse("同步对账不能新增协程或延迟", reconcile.contains("launch(") || reconcile.contains("withContext(") || reconcile.contains("delay("))
     }
 
     @Test
@@ -50,6 +145,27 @@ class HighCurrentTrafficModeSourceTest {
         assertTrue("只有实际续补 RESUMED 后才应提前 return", resumedOnlyReturn > pendingHandling)
         assertTrue("等待人工确认/blocked 只能阻止继续补 25~33，不能阻止 13~18 回搬判断", supplementBlockFlag > resumedOnlyReturn)
         assertTrue("13~18 旧补热区回搬判断必须位于 pending 批次检查之后并仍可执行", oldLowHeatReturn > supplementBlockFlag)
+    }
+
+    @Test
+    fun lowToHighTransition_shouldReclassifyPersistedBatchAfterPhysicalReconciliation() {
+        val source = sourceText()
+        val transition = functionBlock(
+            source,
+            "private suspend fun lowTrafficModeTransition(",
+            "/**\n     * 低转高期间"
+        )
+
+        val pendingHandler = transition.indexOf("handlePendingSupplementBatchIfAny(")
+        val refreshedIntent = transition.indexOf("activeSupplementBatchIntentForUi()", pendingHandler)
+        val refreshedClassification = transition.indexOf("classifyPersistedHighHeatBatch(", refreshedIntent)
+        val layoutResumeDecision = transition.indexOf("shouldResumeIncompleteHighHeatBatch(", pendingHandler)
+        val refreshedStateArgument = transition.indexOf("persistedBatchState = persistedBatchState", layoutResumeDecision)
+
+        assertTrue("低转高 pending 对账后必须重读持久化意图", refreshedIntent > pendingHandler)
+        assertTrue("低转高必须用对账后的意图重新分类", refreshedClassification > refreshedIntent)
+        assertTrue("布局续补判断必须晚于对账后重新分类", layoutResumeDecision > refreshedClassification)
+        assertTrue("布局续补只能使用对账后的三态，不能复用对账前 REMAINING", refreshedStateArgument > layoutResumeDecision)
     }
 
     @Test
@@ -84,11 +200,17 @@ class HighCurrentTrafficModeSourceTest {
         val manualConfirmCheck = functionBlock.indexOf("pendingSupplementBatchRequiresManualConfirm()")
         val highHeatTypeCheck = functionBlock.indexOf("SupplementBatchType.HIGH_HEAT_25_33", manualConfirmCheck)
         val clearIntent = functionBlock.indexOf("clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(", manualConfirmCheck)
+        val persistedEvidence = functionBlock.indexOf("classifyPersistedHighHeatBatch(", clearIntent)
+        val pendingSafetyGate = functionBlock.indexOf("shouldBlockPendingHighHeatRecovery(", persistedEvidence)
+        val physicalReconcile = functionBlock.indexOf("reconcilePendingSupplementTargetsAlreadyOnPans(", pendingSafetyGate)
         val pendingResume = functionBlock.indexOf("handlePendingSupplementBatchIfAny(", clearIntent)
         val checkHighHeat = functionBlock.indexOf("checkHighHeatSausage(list)", manualConfirmCheck)
 
         assertTrue("高转低必须先检查25~33人工确认批次", manualConfirmCheck >= 0 && highHeatTypeCheck > manualConfirmCheck)
         assertTrue("高转低不能在25~33人工确认批次存在时无条件清意图", clearIntent > highHeatTypeCheck)
+        assertTrue("高转低已确认批次续补前必须分类持久化证据", persistedEvidence > clearIntent)
+        assertTrue("高转低不可信批次必须在 pending handler 前失败关闭", pendingSafetyGate in (persistedEvidence + 1) until pendingResume)
+        assertTrue("高转低等待人工确认时也必须在成熟回搬前对账可信的物理已上盘目标", physicalReconcile in (pendingSafetyGate + 1) until checkHighHeat)
         assertTrue("高转低已确认的25~33未完成故障批次必须先尝持续补，再判断残缺回搬", pendingResume > clearIntent)
         assertTrue("25~33成熟/残缺回搬判断必须在续补入口之后执行，才能避免确认后拆批", checkHighHeat > pendingResume)
     }

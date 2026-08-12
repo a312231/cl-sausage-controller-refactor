@@ -163,7 +163,8 @@ class HighCurrentTrafficModeStateHelperTest {
         assertTrue(
             shouldResumeIncompleteHighHeatBatch(
                 pitCount = updated.pitCount,
-                hasIncompleteBatch = true
+                hasIncompleteBatch = true,
+                persistedBatchState = PersistedHighHeatBatchState.REMAINING
             )
         )
     }
@@ -173,7 +174,8 @@ class HighCurrentTrafficModeStateHelperTest {
         assertFalse(
             shouldResumeIncompleteHighHeatBatch(
                 pitCount = 5,
-                hasIncompleteBatch = true
+                hasIncompleteBatch = true,
+                persistedBatchState = PersistedHighHeatBatchState.REMAINING
             )
         )
     }
@@ -183,9 +185,310 @@ class HighCurrentTrafficModeStateHelperTest {
         assertTrue(
             shouldResumeIncompleteHighHeatBatch(
                 pitCount = 0,
-                hasIncompleteBatch = true
+                hasIncompleteBatch = true,
+                persistedBatchState = PersistedHighHeatBatchState.REMAINING
             )
         )
+    }
+
+    @Test
+    fun plannedPartialHighHeatBatch_shouldNotResumeAfterRestartForOneOrEightTargets() {
+        listOf(1, 8).forEach { plannedCount ->
+            val occupiedPositions = (25 until 25 + plannedCount).toSet()
+            val intent = completedHighHeatIntent(plannedCount)
+            val persistedBatchState = classifyPersistedHighHeatBatch(
+                activeIntent = intent,
+                highHeatPans = highHeatPans(occupiedPositions)
+            )
+
+            assertEquals(
+                "重启后应从持久化意图识别计划内 $plannedCount 根批次",
+                PersistedHighHeatBatchState.COMPLETED_OR_TERMINAL,
+                persistedBatchState
+            )
+            assertFalse(
+                "重启后 pitCount=0 也不能把计划内 $plannedCount 根批次续补到9根",
+                shouldResumeIncompleteHighHeatBatch(
+                    pitCount = 0,
+                    hasIncompleteBatch = true,
+                    persistedBatchState = persistedBatchState
+                )
+            )
+        }
+    }
+
+    @Test
+    fun interruptedHighHeatBatch_shouldStillResumeAfterRestartWhenIntentHasRemainingTarget() {
+        val intent = completedHighHeatIntent(plannedCount = 8).apply {
+            targets += SupplementBatchIntentTarget(
+                positionSn = 33,
+                tasteCode = "A",
+                returnPositionSn = 9,
+                completed = false,
+                originBatchId = batchId,
+                originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+            )
+        }
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = intent,
+            highHeatPans = highHeatPans((25..32).toSet())
+        )
+
+        assertEquals(PersistedHighHeatBatchState.REMAINING, persistedBatchState)
+        assertTrue(
+            shouldResumeIncompleteHighHeatBatch(
+                pitCount = 0,
+                hasIncompleteBatch = true,
+                persistedBatchState = persistedBatchState
+            )
+        )
+    }
+
+    @Test
+    fun terminalSkippedOrCancelledTargets_shouldNotResumeAfterRestart() {
+        listOf("skipped", "cancelled").forEach { terminalState ->
+            val intent = completedHighHeatIntent(plannedCount = 1).apply {
+                targets += SupplementBatchIntentTarget(
+                    positionSn = 26,
+                    tasteCode = "A",
+                    returnPositionSn = 2,
+                    completed = false,
+                    skippedBySupplyDegrade = terminalState == "skipped",
+                    cancelledByFaultTimeout = terminalState == "cancelled",
+                    originBatchId = batchId,
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            }
+
+            assertTrue("终态目标不应再出现在 remainingTargets", intent.remainingTargets().isEmpty())
+            val persistedBatchState = classifyPersistedHighHeatBatch(
+                activeIntent = intent,
+                highHeatPans = highHeatPans(setOf(25))
+            )
+
+            assertEquals(
+                "重启后应保留 completed + $terminalState 批次的终态证据",
+                PersistedHighHeatBatchState.COMPLETED_OR_TERMINAL,
+                persistedBatchState
+            )
+            assertFalse(
+                "重启后不能重新补入已 $terminalState 的目标",
+                shouldResumeIncompleteHighHeatBatch(
+                    pitCount = 0,
+                    hasIncompleteBatch = true,
+                    persistedBatchState = persistedBatchState
+                )
+            )
+        }
+    }
+
+    @Test
+    fun missingOrMismatchedIntent_shouldFailClosedAfterRestart() {
+        val validIntent = completedHighHeatIntent(plannedCount = 1)
+        val wrongOriginIntent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets.single().originBatchType = SupplementBatchType.HIGH_INITIALIZATION_1_21
+        }
+        val duplicateReturnIntent = completedHighHeatIntent(plannedCount = 2).apply {
+            targets[1].returnPositionSn = targets[0].returnPositionSn
+        }
+        val invalidReturnIntent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets.single().returnPositionSn = 22
+        }
+        val cases = listOf(
+            "missing" to (null to setOf(25)),
+            "wrong-origin" to (wrongOriginIntent to setOf(25)),
+            "physical-mismatch" to (validIntent to setOf(25, 26)),
+            "duplicate-return" to (duplicateReturnIntent to setOf(25, 26)),
+            "invalid-return" to (invalidReturnIntent to setOf(25))
+        )
+
+        cases.forEach { (caseName, input) ->
+            val persistedBatchState = classifyPersistedHighHeatBatch(
+                activeIntent = input.first,
+                highHeatPans = highHeatPans(input.second)
+            )
+
+            assertEquals(
+                "$caseName 不能退回布局推断自动续补",
+                PersistedHighHeatBatchState.UNTRUSTED,
+                persistedBatchState
+            )
+            assertFalse(
+                shouldResumeIncompleteHighHeatBatch(
+                    pitCount = 0,
+                    hasIncompleteBatch = true,
+                    persistedBatchState = persistedBatchState
+                )
+            )
+        }
+    }
+
+    @Test
+    fun untrustedRemainingHighHeatIntent_shouldBlockPendingRecovery() {
+        val duplicateReturnIntent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets += remainingHighHeatTarget(positionSn = 26, returnPositionSn = 1)
+        }
+        val invalidReturnIntent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets += remainingHighHeatTarget(positionSn = 26, returnPositionSn = 22)
+        }
+        val wrongOriginIntent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets += remainingHighHeatTarget(positionSn = 26, returnPositionSn = 2).apply {
+                originBatchType = SupplementBatchType.HIGH_INITIALIZATION_1_21
+            }
+        }
+        val physicalMismatchIntent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets += remainingHighHeatTarget(positionSn = 26, returnPositionSn = 2)
+        }
+        val cases = listOf(
+            "duplicate-return" to (duplicateReturnIntent to setOf(25)),
+            "invalid-return" to (invalidReturnIntent to setOf(25)),
+            "wrong-origin" to (wrongOriginIntent to setOf(25)),
+            "physical-mismatch" to (physicalMismatchIntent to setOf(25, 27))
+        )
+
+        cases.forEach { (caseName, input) ->
+            val persistedBatchState = classifyPersistedHighHeatBatch(
+                activeIntent = input.first,
+                highHeatPans = highHeatPans(input.second)
+            )
+
+            assertEquals(caseName, PersistedHighHeatBatchState.UNTRUSTED, persistedBatchState)
+            assertTrue(
+                "$caseName 必须在 pending handler 前失败关闭",
+                shouldBlockPendingHighHeatRecovery(input.first, persistedBatchState)
+            )
+        }
+    }
+
+    @Test
+    fun trustedRemainingHighHeatIntent_shouldKeepOriginalPendingRecovery() {
+        val intent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets += remainingHighHeatTarget(positionSn = 26, returnPositionSn = 2)
+        }
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = intent,
+            highHeatPans = highHeatPans(setOf(25))
+        )
+
+        assertEquals(PersistedHighHeatBatchState.REMAINING, persistedBatchState)
+        assertFalse(shouldBlockPendingHighHeatRecovery(intent, persistedBatchState))
+    }
+
+    @Test
+    fun trustedRemainingHighHeatIntent_shouldAllowRetainedCompletedLowHeatBinding() {
+        val intent = SupplementBatchIntent(
+            batchId = "mixed-retained-binding",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = true,
+                    originBatchId = "old-low-heat",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                ),
+                SupplementBatchIntentTarget(
+                    positionSn = 25,
+                    tasteCode = "A",
+                    returnPositionSn = 2,
+                    completed = true,
+                    originBatchId = "new-high-heat",
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                ),
+                SupplementBatchIntentTarget(
+                    positionSn = 26,
+                    tasteCode = "A",
+                    returnPositionSn = 3,
+                    completed = false,
+                    originBatchId = "new-high-heat",
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            )
+        )
+
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = intent,
+            highHeatPans = highHeatPans(setOf(25))
+        )
+
+        assertEquals(PersistedHighHeatBatchState.REMAINING, persistedBatchState)
+        assertFalse(shouldBlockPendingHighHeatRecovery(intent, persistedBatchState))
+    }
+
+    @Test
+    fun remainingHighHeatIntent_shouldRejectReturnCollisionWithRetainedLowHeatBinding() {
+        val intent = SupplementBatchIntent(
+            batchId = "mixed-return-collision",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = true,
+                    originBatchId = "old-low-heat",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                ),
+                SupplementBatchIntentTarget(
+                    positionSn = 25,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = false,
+                    originBatchId = "new-high-heat",
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            )
+        )
+
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = intent,
+            highHeatPans = highHeatPans(emptySet())
+        )
+
+        assertEquals(PersistedHighHeatBatchState.UNTRUSTED, persistedBatchState)
+        assertTrue(shouldBlockPendingHighHeatRecovery(intent, persistedBatchState))
+    }
+
+    @Test
+    fun trustedHighHeatIntentBeforeFirstSuccessfulMove_shouldRemainRecoverable() {
+        val intent = SupplementBatchIntent(
+            batchId = "before-first-move",
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 25,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = false,
+                    originBatchId = "before-first-move",
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            )
+        )
+
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = intent,
+            highHeatPans = highHeatPans(emptySet())
+        )
+
+        assertEquals(PersistedHighHeatBatchState.REMAINING, persistedBatchState)
+        assertFalse(shouldBlockPendingHighHeatRecovery(intent, persistedBatchState))
+    }
+
+    @Test
+    fun trustedRemainingTargetAlreadyOnPhysicalPan_shouldAllowPendingReconciliation() {
+        val intent = completedHighHeatIntent(plannedCount = 1).apply {
+            targets += remainingHighHeatTarget(positionSn = 26, returnPositionSn = 2)
+        }
+
+        val persistedBatchState = classifyPersistedHighHeatBatch(
+            activeIntent = intent,
+            highHeatPans = highHeatPans(setOf(25, 26))
+        )
+
+        assertEquals(PersistedHighHeatBatchState.REMAINING, persistedBatchState)
+        assertFalse(shouldBlockPendingHighHeatRecovery(intent, persistedBatchState))
     }
 
     @Test
@@ -1110,4 +1413,34 @@ class HighCurrentTrafficModeStateHelperTest {
                 status = if (position in occupiedPositions) 2 else 0
             }
         }
+
+    private fun completedHighHeatIntent(plannedCount: Int): SupplementBatchIntent {
+        val batchId = "planned-partial-$plannedCount"
+        return SupplementBatchIntent(
+            batchId = batchId,
+            type = SupplementBatchType.HIGH_HEAT_25_33,
+            targets = (25 until 25 + plannedCount).mapIndexed { index, position ->
+                SupplementBatchIntentTarget(
+                    positionSn = position,
+                    tasteCode = "A",
+                    returnPositionSn = index + 1,
+                    completed = true,
+                    originBatchId = batchId,
+                    originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+                )
+            }.toMutableList()
+        )
+    }
+
+    private fun SupplementBatchIntent.remainingHighHeatTarget(
+        positionSn: Int,
+        returnPositionSn: Int
+    ): SupplementBatchIntentTarget = SupplementBatchIntentTarget(
+        positionSn = positionSn,
+        tasteCode = "A",
+        returnPositionSn = returnPositionSn,
+        completed = false,
+        originBatchId = batchId,
+        originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+    )
 }
