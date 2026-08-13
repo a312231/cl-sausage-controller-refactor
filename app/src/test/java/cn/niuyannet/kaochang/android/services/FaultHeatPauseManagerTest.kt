@@ -258,6 +258,31 @@ class FaultHeatPauseManagerTest {
     }
 
     @Test
+    fun adjustPansForPause_duplicatePositionKeepsLastTargetButMutatesFirstMatchingPan() {
+        val firstPending = bakingPan(positionSn = 7, startTime = 1_000L)
+        val secondShifted = bakingPan(positionSn = 7, startTime = 8_000L)
+        val config = config().apply {
+            faultBakingPauseAbortMs = 4_000L
+            faultPauseAnomalyMs = 100_000L
+        }
+
+        val result = FaultHeatPauseManager.adjustPansForPause(
+            pans = listOf(firstPending, secondShifted),
+            config = config,
+            nowMs = 10_000L,
+            pauseStartedAtMs = 5_000L,
+            reason = "重复盘位兼容",
+            emitLogs = false
+        )
+
+        assertEquals(listOf(7), result.shiftedPositions)
+        assertEquals(listOf(7), result.pendingDiscardPositions)
+        assertEquals(mapOf(7 to 10_000L), result.targetStartTimes)
+        assertEquals(10_000L, firstPending.startTime)
+        assertEquals(8_000L, secondShifted.startTime)
+    }
+
+    @Test
     fun adjustPansForPause_shouldMarkLongPausedBakingPanPendingDiscard() {
         val config = config()
         val bakingPan = bakingPan(positionSn = 25, startTime = 10_000L)

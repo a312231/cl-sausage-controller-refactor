@@ -8,6 +8,10 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
+import cn.niuyannet.kaochang.recovery.FaultHeatPanSnapshot
+import cn.niuyannet.kaochang.recovery.FaultHeatPauseAdjustmentInput
+import cn.niuyannet.kaochang.recovery.FaultHeatPauseAdjustmentPolicy
+import cn.niuyannet.kaochang.recovery.FaultHeatPauseAlert
 import com.alibaba.fastjson.JSON
 import java.util.LinkedHashSet
 import java.util.UUID
@@ -713,51 +717,36 @@ object FaultHeatPauseManager {
         nowMs: Long,
         pauseStartedAtMs: Long
     ): EndPauseResult {
-        val pauseDurationMs = nowMs - pauseStartedAtMs
-        val shiftedPositions = mutableListOf<Int>()
-        val holdingPositions = mutableListOf<Int>()
-        val pendingPositions = mutableListOf<Int>()
-        val targetStartTimes = linkedMapOf<Int, Long>()
-        val hasAnySausage = TemperatureControlPolicy.hasAnySausageInPhysicalPans(pans)
-        val globalAlertCode = when {
-            nowMs < pauseStartedAtMs -> ALERT_CLOCK_REGRESSED
-            hasAnySausage && pauseDurationMs > normalizedFaultPauseAnomalyMs(config) -> ALERT_ANOMALY_TOO_LONG
-            else -> null
-        }
-        val hasFutureBakingStart = pans.any { isBakingPan(it) && it.startTime > nowMs }
-        val failClosed = globalAlertCode != null || hasFutureBakingStart
-        val alertCode = globalAlertCode ?: if (hasFutureBakingStart) ALERT_CLOCK_REGRESSED else null
-        pans.forEach { pan ->
-            when {
-                isBakingPan(pan) -> {
-                    val overlapMs = actualPauseOverlapMs(pan, nowMs, pauseStartedAtMs)
-                    if (failClosed || overlapMs > normalizedFaultBakingPauseAbortMs(config)) {
-                        pendingPositions.add(pan.positionSn)
-                        if (!failClosed) {
-                            targetStartTimes[pan.positionSn] = pan.startTime
-                        }
-                    } else {
-                        shiftedPositions.add(pan.positionSn)
-                        targetStartTimes[pan.positionSn] = pan.startTime + overlapMs
-                    }
+        val adjustment = FaultHeatPauseAdjustmentPolicy.calculate(
+            FaultHeatPauseAdjustmentInput(
+                nowMs = nowMs,
+                pauseStartedAtMs = pauseStartedAtMs,
+                bakingPauseAbortMs = normalizedFaultBakingPauseAbortMs(config),
+                pauseAnomalyMs = normalizedFaultPauseAnomalyMs(config),
+                pans = pans.map { pan ->
+                    FaultHeatPanSnapshot(
+                        positionSn = pan.positionSn,
+                        hasSausage = pan.isHasSausage,
+                        startTimeMs = pan.startTime,
+                        holdingTimeMs = pan.holdingTime,
+                        closeTimeMs = pan.closeTime
+                    )
                 }
-                isHoldingPan(pan) -> {
-                    holdingPositions.add(pan.positionSn)
-                    if (pan.closeTime > 0L && nowMs - pan.holdingTime > pan.closeTime) {
-                        pendingPositions.add(pan.positionSn)
-                    }
-                }
-            }
-        }
+            )
+        )
         return EndPauseResult(
             active = true,
-            pauseDurationMs = pauseDurationMs,
-            shiftedPositions = shiftedPositions.sorted(),
-            holdingPositions = holdingPositions.sorted(),
-            pendingDiscardPositions = pendingPositions.distinct().sorted(),
-            alertCode = alertCode,
-            targetStartTimes = targetStartTimes.toSortedMap(),
-            failClosed = failClosed
+            pauseDurationMs = adjustment.pauseDurationMs,
+            shiftedPositions = adjustment.shiftedPositions,
+            holdingPositions = adjustment.holdingPositions,
+            pendingDiscardPositions = adjustment.pendingDiscardPositions,
+            alertCode = when (adjustment.alert) {
+                FaultHeatPauseAlert.CLOCK_REGRESSED -> ALERT_CLOCK_REGRESSED
+                FaultHeatPauseAlert.ANOMALY_TOO_LONG -> ALERT_ANOMALY_TOO_LONG
+                null -> null
+            },
+            targetStartTimes = adjustment.targetStartTimes,
+            failClosed = adjustment.failClosed
         )
     }
 

@@ -59,6 +59,7 @@
 - 区分“期望状态”“已下发动作”“下位机结果”“已持久化终态”；
 - 重启后只依据可验证 checkpoint 恢复，不根据 UI 或陈旧寄存器猜测。
 - 纯 JVM 2C-1 已把断电冷启动三分支和 60 秒运行心跳是否到期提取为确定性决策；App 继续拥有墙钟、journal、烤盘/config 变更、持久化、日志及 MQTT/HTTP，真实断电恢复效果仍须真机验证。
+- 纯 JVM/App 2C-2 已把故障停热后的烤制顺延、保温到期、食品安全待丢弃和 fail-closed 候选判断提取为 `FaultHeatPauseAdjustmentPolicy`。核心只接收调用方提供的时间、归一化阈值和不可变烤盘快照；App 继续拥有墙钟、`KaoPan/AppConfig`、journal、持久化、日志、状态同步和温控恢复顺序。当前只完成源码/JVM/Debug 构建验证，真实断电、温控、MQTT、RS485/Modbus 和机械效果仍须测试设备联调。
 
 ### 4. 端口与适配器
 
