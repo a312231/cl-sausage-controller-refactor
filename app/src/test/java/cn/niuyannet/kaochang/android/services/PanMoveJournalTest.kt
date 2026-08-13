@@ -66,6 +66,24 @@ class PanMoveJournalTest {
         assertEquals(PanMoveCheckpoint.COMMAND_INTENT, store.journal?.checkpoint)
     }
 
+    @Test(expected = AssertionError::class)
+    fun sharedPreferenceStore_doesNotSwallowFatalDecoderErrors() {
+        SharedPreferencePanMoveJournalStore(
+            readRaw = { "raw" },
+            decodeRaw = { throw AssertionError("fatal") }
+        ).load()
+    }
+
+    @Test
+    fun sharedPreferenceStore_mapsMissingCheckpointToCorruptSentinel() {
+        val result = SharedPreferencePanMoveJournalStore(
+            readRaw = { """{"moveId":"move-1","sourcePositionSn":13,"targetPositionSn":1,"createdAtMs":1}""" }
+        ).load()
+
+        assertEquals(0, result?.sourcePositionSn)
+        assertEquals(0, result?.targetPositionSn)
+    }
+
     private fun journal(checkpoint: PanMoveCheckpoint) = PanMoveJournal(
         moveId = "move-1",
         sourcePositionSn = 13,

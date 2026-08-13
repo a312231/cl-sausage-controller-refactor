@@ -86,6 +86,15 @@ class EmergencyResetRecoveryFenceTest {
         assertEquals(repeated, store.load())
     }
 
+    @Test(expected = AssertionError::class)
+    fun store_shouldNotWrapFatalDecoderErrors() {
+        EmergencyResetRecoveryFenceStore(
+            readRaw = { "raw" },
+            writeRawDurably = { true },
+            decodeRaw = { throw AssertionError("fatal") }
+        ).load()
+    }
+
     @Test
     fun forceCloseoutPolicy_shouldRequireConfirmationTwoIdleSnapshotsAndColdRestart() {
         val idle = ManualDeviceRecoveryCloseoutDecision(true, "下位机已空闲")

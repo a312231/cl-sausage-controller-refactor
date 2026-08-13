@@ -1,7 +1,17 @@
-package cn.niuyannet.kaochang.android.services
+package cn.niuyannet.kaochang.recovery
+
+enum class ManualRecoveryCloudCode {
+    ACK_TIMEOUT,
+    ACK_NOT_APPLIED,
+    LOCAL_STATE_CHANGED,
+    REMOTE_STATE_MISMATCH,
+    HTTP_VERIFICATION_FAILED,
+    CONFIRMED
+}
 
 object ManualRecoveryCloudConfirmationPolicy {
     data class Decision(
+        val code: ManualRecoveryCloudCode,
         val confirmed: Boolean,
         val reason: String
     )
@@ -29,18 +39,19 @@ object ManualRecoveryCloudConfirmationPolicy {
         localStateStillRecovered: Boolean
     ): Decision {
         if (!ackReceived) {
-            return Decision(false, "云端恢复确认超时")
+            return Decision(ManualRecoveryCloudCode.ACK_TIMEOUT, false, "云端恢复确认超时")
         }
         if (!ackApplied) {
-            return Decision(false, "云端未应用恢复状态")
+            return Decision(ManualRecoveryCloudCode.ACK_NOT_APPLIED, false, "云端未应用恢复状态")
         }
         if (!localStateStillRecovered) {
-            return Decision(false, "恢复确认期间本机状态再次变化")
+            return Decision(ManualRecoveryCloudCode.LOCAL_STATE_CHANGED, false, "恢复确认期间本机状态再次变化")
         }
         return if (remoteOnlineStatus == targetOnlineStatus && remoteErrorStatus == 0) {
-            Decision(true, "后台已确认恢复")
+            Decision(ManualRecoveryCloudCode.CONFIRMED, true, "后台已确认恢复")
         } else {
             Decision(
+                ManualRecoveryCloudCode.REMOTE_STATE_MISMATCH,
                 false,
                 "后台仍未恢复：onlineStatus=$remoteOnlineStatus，errorStatus=$remoteErrorStatus"
             )

@@ -18,7 +18,9 @@ class SharedPreferenceSupplementPrefetchSessionStore(
     private val writeRawDurably: (String) -> Boolean = { raw ->
         PreferenceUtils.saveStringPreferenceDurable(file, key, raw)
     },
-    private val mutationAllowed: (String) -> Boolean = { true }
+    private val mutationAllowed: (String) -> Boolean = { true },
+    private val decodeRaw: (String) -> SupplementPrefetchPipelineSession = ::decodeSupplementPrefetchSession,
+    private val evidenceValidator: (SupplementPrefetchPipelineSession) -> Boolean = SupplementPrefetchSessionValidator::isValid
 ) : SupplementPrefetchSessionStore {
 
     override val synchronizationLock: Any = sharedLock(file, key)
@@ -36,8 +38,8 @@ class SharedPreferenceSupplementPrefetchSessionStore(
     override fun read(): DurableEvidenceReadResult<SupplementPrefetchPipelineSession> =
         DurableEvidenceCodec.read(
             readRaw(),
-            ::decodeSupplementPrefetchSession,
-            SupplementPrefetchSessionValidator::isValid
+            decodeRaw,
+            evidenceValidator
         )
 
     override fun save(session: SupplementPrefetchPipelineSession) {

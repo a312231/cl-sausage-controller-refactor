@@ -6,8 +6,12 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
+import cn.niuyannet.kaochang.scheduler.SupplementPositionInput
 
 internal object HighHeatSupplementResumePlanner {
+    private val batchHeatPositionStrategy = SchedulerProfileRuntime.activeProfile.batchHeatPositionStrategy
+
     data class ResumeTarget(
         val kaoPan: KaoPan,
         val tasteCode: String,
@@ -52,31 +56,37 @@ internal object HighHeatSupplementResumePlanner {
         requestedCount: Int = 9,
         excludedReturnPositions: Set<Int> = emptySet(),
         committedFutureReturnPositions: List<Int> = emptyList(),
-        committedReturnTasteByPosition: Map<Int, String> = emptyMap()
+        committedReturnTasteByPosition: Map<Int, String> = emptyMap(),
+        frontTasteWritesBeforeTargetCommit: List<DeferredTasteReservationWrite> = emptyList()
     ): List<ResumeTarget> {
+        val excludedReturnSnapshot = excludedReturnPositions.toSet()
+        val committedFutureReturnSnapshot = committedFutureReturnPositions.toList()
+        val committedReturnTasteSnapshot = committedReturnTasteByPosition.toMap()
+        val frontTasteWriteSnapshot = frontTasteWritesBeforeTargetCommit.toList()
+        val allFrontByPosition = frontPans.associateBy { it.positionSn }
         val currentReturnPans = frontPans
             .filter {
                 !it.isHasSausage &&
-                    it.positionSn !in excludedReturnPositions &&
-                    it.positionSn !in committedReturnTasteByPosition
+                    it.positionSn !in excludedReturnSnapshot &&
+                    it.positionSn !in committedReturnTasteSnapshot
             }
             .sortedBy { it.positionSn }
             .take(requestedCount)
         val currentReturnPositions = currentReturnPans.map { it.positionSn }.toSet()
         val futureReturnPans = if (currentReturnPans.size < requestedCount) {
-            val futureReturnPositions = committedFutureReturnPositions
+            val futureReturnPositions = committedFutureReturnSnapshot
                 .filter {
                     it in 1..21 &&
-                        it !in excludedReturnPositions &&
+                        it !in excludedReturnSnapshot &&
                         it !in currentReturnPositions &&
-                        it !in committedReturnTasteByPosition
+                        it !in committedReturnTasteSnapshot
                 }
                 .distinct()
                 .take(requestedCount - currentReturnPans.size)
                 .toSet()
             frontPans
                 .filter { it.positionSn in futureReturnPositions }
-                .sortedBy { committedFutureReturnPositions.indexOf(it.positionSn).let { index -> if (index >= 0) index else Int.MAX_VALUE } }
+                .sortedBy { committedFutureReturnSnapshot.indexOf(it.positionSn).let { index -> if (index >= 0) index else Int.MAX_VALUE } }
         } else {
             emptyList()
         }
@@ -93,18 +103,38 @@ internal object HighHeatSupplementResumePlanner {
         if (targetPans.isEmpty()) {
             return emptyList()
         }
+        val positionPlan = batchHeatPositionStrategy.planPositions(
+            SupplementPositionInput(
+                requestedCount = requestedCount,
+                targetCandidates = targetPans.map { it.positionSn },
+                returnCandidates = returnPans.map { it.positionSn }
+            )
+        )
+        if (positionPlan.pairs.isEmpty()) {
+            return emptyList()
+        }
+        val targetByPosition = targetPans.associateBy { it.positionSn }
+        val returnByPosition = returnPans.associateBy { it.positionSn }
+        val selectedPairs = positionPlan.pairs.mapNotNull { pair ->
+            val targetPan = targetByPosition[pair.targetPosition] ?: return@mapNotNull null
+            val returnPan = returnByPosition[pair.returnPosition] ?: return@mapNotNull null
+            targetPan to returnPan
+        }
+        if (selectedPairs.size != positionPlan.pairs.size) {
+            return emptyList()
+        }
 
         val occupiedTasteByPosition = frontPans
             .filter { it.positionSn !in futureReturnPositions && it.isHasSausage }
             .mapNotNull { pan ->
-                val tasteCode = committedReturnTasteByPosition[pan.positionSn]
+                val tasteCode = committedReturnTasteSnapshot[pan.positionSn]
                     ?: pan.taste?.tasteCode?.takeIf { it.isNotBlank() }
                 tasteCode?.let { pan.positionSn to it }
             }
             .toMap()
             .toMutableMap()
             .apply {
-                committedReturnTasteByPosition.forEach { (positionSn, tasteCode) ->
+                committedReturnTasteSnapshot.forEach { (positionSn, tasteCode) ->
                     if (positionSn in 1..21 && positionSn !in futureReturnPositions && tasteCode.isNotBlank()) {
                         put(positionSn, tasteCode)
                     }
@@ -115,21 +145,52 @@ internal object HighHeatSupplementResumePlanner {
             targetCountByTaste = KaoPanHelper.computeHighKaoPamRatio(listBox, 21),
             availableStockByTaste = buildAvailableStockByTaste(listBox),
             occupiedTasteByPosition = occupiedTasteByPosition,
-            assignablePositions = returnPans.take(targetPans.size).map { it.positionSn }
+            assignablePositions = selectedPairs.map { it.second.positionSn }
         )
         val assignmentByPosition = tastePlan.assignments.associateBy { it.positionSn }
 
-        val targets = targetPans.mapIndexedNotNull { index, targetPan ->
-            val returnPan = returnPans.getOrNull(index) ?: return@mapIndexedNotNull null
+        val targets = selectedPairs.mapNotNull { (targetPan, returnPan) ->
             val tasteCode = assignmentByPosition[returnPan.positionSn]?.tasteCode
-                ?: return@mapIndexedNotNull null
-            if (returnPan.positionSn !in futureReturnPositions &&
-                returnPan.taste?.tasteCode != tasteCode
-            ) {
-                returnPan.taste = Taste(tasteCode)
-            }
-            targetPan.taste = Taste(tasteCode)
+                ?: return@mapNotNull null
             ResumeTarget(targetPan, tasteCode, returnPan.positionSn)
+        }
+        if (!isValidInitialPlan(targets) || targets.size != selectedPairs.size) {
+            return emptyList()
+        }
+        val validatedTargets = validateInitialTargetsBeforeTasteWrite(
+            targets = targets,
+            targetByPosition = targetByPosition,
+            returnByPosition = returnByPosition,
+            futureReturnPositions = futureReturnPositions,
+            excludedReturnPositions = excludedReturnSnapshot,
+            committedReturnTasteByPosition = committedReturnTasteSnapshot
+        ) ?: return emptyList()
+        if (frontTasteWriteSnapshot.map { it.expectedPositionSn }.distinct().size != frontTasteWriteSnapshot.size) {
+            return emptyList()
+        }
+        val validatedFrontTasteWrites = frontTasteWriteSnapshot.map { write ->
+            val frontPan = allFrontByPosition[write.expectedPositionSn] ?: return emptyList()
+            if (
+                frontPan !== write.expectedPan ||
+                frontPan.positionSn != write.expectedPositionSn ||
+                frontPan.isHasSausage ||
+                !frontPan.taste?.tasteCode.isNullOrBlank() ||
+                write.tasteCode.isBlank()
+            ) {
+                return emptyList()
+            }
+            frontPan to write.tasteCode
+        }
+        validatedFrontTasteWrites.forEach { (frontPan, tasteCode) ->
+            frontPan.taste = Taste(tasteCode)
+        }
+        validatedTargets.forEach { (target, returnPan) ->
+            if (returnPan.positionSn !in futureReturnPositions &&
+                returnPan.taste?.tasteCode != target.tasteCode
+            ) {
+                returnPan.taste = Taste(target.tasteCode)
+            }
+            target.kaoPan.taste = Taste(target.tasteCode)
         }
         if (targets.size == requestedCount) {
             val assignmentText = tastePlan.assignments.joinToString(",") {
@@ -145,6 +206,29 @@ internal object HighHeatSupplementResumePlanner {
             }
         }
         return targets
+    }
+
+    internal fun validateInitialTargetsBeforeTasteWrite(
+        targets: List<ResumeTarget>,
+        targetByPosition: Map<Int, KaoPan>,
+        returnByPosition: Map<Int, KaoPan>,
+        futureReturnPositions: Set<Int>,
+        excludedReturnPositions: Set<Int>,
+        committedReturnTasteByPosition: Map<Int, String>
+    ): List<Pair<ResumeTarget, KaoPan>>? {
+        val validated = targets.map { target ->
+            val targetPan = targetByPosition[target.positionSn] ?: return null
+            if (targetPan !== target.kaoPan || targetPan.isHasSausage) return null
+            val returnPosition = target.returnPositionSn ?: return null
+            val returnPan = returnByPosition[returnPosition] ?: return null
+            if (returnPan.positionSn != returnPosition) return null
+            if (returnPosition in excludedReturnPositions || returnPosition in committedReturnTasteByPosition) {
+                return null
+            }
+            if (returnPosition !in futureReturnPositions && returnPan.isHasSausage) return null
+            target to returnPan
+        }
+        return validated.takeIf { it.size == targets.size }
     }
 
     fun planResumeTargets(

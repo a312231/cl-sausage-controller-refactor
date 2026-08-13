@@ -6,6 +6,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalClaimState
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
+import java.util.concurrent.CancellationException
 
 enum class DiscardCheckpoint {
     PREPARED,
@@ -98,21 +99,30 @@ interface DiscardJournalStore {
 
 class SharedPreferenceDiscardJournalStore(
     private val file: String = AppConfig.Sp_File_URL,
-    private val key: String = KEY_DISCARD_JOURNAL
+    private val key: String = KEY_DISCARD_JOURNAL,
+    private val readRaw: () -> String? = { PreferenceUtils.getStringPreference(file, key, null) },
+    private val decodeRaw: (String) -> DiscardJournal = { raw -> JSON.parseObject(raw, DiscardJournal::class.java) }
 ) : DiscardJournalStore {
-    override fun load(): DiscardJournal? = PreferenceUtils
-        .getStringPreference(file, key, null)
+    override fun load(): DiscardJournal? = readRaw()
         ?.takeIf { it.isNotBlank() }
         ?.let { raw ->
-            val parsed = runCatching { JSON.parseObject(raw, DiscardJournal::class.java) }.getOrNull()
-            parsed?.takeIf(::isValid)
-                ?: corruptJournal()
+            val parsed = try {
+                decodeRaw(raw).takeIf(::isValid)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            parsed ?: corruptJournal()
         }
 
     private fun isValid(journal: DiscardJournal): Boolean =
         journal.owner.isNotBlank() &&
             journal.positionSn > 0 &&
-            runCatching { journal.checkpoint.name }.isSuccess
+            journal.checkpoint.name.isNotBlank()
 
     private fun corruptJournal() = DiscardJournal(
         owner = "corrupt-journal",

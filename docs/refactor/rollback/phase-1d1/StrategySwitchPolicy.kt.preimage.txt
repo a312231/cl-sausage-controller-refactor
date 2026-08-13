@@ -1,0 +1,180 @@
+package cn.niuyannet.kaochang.scheduler
+
+import java.util.Collections
+
+data class StrategySwitchRuntimeSnapshot(
+    val deviceIdle: Boolean,
+    val hasActiveOrder: Boolean,
+    val hasWholeOrderClaim: Boolean,
+    val hasOutActionSession: Boolean,
+    val hasSupplementOwner: Boolean,
+    val hasCleaningOwner: Boolean,
+    val hasMaintenanceOwner: Boolean
+)
+
+enum class StrategySwitchBlocker {
+    DEVICE_NOT_IDLE,
+    ACTIVE_ORDER,
+    WHOLE_ORDER_CLAIM,
+    OUT_ACTION_SESSION,
+    SUPPLEMENT_OWNER,
+    CLEANING_OWNER,
+    MAINTENANCE_OWNER
+}
+
+enum class StrategySwitchDecisionCode {
+    NO_CHANGE,
+    SWITCH_ALLOWED,
+    REQUESTED_STRATEGY_ID_INVALID,
+    REQUESTED_STRATEGY_NOT_REGISTERED,
+    CURRENT_STRATEGY_ID_INVALID,
+    CURRENT_STRATEGY_NOT_REGISTERED,
+    RUNTIME_BUSY
+}
+
+class StrategySwitchPlan private constructor(
+    val code: StrategySwitchDecisionCode,
+    val currentStrategyId: StrategyId?,
+    val requestedStrategyId: StrategyId?,
+    blockers: List<StrategySwitchBlocker>
+) {
+    val blockers: List<StrategySwitchBlocker> =
+        Collections.unmodifiableList(ArrayList(blockers))
+
+    val requiresPersistence: Boolean
+        get() = code == StrategySwitchDecisionCode.SWITCH_ALLOWED
+
+    init {
+        when (code) {
+            StrategySwitchDecisionCode.NO_CHANGE -> require(
+                currentStrategyId != null && currentStrategyId == requestedStrategyId && blockers.isEmpty()
+            ) { "NO_CHANGE requires one registered strategy id and no blockers" }
+
+            StrategySwitchDecisionCode.SWITCH_ALLOWED -> require(
+                currentStrategyId != null && requestedStrategyId != null &&
+                    currentStrategyId != requestedStrategyId && blockers.isEmpty()
+            ) { "SWITCH_ALLOWED requires distinct registered ids and no blockers" }
+
+            StrategySwitchDecisionCode.REQUESTED_STRATEGY_ID_INVALID -> require(
+                currentStrategyId == null && requestedStrategyId == null && blockers.isEmpty()
+            ) { "invalid requested id must not carry parsed ids or blockers" }
+
+            StrategySwitchDecisionCode.REQUESTED_STRATEGY_NOT_REGISTERED,
+            StrategySwitchDecisionCode.CURRENT_STRATEGY_ID_INVALID -> require(
+                currentStrategyId == null && requestedStrategyId != null && blockers.isEmpty()
+            ) { "$code requires only a parsed requested id" }
+
+            StrategySwitchDecisionCode.CURRENT_STRATEGY_NOT_REGISTERED -> require(
+                currentStrategyId != null && requestedStrategyId != null && blockers.isEmpty()
+            ) { "unregistered current strategy requires both parsed ids" }
+
+            StrategySwitchDecisionCode.RUNTIME_BUSY -> require(
+                currentStrategyId != null && requestedStrategyId != null &&
+                    currentStrategyId != requestedStrategyId && blockers.isNotEmpty()
+            ) { "RUNTIME_BUSY requires a real strategy change and at least one blocker" }
+        }
+    }
+
+    companion object {
+        @JvmSynthetic
+        internal fun evaluate(
+            catalog: SellCandidateStrategyCatalog,
+            currentId: String?,
+            requestedId: String?,
+            runtime: StrategySwitchRuntimeSnapshot
+        ): StrategySwitchPlan {
+            val requested = parseStrategyIdStrict(requestedId)
+                ?: return rejected(StrategySwitchDecisionCode.REQUESTED_STRATEGY_ID_INVALID)
+            if (catalog.find(requested) == null) {
+                return rejected(
+                    code = StrategySwitchDecisionCode.REQUESTED_STRATEGY_NOT_REGISTERED,
+                    requestedStrategyId = requested
+                )
+            }
+
+            val current = parseStrategyIdStrict(currentId)
+                ?: return rejected(
+                    code = StrategySwitchDecisionCode.CURRENT_STRATEGY_ID_INVALID,
+                    requestedStrategyId = requested
+                )
+            if (catalog.find(current) == null) {
+                return rejected(
+                    code = StrategySwitchDecisionCode.CURRENT_STRATEGY_NOT_REGISTERED,
+                    currentStrategyId = current,
+                    requestedStrategyId = requested
+                )
+            }
+
+            if (current == requested) {
+                return StrategySwitchPlan(
+                    code = StrategySwitchDecisionCode.NO_CHANGE,
+                    currentStrategyId = current,
+                    requestedStrategyId = requested,
+                    blockers = emptyList()
+                )
+            }
+
+            val blockers = runtime.blockers()
+            if (blockers.isNotEmpty()) {
+                return StrategySwitchPlan(
+                    code = StrategySwitchDecisionCode.RUNTIME_BUSY,
+                    currentStrategyId = current,
+                    requestedStrategyId = requested,
+                    blockers = blockers
+                )
+            }
+
+            return StrategySwitchPlan(
+                code = StrategySwitchDecisionCode.SWITCH_ALLOWED,
+                currentStrategyId = current,
+                requestedStrategyId = requested,
+                blockers = emptyList()
+            )
+        }
+
+        private fun rejected(
+            code: StrategySwitchDecisionCode,
+            currentStrategyId: StrategyId? = null,
+            requestedStrategyId: StrategyId? = null
+        ): StrategySwitchPlan = StrategySwitchPlan(
+            code = code,
+            currentStrategyId = currentStrategyId,
+            requestedStrategyId = requestedStrategyId,
+            blockers = emptyList()
+        )
+
+        private fun StrategySwitchRuntimeSnapshot.blockers(): List<StrategySwitchBlocker> =
+            buildList {
+                if (!deviceIdle) add(StrategySwitchBlocker.DEVICE_NOT_IDLE)
+                if (hasActiveOrder) add(StrategySwitchBlocker.ACTIVE_ORDER)
+                if (hasWholeOrderClaim) add(StrategySwitchBlocker.WHOLE_ORDER_CLAIM)
+                if (hasOutActionSession) add(StrategySwitchBlocker.OUT_ACTION_SESSION)
+                if (hasSupplementOwner) add(StrategySwitchBlocker.SUPPLEMENT_OWNER)
+                if (hasCleaningOwner) add(StrategySwitchBlocker.CLEANING_OWNER)
+                if (hasMaintenanceOwner) add(StrategySwitchBlocker.MAINTENANCE_OWNER)
+            }
+    }
+}
+
+object StrategySwitchPolicy {
+    fun plan(
+        catalog: SellCandidateStrategyCatalog,
+        currentId: String?,
+        requestedId: String?,
+        runtime: StrategySwitchRuntimeSnapshot
+    ): StrategySwitchPlan = StrategySwitchPlan.evaluate(
+        catalog = catalog,
+        currentId = currentId,
+        requestedId = requestedId,
+        runtime = runtime
+    )
+}
+
+internal fun parseStrategyIdStrict(raw: String?): StrategyId? {
+    if (raw == null) return null
+    return try {
+        StrategyId(raw)
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+}

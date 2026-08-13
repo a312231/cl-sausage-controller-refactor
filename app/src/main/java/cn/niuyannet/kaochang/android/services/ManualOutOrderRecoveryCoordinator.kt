@@ -20,6 +20,10 @@ internal class ManualOutOrderRecoveryCoordinator {
         orderNo.isNotBlank() && reservedOrderNo == orderNo
     }
 
+    fun hasReservation(): Boolean = synchronized(lock) {
+        !reservedOrderNo.isNullOrBlank()
+    }
+
     fun release(orderNo: String) {
         synchronized(lock) {
             if (reservedOrderNo == orderNo) {

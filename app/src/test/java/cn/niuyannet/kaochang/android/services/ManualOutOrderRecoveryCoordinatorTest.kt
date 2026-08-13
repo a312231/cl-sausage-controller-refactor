@@ -42,4 +42,14 @@ class ManualOutOrderRecoveryCoordinatorTest {
         assertFalse(coordinator.isReservedFor("order-1"))
         assertTrue(coordinator.tryReserve("order-2"))
     }
+
+    @Test
+    fun reservationSnapshot_shouldNotMutateTheOwner() {
+        val coordinator = ManualOutOrderRecoveryCoordinator()
+        assertFalse(coordinator.hasReservation())
+
+        assertTrue(coordinator.tryReserve("order-1"))
+        assertTrue(coordinator.hasReservation())
+        assertTrue(coordinator.isReservedFor("order-1"))
+    }
 }

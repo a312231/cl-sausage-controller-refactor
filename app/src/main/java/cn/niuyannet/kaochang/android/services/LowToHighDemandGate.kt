@@ -3,9 +3,19 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.scheduler.LowToHighDemandInput
+import cn.niuyannet.kaochang.scheduler.TrafficDemandTransitionStrategy
+import cn.niuyannet.kaochang.scheduler.TrafficTransitionOutcome
 import com.alibaba.fastjson.JSON
+
+internal fun acceptsLowToHighDemand(
+    strategy: TrafficDemandTransitionStrategy,
+    input: LowToHighDemandInput
+): Boolean = strategy.planLowToHigh(input) ==
+    TrafficTransitionOutcome.LOW_TO_HIGH_EFFECTIVE_DEMAND
 
 /**
  * 低并发转高并发的需求来源门禁。
@@ -134,6 +144,7 @@ object LowToHighDemandGate {
     private const val HIGH_TO_LOW_TRANSITION = 2
     private val trackedFrontPositions = 1..21
     private val lowHeatPositions = 13..18
+    private val demandTransitionStrategy = SchedulerProfileRuntime.activeProfile.demandTransitionStrategy
     private var stateStore: LowToHighDemandStateStore = SharedPreferenceLowToHighDemandStateStore()
     private var stateRepository = LowToHighDemandStateRepository(stateStore)
     private val defaultInfoLogger: (String) -> Unit = { message -> LogUtils.i(TAG, message) }
@@ -241,8 +252,13 @@ object LowToHighDemandGate {
         frontPans: List<KaoPan>,
         lowHeatPans: List<KaoPan>
     ): Boolean {
-        return effectiveEmptyFrontPositions(frontPans).size > 7 &&
-            hasActiveLowHeatBatch(lowHeatPans)
+        return acceptsLowToHighDemand(
+            demandTransitionStrategy,
+            LowToHighDemandInput(
+                effectiveEmptyFrontCount = effectiveEmptyFrontPositions(frontPans).size,
+                hasCompleteActiveLowHeatBatch = hasActiveLowHeatBatch(lowHeatPans)
+            )
+        )
     }
 
     @Synchronized

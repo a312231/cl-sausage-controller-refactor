@@ -7,10 +7,11 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.recovery.PowerLossColdStartAction
+import cn.niuyannet.kaochang.recovery.PowerLossRecoveryPolicy
 
 object PowerLossRecoveryGuard {
     private const val LOG_TAG = "断电恢复"
-    private const val HEARTBEAT_INTERVAL_MS = 60_000L
     private var recoveredInProcess = false
 
     data class RecoveryResult(
@@ -56,44 +57,44 @@ object PowerLossRecoveryGuard {
         emitLogs: Boolean = true
     ): RecoveryResult {
         val lastAliveAtMs = config.lastRuntimeAliveAtMs
-        if (lastAliveAtMs <= 0L) {
-            config.lastRuntimeAliveAtMs = nowMs
-            return RecoveryResult(
-                adjusted = false,
-                normalizedPositions = emptyList(),
-                pauseResult = FaultHeatPauseManager.EndPauseResult.NotActive
-            )
-        }
-
-        if (FaultHeatPauseManager.shouldSkipBakingCompletion(config)) {
-            config.lastRuntimeAliveAtMs = nowMs
-            return RecoveryResult(
-                adjusted = false,
-                normalizedPositions = emptyList(),
-                pauseResult = FaultHeatPauseManager.EndPauseResult.NotActive
-            )
-        }
-
-        val normalizedPositions = FaultHeatPauseManager.normalizeStaleBakingHoldingTimes(pans, config)
-        val pauseResult = FaultHeatPauseManager.adjustPansForPause(
-            pans = pans,
-            config = config,
-            nowMs = nowMs,
-            pauseStartedAtMs = lastAliveAtMs,
-            reason = reason,
-            emitLogs = emitLogs
+        val coldStartAction = PowerLossRecoveryPolicy.coldStartAction(
+            lastAliveAtMs = lastAliveAtMs,
+            faultHeatPauseActive = config.faultHeatPauseActive,
+            faultHeatPauseStartedAtMs = config.faultHeatPauseStartedAtMs
         )
-        config.lastRuntimeAliveAtMs = nowMs
-        return RecoveryResult(
-            adjusted = true,
-            normalizedPositions = normalizedPositions,
-            pauseResult = pauseResult
-        )
+        return when (coldStartAction) {
+            PowerLossColdStartAction.INITIALIZE_HEARTBEAT,
+            PowerLossColdStartAction.SKIP_ACTIVE_FAULT_PAUSE -> {
+                config.lastRuntimeAliveAtMs = nowMs
+                RecoveryResult(
+                    adjusted = false,
+                    normalizedPositions = emptyList(),
+                    pauseResult = FaultHeatPauseManager.EndPauseResult.NotActive
+                )
+            }
+
+            PowerLossColdStartAction.APPLY_POWER_LOSS_GAP -> {
+                val normalizedPositions = FaultHeatPauseManager.normalizeStaleBakingHoldingTimes(pans, config)
+                val pauseResult = FaultHeatPauseManager.adjustPansForPause(
+                    pans = pans,
+                    config = config,
+                    nowMs = nowMs,
+                    pauseStartedAtMs = lastAliveAtMs,
+                    reason = reason,
+                    emitLogs = emitLogs
+                )
+                config.lastRuntimeAliveAtMs = nowMs
+                RecoveryResult(
+                    adjusted = true,
+                    normalizedPositions = normalizedPositions,
+                    pauseResult = pauseResult
+                )
+            }
+        }
     }
 
     fun markAliveIfDue(config: AppConfigBean, nowMs: Long = System.currentTimeMillis()): Boolean {
-        val lastAliveAtMs = config.lastRuntimeAliveAtMs
-        if (lastAliveAtMs > 0L && nowMs - lastAliveAtMs < HEARTBEAT_INTERVAL_MS) {
+        if (!PowerLossRecoveryPolicy.shouldMarkAlive(config.lastRuntimeAliveAtMs, nowMs)) {
             return false
         }
         config.lastRuntimeAliveAtMs = nowMs

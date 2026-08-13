@@ -76,6 +76,8 @@ class KaoPanHelperRatioTest {
 
         assertEquals(8, allocation["A"])
         assertEquals(13, allocation["B"])
+        allocation["X"] = 1
+        assertEquals(1, allocation["X"])
     }
 
     @Test
@@ -92,6 +94,41 @@ class KaoPanHelperRatioTest {
         assertEquals(3, allocation.values.sum())
         assertEquals(setOf("A", "B", "C"), allocation.keys)
         assertFalse(allocation.containsKey("S"))
+    }
+
+    @Test
+    fun computeKaoPamRatio_shouldPreserveSameTasteIntAggregationOverflow() {
+        val boxes = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "A", num = 1)
+        )
+
+        assertTrue(KaoPanHelper.computeKaoPamRatio(boxes, 3).isEmpty())
+    }
+
+    @Test
+    fun computeKaoPamRatio_shouldPreserveTotalStockIntWraparound() {
+        val negativeWrap = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "B", num = 1)
+        )
+        val zeroWrap = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "B", num = Int.MAX_VALUE),
+            box(positionSn = 4, tasteCode = "C", num = 2)
+        )
+        val positiveWrap = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "B", num = Int.MAX_VALUE),
+            box(positionSn = 4, tasteCode = "C", num = 3)
+        )
+
+        assertTrue(KaoPanHelper.computeKaoPamRatio(negativeWrap, 3).isEmpty())
+        assertTrue(KaoPanHelper.computeKaoPamRatio(zeroWrap, 3).isEmpty())
+        assertEquals(
+            listOf("A" to Int.MAX_VALUE - 1, "B" to Int.MAX_VALUE - 1, "C" to 8),
+            KaoPanHelper.computeKaoPamRatio(positiveWrap, 3).entries.map { it.toPair() }
+        )
     }
 
     @Test
@@ -141,6 +178,43 @@ class KaoPanHelperRatioTest {
         assertEquals(3, allocation.values.sum())
         assertEquals(setOf("A", "B", "C"), allocation.keys)
         assertFalse(allocation.containsKey("S"))
+        allocation["X"] = 1
+        assertEquals(1, allocation["X"])
+    }
+
+    @Test
+    fun computeHighKaoPamRatio_shouldPreserveSameTasteIntAggregationOverflow() {
+        val boxes = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "A", num = 1)
+        )
+
+        assertTrue(KaoPanHelper.computeHighKaoPamRatio(boxes, 3).isEmpty())
+    }
+
+    @Test
+    fun computeHighKaoPamRatio_shouldPreserveTotalStockIntWraparoundAndOrder() {
+        val negativeWrap = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "B", num = 1)
+        )
+        val zeroWrap = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "B", num = Int.MAX_VALUE),
+            box(positionSn = 4, tasteCode = "C", num = 2)
+        )
+        val positiveWrap = listOf(
+            box(positionSn = 2, tasteCode = "A", num = Int.MAX_VALUE),
+            box(positionSn = 3, tasteCode = "B", num = Int.MAX_VALUE),
+            box(positionSn = 4, tasteCode = "C", num = 3)
+        )
+
+        assertTrue(KaoPanHelper.computeHighKaoPamRatio(negativeWrap, 3).isEmpty())
+        assertTrue(KaoPanHelper.computeHighKaoPamRatio(zeroWrap, 3).isEmpty())
+        assertEquals(
+            listOf("A" to Int.MAX_VALUE, "B" to Int.MAX_VALUE, "C" to 9),
+            KaoPanHelper.computeHighKaoPamRatio(positiveWrap, 3).entries.map { it.toPair() }
+        )
     }
 
     @Test

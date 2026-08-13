@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
+import java.util.concurrent.CancellationException
 
 data class OrderDeliveryClaim(
     val orderNo: String = "",
@@ -27,14 +28,17 @@ class OrderDeliveryClaimStore(
     private val writeRaw: (String) -> Boolean = { raw ->
         PreferenceUtils.saveStringPreferenceDurable(AppConfig.Sp_File_URL, KEY_ORDER_DELIVERY_CLAIM, raw)
     },
-    private val nowMs: () -> Long = System::currentTimeMillis
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val decodeRaw: (String) -> OrderDeliveryClaim = { raw ->
+        JSON.parseObject(raw, OrderDeliveryClaim::class.java)
+    }
 ) : MechanicalClaimOwnerStore {
 
     fun load(): OrderDeliveryClaim? {
         val raw = readRaw()
         if (raw.isNullOrBlank()) return null
         return try {
-            JSON.parseObject(raw, OrderDeliveryClaim::class.java).also { claim ->
+            decodeRaw(raw).also { claim ->
                 check(
                     claim.orderNo.isNotBlank() &&
                         claim.owner == OWNER_PREFIX + claim.orderNo &&
@@ -43,7 +47,12 @@ class OrderDeliveryClaimStore(
                         claim.createdAtMs > 0L
                 ) { "订单出餐 claim 字段非法" }
             }
-        } catch (error: Throwable) {
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
+        } catch (error: Exception) {
             throw IllegalStateException("订单出餐 claim 损坏，拒绝按无 owner 处理", error)
         }
     }

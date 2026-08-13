@@ -7,6 +7,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TrafficModeHelperTest {
@@ -84,6 +85,50 @@ class TrafficModeHelperTest {
         val result = TrafficModeHelper.selectSellCandidate(pans, "A", 104, nowMs)
 
         assertEquals(8, result?.positionSn)
+    }
+
+    @Test
+    fun selectSellCandidate_shouldUsePositionAsTieBreaker() {
+        val nowMs = 100_000L
+        val pans = listOf(
+            sellablePan(positionSn = 8, holdingTime = 1_000L),
+            sellablePan(positionSn = 3, holdingTime = 1_000L)
+        )
+
+        val result = TrafficModeHelper.selectSellCandidate(pans, "A", 104, nowMs)
+
+        assertEquals(3, result?.positionSn)
+    }
+
+    @Test
+    fun selectSellCandidate_shouldIncludeBothHoldingWindowEndpoints() {
+        val startsHoldingNow = sellablePan(positionSn = 1, holdingTime = 10_000L, closeTime = 5_000L)
+        val reachesCloseTimeNow = sellablePan(positionSn = 2, holdingTime = 10_000L, closeTime = 5_000L)
+
+        assertEquals(
+            1,
+            TrafficModeHelper.selectSellCandidate(listOf(startsHoldingNow), "A", 104, nowMs = 10_000L)?.positionSn
+        )
+        assertEquals(
+            2,
+            TrafficModeHelper.selectSellCandidate(listOf(reachesCloseTimeNow), "A", 104, nowMs = 15_000L)?.positionSn
+        )
+        assertNull(
+            TrafficModeHelper.selectSellCandidate(listOf(reachesCloseTimeNow), "A", 104, nowMs = 15_001L)
+        )
+    }
+
+    @Test
+    fun selectSellCandidate_shouldExcludePendingDiscardAndFutureHoldingTime() {
+        AppConfig.getAppConfig().pendingDiscardPositions.add(2)
+        val pans = listOf(
+            sellablePan(positionSn = 1, holdingTime = 100_001L),
+            sellablePan(positionSn = 2, holdingTime = 1_000L)
+        )
+
+        val result = TrafficModeHelper.selectSellCandidate(pans, "A", 104, nowMs = 100_000L)
+
+        assertNull(result)
     }
 
     @Test
@@ -192,13 +237,13 @@ class TrafficModeHelperTest {
         }
     }
 
-    private fun sellablePan(positionSn: Int, holdingTime: Long): KaoPan {
+    private fun sellablePan(positionSn: Int, holdingTime: Long, closeTime: Long = 200_000L): KaoPan {
         return KaoPan().apply {
             this.positionSn = positionSn
             isHasSausage = true
             status = 2
             this.holdingTime = holdingTime
-            closeTime = 200_000L
+            this.closeTime = closeTime
             taste = Taste().apply {
                 tasteCode = "A"
                 productId = 104

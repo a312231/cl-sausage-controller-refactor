@@ -310,17 +310,6 @@ internal fun canReturnHighHeatBatchToFront(
     return batchSize > 0 && frontEmptyCount >= batchSize
 }
 
-internal fun shouldSwitchHighToLowByTimeout(
-    lastFillPitTime: Long,
-    now: Long,
-    timeThresholdLowMinutes: Int
-): Boolean {
-    if (lastFillPitTime <= 0L || timeThresholdLowMinutes <= 0) {
-        return false
-    }
-    val thresholdMs = timeThresholdLowMinutes * 60 * 1000L
-    return now - lastFillPitTime > thresholdMs
-}
 
 internal fun canFinishHighToLowDrain(
     frontSausageCount: Int,

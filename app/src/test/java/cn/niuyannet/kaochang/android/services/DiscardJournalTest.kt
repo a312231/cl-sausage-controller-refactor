@@ -248,6 +248,23 @@ class DiscardJournalTest {
         )
     }
 
+    @Test(expected = AssertionError::class)
+    fun sharedPreferenceStore_doesNotSwallowFatalDecoderErrors() {
+        SharedPreferenceDiscardJournalStore(
+            readRaw = { "raw" },
+            decodeRaw = { throw AssertionError("fatal") }
+        ).load()
+    }
+
+    @Test
+    fun sharedPreferenceStore_mapsNullCheckpointToCorruptSentinel() {
+        val result = SharedPreferenceDiscardJournalStore(
+            readRaw = { """{"owner":"discard:7:1","positionSn":7,"checkpoint":null,"createdAtMs":1}""" }
+        ).load()
+
+        assertEquals(0, result?.positionSn)
+    }
+
     private fun journal(checkpoint: DiscardCheckpoint) = DiscardJournal(
         owner = "discard:7:1",
         positionSn = 7,

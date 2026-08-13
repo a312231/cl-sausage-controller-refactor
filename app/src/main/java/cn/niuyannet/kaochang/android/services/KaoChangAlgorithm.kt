@@ -12,6 +12,8 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
+import cn.niuyannet.kaochang.android.services.scheduler.LegacyCandidateShadowGate
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerShadowRuntime
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
@@ -1328,11 +1330,23 @@ object KaoChangAlgorithm {
                 config.transitionMode,
                 config.highConcurrencyResidualDrain
             )
-            val targetKaoPan = TrafficModeHelper.selectSellCandidate(
+            val legacyTargetKaoPan = TrafficModeHelper.selectSellCandidate(
                 TrafficModeHelper.getTrafficModePositions(1, sellEnd, kaoPanList),
                 tasteCode,
                 productId
             )
+            val targetKaoPan = LegacyCandidateShadowGate.observeAndKeep(
+                config.enableSchedulerShadowMode == 1,
+                legacyTargetKaoPan
+            ) {
+                SchedulerShadowRuntime.observe(
+                    legacyCandidate = legacyTargetKaoPan,
+                    tasteCode = tasteCode,
+                    productId = productId,
+                    sellEnd = sellEnd,
+                    pans = kaoPanList
+                )
+            }
             if (targetKaoPan == null) {
                 logW(
                     LOG_DEVICE,

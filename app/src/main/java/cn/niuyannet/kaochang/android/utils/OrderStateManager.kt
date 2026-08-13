@@ -90,6 +90,10 @@ object OrderStateManager {
         return memoryStates.values.any { it.state == STATE_ACCEPTED_PROCESSING }
     }
 
+    /** 调度切换诊断只观察当前 owner，不触发 TTL 清理或持久化读取。 */
+    @Synchronized
+    fun hasProcessingOrderSnapshot(): Boolean = hasProcessingOrderSnapshot(memoryStates.values)
+
     @Synchronized
     fun canCloseStaleClaim(orderNo: String): Boolean {
         if (orderNo.isBlank()) return false
@@ -304,6 +308,9 @@ object OrderStateManager {
         }
     }
 }
+
+internal fun hasProcessingOrderSnapshot(states: Collection<OrderStateManager.OrderState>): Boolean =
+    states.any { it.state == OrderStateManager.STATE_ACCEPTED_PROCESSING }
 
 internal fun staleOrderCloseoutTerminalStateToPersist(existingState: Int?): Int? = when (existingState) {
     OrderStateManager.STATE_FINISHED,

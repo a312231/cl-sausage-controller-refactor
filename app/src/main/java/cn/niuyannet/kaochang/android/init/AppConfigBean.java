@@ -202,6 +202,9 @@ public class AppConfigBean implements Serializable {
     // 视觉影子模式：0=关闭，1=仅记录视觉对账结果，不参与动作决策
     public int enableVisionShadowMode = 0;
 
+    // 调度影子模式：0=关闭，1=仅对照算法 A，不参与候选或机械动作决策
+    public int enableSchedulerShadowMode = 0;
+
     // 远程关闭动作组时，若当前动作未收口则暂存为待关闭：0=无，1=会话结束后关闭
     public int pendingDisableActionGroupV2 = 0;
 

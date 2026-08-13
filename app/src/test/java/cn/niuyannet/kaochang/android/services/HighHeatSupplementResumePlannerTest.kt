@@ -319,6 +319,180 @@ class HighHeatSupplementResumePlannerTest {
     }
 
     @Test
+    fun planInitialTargets_shouldDeduplicateCommittedFutureReturnsByFirstOccurrence() {
+        val availableNow = setOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val front = (1..21).map { position ->
+            frontPan(position, "B", reserved = false).apply {
+                isHasSausage = position !in availableNow
+            }
+        }
+        val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+        val boxes = listOf(box(positionSn = 18, tasteCode = "B", num = 9))
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes,
+            committedFutureReturnPositions = listOf(13, 13, 14)
+        )
+
+        assertEquals((25..33).toList(), result.map { it.positionSn })
+        assertEquals((1..8).toList() + 13, result.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun planInitialTargets_shouldNotMutateAnyTasteWhenSourcePositionsAreInvalid() {
+        val front = (1..21).map { position ->
+            frontPan(position, "OLD-$position", reserved = false).apply {
+                isHasSausage = position !in 1..9
+            }
+        }
+        val group = (26..34).map { position ->
+            supplementPan(position, "SOURCE-$position", hasSausage = false)
+        }
+        val boxes = listOf(box(positionSn = 18, tasteCode = "B", num = 9))
+        val frontTasteBefore = front.associate { it.positionSn to it.taste?.tasteCode }
+        val groupTasteBefore = group.associate { it.positionSn to it.taste?.tasteCode }
+
+        val result = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = front,
+            supplementGroup = group,
+            listBox = boxes
+        )
+
+        assertTrue(result.isEmpty())
+        assertEquals(frontTasteBefore, front.associate { it.positionSn to it.taste?.tasteCode })
+        assertEquals(groupTasteBefore, group.associate { it.positionSn to it.taste?.tasteCode })
+    }
+
+    @Test
+    fun planInitialTargets_deferredReservationWritesShouldMatchLegacyPrefillOrder() {
+        fun fronts(): List<KaoPan> = (1..21).map { position ->
+            frontPan(position, if (position % 2 == 0) "A" else "B", reserved = false).apply {
+                isHasSausage = position > 12
+                if (!isHasSausage) taste = null
+            }
+        }
+        fun group(): List<KaoPan> =
+            (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+
+        val boxes = listOf(
+            box(positionSn = 18, tasteCode = "A", num = 12),
+            box(positionSn = 17, tasteCode = "B", num = 9)
+        )
+        val legacyFront = fronts()
+        val legacyGroup = group()
+        TrafficModeHelper.fillMissingTasteReservations(legacyFront, boxes)
+        val legacyTargets = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = legacyFront,
+            supplementGroup = legacyGroup,
+            listBox = boxes
+        )
+
+        val deferredFront = fronts()
+        val deferredGroup = group()
+        val reservationPlan = TrafficModeHelper.planMissingTasteReservations(deferredFront, boxes)
+        assertEquals(
+            (1..8).associateWith { "A" } + (9..12).associateWith { "B" },
+            reservationPlan.writes.associate { it.expectedPositionSn to it.tasteCode }
+        )
+        val deferredTargets = HighHeatSupplementResumePlanner.planInitialTargets(
+            frontPans = deferredFront,
+            supplementGroup = deferredGroup,
+            listBox = boxes,
+            frontTasteWritesBeforeTargetCommit = reservationPlan.writes
+        )
+
+        assertEquals(
+            legacyTargets.map { Triple(it.positionSn, it.returnPositionSn, it.tasteCode) },
+            deferredTargets.map { Triple(it.positionSn, it.returnPositionSn, it.tasteCode) }
+        )
+        assertEquals(
+            legacyFront.associate { it.positionSn to it.taste?.tasteCode },
+            deferredFront.associate { it.positionSn to it.taste?.tasteCode }
+        )
+        assertEquals(
+            legacyGroup.associate { it.positionSn to it.taste?.tasteCode },
+            deferredGroup.associate { it.positionSn to it.taste?.tasteCode }
+        )
+    }
+
+    @Test
+    fun planInitialTargets_shouldRejectDeferredPrefillStateDrift() {
+        val boxes = listOf(
+            box(positionSn = 18, tasteCode = "A", num = 12),
+            box(positionSn = 17, tasteCode = "B", num = 9)
+        )
+
+        fun fronts(): MutableList<KaoPan> = (1..21).map { position ->
+            frontPan(position, "EXISTING", reserved = false).apply {
+                isHasSausage = position > 12
+                if (!isHasSausage) taste = null
+            }
+        }.toMutableList()
+
+        fun assertRejectedAfterDrift(mutate: (MutableList<KaoPan>) -> Unit) {
+            val front = fronts()
+            val group = (25..33).map { position -> supplementPan(position, null, hasSausage = false) }
+            val reservationPlan = TrafficModeHelper.planMissingTasteReservations(front, boxes)
+            mutate(front)
+            val frontBefore = front.map { Triple(it, it.positionSn, it.taste?.tasteCode) }
+            val groupBefore = group.map { it.taste?.tasteCode }
+
+            val result = HighHeatSupplementResumePlanner.planInitialTargets(
+                frontPans = front,
+                supplementGroup = group,
+                listBox = boxes,
+                frontTasteWritesBeforeTargetCommit = reservationPlan.writes
+            )
+
+            assertTrue(result.isEmpty())
+            assertEquals(frontBefore, front.map { Triple(it, it.positionSn, it.taste?.tasteCode) })
+            assertEquals(groupBefore, group.map { it.taste?.tasteCode })
+        }
+
+        assertRejectedAfterDrift { front ->
+            front.first { it.positionSn == 12 }.taste = Taste("NEW")
+        }
+        assertRejectedAfterDrift { front ->
+            front.first { it.positionSn == 12 }.positionSn = 40
+        }
+        assertRejectedAfterDrift { front ->
+            front[11] = frontPan(12, "IGNORED", reserved = false).apply { taste = null }
+        }
+    }
+
+    @Test
+    fun validateInitialTargetsBeforeTasteWrite_shouldRejectStateDrift() {
+        val targetPan = supplementPan(25, null, hasSausage = false)
+        val returnPan = frontPan(1, "A", reserved = false).apply { isHasSausage = false }
+        val target = HighHeatSupplementResumePlanner.ResumeTarget(targetPan, "B", 1)
+
+        fun validate(
+            excluded: Set<Int> = emptySet(),
+            committed: Map<Int, String> = emptyMap()
+        ) = HighHeatSupplementResumePlanner.validateInitialTargetsBeforeTasteWrite(
+            targets = listOf(target),
+            targetByPosition = mapOf(25 to targetPan),
+            returnByPosition = mapOf(1 to returnPan),
+            futureReturnPositions = emptySet(),
+            excludedReturnPositions = excluded,
+            committedReturnTasteByPosition = committed
+        )
+
+        targetPan.isHasSausage = true
+        assertNull(validate())
+        targetPan.isHasSausage = false
+        returnPan.isHasSausage = true
+        assertNull(validate())
+        returnPan.isHasSausage = false
+        assertNull(validate(excluded = setOf(1)))
+        assertNull(validate(committed = mapOf(1 to "A")))
+        assertNull(targetPan.taste)
+        assertEquals("A", returnPan.taste.tasteCode)
+    }
+
+    @Test
     fun planInitialTargets_shouldKeepDefaultHighHeatPlanningWhenNoReturnPositionsAreExcluded() {
         val front = (1..21).map { position ->
             frontPan(position, "B", reserved = false).apply {

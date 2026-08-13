@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services.recovery
 
 import com.alibaba.fastjson.JSON
 import java.security.MessageDigest
+import java.util.concurrent.CancellationException
 
 sealed class DurableEvidenceReadResult<out T> {
     data object Absent : DurableEvidenceReadResult<Nothing>()
@@ -30,6 +31,11 @@ object DurableEvidenceCodec {
         if (raw.isNullOrBlank()) return DurableEvidenceReadResult.Absent
         val parsed = try {
             parser(raw)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
         } catch (error: Exception) {
             return corrupted(raw, "JSON_PARSE_${error.javaClass.simpleName}")
         } ?: return corrupted(raw, "JSON_PARSE_NULL")
@@ -39,6 +45,11 @@ object DurableEvidenceCodec {
             } else {
                 corrupted(raw, "INVARIANT_INVALID")
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
         } catch (error: Exception) {
             corrupted(raw, "INVARIANT_${error.javaClass.simpleName}")
         }

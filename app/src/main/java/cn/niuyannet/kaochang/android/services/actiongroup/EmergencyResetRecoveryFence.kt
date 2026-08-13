@@ -3,6 +3,7 @@ package cn.niuyannet.kaochang.android.services.actiongroup
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
+import java.util.concurrent.CancellationException
 
 enum class EmergencyResetRecoveryPhase {
     PREPARED,
@@ -55,6 +56,9 @@ class EmergencyResetRecoveryFenceStore(
     },
     private val writeRawDurably: (String) -> Boolean = { raw ->
         PreferenceUtils.saveStringPreferenceDurable(file, key, raw)
+    },
+    private val decodeRaw: (String) -> EmergencyResetRecoveryFence = { raw ->
+        JSON.parseObject(raw, EmergencyResetRecoveryFence::class.java)
     }
 ) {
     @Synchronized
@@ -62,8 +66,13 @@ class EmergencyResetRecoveryFenceStore(
         val raw = readRaw()
         if (raw.isNullOrBlank()) return null
         return try {
-            JSON.parseObject(raw, EmergencyResetRecoveryFence::class.java).requireValid()
-        } catch (error: Throwable) {
+            decodeRaw(raw).requireValid()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
+        } catch (error: Exception) {
             throw IllegalStateException("紧急复位恢复栅栏损坏，拒绝按无栅栏处理", error)
         }
     }

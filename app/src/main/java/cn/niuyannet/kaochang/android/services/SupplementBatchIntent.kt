@@ -76,11 +76,14 @@ interface SupplementBatchIntentStore {
 
 class SharedPreferenceSupplementBatchIntentStore(
     private val file: String = AppConfig.Sp_File_URL,
-    private val key: String = KEY_SUPPLEMENT_BATCH_INTENT
+    private val key: String = KEY_SUPPLEMENT_BATCH_INTENT,
+    private val readRaw: () -> String? = {
+        PreferenceUtils.getStringPreference(file, key, null)
+    }
 ) : SupplementBatchIntentStore {
 
     override fun load(): SupplementBatchIntent? {
-        val raw = PreferenceUtils.getStringPreference(file, key, null)
+        val raw = readRaw()
         if (raw.isNullOrBlank()) {
             return null
         }
@@ -105,6 +108,9 @@ class SharedPreferenceSupplementBatchIntentStore(
 
     override fun clearDurable(): Boolean =
         PreferenceUtils.saveStringPreferenceDurable(file, key, "")
+
+    /** 只读判断是否存在任何批次证据；不解析、迁移或清理。 */
+    fun hasRawEvidence(): Boolean = !readRaw().isNullOrBlank()
 
     companion object {
         private const val KEY_SUPPLEMENT_BATCH_INTENT = "sp_supplement_batch_intent_json"

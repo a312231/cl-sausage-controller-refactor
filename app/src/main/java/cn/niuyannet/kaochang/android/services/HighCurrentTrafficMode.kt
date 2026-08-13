@@ -8,7 +8,26 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.scheduler.HighHeatSteadyInput
+import cn.niuyannet.kaochang.scheduler.HighToLowDemandInput
+import cn.niuyannet.kaochang.scheduler.TrafficDemandTransitionStrategy
+import cn.niuyannet.kaochang.scheduler.TrafficTransitionOutcome
+
+internal fun acceptedHighToLowDemandOutcome(
+    strategy: TrafficDemandTransitionStrategy,
+    input: HighToLowDemandInput
+): TrafficTransitionOutcome? = when (val outcome = strategy.planHighToLow(input)) {
+    TrafficTransitionOutcome.NONE,
+    TrafficTransitionOutcome.HIGH_TO_LOW_BEFORE_CLOSE,
+    TrafficTransitionOutcome.HIGH_TO_LOW_INACTIVITY_TIMEOUT -> outcome
+
+    TrafficTransitionOutcome.LOW_TO_HIGH_EFFECTIVE_DEMAND -> null
+}
+
+internal fun validHighSupplementTime(lastFillPitTime: Long): Long? =
+    lastFillPitTime.takeIf { it > 0L }
 
 /**
  * 高并发模式控制器。
@@ -18,6 +37,8 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
  */
 object HighCurrentTrafficMode {
     private const val TAG = "KaoChangAlgorithm"
+    private val batchHeatPositionStrategy = SchedulerProfileRuntime.activeProfile.batchHeatPositionStrategy
+    private val demandTransitionStrategy = SchedulerProfileRuntime.activeProfile.demandTransitionStrategy
 
     /** 已触发的高并发补肠坑位计数，仅用于状态观察。 */
     private var pitCount = 0
@@ -371,9 +392,16 @@ object HighCurrentTrafficMode {
                         KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                         return
                     }
-                    if (p25_33 == 9) {
+                    val highHeatPlan = batchHeatPositionStrategy.planHighHeatSteady(
+                        HighHeatSteadyInput(p1_21, p25_33)
+                    )
+                    if (highHeatPlan.shouldStart) {
                         if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
-                            val movedCount = addHighHeatSausage(list, listBox)
+                            val movedCount = addHighHeatSausage(
+                                list = list,
+                                listBox = listBox,
+                                requestedCount = highHeatPlan.requestedCount
+                            )
                             if (movedCount > 0) {
                                 LogUtils.i(
                                     TAG,
@@ -621,7 +649,8 @@ object HighCurrentTrafficMode {
             )
         } else if (!pendingHighHeatBatchBlocksSupplement && !hasStartedHighHeatSupply && boxSupplyAvailable && schedulingEnabled && !isBeforeCloseWindow) {
             val frontEmptyCount = list1_21.count { !it.isHasSausage }
-            TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
+            val frontTasteReservationPlan =
+                TrafficModeHelper.planMissingTasteReservations(list1_21, listBox)
             val plannedTargets = HighHeatSupplementResumePlanner.planInitialTargets(
                 frontPans = list1_21,
                 supplementGroup = list25_33,
@@ -631,7 +660,8 @@ object HighCurrentTrafficMode {
                 committedReturnTasteByPosition = SupplementTasteMixPlanner.committedReturnTasteByPosition(
                     activeIntent,
                     1..21
-                )
+                ),
+                frontTasteWritesBeforeTargetCommit = frontTasteReservationPlan.writes
             )
             val availableStockByTaste = listBox
                 .filter { KaoPanHelper.isSupplyBoxAvailableForAutoSupplement(it) && !it.tasteCode.isNullOrBlank() }
@@ -1200,7 +1230,11 @@ object HighCurrentTrafficMode {
      * 向 25~33 补热区批量补肠。
      * 只有当前区 1~21 形成 9 个坑位时才触发。
      */
-    private suspend fun addHighHeatSausage(list: List<KaoPan>, listBox: List<KaoPanBox>): Int {
+    private suspend fun addHighHeatSausage(
+        list: List<KaoPan>,
+        listBox: List<KaoPanBox>,
+        requestedCount: Int
+    ): Int {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
         val hasSausageIn25_33 = list25_33.any { it.isHasSausage }
@@ -1208,10 +1242,11 @@ object HighCurrentTrafficMode {
             return 0
         }
 
-        TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
         val emptyPositions = list1_21.filter { !it.isHasSausage }
         val emptyPositions25_33 = list25_33.filter { !it.isHasSausage }
-        if (emptyPositions.size >= 9 && emptyPositions25_33.size >= 9) {
+        if (emptyPositions.size >= requestedCount && emptyPositions25_33.size >= requestedCount) {
+            val frontTasteReservationPlan =
+                TrafficModeHelper.planMissingTasteReservations(list1_21, listBox)
             val committedReturnTasteByPosition = SupplementTasteMixPlanner.committedReturnTasteByPosition(
                 KaoChangOperate.completedHeatReturnIntentForUi(),
                 1..21
@@ -1220,7 +1255,9 @@ object HighCurrentTrafficMode {
                 frontPans = list1_21,
                 supplementGroup = list25_33,
                 listBox = listBox,
-                committedReturnTasteByPosition = committedReturnTasteByPosition
+                requestedCount = requestedCount,
+                committedReturnTasteByPosition = committedReturnTasteByPosition,
+                frontTasteWritesBeforeTargetCommit = frontTasteReservationPlan.writes
             )
             if (!HighHeatSupplementResumePlanner.isValidInitialPlan(plannedTargets)) {
                 LogUtils.w(
@@ -1731,32 +1768,41 @@ object HighCurrentTrafficMode {
         kaoPanList: List<KaoPan>,
         boxSupplyAvailable: Boolean
     ) {
-        val businessTime = AppConfig.getAppConfig().businessTime
-        if (businessTime != null) {
-            val remainingTimeUntilClose = getRemainingTimeUntilClose(businessTime)
-            val beforeCloseThreshold =
-                (AppConfig.getAppConfig().timeBeforeClose.takeIf { it > 0 } ?: 30) * 60 * 1000L
-            if (remainingTimeUntilClose > 0 && remainingTimeUntilClose < beforeCloseThreshold) {
-                switchHighToLow("接近营业结束", kaoPanList)
-                return
-            }
-        }
-
+        val config = AppConfig.getAppConfig()
+        val remainingTimeUntilClose = config.businessTime
+            ?.let(::getRemainingTimeUntilClose)
+            ?: -1L
+        val beforeCloseMinutes = config.timeBeforeClose.takeIf { it > 0 } ?: 30
         val currentTime = System.currentTimeMillis()
-        if (lastFillPitTime <= 0L) {
+        val validLastFillPitTime = validHighSupplementTime(lastFillPitTime)
+        val outcome = acceptedHighToLowDemandOutcome(
+            demandTransitionStrategy,
+            HighToLowDemandInput(
+                remainingUntilCloseMs = remainingTimeUntilClose,
+                beforeCloseMinutes = beforeCloseMinutes,
+                nowMs = currentTime,
+                lastHighSupplementTimeMs = validLastFillPitTime,
+                inactivityThresholdMinutes = config.timeThresholdLow
+            )
+        ) ?: return
+
+        if (outcome == TrafficTransitionOutcome.HIGH_TO_LOW_BEFORE_CLOSE) {
+            switchHighToLow("接近营业结束", kaoPanList)
+            return
+        }
+        if (outcome == TrafficTransitionOutcome.NONE && validLastFillPitTime == null) {
             applySupplementTrackingState(
                 nextState = currentSupplementTrackingState().copy(lastFillPitTime = currentTime),
                 reason = "高并发稳态建立高转低计时锚点，boxSupplyAvailable=$boxSupplyAvailable"
             )
             return
         }
-        val timeSinceLastFill = currentTime - lastFillPitTime
-        val timeThresholdLowMinutes = AppConfig.getAppConfig().timeThresholdLow
-        if (shouldSwitchHighToLowByTimeout(lastFillPitTime, currentTime, timeThresholdLowMinutes)) {
+        if (outcome == TrafficTransitionOutcome.HIGH_TO_LOW_INACTIVITY_TIMEOUT) {
+            val timeSinceLastFill = currentTime - lastFillPitTime
             LogUtils.w(
                 TAG,
                 "【并发切换】高并发补肠间隔超时判定成立：lastFillPitTime=$lastFillPitTime，currentTime=$currentTime，" +
-                    "elapsedMs=$timeSinceLastFill，timeThresholdLow=${timeThresholdLowMinutes}分钟，" +
+                    "elapsedMs=$timeSinceLastFill，timeThresholdLow=${config.timeThresholdLow}分钟，" +
                     "boxSupplyAvailable=$boxSupplyAvailable，高转低间隔不再依赖箱库存"
             )
             val reason = if (boxSupplyAvailable) {

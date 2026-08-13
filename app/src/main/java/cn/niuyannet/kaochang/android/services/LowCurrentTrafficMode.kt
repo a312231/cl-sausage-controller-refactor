@@ -7,7 +7,11 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.scheduler.LowHeatAction
+import cn.niuyannet.kaochang.scheduler.LowHeatBatchInput
+import cn.niuyannet.kaochang.scheduler.SupplementPositionInput
 
 /**
  * 低并发模式控制器。
@@ -17,6 +21,7 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
  */
 object LowCurrentTrafficMode {
     private const val TAG = "KaoChangAlgorithm"
+    private val batchHeatPositionStrategy = SchedulerProfileRuntime.activeProfile.batchHeatPositionStrategy
 
     /**
      * 2 区加热开关：
@@ -90,7 +95,10 @@ object LowCurrentTrafficMode {
         val p16_18 = list16_18.count { !it.isHasSausage }
         val totalEmpty = p1_9 + p13_18
 
-        val supplementDecision = lowConcurrencyIntestinalSupplementation(p1_9, p13_15, p16_18)
+        val supplementPlan = batchHeatPositionStrategy.planLowHeat(
+            LowHeatBatchInput(p1_9, p13_15, p16_18)
+        )
+        val supplementDecision = supplementPlan.action.legacyCode
         val stateSnapshot =
             "total=$totalEmpty|front=$p1_9|13_15=$p13_15|16_18=$p16_18|decision=$supplementDecision|mode=${config.modeType}|transition=${config.transitionMode}|error=${config.errorStatus}"
         if (stateSnapshot != lastLowTrafficSnapshot) {
@@ -202,27 +210,27 @@ object LowCurrentTrafficMode {
                 boxSupplyAvailable = boxSupplyAvailable,
                 errorStatus = config.errorStatus,
                 isBeforeCloseWindow = isBeforeCloseWindow,
-                selectedFrontPositions = when (supplementDecision) {
-                    1 -> list1_9.filter { !it.isHasSausage }.take(list13_15.size)
-                    2 -> list1_9.filter { !it.isHasSausage }.take(list16_18.size)
+                selectedFrontPositions = when (supplementPlan.action) {
+                    LowHeatAction.START_13_15 -> list1_9.filter { !it.isHasSausage }.take(supplementPlan.requestedCount)
+                    LowHeatAction.START_16_18 -> list1_9.filter { !it.isHasSausage }.take(supplementPlan.requestedCount)
                     else -> emptyList()
                 }
             )
 
-            if (canStartSupplement && supplementDecision == 1 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            if (canStartSupplement && supplementPlan.action == LowHeatAction.START_13_15 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
-                if (addLowHeatSausage(kaoPanList, listBox, list13_15.size)) {
+                if (addLowHeatSausage(kaoPanList, listBox, supplementPlan.requestedCount)) {
                     LogUtils.i(TAG, "【低并发补肠】已向 13~15 补热区补肠")
                 }
-            } else if (canStartSupplement && supplementDecision == 2 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+            } else if (canStartSupplement && supplementPlan.action == LowHeatAction.START_16_18 && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 TEMPERATURE_OFF = 0
-                if (addLowHeatSausage16_18(kaoPanList, listBox, list16_18.size)) {
+                if (addLowHeatSausage16_18(kaoPanList, listBox, supplementPlan.requestedCount)) {
                     LogUtils.i(TAG, "【低并发补肠】已向 16~18 补热区补肠")
                 }
             }
         }
 
-        if (supplementDecision == 3 && TEMPERATURE_OFF != 1) {
+        if (supplementPlan.action == LowHeatAction.STOP_ZONE_2 && TEMPERATURE_OFF != 1) {
             TEMPERATURE_OFF = 1
             LogUtils.i(TAG, "【加热控制】2 区补热区已空，关闭 2 区加热")
             KaoChangOperate.stopHeating(2)
@@ -422,21 +430,9 @@ object LowCurrentTrafficMode {
         p1_9: Int,
         p13_15: Int,
         p16_18: Int
-    ): Int {
-        val p13_18 = p13_15 + p16_18
-        if (p1_9 >= 3) {
-            if (p13_15 == 3 && p16_18 == 3) {
-                return 1
-            } else if (p13_15 == 3 && p1_9 >= 6 && p16_18 == 0) {
-                return 1
-            } else if (p16_18 == 3 && p1_9 >= 6 && p13_15 == 0) {
-                return 2
-            }
-        } else if (p13_18 == 6) {
-            return 3
-        }
-        return 0
-    }
+    ): Int = batchHeatPositionStrategy.planLowHeat(
+        LowHeatBatchInput(p1_9, p13_15, p16_18)
+    ).action.legacyCode
 
     /**
      * 初始化低并发模式。
@@ -955,7 +951,24 @@ object LowCurrentTrafficMode {
         committedReturnTasteByPosition: Map<Int, String> = emptyMap(),
         isBoxAvailable: (KaoPanBox) -> Boolean = KaoPanHelper::isSupplyBoxAvailableForAutoSupplement
     ): LowHeatSupplementPlan {
-        val maxCount = minOf(selectedFrontPositions.size, supplementPositions.size)
+        val positionPlan = batchHeatPositionStrategy.planPositions(
+            SupplementPositionInput(
+                requestedCount = minOf(selectedFrontPositions.size, supplementPositions.size),
+                targetCandidates = supplementPositions.map { it.positionSn },
+                returnCandidates = selectedFrontPositions.map { it.positionSn }
+            )
+        )
+        val maxCount = positionPlan.pairs.size
+        val frontByPosition = selectedFrontPositions.associateBy { it.positionSn }
+        val supplementByPosition = supplementPositions.associateBy { it.positionSn }
+        val selectedPairs = positionPlan.pairs.mapNotNull { pair ->
+            val frontPan = frontByPosition[pair.returnPosition] ?: return@mapNotNull null
+            val targetPan = supplementByPosition[pair.targetPosition] ?: return@mapNotNull null
+            frontPan to targetPan
+        }
+        if (selectedPairs.size != maxCount) {
+            return LowHeatSupplementPlan(emptyList(), emptyList())
+        }
         val availableStockByTaste = buildAvailableStockByTaste(listBox, isBoxAvailable)
         val occupiedTasteByPosition = allFrontPans
             .filter { it.isHasSausage || it.isHasGrilling }
@@ -979,19 +992,17 @@ object LowCurrentTrafficMode {
             targetCountByTaste = targetCountByTaste,
             availableStockByTaste = availableStockByTaste,
             occupiedTasteByPosition = occupiedTasteByPosition,
-            assignablePositions = selectedFrontPositions.take(maxCount).map { it.positionSn }
+            assignablePositions = selectedPairs.map { it.first.positionSn }
         )
         val assignmentByPosition = tastePlan.assignments.associateBy { it.positionSn }
         val plannedFrontPans = mutableListOf<KaoPan>()
         val targets = mutableListOf<KaoChangOperate.SupplementTarget>()
-        supplementPositions.take(maxCount).forEach { targetPan ->
+        selectedPairs.forEach { (_, targetPan) ->
             if (!targetPan.isHasSausage) {
                 targetPan.taste = null
             }
         }
-        for (index in 0 until maxCount) {
-            val frontPan = selectedFrontPositions[index]
-            val targetPan = supplementPositions[index]
+        for ((frontPan, targetPan) in selectedPairs) {
             val tasteCode = assignmentByPosition[frontPan.positionSn]?.tasteCode ?: break
             if (frontPan.taste?.tasteCode != tasteCode) {
                 frontPan.taste = Taste(tasteCode)
@@ -1020,6 +1031,14 @@ object LowCurrentTrafficMode {
         }
         return LowHeatSupplementPlan(plannedFrontPans, targets)
     }
+
+    private val LowHeatAction.legacyCode: Int
+        get() = when (this) {
+            LowHeatAction.NONE -> 0
+            LowHeatAction.START_13_15 -> 1
+            LowHeatAction.START_16_18 -> 2
+            LowHeatAction.STOP_ZONE_2 -> 3
+        }
 
     private fun buildAvailableStockByTaste(
         listBox: List<KaoPanBox>,

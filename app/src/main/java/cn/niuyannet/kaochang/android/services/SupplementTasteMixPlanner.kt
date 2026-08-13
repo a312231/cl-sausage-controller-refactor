@@ -1,6 +1,11 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
+import cn.niuyannet.kaochang.scheduler.SupplementTasteMixInput
+
 internal object SupplementTasteMixPlanner {
+
+    private val strategy = SchedulerProfileRuntime.activeProfile.tasteMixStrategy
 
     data class Assignment(
         val positionSn: Int,
@@ -21,44 +26,21 @@ internal object SupplementTasteMixPlanner {
         occupiedTasteByPosition: Map<Int, String>,
         assignablePositions: List<Int>
     ): Plan {
-        val normalizedTargets = targetCountByTaste
-            .filterKeys { it.isNotBlank() }
-            .mapValues { (_, count) -> count.coerceAtLeast(0) }
-            .filterValues { it > 0 }
-        val remainingStock = availableStockByTaste
-            .filterKeys { it.isNotBlank() }
-            .mapValues { (_, count) -> count.coerceAtLeast(0) }
-            .filterValues { it > 0 }
-            .toMutableMap()
-        val occupiedCounts = occupiedTasteByPosition.values
-            .filter { it.isNotBlank() }
-            .groupingBy { it }
-            .eachCount()
-            .toMutableMap()
-        val assignments = mutableListOf<Assignment>()
-        val maxAssignments = (frontCapacity - occupiedTasteByPosition.size)
-            .coerceAtLeast(0)
-            .coerceAtMost(assignablePositions.distinct().size)
-
-        if (frontCapacity > 0) {
-            assignablePositions.distinct().take(maxAssignments).forEach { positionSn ->
-                val tasteCode = selectTaste(normalizedTargets, occupiedCounts, remainingStock)
-                    ?: return@forEach
-                assignments += Assignment(positionSn, tasteCode)
-                occupiedCounts[tasteCode] = (occupiedCounts[tasteCode] ?: 0) + 1
-                remainingStock[tasteCode] = (remainingStock[tasteCode] ?: 0) - 1
-            }
-        }
+        val result = strategy.plan(
+            SupplementTasteMixInput(
+                frontCapacity = frontCapacity,
+                targetCountByTaste = targetCountByTaste,
+                availableStockByTaste = availableStockByTaste,
+                occupiedTasteByPosition = occupiedTasteByPosition,
+                assignablePositions = assignablePositions
+            )
+        )
 
         return Plan(
-            targetCountByTaste = normalizedTargets.toSortedMap(),
-            occupiedCountByTaste = occupiedTasteByPosition.values
-                .filter { it.isNotBlank() }
-                .groupingBy { it }
-                .eachCount()
-                .toSortedMap(),
-            assignments = assignments,
-            stockLimited = assignments.size < assignablePositions.distinct().size
+            targetCountByTaste = result.targetCountByTaste,
+            occupiedCountByTaste = result.occupiedCountByTaste,
+            assignments = result.assignments.map { Assignment(it.positionSn, it.tasteCode) },
+            stockLimited = result.stockLimited
         )
     }
 
@@ -82,41 +64,4 @@ internal object SupplementTasteMixPlanner {
             .orEmpty()
     }
 
-    private fun selectTaste(
-        targetCountByTaste: Map<String, Int>,
-        occupiedCountByTaste: Map<String, Int>,
-        remainingStockByTaste: Map<String, Int>
-    ): String? {
-        return remainingStockByTaste
-            .filterValues { it > 0 }
-            .keys
-            .filter { (targetCountByTaste[it] ?: 0) > 0 }
-            .sortedWith { left, right -> compareTastePriority(left, right, targetCountByTaste, occupiedCountByTaste) }
-            .firstOrNull()
-    }
-
-    private fun compareTastePriority(
-        left: String,
-        right: String,
-        targetCountByTaste: Map<String, Int>,
-        occupiedCountByTaste: Map<String, Int>
-    ): Int {
-        val leftTarget = targetCountByTaste.getValue(left)
-        val rightTarget = targetCountByTaste.getValue(right)
-        val leftOccupied = occupiedCountByTaste[left] ?: 0
-        val rightOccupied = occupiedCountByTaste[right] ?: 0
-        val leftDeficit = (leftTarget - leftOccupied).coerceAtLeast(0)
-        val rightDeficit = (rightTarget - rightOccupied).coerceAtLeast(0)
-
-        val relativeComparison = (rightDeficit.toLong() * leftTarget)
-            .compareTo(leftDeficit.toLong() * rightTarget)
-        if (relativeComparison != 0) {
-            return relativeComparison
-        }
-        val absoluteComparison = rightDeficit.compareTo(leftDeficit)
-        if (absoluteComparison != 0) {
-            return absoluteComparison
-        }
-        return left.compareTo(right)
-    }
 }

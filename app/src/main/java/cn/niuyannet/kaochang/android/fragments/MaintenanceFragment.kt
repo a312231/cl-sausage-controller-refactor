@@ -35,9 +35,6 @@ import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearExecutor
 import cn.niuyannet.kaochang.android.services.ManualPanPositionDataClearPolicy
 import cn.niuyannet.kaochang.android.services.ManualPanResetRuntimeStateHelper
-import cn.niuyannet.kaochang.android.services.ManualRecoveryGatePolicy
-import cn.niuyannet.kaochang.android.services.ManualFaultRecoveryResult
-import cn.niuyannet.kaochang.android.services.ManualRecoveryCloudConfirmationPolicy
 import cn.niuyannet.kaochang.android.services.ManualRecoveryCloudHttpConfirmation
 import cn.niuyannet.kaochang.android.services.MoveStatusRecoveryPolicy
 import cn.niuyannet.kaochang.android.services.LowerPlatformRuntimeStateReporter
@@ -47,6 +44,10 @@ import cn.niuyannet.kaochang.android.services.OrphanSupplementReturnPlanner
 import cn.niuyannet.kaochang.android.services.PanPhysicalStateDeltaReporter
 import cn.niuyannet.kaochang.android.services.SupplementBatchType
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
+import cn.niuyannet.kaochang.recovery.ManualFaultRecoveryResult
+import cn.niuyannet.kaochang.recovery.ManualRecoveryCloudConfirmationPolicy
+import cn.niuyannet.kaochang.recovery.ManualRecoveryGateCode
+import cn.niuyannet.kaochang.recovery.ManualRecoveryGatePolicy
 import cn.niuyannet.kaochang.android.ui.AdminOperationLogger
 import cn.niuyannet.kaochang.android.ui.LogViewActivity
 import cn.niuyannet.kaochang.android.ui.beginAdminBusy
@@ -666,6 +667,7 @@ class MaintenanceFragment : Fragment() {
                 )
                 if (!closeout.ok) {
                     return@withContext ManualRecoveryGatePolicy.Decision(
+                        code = ManualRecoveryGateCode.ACTION_GROUP_RESIDUE_CLOSEOUT_FAILED,
                         canRecoverDeviceStatus = false,
                         reason = closeout.reason
                     )
@@ -720,25 +722,35 @@ class MaintenanceFragment : Fragment() {
             )
         }
         if (recoveryResult !is ManualFaultRecoveryResult.Success) {
+            val failureCode = when (recoveryResult) {
+                is ManualFaultRecoveryResult.Rejected -> recoveryResult.code
+                is ManualFaultRecoveryResult.Failed -> recoveryResult.code
+                is ManualFaultRecoveryResult.Success -> null
+            }
             val failureReason = when (recoveryResult) {
                 is ManualFaultRecoveryResult.Rejected -> recoveryResult.reason
                 is ManualFaultRecoveryResult.Failed -> recoveryResult.reason
                 is ManualFaultRecoveryResult.Success -> ""
             }
-            val failureDetail = if (
-                recoveryResult is ManualFaultRecoveryResult.Rejected &&
-                failureReason == "恢复提交前运行态已变化"
-            ) {
-                "未重复执行温控恢复，请重新检查当前状态"
-            } else {
-                "已回退故障状态并停止加热"
+            val rootCause = (recoveryResult as? ManualFaultRecoveryResult.Failed)?.cause
+            val rollback = when (recoveryResult) {
+                is ManualFaultRecoveryResult.Rejected -> recoveryResult.rollbackOutcome
+                is ManualFaultRecoveryResult.Failed -> recoveryResult.rollbackOutcome
+                is ManualFaultRecoveryResult.Success -> null
             }
+            val failureDetail = ManualRecoveryFailureDisplayPolicy.detail(recoveryResult)
             ToastUtils.showLong("设备恢复未完成：$failureReason；$failureDetail")
             AdminOperationLogger.w(
                 action = "恢复正常状态",
                 page = AdminOperationLogger.PAGE_PAN,
                 result = AdminOperationLogger.RESULT_FAIL,
-                detail = "失败原因=$failureReason，恢复闸门=${recoveryDecision.reason}"
+                detail = "failureCode=$failureCode，失败原因=$failureReason，" +
+                    "rootCause=${ManualRecoveryFailureDisplayPolicy.errorText(rootCause)}，" +
+                    "faultStateRestored=${rollback?.faultStateRestored}，" +
+                    "faultStateRestoreError=${ManualRecoveryFailureDisplayPolicy.errorText(rollback?.faultStateRestoreError)}，" +
+                    "targetTemperatureZeroWritesSucceeded=${rollback?.targetTemperatureZeroWritesSucceeded}，" +
+                    "targetTemperatureZeroWriteError=${ManualRecoveryFailureDisplayPolicy.errorText(rollback?.targetTemperatureZeroWriteError)}，" +
+                    "恢复闸门=${recoveryDecision.reason}"
             )
             return false
         }

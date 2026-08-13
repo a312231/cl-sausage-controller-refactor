@@ -1,0 +1,247 @@
+package cn.niuyannet.kaochang.scheduler
+
+import java.lang.reflect.Modifier
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class StrategySwitchPolicyTest {
+
+    private val algorithmA = fixedStrategy("algorithm-a-v1", position = 1)
+    private val algorithmB = fixedStrategy("algorithm-b-v1", position = 2)
+    private val catalog = SellCandidateStrategyCatalog(listOf(algorithmA, algorithmB))
+    private val idle = StrategySwitchRuntimeSnapshot(
+        deviceIdle = true,
+        hasActiveOrder = false,
+        hasWholeOrderClaim = false,
+        hasOutActionSession = false,
+        hasSupplementOwner = false,
+        hasCleaningOwner = false,
+        hasMaintenanceOwner = false
+    )
+
+    @Test
+    fun `registered strategies switch in either direction only when fully idle`() {
+        val planConstructors = StrategySwitchPlan::class.java.declaredConstructors
+            .filterNot { it.isSynthetic }
+        assertTrue(planConstructors.isNotEmpty())
+        assertTrue(planConstructors.all { Modifier.isPrivate(it.modifiers) })
+        val planFactories = StrategySwitchPlan.Companion::class.java.declaredMethods
+            .filter { it.name.startsWith("evaluate") }
+        assertTrue(planFactories.isNotEmpty())
+        assertTrue(planFactories.all { it.isSynthetic })
+        val aToB = plan(algorithmA.id.value, algorithmB.id.value, idle)
+        assertEquals(StrategySwitchDecisionCode.SWITCH_ALLOWED, aToB.code)
+        assertEquals(algorithmA.id, aToB.currentStrategyId)
+        assertEquals(algorithmB.id, aToB.requestedStrategyId)
+        assertTrue(aToB.requiresPersistence)
+        assertTrue(aToB.blockers.isEmpty())
+
+        val bToA = plan(algorithmB.id.value, algorithmA.id.value, idle)
+        assertEquals(StrategySwitchDecisionCode.SWITCH_ALLOWED, bToA.code)
+        assertEquals(algorithmB.id, bToA.currentStrategyId)
+        assertEquals(algorithmA.id, bToA.requestedStrategyId)
+    }
+
+    @Test
+    fun `only evaluating against catalog can create a plan`() {
+        val missingA = "missing-a-v1"
+        val missingB = "missing-b-v1"
+        val result = StrategySwitchPlan.evaluate(
+            catalog = catalog,
+            currentId = missingA,
+            requestedId = missingB,
+            runtime = idle
+        )
+
+        assertEquals(StrategySwitchDecisionCode.REQUESTED_STRATEGY_NOT_REGISTERED, result.code)
+        assertFalse(result.requiresPersistence)
+        assertTrue(
+            StrategySwitchPlan.Companion::class.java.declaredMethods
+                .none { method ->
+                    method.name.startsWith("create") &&
+                        method.parameterTypes.any { it == StrategySwitchDecisionCode::class.java }
+                }
+        )
+        val source = java.io.File("src/main/kotlin/cn/niuyannet/kaochang/scheduler/StrategySwitchPolicy.kt")
+            .readText()
+        assertFalse(source.contains("runCatching"))
+        assertTrue(source.contains("catch (_: IllegalArgumentException)"))
+    }
+
+    @Test
+    fun `same registered strategy is no change even while runtime is busy`() {
+        val result = plan(
+            algorithmA.id.value,
+            algorithmA.id.value,
+            idle.copy(deviceIdle = false, hasActiveOrder = true)
+        )
+
+        assertEquals(StrategySwitchDecisionCode.NO_CHANGE, result.code)
+        assertFalse(result.requiresPersistence)
+        assertTrue(result.blockers.isEmpty())
+    }
+
+    @Test
+    fun `invalid raw ids are rejected without trimming correction or exceptions`() {
+        val invalidValues = listOf<String?>(
+            null,
+            "",
+            " algorithm-b-v1",
+            "ALGORITHM-B-V1",
+            "ab",
+            "a".repeat(65),
+            "algorithm/b-v1"
+        )
+
+        invalidValues.forEach { raw ->
+            assertEquals(
+                "requested=$raw",
+                StrategySwitchDecisionCode.REQUESTED_STRATEGY_ID_INVALID,
+                plan(algorithmA.id.value, raw, idle).code
+            )
+            assertEquals(
+                "current=$raw",
+                StrategySwitchDecisionCode.CURRENT_STRATEGY_ID_INVALID,
+                plan(raw, algorithmB.id.value, idle).code
+            )
+        }
+    }
+
+    @Test
+    fun `unregistered ids and condition collisions use stable fail closed precedence`() {
+        val missingOne = "missing-strategy-v1"
+        val missingTwo = "missing-strategy-v2"
+        val busy = idle.copy(deviceIdle = false, hasActiveOrder = true)
+        val cases = listOf(
+            Triple(missingOne, missingOne, StrategySwitchDecisionCode.REQUESTED_STRATEGY_NOT_REGISTERED),
+            Triple(missingOne, missingTwo, StrategySwitchDecisionCode.REQUESTED_STRATEGY_NOT_REGISTERED),
+            Triple(algorithmA.id.value, missingOne, StrategySwitchDecisionCode.REQUESTED_STRATEGY_NOT_REGISTERED),
+            Triple(missingOne, algorithmB.id.value, StrategySwitchDecisionCode.CURRENT_STRATEGY_NOT_REGISTERED)
+        )
+
+        cases.forEach { (current, requested, expected) ->
+            assertEquals("current=$current requested=$requested", expected, plan(current, requested, busy).code)
+        }
+    }
+
+    @Test
+    fun `each runtime owner blocks a real strategy change`() {
+        val cases = listOf(
+            idle.copy(deviceIdle = false) to StrategySwitchBlocker.DEVICE_NOT_IDLE,
+            idle.copy(hasActiveOrder = true) to StrategySwitchBlocker.ACTIVE_ORDER,
+            idle.copy(hasWholeOrderClaim = true) to StrategySwitchBlocker.WHOLE_ORDER_CLAIM,
+            idle.copy(hasOutActionSession = true) to StrategySwitchBlocker.OUT_ACTION_SESSION,
+            idle.copy(hasSupplementOwner = true) to StrategySwitchBlocker.SUPPLEMENT_OWNER,
+            idle.copy(hasCleaningOwner = true) to StrategySwitchBlocker.CLEANING_OWNER,
+            idle.copy(hasMaintenanceOwner = true) to StrategySwitchBlocker.MAINTENANCE_OWNER
+        )
+
+        cases.forEach { (snapshot, blocker) ->
+            val result = plan(algorithmA.id.value, algorithmB.id.value, snapshot)
+            assertEquals(blocker.name, StrategySwitchDecisionCode.RUNTIME_BUSY, result.code)
+            assertEquals(listOf(blocker), result.blockers)
+            assertFalse(result.requiresPersistence)
+        }
+    }
+
+    @Test
+    fun `multiple blockers are complete deterministic and immutable`() {
+        val result = plan(
+            algorithmA.id.value,
+            algorithmB.id.value,
+            StrategySwitchRuntimeSnapshot(
+                deviceIdle = false,
+                hasActiveOrder = true,
+                hasWholeOrderClaim = true,
+                hasOutActionSession = true,
+                hasSupplementOwner = true,
+                hasCleaningOwner = true,
+                hasMaintenanceOwner = true
+            )
+        )
+
+        assertEquals(
+            StrategySwitchBlocker.entries.toList(),
+            result.blockers
+        )
+        assertThrows(UnsupportedOperationException::class.java) {
+            (result.blockers as MutableList<StrategySwitchBlocker>).clear()
+        }
+    }
+
+    @Test
+    fun `pin is privately constructed from the exact registered strategy instance`() {
+        val pinConstructors = PinnedSellCandidateStrategy::class.java.declaredConstructors
+            .filterNot { it.isSynthetic }
+        assertTrue(pinConstructors.isNotEmpty())
+        assertTrue(pinConstructors.all { Modifier.isPrivate(it.modifiers) })
+
+        val aResult = PinnedSellCandidateStrategy.create(catalog, algorithmA.id.value)
+        val bResult = PinnedSellCandidateStrategy.create(catalog, algorithmB.id.value)
+        val pinA = (aResult as StrategyPinResult.Pinned).strategy
+        val pinB = (bResult as StrategyPinResult.Pinned).strategy
+        assertEquals(algorithmA.id, pinA.id)
+        assertEquals(algorithmB.id, pinB.id)
+        val strategyField = PinnedSellCandidateStrategy::class.java.declaredFields
+            .single { SellCandidateStrategy::class.java.isAssignableFrom(it.type) }
+            .apply { isAccessible = true }
+        assertSame(algorithmA, strategyField.get(pinA))
+        assertSame(algorithmB, strategyField.get(pinB))
+        assertEquals(1, pinA.selectPosition(input()))
+        assertEquals(2, pinB.selectPosition(input()))
+    }
+
+    @Test
+    fun `existing pin does not follow a later desired id change`() {
+        var desiredId = algorithmA.id.value
+        val pin = (PinnedSellCandidateStrategy.create(catalog, desiredId) as StrategyPinResult.Pinned).strategy
+
+        desiredId = algorithmB.id.value
+
+        assertEquals(algorithmB.id.value, desiredId)
+        assertEquals(algorithmA.id, pin.id)
+        assertEquals(1, pin.selectPosition(input()))
+    }
+
+    @Test
+    fun `pin rejects invalid and unregistered ids without falling back`() {
+        listOf<String?>(null, "", " algorithm-a-v1", "ALGORITHM-A-V1", "ab", "algorithm/a-v1")
+            .forEach { raw ->
+                assertEquals(StrategyPinResult.InvalidId, PinnedSellCandidateStrategy.create(catalog, raw))
+            }
+        assertEquals(
+            StrategyPinResult.NotRegistered,
+            PinnedSellCandidateStrategy.create(catalog, "missing-strategy-v1")
+        )
+    }
+
+    private fun plan(
+        currentId: String?,
+        requestedId: String?,
+        runtime: StrategySwitchRuntimeSnapshot
+    ): StrategySwitchPlan = StrategySwitchPolicy.plan(
+        catalog = catalog,
+        currentId = currentId,
+        requestedId = requestedId,
+        runtime = runtime
+    )
+
+    private fun fixedStrategy(id: String, position: Int): SellCandidateStrategy =
+        object : SellCandidateStrategy {
+            override val id = StrategyId(id)
+            override fun selectPosition(input: SellCandidateInput): Int? = position
+        }
+
+    private fun input(): SellCandidateInput = SellCandidateInput(
+        nowMs = 1_000,
+        tasteCode = "A",
+        productId = 1,
+        sellRange = 1..9,
+        pendingDiscardPositions = emptySet(),
+        pans = emptyList()
+    )
+}

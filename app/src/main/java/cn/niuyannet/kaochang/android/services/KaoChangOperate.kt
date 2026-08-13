@@ -104,6 +104,17 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementRuntimeResum
 import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchConfigEvidence
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchEvidence
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchOwnerEvidence
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchReadinessIssue
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchReadinessMapper
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchReadinessResult
+import cn.niuyannet.kaochang.android.services.scheduler.captureSchedulerProfileSwitchEvidence
+import cn.niuyannet.kaochang.recovery.ManualFaultRecoveryCoordinator
+import cn.niuyannet.kaochang.recovery.ManualFaultRecoveryResult
+import cn.niuyannet.kaochang.recovery.ManualFaultRecoveryState
+import cn.niuyannet.kaochang.recovery.ManualFaultRecoveryStateStore
 import cn.niuyannet.kaochang.android.ui.OrderMoveStatusPolicy
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -258,8 +269,9 @@ object KaoChangOperate {
     private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
     private val orderDeliveryClaimStore = OrderDeliveryClaimStore()
     private val panMoveJournalStore = SharedPreferencePanMoveJournalStore()
+    private val supplementBatchIntentStore = SharedPreferenceSupplementBatchIntentStore()
     private val supplementBatchIntentRepository =
-        SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
+        SupplementBatchIntentRepository(supplementBatchIntentStore)
     private val orphanSupplementReturnCoordinator = OrphanSupplementReturnCoordinator(
         repository = supplementBatchIntentRepository,
         savePansDurable = { pans -> KaoPanHelper.saveKaoPanListDurable(pans) }
@@ -617,6 +629,192 @@ object KaoChangOperate {
             )
             orderClaimRecovery == OrderDeliveryClaimRecovery.NO_CLAIM &&
                 isActionGroupIdleForMoveStatusRecoveryWithoutOrderClaim()
+        }
+    }
+
+    /**
+     * 只读、非原子的调度 Profile 切换就绪采样。
+     *
+     * Available 仅表示本次顺序采样未发现 blocker；它不是切换授权，不能消除返回后的启动竞态。
+     */
+    fun readSchedulerProfileSwitchReadiness(): SchedulerProfileSwitchReadinessResult =
+        withFaultHeatTransitionLock {
+            val issues = mutableListOf<SchedulerProfileSwitchReadinessIssue>()
+            val config = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.CONFIG_READ_FAILED,
+                issues
+            ) { AppConfig.peekInitializedAppConfig() }
+            if (config == null) {
+                if (SchedulerProfileSwitchReadinessIssue.CONFIG_READ_FAILED !in issues) {
+                    issues += SchedulerProfileSwitchReadinessIssue.CONFIG_UNAVAILABLE
+                }
+                return@withFaultHeatTransitionLock SchedulerProfileSwitchReadinessResult.unavailable(issues)
+            }
+
+            val pendingDiscardPositions = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.CONFIG_READ_FAILED,
+                issues
+            ) {
+                requireNotNull(config.pendingDiscardPositions) { "pendingDiscardPositions 不能为空" }.toSet()
+            }.orEmpty()
+            val panActivity = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.PAN_CACHE_READ_FAILED,
+                issues
+            ) {
+                KaoPanHelper.peekSchedulerSwitchPanActivitySnapshot(pendingDiscardPositions)
+            }
+            if (panActivity == null && SchedulerProfileSwitchReadinessIssue.PAN_CACHE_READ_FAILED !in issues) {
+                issues += SchedulerProfileSwitchReadinessIssue.PAN_CACHE_UNAVAILABLE
+            }
+
+            val actionSessionRead = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.ACTION_GROUP_SESSION_READ_FAILED,
+                issues
+            ) { actionGroupSessionStore.readEvidence() }
+            val actionSession = actionSessionRead.valueOrRecordCorruption(
+                SchedulerProfileSwitchReadinessIssue.ACTION_GROUP_SESSION_CORRUPTED,
+                issues
+            )
+            val pausedSupplementRead = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.PAUSED_SUPPLEMENT_SESSION_READ_FAILED,
+                issues
+            ) { pausedSupplementSessionStore.readEvidence() }
+            val pausedSupplementSession = pausedSupplementRead.valueOrRecordCorruption(
+                SchedulerProfileSwitchReadinessIssue.PAUSED_SUPPLEMENT_SESSION_CORRUPTED,
+                issues
+            )
+            val prefetchRead = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.PREFETCH_SESSION_READ_FAILED,
+                issues
+            ) { supplementPrefetchSessionStore.read() }
+            val prefetchSession = prefetchRead.valueOrRecordCorruption(
+                SchedulerProfileSwitchReadinessIssue.PREFETCH_SESSION_CORRUPTED,
+                issues
+            )
+
+            val orderClaim = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.ORDER_CLAIM_READ_FAILED,
+                issues
+            ) { orderDeliveryClaimStore.load() }
+            val hasProcessingOrder = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.ORDER_STATE_READ_FAILED,
+                issues
+            ) { OrderStateManager.hasProcessingOrderSnapshot() } ?: false
+            val hasOrderPause = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.ORDER_STATE_READ_FAILED,
+                issues
+            ) { SupplementPauseController.shouldPauseForOrder() } ?: false
+            val hasSupplementBatchIntent = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.SUPPLEMENT_BATCH_INTENT_READ_FAILED,
+                issues
+            ) { supplementBatchIntentStore.hasRawEvidence() } ?: false
+
+            val panMoveJournal = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.PAN_MOVE_JOURNAL_READ_FAILED,
+                issues
+            ) { panMoveJournalStore.load() }
+            if (panMoveJournal?.let { it.moveId.isBlank() || it.sourcePositionSn <= 0 || it.targetPositionSn <= 0 } == true) {
+                issues += SchedulerProfileSwitchReadinessIssue.PAN_MOVE_JOURNAL_READ_FAILED
+            }
+            val discardJournal = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.DISCARD_JOURNAL_READ_FAILED,
+                issues
+            ) { discardJournalStore.load() }
+            if (discardJournal?.let { it.owner.isBlank() || it.positionSn <= 0 } == true) {
+                issues += SchedulerProfileSwitchReadinessIssue.DISCARD_JOURNAL_READ_FAILED
+            }
+            val emergencyResetFence = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.EMERGENCY_RESET_FENCE_READ_FAILED,
+                issues
+            ) { emergencyResetRecoveryFenceStore.load() }
+
+            val resourceLocksIdle = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.RESOURCE_LOCKS_READ_FAILED,
+                issues
+            ) { actionGroupLocks.isIdle() } ?: false
+            val actionSessionOwnedMask = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.RESOURCE_LOCKS_READ_FAILED,
+                issues
+            ) { actionSession?.let { actionGroupLocks.ownedMask(it.sessionId) } }
+            val processOwners = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.PROCESS_OWNER_READ_FAILED,
+                issues
+            ) {
+                SchedulerSwitchProcessOwnerSnapshot(
+                    manualTakeTaskActive = manualTakeTaskCoordinator.hasActiveTask(),
+                    manualOutRecoveryReserved = manualOutOrderRecoveryCoordinator.hasReservation(),
+                    supplementResumeRunning = supplementResumeSingleFlight.isRunning()
+                )
+            }
+
+            val guardedSupplementResidue = captureSchedulerProfileSwitchEvidence(
+                SchedulerProfileSwitchReadinessIssue.PROCESS_OWNER_READ_FAILED,
+                issues
+            ) {
+                hasGuardedSupplementCloseoutResidue(
+                    config = config,
+                    session = actionSession,
+                    sessionOwnedMask = actionSessionOwnedMask
+                )
+            } ?: true
+            SchedulerProfileSwitchReadinessMapper.evaluate(
+                SchedulerProfileSwitchEvidence(
+                    config = SchedulerProfileSwitchConfigEvidence(
+                        moveStatus = config.moveStatus,
+                        onlineStatus = config.onlineStatus,
+                        inspectionMode = config.inspectionMode,
+                        errorStatus = config.errorStatus,
+                        isEnable = config.isEnable,
+                        modeType = config.modeType,
+                        transitionMode = config.transitionMode,
+                        highConcurrencyResidualDrain = config.highConcurrencyResidualDrain,
+                        faultHeatPauseActive = config.faultHeatPauseActive,
+                        hasFaultHeatRecoveryJournal = !config.faultHeatRecoveryJournalJson.isNullOrBlank(),
+                        hasPendingDiscardPositions = pendingDiscardPositions.isNotEmpty(),
+                        pendingDisableActionGroupV2 = config.pendingDisableActionGroupV2,
+                        useActionGroupV2 = config.useActionGroupV2
+                    ),
+                    owners = SchedulerProfileSwitchOwnerEvidence(
+                        algorithmIsEnabled = KaoChangAlgorithm.isEnabled,
+                        hasActiveCookingBatch = panActivity?.hasActiveCookingBatch ?: true,
+                        hasProcessingOrder = hasProcessingOrder,
+                        hasOrderPause = hasOrderPause,
+                        hasWholeOrderClaim = orderClaim != null,
+                        actionGroupSessionType = actionSession?.type,
+                        hasPausedSupplementSession = pausedSupplementSession != null,
+                        hasPrefetchSession = prefetchSession != null,
+                        hasSupplementBatchIntentEvidence = hasSupplementBatchIntent,
+                        resourceLocksIdle = resourceLocksIdle,
+                        hasPanMoveJournal = panMoveJournal != null,
+                        hasDiscardJournal = discardJournal != null,
+                        hasEmergencyResetFence = emergencyResetFence != null,
+                        manualTakeTaskActive = processOwners?.manualTakeTaskActive ?: true,
+                        manualOutRecoveryReserved = processOwners?.manualOutRecoveryReserved ?: true,
+                        supplementResumeRunning = processOwners?.supplementResumeRunning ?: true,
+                        actionGroupRecoveryVerified = actionGroupRecoveryVerified,
+                        hasGuardedSupplementCloseoutResidue = guardedSupplementResidue
+                    ),
+                    issues = issues
+                )
+            )
+        }
+
+    private data class SchedulerSwitchProcessOwnerSnapshot(
+        val manualTakeTaskActive: Boolean,
+        val manualOutRecoveryReserved: Boolean,
+        val supplementResumeRunning: Boolean
+    )
+
+    private fun <T> DurableEvidenceReadResult<T>?.valueOrRecordCorruption(
+        corruptedIssue: SchedulerProfileSwitchReadinessIssue,
+        issues: MutableList<SchedulerProfileSwitchReadinessIssue>
+    ): T? = when (this) {
+        null,
+        DurableEvidenceReadResult.Absent -> null
+        is DurableEvidenceReadResult.Valid -> value
+        is DurableEvidenceReadResult.Corrupted -> {
+            issues += corruptedIssue
+            null
         }
     }
 
@@ -1693,6 +1891,19 @@ object KaoChangOperate {
     }
 
     private fun hasGuardedSupplementCloseoutResidue(config: AppConfigBean): Boolean {
+        val session = actionGroupSessionStore.load()
+        return hasGuardedSupplementCloseoutResidue(
+            config = config,
+            session = session,
+            sessionOwnedMask = session?.let { actionGroupLocks.ownedMask(it.sessionId) }
+        )
+    }
+
+    private fun hasGuardedSupplementCloseoutResidue(
+        config: AppConfigBean,
+        session: ActionGroupSession?,
+        sessionOwnedMask: Int?
+    ): Boolean {
         val guardedEpisode = config.lowerPlatformEpisodes.any {
             it.lifecycle == "OPEN" &&
                 it.faultType == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
@@ -1700,11 +1911,11 @@ object KaoChangOperate {
         }
         if (guardedEpisode || serialSupplementFailureProof != null) return true
 
-        val session = actionGroupSessionStore.load() ?: return false
+        session ?: return false
         if (session.type != ActionGroupSessionType.IN_SUPPLEMENT || session.prefetch) return false
         return config.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
             session.currentAction in setOf("in1", "in2", "in3") &&
-            actionGroupLocks.ownedMask(session.sessionId) != session.resourceMask
+            sessionOwnedMask != session.resourceMask
     }
 
     fun acceptIncomingOrderForMechanicalDispatch(orderNo: String): IncomingOrderMechanicalAdmission {

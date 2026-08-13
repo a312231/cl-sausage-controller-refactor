@@ -1,0 +1,18 @@
+package cn.niuyannet.kaochang.scheduler
+
+class SellCandidateStrategyCatalog(strategies: Collection<SellCandidateStrategy>) {
+    private val strategiesById: Map<StrategyId, SellCandidateStrategy>
+
+    init {
+        val grouped = strategies.groupBy { it.id }
+        val duplicateIds = grouped.filterValues { it.size > 1 }.keys
+        require(duplicateIds.isEmpty()) {
+            "Duplicate sell candidate strategy ids: ${duplicateIds.joinToString { it.value }}"
+        }
+        strategiesById = grouped.mapValues { (_, values) -> values.single() }
+    }
+
+    fun find(id: StrategyId): SellCandidateStrategy? = strategiesById[id]
+
+    fun registeredIds(): Set<StrategyId> = strategiesById.keys.toSet()
+}

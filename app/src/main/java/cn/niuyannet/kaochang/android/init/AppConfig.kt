@@ -54,6 +54,10 @@ object AppConfig {
     )
     private var appConfigBean: AppConfigBean? = null
 
+    /** 调度就绪诊断只观察已初始化缓存；不会读取、迁移、默认化或保存配置。 */
+    @Synchronized
+    fun peekInitializedAppConfig(): AppConfigBean? = appConfigBean
+
     data class RemoteConfigMergeResult(
         val applied: Boolean,
         val usedLocalFallback: Boolean,
@@ -1077,6 +1081,7 @@ object AppConfig {
         if (jsonData.containsKey("enableVisionShadowMode")) {
             config.enableVisionShadowMode = if (jsonData.getIntValue("enableVisionShadowMode") == 1) 1 else 0
         }
+        applyRemoteSchedulerShadowModeConfig(config, jsonData)
         if (jsonData.containsKey("pendingDisableActionGroupV2")) {
             config.pendingDisableActionGroupV2 = if (jsonData.getIntValue("pendingDisableActionGroupV2") == 1) 1 else 0
         }
@@ -1226,6 +1231,19 @@ object AppConfig {
             val normalized = (rawValue as Number).toLong()
             if (normalized == 0L || normalized == 1L) {
                 config.enableParallelSupplementPrefetch = normalized.toInt()
+            }
+        }
+    }
+
+    internal fun applyRemoteSchedulerShadowModeConfig(
+        config: AppConfigBean,
+        jsonData: JSONObject?
+    ) {
+        val rawValue = jsonData?.get("enableSchedulerShadowMode") ?: return
+        if (rawValue is Byte || rawValue is Short || rawValue is Int || rawValue is Long) {
+            when ((rawValue as Number).toLong()) {
+                0L -> config.enableSchedulerShadowMode = 0
+                1L -> config.enableSchedulerShadowMode = 1
             }
         }
     }

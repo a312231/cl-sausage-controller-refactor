@@ -14,6 +14,9 @@ import cn.niuyannet.kaochang.android.services.TakeStatusRevisionMergePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
+import cn.niuyannet.kaochang.scheduler.SupplementTargetAllocationInput
+import cn.niuyannet.kaochang.scheduler.SupplementTargetScenario
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +40,24 @@ internal class KaoPanBoxTableCommitCoordinator {
     }
 }
 
+internal data class SchedulerSwitchPanActivitySnapshot(
+    val hasActiveCookingBatch: Boolean
+)
+
+internal fun schedulerSwitchPanActivitySnapshot(
+    initializedPans: List<KaoPan>?,
+    pendingDiscardPositions: Set<Int>,
+    nowMs: Long = System.currentTimeMillis()
+): SchedulerSwitchPanActivitySnapshot? {
+    val pans = initializedPans?.takeIf { it.isNotEmpty() } ?: return null
+    return SchedulerSwitchPanActivitySnapshot(
+        hasActiveCookingBatch = pans.any { pan ->
+            pan.isHasGrilling ||
+                (pan.isHasSausage && !KaoPanHelper.isSellable(pan, pendingDiscardPositions, nowMs))
+        }
+    )
+}
+
 
 /**
  * 烤盘与烤肠箱本地缓存辅助类。
@@ -51,6 +72,7 @@ object KaoPanHelper {
      * 因此统一走对象级后台作用域，避免失控的全局协程。
      */
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val targetAllocationStrategy = SchedulerProfileRuntime.activeProfile.targetAllocationStrategy
     private const val FILE_SP_URL = "file_kaopan_helper"
     private const val KEY_KAO_PAN_LIST = "key_kao_pan_list"
     private const val KEY_KAO_PAN_BOX_LIST = "key_kao_pan_box_list"
@@ -273,6 +295,14 @@ object KaoPanHelper {
     /**
      * 获取烤盘列表
      */
+    internal fun peekSchedulerSwitchPanActivitySnapshot(
+        pendingDiscardPositions: Set<Int>
+    ): SchedulerSwitchPanActivitySnapshot? = schedulerSwitchPanActivitySnapshot(
+        initializedPans = kaoPanList.takeIf { it.isNotEmpty() },
+        pendingDiscardPositions = pendingDiscardPositions,
+        nowMs = System.currentTimeMillis()
+    )
+
     fun getKaoPanList():List<KaoPan>{
         if (kaoPanList.size>0){
             return kaoPanList
@@ -703,78 +733,21 @@ object KaoPanHelper {
      */
     fun computeKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         logAutoSupplementRatioInput("computeKaoPamRatio", listPanBox, list_size)
-        // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
             .filter { isSupplyBoxAvailableForAutoSupplement(it) }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
         logAutoSupplementRatioEffectiveStock("computeKaoPamRatio", flavorTypes2)
-
-        if (list_size <= 0 || flavorTypes2.isEmpty()) {
-            logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, emptyMap())
-            return mutableMapOf()
-        }
-        //烤箱库存总数
-        val totalCount = flavorTypes2.values.sum().toFloat()
-        if (totalCount <= 0f) {
-            logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, emptyMap())
-            return mutableMapOf()
-        }
-
-        // 3. 计算比例并排序；口味数超过目标工位数时，只保留库存最多的前 N 个口味。
-        val sortedFlavors = selectAssignableFlavors("computeKaoPamRatio", flavorTypes2, list_size, totalCount)
-
-        // 4. 按比例计算“理论分配值”
-        val rawAllocations = sortedFlavors.associate { (flavor, ratio) ->
-            flavor to (list_size * ratio)
-        }
-
-        // 5. 取整，并保证每种至少 1 个
-        val allocation = rawAllocations.mapValues { (_, value) ->
-            maxOf(1, value.toInt())
-        }.toMutableMap()
-
-        // 6. 修正总数，使分配总和严格等于 list_size
-        var currentSum = allocation.values.sum()
-
-        if (currentSum < list_size) {
-            // 6.1 不足：按小数部分从大到小补
-            val sortedByRemainder = rawAllocations
-                .map { (flavor, value) ->
-                    flavor to (value - value.toInt())
-                }
-                .sortedByDescending { it.second }
-
-            var idx = 0
-            while (currentSum < list_size) {
-                val flavor = sortedByRemainder[idx % sortedByRemainder.size].first
-                allocation[flavor] = allocation[flavor]!! + 1
-                currentSum++
-                idx++
-            }
-
-        } else if (currentSum > list_size) {
-            // 6.2 超出：从分配最多的口味开始减，但不能减到 < 1
-            val sortedByCount = allocation.entries
-                .sortedByDescending { it.value }
-                .map { it.key }
-
-            var idx = 0
-            while (currentSum > list_size) {
-                if (idx >= sortedByCount.size) {
-                    break
-                }
-                val flavor = sortedByCount[idx]
-                if (allocation[flavor]!! > 1) {
-                    allocation[flavor] = allocation[flavor]!! - 1
-                    currentSum--
-                }
-                idx++
-            }
-        }
-
-        logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, allocation)
-        return allocation
+        val plan = targetAllocationStrategy.allocate(
+            SupplementTargetAllocationInput(
+                targetPanCount = list_size,
+                availableStockByTaste = flavorTypes2,
+                scenario = SupplementTargetScenario.STANDARD
+            )
+        )
+        logAutoSupplementDroppedStock("computeKaoPamRatio", list_size, plan.droppedStockByTaste)
+        logAutoSupplementRatioAllocation("computeKaoPamRatio", list_size, plan.targetCountByTaste)
+        return plan.targetCountByTaste.toMutableMap()
     }
 
 
@@ -854,76 +827,21 @@ object KaoPanHelper {
      */
     fun computeHighKaoPamRatio(listPanBox: List<KaoPanBox>, list_size: Int): MutableMap<String, Int> {
         logAutoSupplementRatioInput("computeHighKaoPamRatio", listPanBox, list_size)
-        // 1. 统计每种口味总数量
         val flavorTypes2 = listPanBox
             .filter { isSupplyBoxAvailableForAutoSupplement(it) }
             .groupBy { it.tasteCode!! }
             .mapValues { (_, items) -> items.sumOf { it.num } }
         logAutoSupplementRatioEffectiveStock("computeHighKaoPamRatio", flavorTypes2)
-
-        if (list_size <= 0 || flavorTypes2.isEmpty()) {
-            logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, emptyMap())
-            return mutableMapOf()
-        }
-        //烤箱库存总数
-        val totalCount = flavorTypes2.values.sum().toFloat()
-        if (totalCount <= 0f) {
-            logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, emptyMap())
-            return mutableMapOf()
-        }
-
-        // 3. 计算比例并排序；口味数超过目标工位数时，只保留库存最多的前 N 个口味。
-        val sortedFlavors = selectAssignableFlavors("computeHighKaoPamRatio", flavorTypes2, list_size, totalCount)
-
-        // 4. 初始化每个口味
-        val allocation = mutableMapOf<String, Int>()
-
-        // 5. 按比例分配剩余位置
-        var remainingPositions = list_size
-        if (remainingPositions > 0) {
-            // 计算每个口味的额外分配
-            val extraAllocations = sortedFlavors.map { (flavor, ratio) ->
-                flavor to (remainingPositions * ratio).toInt()
-            }.toMap()
-
-            // 处理剩余位置（由于取整可能未完全分配）
-            var unallocated = remainingPositions - extraAllocations.values.sum()
-            var index = 0
-            while (unallocated > 0) {
-                // 循环遍历所有口味，按比例高低顺序分配
-                val flavor = sortedFlavors[index % sortedFlavors.size].first
-                // 增加该口味一个工位
-                allocation[flavor] = (allocation[flavor] ?: 0) + 1
-                unallocated--
-                index++
-            }
-            // 将额外分配的结果合并到总分配中
-            extraAllocations.forEach { (flavor, count) ->
-                allocation[flavor] = (allocation[flavor] ?: 0) + count
-            }
-        }
-
-        logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, allocation)
-        return allocation
-    }
-
-    private fun selectAssignableFlavors(
-        source: String,
-        stockByTaste: Map<String, Int>,
-        targetPanCount: Int,
-        totalCount: Float
-    ): List<Pair<String, Float>> {
-        val sortedByStock = stockByTaste.entries
-            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-        if (sortedByStock.size > targetPanCount) {
-            val dropped = sortedByStock
-                .drop(targetPanCount)
-                .joinToString(",") { "${it.key}=${it.value}" }
-            safeLogInfo("【补肠】可用口味数超过目标烤盘数，按库存从高到低取前${targetPanCount}种：source=$source，被暂不分配口味=$dropped")
-        }
-        return sortedByStock
-            .take(targetPanCount)
-            .map { it.key to it.value / totalCount }
+        val plan = targetAllocationStrategy.allocate(
+            SupplementTargetAllocationInput(
+                targetPanCount = list_size,
+                availableStockByTaste = flavorTypes2,
+                scenario = SupplementTargetScenario.HIGH_HEAT
+            )
+        )
+        logAutoSupplementDroppedStock("computeHighKaoPamRatio", list_size, plan.droppedStockByTaste)
+        logAutoSupplementRatioAllocation("computeHighKaoPamRatio", list_size, plan.targetCountByTaste)
+        return plan.targetCountByTaste.toMutableMap()
     }
 
     private fun logAutoSupplementRatioInput(
@@ -967,6 +885,19 @@ object KaoPanHelper {
             .joinToString(",") { (tasteCode, count) -> "$tasteCode=$count" }
             .ifBlank { "空" }
         safeLogInfo("【补肠】比例计算结果：source=$source，目标烤盘数=$targetPanCount，分配=$allocationText")
+    }
+
+    private fun logAutoSupplementDroppedStock(
+        source: String,
+        targetPanCount: Int,
+        droppedStockByTaste: Map<String, Int>
+    ) {
+        if (droppedStockByTaste.isEmpty()) return
+        val dropped = droppedStockByTaste.entries.joinToString(",") { "${it.key}=${it.value}" }
+        safeLogInfo(
+            "【补肠】可用口味数超过目标烤盘数，按库存从高到低取前${targetPanCount}种：" +
+                "source=$source，被暂不分配口味=$dropped"
+        )
     }
 
     private fun safeLogInfo(message: String) {

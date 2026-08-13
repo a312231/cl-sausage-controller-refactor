@@ -1,0 +1,26 @@
+package cn.niuyannet.kaochang.scheduler
+
+sealed class StrategyPinResult {
+    data class Pinned(val strategy: PinnedSellCandidateStrategy) : StrategyPinResult()
+    data object InvalidId : StrategyPinResult()
+    data object NotRegistered : StrategyPinResult()
+}
+
+class PinnedSellCandidateStrategy private constructor(
+    private val strategy: SellCandidateStrategy
+) {
+    val id: StrategyId = strategy.id
+
+    fun selectPosition(input: SellCandidateInput): Int? = strategy.selectPosition(input)
+
+    companion object {
+        fun create(
+            catalog: SellCandidateStrategyCatalog,
+            rawId: String?
+        ): StrategyPinResult {
+            val id = parseStrategyIdStrict(rawId) ?: return StrategyPinResult.InvalidId
+            val strategy = catalog.find(id) ?: return StrategyPinResult.NotRegistered
+            return StrategyPinResult.Pinned(PinnedSellCandidateStrategy(strategy))
+        }
+    }
+}

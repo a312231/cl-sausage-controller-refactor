@@ -25,6 +25,9 @@ dependencyResolutionManagement {
 
 rootProject.name = "KaoChangAndroid"
 include(":app")
+include(":scheduler-core")
+include(":recovery-core")
+include(":order-core")
 
 include(":libausbc")            // UVC摄像头
 include(":libuvc")              // UVC摄像头

@@ -591,56 +591,6 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
-    fun shouldSwitchHighToLowByTimeout_shouldReturnFalseWhenThresholdIsNonPositive() {
-        assertFalse(
-            shouldSwitchHighToLowByTimeout(
-                lastFillPitTime = 10_000L,
-                now = 20_000L,
-                timeThresholdLowMinutes = 0
-            )
-        )
-    }
-
-    @Test
-    fun shouldSwitchHighToLowByTimeout_shouldReturnTrueWhenElapsedTimeExceedsThreshold() {
-        assertTrue(
-            shouldSwitchHighToLowByTimeout(
-                lastFillPitTime = 10_000L,
-                now = 80_001L,
-                timeThresholdLowMinutes = 1
-            )
-        )
-    }
-
-    @Test
-    fun shouldSwitchHighToLowByTimeout_shouldReturnFalseAtExactThreshold() {
-        val lastFillPitTime = 10_000L
-        val thresholdMs = 40 * 60 * 1000L
-
-        assertFalse(
-            shouldSwitchHighToLowByTimeout(
-                lastFillPitTime = lastFillPitTime,
-                now = lastFillPitTime + thresholdMs,
-                timeThresholdLowMinutes = 40
-            )
-        )
-    }
-
-    @Test
-    fun shouldSwitchHighToLowByTimeout_shouldReturnTrueAfterFortyMinuteThreshold() {
-        val lastFillPitTime = 10_000L
-        val thresholdMs = 40 * 60 * 1000L
-
-        assertTrue(
-            shouldSwitchHighToLowByTimeout(
-                lastFillPitTime = lastFillPitTime,
-                now = lastFillPitTime + thresholdMs + 1,
-                timeThresholdLowMinutes = 40
-            )
-        )
-    }
-
-    @Test
     fun canFinishHighToLowDrain_shouldAllowCloseoutWhenFrontHasNineAndZone3IsEmpty() {
         assertTrue(
             canFinishHighToLowDrain(

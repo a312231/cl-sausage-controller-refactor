@@ -64,4 +64,13 @@ class OrderDeliveryClaimStoreTest {
         assertTrue(store.clearIfOwnerAndRevision(claimed.owner, claimed.revision))
         assertNull(store.load())
     }
+
+    @Test(expected = AssertionError::class)
+    fun load_shouldNotWrapFatalDecoderErrors() {
+        OrderDeliveryClaimStore(
+            readRaw = { "raw" },
+            writeRaw = { true },
+            decodeRaw = { throw AssertionError("fatal") }
+        ).load()
+    }
 }

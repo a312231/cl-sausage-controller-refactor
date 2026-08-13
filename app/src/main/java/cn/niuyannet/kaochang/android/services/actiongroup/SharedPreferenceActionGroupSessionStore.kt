@@ -9,16 +9,21 @@ import com.alibaba.fastjson.JSON
 
 class SharedPreferenceActionGroupSessionStore(
     private val file: String = AppConfig.Sp_File_URL,
-    private val key: String = KEY_ACTION_GROUP_SESSION
+    private val key: String = KEY_ACTION_GROUP_SESSION,
+    private val readRaw: () -> String? = { PreferenceUtils.getStringPreference(file, key, null) },
+    private val decodeRaw: (String) -> ActionGroupSession = { raw ->
+        JSON.parseObject(raw, ActionGroupSession::class.java)
+    },
+    private val evidenceValidator: (ActionGroupSession) -> Boolean = ::isValidSession
 ) : ActionGroupSessionStore {
 
     override fun load(): ActionGroupSession? {
-        val raw = PreferenceUtils.getStringPreference(file, key, null)
+        val raw = readRaw()
         if (raw.isNullOrBlank()) {
             return null
         }
         return try {
-            JSON.parseObject(raw, ActionGroupSession::class.java)
+            decodeRaw(raw)
         } catch (e: Exception) {
             LogUtils.w("【300/400动作组】读取本地动作组会话失败，已按无会话处理：raw=$raw", e)
             null
@@ -30,18 +35,10 @@ class SharedPreferenceActionGroupSessionStore(
      */
     fun readEvidence(): DurableEvidenceReadResult<ActionGroupSession> =
         DurableEvidenceCodec.read(
-            raw = PreferenceUtils.getStringPreference(file, key, null),
-            parser = { raw -> JSON.parseObject(raw, ActionGroupSession::class.java) },
-            validator = ::isValid
+            raw = readRaw(),
+            parser = decodeRaw,
+            validator = evidenceValidator
         )
-
-    private fun isValid(session: ActionGroupSession): Boolean =
-        session.sessionId.isNotBlank() &&
-            session.sourceNo > 0 &&
-            session.resourceMask >= 0 &&
-            session.startedAtMs >= 0L &&
-            session.mechanicalClaimRevision >= 0L &&
-            runCatching { session.type.name }.isSuccess
 
     override fun save(session: ActionGroupSession) {
         check(PreferenceUtils.saveStringPreferenceDurable(file, key, JSON.toJSONString(session))) {
@@ -60,3 +57,11 @@ class SharedPreferenceActionGroupSessionStore(
         const val KEY_PAUSED_SUPPLEMENT_SESSION = "sp_paused_supplement_session_json"
     }
 }
+
+private fun isValidSession(session: ActionGroupSession): Boolean =
+    session.sessionId.isNotBlank() &&
+        session.sourceNo > 0 &&
+        session.resourceMask >= 0 &&
+        session.startedAtMs >= 0L &&
+        session.mechanicalClaimRevision >= 0L &&
+        session.type.name.isNotBlank()

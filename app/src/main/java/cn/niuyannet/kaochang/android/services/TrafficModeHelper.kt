@@ -6,11 +6,21 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
+internal data class DeferredTasteReservationWrite(
+    val expectedPan: KaoPan,
+    val expectedPositionSn: Int,
+    val tasteCode: String
+)
+
 /**
  * 并发模式公共工具。
  * 负责烤盘范围筛选，以及按口味从烤肠箱中选择供给来源。
  */
 object TrafficModeHelper {
+    internal data class MissingTasteReservationPlan(
+        val hasAvailableAllocation: Boolean,
+        val writes: List<DeferredTasteReservationWrite>
+    )
     private const val TAG = "KaoChangAlgorithm"
 
     fun purchaseSellEnd(
@@ -149,6 +159,7 @@ object TrafficModeHelper {
      * 先读取前区空盘的预留口味。这里统一按当前箱位库存比例回填，避免空指针导致算法崩溃。
      */
     fun fillMissingTasteReservations(frontPositions: List<KaoPan>, listBox: List<KaoPanBox>) {
+        val reservationPlan = planMissingTasteReservations(frontPositions, listBox)
         val blankReservedPans = frontPositions.filter {
             !it.isHasSausage && it.taste?.tasteCode.isNullOrBlank()
         }
@@ -156,30 +167,67 @@ object TrafficModeHelper {
             return
         }
 
-        val flavorAllocation = KaoPanHelper.computeKaoPamRatio(listBox, frontPositions.size)
-        if (flavorAllocation.isEmpty()) {
+        if (!reservationPlan.hasAvailableAllocation) {
             safeLogWarn("【并发补肠】跳过口味预留补齐：当前烤肠箱无可用库存口味")
             return
+        }
+
+        reservationPlan.writes.forEach { write ->
+            write.expectedPan.taste = Taste(write.tasteCode)
+        }
+        if (reservationPlan.writes.isNotEmpty()) {
+            safeLogInfo("【并发补肠】已补齐前区空盘口味预留：补齐数量=${reservationPlan.writes.size}，总空盘=${blankReservedPans.size}")
+        }
+    }
+
+    /**
+     * 只计算补齐结果，不修改烤盘。用于需要先完成整份机械计划校验、成功后再提交状态的路径。
+     */
+    internal fun planMissingTasteReservations(
+        frontPositions: List<KaoPan>,
+        listBox: List<KaoPanBox>
+    ): MissingTasteReservationPlan {
+        val blankReservedPans = frontPositions.filter {
+            !it.isHasSausage && it.taste?.tasteCode.isNullOrBlank()
+        }
+        if (blankReservedPans.isEmpty()) {
+            return MissingTasteReservationPlan(
+                hasAvailableAllocation = true,
+                writes = emptyList()
+            )
+        }
+
+        val flavorAllocation = KaoPanHelper.computeKaoPamRatio(listBox, frontPositions.size)
+        if (flavorAllocation.isEmpty()) {
+            return MissingTasteReservationPlan(
+                hasAvailableAllocation = false,
+                writes = emptyList()
+            )
         }
 
         val existingAssignedCount = frontPositions
             .mapNotNull { it.taste?.tasteCode?.takeIf { code -> code.isNotBlank() } }
             .groupingBy { it }
             .eachCount()
-
+        val plannedWrites = mutableListOf<DeferredTasteReservationWrite>()
         var blankIndex = 0
         flavorAllocation.forEach { (flavor, targetCount) ->
             var needCount = targetCount - existingAssignedCount.getOrDefault(flavor, 0)
             while (needCount > 0 && blankIndex < blankReservedPans.size) {
-                blankReservedPans[blankIndex].taste = Taste(flavor)
+                val expectedPan = blankReservedPans[blankIndex]
+                plannedWrites += DeferredTasteReservationWrite(
+                    expectedPan = expectedPan,
+                    expectedPositionSn = expectedPan.positionSn,
+                    tasteCode = flavor
+                )
                 blankIndex++
                 needCount--
             }
         }
-
-        if (blankIndex > 0) {
-            safeLogInfo("【并发补肠】已补齐前区空盘口味预留：补齐数量=$blankIndex，总空盘=${blankReservedPans.size}")
-        }
+        return MissingTasteReservationPlan(
+            hasAvailableAllocation = true,
+            writes = plannedWrites.toList()
+        )
     }
 
     /**

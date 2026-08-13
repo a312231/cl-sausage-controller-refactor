@@ -11,6 +11,20 @@ import org.junit.Test
 class SupplementBatchIntentRepositoryTest {
 
     @Test
+    fun rawEvidenceProbe_shouldNotParseMigrateOrClear() {
+        var reads = 0
+        val store = SharedPreferenceSupplementBatchIntentStore(
+            readRaw = {
+                reads++
+                "{broken-json"
+            }
+        )
+
+        assertTrue(store.hasRawEvidence())
+        assertEquals(1, reads)
+    }
+
+    @Test
     fun begin_shouldPersistLowHeat13To15IntentBeforeAnyPanIsFilled() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)

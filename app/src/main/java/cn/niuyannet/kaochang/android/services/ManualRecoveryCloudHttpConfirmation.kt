@@ -1,6 +1,8 @@
 package cn.niuyannet.kaochang.android.services
 
 import cn.niuyannet.kaochang.android.net.ApiResponseCompat
+import cn.niuyannet.kaochang.recovery.ManualRecoveryCloudCode
+import cn.niuyannet.kaochang.recovery.ManualRecoveryCloudConfirmationPolicy
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 
@@ -16,8 +18,9 @@ object ManualRecoveryCloudHttpConfirmation {
     ): ManualRecoveryCloudConfirmationPolicy.Decision {
         if (!localStateStillRecovered) {
             return ManualRecoveryCloudConfirmationPolicy.Decision(
-                false,
-                "HTTP补偿期间本机状态再次变化"
+                code = ManualRecoveryCloudCode.LOCAL_STATE_CHANGED,
+                confirmed = false,
+                reason = "HTTP补偿期间本机状态再次变化"
             )
         }
 
@@ -25,8 +28,9 @@ object ManualRecoveryCloudHttpConfirmation {
         val verifyResult = parseResponse(verifyTransportSucceeded, verifyResponse)
         if (!verifyResult.success) {
             return ManualRecoveryCloudConfirmationPolicy.Decision(
-                false,
-                "HTTP补偿后读取后台状态失败：${verifyResult.reason}；更新结果=${updateResult.reason}"
+                code = ManualRecoveryCloudCode.HTTP_VERIFICATION_FAILED,
+                confirmed = false,
+                reason = "HTTP补偿后读取后台状态失败：${verifyResult.reason}；更新结果=${updateResult.reason}"
             )
         }
 
@@ -40,13 +44,15 @@ object ManualRecoveryCloudHttpConfirmation {
             remoteIsEnable == 0
         ) {
             ManualRecoveryCloudConfirmationPolicy.Decision(
-                true,
-                "后台已通过HTTP回读确认恢复"
+                code = ManualRecoveryCloudCode.CONFIRMED,
+                confirmed = true,
+                reason = "后台已通过HTTP回读确认恢复"
             )
         } else {
             ManualRecoveryCloudConfirmationPolicy.Decision(
-                false,
-                "后台仍未恢复：onlineStatus=$remoteOnlineStatus，errorStatus=$remoteErrorStatus，" +
+                code = ManualRecoveryCloudCode.REMOTE_STATE_MISMATCH,
+                confirmed = false,
+                reason = "后台仍未恢复：onlineStatus=$remoteOnlineStatus，errorStatus=$remoteErrorStatus，" +
                     "isEnable=$remoteIsEnable；" +
                     "更新结果=${updateResult.reason}"
             )
