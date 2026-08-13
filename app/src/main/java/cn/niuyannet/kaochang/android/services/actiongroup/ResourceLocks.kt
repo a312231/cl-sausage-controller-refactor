@@ -46,6 +46,33 @@ class ResourceLocks {
         return ResourceReleaseResult.RELEASED
     }
 
+    /**
+     * 在资源 owner 保持不变的同一监视器内提交关联状态；只有提交成功才删除该 owner。
+     * 用于必须避免“状态提交后资源归属在间隙中变化”的机械收口路径。
+     */
+    @Synchronized
+    fun releaseIfOwnedAfterCommit(
+        owner: String,
+        expectedMask: Int,
+        commit: () -> Unit
+    ): ResourceReleaseCommitResult {
+        val currentMask = owners[owner]
+        if (currentMask != null && currentMask != expectedMask) {
+            return ResourceReleaseCommitResult.MaskMismatch
+        }
+        try {
+            commit()
+        } catch (error: Throwable) {
+            return ResourceReleaseCommitResult.CommitFailed(error)
+        }
+        return if (currentMask == null) {
+            ResourceReleaseCommitResult.AlreadyAbsent
+        } else {
+            owners.remove(owner)
+            ResourceReleaseCommitResult.Released
+        }
+    }
+
     @Synchronized
     fun forceAcquire(mask: Int, owner: String) {
         owners[owner]?.let { ownedMask ->
@@ -103,6 +130,13 @@ enum class ResourceReleaseResult {
     RELEASED,
     ALREADY_ABSENT,
     MASK_MISMATCH
+}
+
+sealed class ResourceReleaseCommitResult {
+    data object Released : ResourceReleaseCommitResult()
+    data object AlreadyAbsent : ResourceReleaseCommitResult()
+    data object MaskMismatch : ResourceReleaseCommitResult()
+    data class CommitFailed(val cause: Throwable) : ResourceReleaseCommitResult()
 }
 
 data class ActionGroupSession(

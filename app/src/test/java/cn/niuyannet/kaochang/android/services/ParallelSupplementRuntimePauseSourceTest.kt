@@ -203,6 +203,26 @@ class ParallelSupplementRuntimePauseSourceTest {
     }
 
     @Test
+    fun isolatedOrSupplementDisabled_shouldNeverEnterParallelResume() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val gate = functionBlock(
+            operate,
+            "private fun parallelSupplementRuntimeAvailable()",
+            "private fun deferParallelSupplementForRuntimeRecovery("
+        )
+        assertTrue(gate.contains("lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED"))
+        assertTrue(gate.contains("supplementEnabled == AppConfigBean.SUPPLEMENT_ENABLED_YES"))
+
+        val resumeOnce = functionBlock(
+            operate,
+            "private suspend fun resumePreparedParallelSupplementOnce",
+            "private suspend fun finishParallelSupplementResume"
+        )
+        assertTrue(resumeOnce.contains("runtime.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED"))
+        assertTrue(resumeOnce.contains("runtime.supplementEnabled != AppConfigBean.SUPPLEMENT_ENABLED_YES"))
+    }
+
+    @Test
     fun runtimeResumeEvidenceRead_shouldKeepCorruptedEvidenceLocked() {
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val resumeOnce = functionBlock(

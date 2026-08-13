@@ -80,6 +80,9 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementDeliveryComm
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalCheckpointResult
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalMutation
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementMechanicalCloseoutCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementMechanicalCloseoutRequest
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementMechanicalCloseoutResult
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPhysicalStateCoordinator
 import cn.niuyannet.kaochang.android.services.actiongroup.claimOrderDeliveryMove
 import cn.niuyannet.kaochang.android.services.actiongroup.closeOrderDeliveryMoveForMaintenance
@@ -1524,6 +1527,8 @@ object KaoChangOperate {
             config.errorStatus == 0 &&
             config.inspectionMode == 0 &&
             config.supplyStatus == 0 &&
+            config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+            config.supplementEnabled == AppConfigBean.SUPPLEMENT_ENABLED_YES &&
             config.isEnable == 1 &&
             VMModbusHelper.connectStatus()
     }
@@ -1999,7 +2004,10 @@ object KaoChangOperate {
         }
         val runtime = AppConfig.getAppConfig()
         if (runtime.onlineStatus != 1 || runtime.errorStatus != 0 || runtime.inspectionMode != 0 ||
-            runtime.supplyStatus != 0 || runtime.isEnable != 1 || !VMModbusHelper.connectStatus()
+            runtime.supplyStatus != 0 ||
+            runtime.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED ||
+            runtime.supplementEnabled != AppConfigBean.SUPPLEMENT_ENABLED_YES ||
+            runtime.isEnable != 1 || !VMModbusHelper.connectStatus()
         ) {
             logW(LOG_SUPPLEMENT, "双 lane 续作运行态门禁拒绝下发，保留会话并释放本次资源锁：reason=$reason")
             if (allowRuntimeDefer) {
@@ -2673,6 +2681,19 @@ object KaoChangOperate {
         details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails(requiresManualConfirm = true)
     ) {
         LowerPlatformRuntimeStateReporter.markIsolated(reason, actionName, details)
+    }
+
+    private fun persistLowerPlatformIsolatedRuntimeState(
+        reason: String,
+        actionName: String,
+        details: LowerPlatformEpisodeDetails
+    ): LowerPlatformEpisodeReducer.StateSnapshot =
+        LowerPlatformRuntimeStateReporter.persistIsolated(reason, actionName, details)
+
+    private fun publishPersistedLowerPlatformIsolation(
+        snapshot: LowerPlatformEpisodeReducer.StateSnapshot
+    ) {
+        LowerPlatformRuntimeStateReporter.publishPersistedIsolation(snapshot)
     }
 
     private fun recordConfirmedSupplementSessionStage(
@@ -6967,12 +6988,9 @@ object KaoChangOperate {
                     taskByPanNo,
                     batchId,
                     timeoutResolution,
-                    parallelSessionActive = parallelEnabled
-                )
-                logW(
-                    LOG_ACTION_GROUP,
-                    "补肠预取失败后保留session、资源锁和moveStatus，等待维护/启动恢复：" +
-                        "action=${result.actionName}，targetPan=${result.task?.targetPanNo}"
+                    parallelSessionActive = parallelEnabled,
+                    parallelSessionId = sessionId,
+                    durableStateSaved = !durableCompletionFailed
                 )
                 return completedCount
             }
@@ -7522,12 +7540,51 @@ object KaoChangOperate {
         )
     }
 
+    private fun closeParallelSupplementSemiFaultIfSafe(
+        result: InActionGroupPipelineResult.Failed,
+        resolvedAtomicResult: AtomicActionResult,
+        expectedSessionId: String,
+        durableStateSaved: Boolean
+    ): SupplementMechanicalCloseoutResult {
+        val session = activeSupplementPrefetchSessionOrNull("双 lane 下平台半故障原子收口")
+            ?: return SupplementMechanicalCloseoutResult.Rejected("双 lane session 不存在或损坏")
+        if (!ParallelSupplementSemiFaultClosurePolicy.canClose(
+                actionName = result.actionName,
+                sourceBoxNo = result.sourceBoxNo,
+                targetPanNo = result.task?.targetPanNo,
+                result = resolvedAtomicResult,
+                session = session,
+                expectedSessionId = expectedSessionId,
+                laneRole = result.laneRole,
+                durableStateSaved = durableStateSaved
+            )
+        ) {
+            return SupplementMechanicalCloseoutResult.Rejected("in4 前物理证据未通过精准收口策略")
+        }
+        val closeout = SupplementMechanicalCloseoutCoordinator(
+            transitionLock = faultHeatTransitionLock,
+            supplementOwnerStore = supplementPipelineClaimOwnerStore(),
+            orderOwnerStore = orderDeliveryClaimStore,
+            moveStore = mechanicalMoveStatusStore,
+            resourceLocks = actionGroupLocks
+        ).close(
+            SupplementMechanicalCloseoutRequest(
+                owner = expectedSessionId,
+                revision = session.mechanicalClaimRevision,
+                resourceMask = session.resourceMask
+            )
+        )
+        return closeout
+    }
+
     private suspend fun handlePipelineSupplementFailure(
         result: InActionGroupPipelineResult.Failed,
         taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
         batchId: String?,
         timeoutProbe: TimeoutProbe? = null,
-        parallelSessionActive: Boolean
+        parallelSessionActive: Boolean,
+        parallelSessionId: String? = null,
+        durableStateSaved: Boolean
     ) {
         val batchType = batchId?.let {
             supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
@@ -7609,13 +7666,65 @@ object KaoChangOperate {
                     )
                 }
             }
-            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
+            val persistedIsolation = if (parallelSessionActive && parallelSessionId != null) {
+                try {
+                    persistLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
+                } catch (error: Throwable) {
+                    enterActionGroupMaintenance(
+                        "双 lane 下平台隔离状态耐久保存失败，保留 session/owner/资源，禁止订单进入：${error.message}",
+                        preserveMoveStatus = true
+                    )
+                    return
+                }
+            } else {
+                markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
+                null
+            }
+            val closeout = if (parallelSessionActive && parallelSessionId != null) {
+                closeParallelSupplementSemiFaultIfSafe(
+                    result = result,
+                    resolvedAtomicResult = resolvedAtomicResult,
+                    expectedSessionId = parallelSessionId,
+                    durableStateSaved = durableStateSaved
+                )
+            } else {
+                SupplementMechanicalCloseoutResult.Rejected("非双 lane 会话")
+            }
+            when (closeout) {
+                SupplementMechanicalCloseoutResult.ClosedIdle,
+                SupplementMechanicalCloseoutResult.ClosedKeepingOrder -> {
+                    checkNotNull(persistedIsolation) { "双 lane 下平台隔离快照缺失" }
+                    publishPersistedLowerPlatformIsolation(persistedIsolation)
+                    applyPendingActionGroupDisableIfIdle("双 lane 下平台半故障原子收口")
+                }
+                is SupplementMechanicalCloseoutResult.Inconsistent -> {
+                    enterActionGroupMaintenance(
+                        "双 lane 下平台半故障原子收口发生状态不一致，保留 owner/资源等待人工处置：${closeout.reason}",
+                        preserveMoveStatus = true
+                    )
+                    return
+                }
+                is SupplementMechanicalCloseoutResult.Failed,
+                is SupplementMechanicalCloseoutResult.Rejected -> {
+                    if (parallelSessionActive) {
+                        enterActionGroupMaintenance(
+                            "双 lane 下平台故障无法安全释放，保留 session/owner/资源，禁止订单进入：closeout=$closeout",
+                            preserveMoveStatus = true
+                        )
+                        return
+                    }
+                    logW(
+                        LOG_ACTION_GROUP,
+                        "非双 lane 下平台半故障沿用既有隔离收口：closeout=$closeout"
+                    )
+                }
+            }
             logW(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线下平台失败已隔离，不进入维护：" +
                     "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
                     "result=${describeAtomicActionResult(resolvedAtomicResult)}，batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}，" +
-                    "requiresManualConfirm=$requiresManualConfirm，reason=$isolationReason"
+                    "requiresManualConfirm=$requiresManualConfirm，closeout=$closeout，reason=$isolationReason"
             )
             return
         }

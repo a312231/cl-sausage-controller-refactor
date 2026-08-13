@@ -135,6 +135,45 @@ class ParallelSupplementPipelineWiringSourceTest {
     }
 
     @Test
+    fun parallelSemiFault_shouldPersistIsolationThenUseAtomicCloseoutAndEscalateEveryUnsafeResidue() {
+        val source = operateSource()
+        val pipeline = pipelineBlock(source)
+        val handler = functionBlock(
+            source,
+            "private suspend fun handlePipelineSupplementFailure",
+            "private fun describeAtomicActionResult"
+        )
+        val isolated = handler.indexOf("persistLowerPlatformIsolatedRuntimeState(")
+        val closeout = handler.indexOf("closeParallelSupplementSemiFaultIfSafe(", isolated)
+        val published = handler.indexOf("publishPersistedLowerPlatformIsolation(", closeout)
+
+        assertTrue(isolated >= 0 && closeout > isolated)
+        assertTrue(published > closeout)
+        assertTrue(!handler.substring(isolated, closeout).contains("publishPersistedLowerPlatformIsolation("))
+        assertTrue(handler.substring(isolated, closeout).contains("隔离状态耐久保存失败"))
+        assertTrue(handler.substring(isolated, closeout).contains("enterActionGroupMaintenance("))
+        assertTrue(pipeline.contains("parallelSessionId = sessionId"))
+        assertTrue(pipeline.contains("durableStateSaved = !durableCompletionFailed"))
+
+        val closeoutBody = functionBlock(
+            source,
+            "private fun closeParallelSupplementSemiFaultIfSafe(",
+            "private suspend fun handlePipelineSupplementFailure"
+        )
+        assertTrue(closeoutBody.contains("ParallelSupplementSemiFaultClosurePolicy.canClose("))
+        assertTrue(closeoutBody.contains("SupplementMechanicalCloseoutCoordinator("))
+        assertTrue(closeoutBody.contains("SupplementMechanicalCloseoutRequest("))
+        assertTrue(!closeoutBody.contains("moveStatus = 0"))
+        assertTrue(!closeoutBody.contains("actionGroupLocks.release("))
+
+        assertTrue(handler.contains("is SupplementMechanicalCloseoutResult.Inconsistent ->"))
+        assertTrue(handler.contains("is SupplementMechanicalCloseoutResult.Failed,"))
+        assertTrue(handler.contains("is SupplementMechanicalCloseoutResult.Rejected ->"))
+        assertTrue(handler.contains("enterActionGroupMaintenance("))
+        assertTrue(handler.contains("preserveMoveStatus = true"))
+    }
+
+    @Test
     fun everyExplicitE5Candidate_shouldBeDurablyIsolatedBeforeOrDuringExhaustionClosure() {
         val source = operateSource()
         val block = pipelineBlock(source)
