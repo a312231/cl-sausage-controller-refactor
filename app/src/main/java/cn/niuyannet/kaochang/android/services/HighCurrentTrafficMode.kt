@@ -304,12 +304,14 @@ object HighCurrentTrafficMode {
                         isBeforeCloseWindow = isBeforeCloseWindow
                     )
                 }
-                if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE) {
+                if (pendingBatchHandling.completedMechanicalWorkThisRound) {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                     return
                 }
+                val pendingHighHeatBatchBlocksSupplement = pendingBatchHandling.blocksNewSupplement
 
                 if (
+                    !pendingHighHeatBatchBlocksSupplement &&
                     schedulingEnabled &&
                     boxSupplyAvailable &&
                     config.errorStatus == 0 &&
@@ -331,7 +333,7 @@ object HighCurrentTrafficMode {
                     }
                     if (handledFinishedPartialBatch) {
                         // 已处理成熟残缺批次，本轮不再续补，避免新肠混入同一补热批次。
-                    } else if (shouldResumeIncompleteBatch && schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                    } else if (!pendingHighHeatBatchBlocksSupplement && shouldResumeIncompleteBatch && schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                         resumeIncompleteHighHeatSupplement(
                             list = list,
                             listBox = listBox,
@@ -352,7 +354,7 @@ object HighCurrentTrafficMode {
                         checkHighHeatSausage(list)
                     }
                 } else if (totalEmpty == 30) {
-                    if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                    if (!pendingHighHeatBatchBlocksSupplement && schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                         initHighTrafficMode(list, listBox)
                         resetSupplementTracking("高并发初始化重新开盘")
                     } else {
@@ -363,7 +365,7 @@ object HighCurrentTrafficMode {
                     }
                 } else if (p1_21 >= 9) {
                     val blockedEmptyFrontPositions = LowToHighDemandGate.blockedEmptyFrontPositions(list1_21)
-                    if (blockedEmptyFrontPositions.isNotEmpty()) {
+                    if (!pendingHighHeatBatchBlocksSupplement && blockedEmptyFrontPositions.isNotEmpty()) {
                         switchHighToLow(
                             reason = "高并发前区达到补肠门槛但包含过保丢弃空位，blockedEmptyFrontPositions=$blockedEmptyFrontPositions",
                             kaoPanList = list
@@ -372,7 +374,7 @@ object HighCurrentTrafficMode {
                         return
                     }
                     if (p25_33 == 9) {
-                        if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
+                        if (!pendingHighHeatBatchBlocksSupplement && schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                             val movedCount = addHighHeatSausage(list, listBox)
                             if (movedCount > 0) {
                                 LogUtils.i(
@@ -397,7 +399,7 @@ object HighCurrentTrafficMode {
                     checkHighHeatDiscard()
                 }
                 // 高转低收口不依赖烤肠箱库存；箱空时更应进入消化收口。
-                if (schedulingEnabled) {
+                if (!pendingHighHeatBatchBlocksSupplement && schedulingEnabled) {
                     checkSwitchToLow(list, boxSupplyAvailable)
                 }
                 // 烤盘保存由 KaoPanHelper 内部后台作用域统一处理，这里直接提交最新状态。

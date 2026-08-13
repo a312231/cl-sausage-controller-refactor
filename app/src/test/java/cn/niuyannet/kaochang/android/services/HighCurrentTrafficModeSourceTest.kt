@@ -76,6 +76,30 @@ class HighCurrentTrafficModeSourceTest {
     }
 
     @Test
+    fun stableHighHeat_blockedPendingBatch_shouldContinueMatureAndDiscardCloseoutWithoutNewSupplement() {
+        val stable = functionBlock(sourceText(), "suspend fun highTrafficMode(", "suspend fun drainHighConcurrencyResidual(")
+        val pending = stable.indexOf("val pendingBatchHandling")
+        val resumedOnlyReturn = stable.indexOf("completedMechanicalWorkThisRound", pending)
+        val supplementBlockFlag = stable.indexOf("pendingHighHeatBatchBlocksSupplement", pending)
+        val discard = stable.indexOf("checkHighHeatDiscard()", pending)
+        val immediateSwitchToLow = stable.indexOf("switchHighToLow(", pending)
+        val scheduledSwitchToLow = stable.indexOf("checkSwitchToLow(", pending)
+
+        assertTrue("只有真正续补后才能结束本轮", resumedOnlyReturn > pending)
+        assertTrue("BLOCKED/WAITING 必须转成只禁新补肠的门禁", supplementBlockFlag > resumedOnlyReturn)
+        assertTrue("pending BLOCKED 后仍必须能到达过期丢弃", discard > supplementBlockFlag)
+        assertTrue(
+            "pending BLOCKED 时不能走即时高转低",
+            stable.lastIndexOf("!pendingHighHeatBatchBlocksSupplement", immediateSwitchToLow) in (pending + 1) until immediateSwitchToLow
+        )
+        assertTrue(
+            "pending BLOCKED 时不能走定时高转低",
+            stable.lastIndexOf("!pendingHighHeatBatchBlocksSupplement", scheduledSwitchToLow) in (pending + 1) until scheduledSwitchToLow
+        )
+        assertFalse("稳定态不能再对所有非 NONE 直接返回", stable.contains("pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE"))
+    }
+
+    @Test
     fun residualDrain_shouldReconcileTrustedPhysicalTargetsBeforeMatureReturnWithoutResumingSupplement() {
         val source = sourceText()
         val drain = functionBlock(

@@ -5251,7 +5251,13 @@ object KaoChangOperate {
         NONE,
         WAITING_MANUAL_CONFIRMATION,
         BLOCKED,
-        RESUMED
+        RESUMED;
+
+        val completedMechanicalWorkThisRound: Boolean
+            get() = this == RESUMED
+
+        val blocksNewSupplement: Boolean
+            get() = this != NONE
     }
 
     internal fun prepareLowInitializationMaturityCloseout(

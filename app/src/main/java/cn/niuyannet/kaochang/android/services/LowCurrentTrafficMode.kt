@@ -116,16 +116,11 @@ object LowCurrentTrafficMode {
             schedulingEnabled = schedulingEnabled,
             isBeforeCloseWindow = isBeforeCloseWindow
         )
-        val pendingLowHeatManualConfirmation =
-            pendingBatchHandling == KaoChangOperate.PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION &&
-                KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
-                    ?.type
-                    ?.let { SupplementBatchIntentRepository.isHeatSupplementBatch(it) } == true
-        if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE && !pendingLowHeatManualConfirmation) {
+        if (pendingBatchHandling.completedMechanicalWorkThisRound) {
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             return totalEmpty
         }
-        val canStartSupplement = schedulingEnabled && !pendingLowHeatManualConfirmation
+        val canStartSupplement = schedulingEnabled && !pendingBatchHandling.blocksNewSupplement
 
         KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
             types = setOf(
@@ -235,7 +230,8 @@ object LowCurrentTrafficMode {
 
         val effectiveFrontEmptyPositions = LowToHighDemandGate.effectiveEmptyFrontPositions(list1_9)
         val blockedFrontPositions = LowToHighDemandGate.blockedFrontPositions()
-        if (schedulingEnabled &&
+        if (!pendingBatchHandling.blocksNewSupplement &&
+            schedulingEnabled &&
             boxSupplyAvailable &&
             config.modeType == 1 &&
             config.transitionMode == 0 &&
