@@ -14,13 +14,16 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.alibaba.fastjson.JSON
 import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.EmergencyResetAppRestarter
+import cn.niuyannet.kaochang.android.services.AppProcessIdentity
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.PanMove203Decision
 import cn.niuyannet.kaochang.android.services.PanMove203Policy
@@ -32,6 +35,13 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionSpec
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActions
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
+import cn.niuyannet.kaochang.android.services.reset.LowerBoardResetCoordinator
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutPolicy
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutPhase
+import cn.niuyannet.kaochang.android.services.reset.ResetKind
+import cn.niuyannet.kaochang.android.services.reset.ResetStartupCloseoutManager
+import cn.niuyannet.kaochang.android.services.reset.ResetWriteResult
 import cn.niuyannet.kaochang.android.services.paramtuning.CalibrationTarget
 import cn.niuyannet.kaochang.android.services.paramtuning.LowerBoardParamDefinitions
 import cn.niuyannet.kaochang.android.services.paramtuning.LowerBoardParamTuningService
@@ -47,10 +57,14 @@ import cn.niuyannet.kaochang.android.ui.endAdminBusy
 import cn.niuyannet.kaochang.android.ui.registerAdminTextInputs
 import cn.niuyannet.kaochang.android.ui.resetAdminIdleTimer
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 private data class TestAtomicActionItem(
     val label: String,
@@ -139,6 +153,7 @@ class TestFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        ResetStartupCloseoutManager.resumeIfNeeded(requireContext())
         registerAdminTextInputs(view)
         setupActionControlListeners()
         setupTemperatureControlListeners()
@@ -568,75 +583,7 @@ class TestFragment : Fragment() {
     }
 
     private fun resetLowerBoardSystem() {
-        lifecycleScope.launch {
-            setLowerBoardMaintenanceButtonsEnabled(false)
-            binding.tvAtomicActionResult.text = "正在检查下位机空闲状态，准备下发 999 复位..."
-            try {
-                val resultText = withContext(Dispatchers.IO) {
-                    val guard = readLowerBoardMaintenanceGuard()
-                    val decision = LowerBoardMaintenancePolicy.canRunMaintenance(
-                        moveStatus = AppConfig.getAppConfig().moveStatus,
-                        status201 = guard.status201 ?: -1,
-                        moveResult203 = guard.moveResult203 ?: -1,
-                        atomicResultValues = guard.atomicResults.filterValues { it != null }.mapValues { it.value!! }
-                    )
-                    if (!decision.allowed) {
-                        AdminOperationLogger.w(
-                            action = "下位机复位",
-                            page = AdminOperationLogger.PAGE_TEST,
-                            result = AdminOperationLogger.RESULT_REJECT,
-                            detail = "拒绝原因=${decision.reason}，检查结果=${guard.summary()}"
-                        )
-                        return@withContext "下位机复位被拒绝：${decision.reason}\n${guard.summary()}"
-                    }
-                    AdminOperationLogger.i(
-                        action = "下位机复位",
-                        page = AdminOperationLogger.PAGE_TEST,
-                        result = AdminOperationLogger.RESULT_START,
-                        detail = "写入 999=1，检查结果=${guard.summary()}"
-                    )
-                    val writeResult = KaoChangOperate.writeSingleRegister(
-                        LowerBoardMaintenancePolicy.SYSTEM_RESET_REGISTER,
-                        LowerBoardMaintenancePolicy.TRIGGER_VALUE
-                    )
-                    val success = writeResult.isSuccess
-                    val detail = "写入状态=${writeResult.status}，写入消息=${writeResult.message ?: "无"}；" +
-                        "999 写入后下位机会约 50ms 内软重启，不做立即回读"
-                    if (success) {
-                        AdminOperationLogger.i(
-                            action = "下位机复位",
-                            page = AdminOperationLogger.PAGE_TEST,
-                            result = AdminOperationLogger.RESULT_DONE,
-                            detail = detail
-                        )
-                    } else {
-                        AdminOperationLogger.w(
-                            action = "下位机复位",
-                            page = AdminOperationLogger.PAGE_TEST,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = detail
-                        )
-                    }
-                    LogUtils.i("【下位机测试】下位机复位：$detail")
-                    if (success) {
-                        "999 已下发，等待下位机重启并完成机械回零\n写入状态=${writeResult.status}"
-                    } else {
-                        "999 下发失败：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}"
-                    }
-                }
-                binding.tvAtomicActionResult.text = resultText
-            } catch (e: Exception) {
-                binding.tvAtomicActionResult.text = "下位机复位异常：${e.message}"
-                AdminOperationLogger.e(
-                    action = "下位机复位",
-                    page = AdminOperationLogger.PAGE_TEST,
-                    result = AdminOperationLogger.RESULT_FAIL,
-                    detail = "失败原因=${e.message}"
-                )
-            } finally {
-                setLowerBoardMaintenanceButtonsEnabled(true)
-            }
-        }
+        executeLowerBoardReset(ResetKind.NORMAL)
     }
 
     private fun emergencyResetLowerBoardSystem() {
@@ -654,67 +601,104 @@ class TestFragment : Fragment() {
     }
 
     private fun executeEmergencyResetLowerBoardSystem() {
+        executeLowerBoardReset(ResetKind.EMERGENCY)
+    }
+
+    private fun executeLowerBoardReset(kind: ResetKind) {
         lifecycleScope.launch {
             val appContext = requireContext().applicationContext
             setLowerBoardMaintenanceButtonsEnabled(false)
-            binding.tvAtomicActionResult.text = "正在下发紧急复位 999=1..."
+            val actionName = if (kind == ResetKind.EMERGENCY) "下位机紧急复位" else "下位机复位"
+            binding.tvAtomicActionResult.text = "正在下发 999=1，复位过程中暂停售卖..."
             try {
                 val resultText = withContext(Dispatchers.IO) {
-                    val decision = LowerBoardMaintenancePolicy.canRunEmergencyReset()
-                    if (!decision.allowed) {
-                        return@withContext "紧急复位被拒绝：${decision.reason}"
-                    }
+                    val initialConfig = AppConfig.getAppConfig()
                     AdminOperationLogger.w(
-                        action = "下位机紧急复位",
+                        action = actionName,
                         page = AdminOperationLogger.PAGE_TEST,
                         result = AdminOperationLogger.RESULT_START,
-                        detail = "绕过空闲检查，直接写入 999=1；moveStatus=${AppConfig.getAppConfig().moveStatus}"
+                        detail = "不检查动作忙闲，直接写入 999=1；moveStatus=${initialConfig.moveStatus}"
                     )
-                    val preparedFence = KaoChangOperate.prepareEmergencyResetRecoveryFence(
-                        "测试页管理员确认紧急复位"
+                    val resetStore = ResetCloseoutStore.sharedPreferences()
+                    val coordinator = LowerBoardResetCoordinator(
+                        store = resetStore,
+                        newResetId = { UUID.randomUUID().toString() },
+                        nowMs = { System.currentTimeMillis() },
+                        currentProcessId = { AppProcessIdentity.currentId },
+                        prepareAndApplyTemporaryBlock = { prepared, reason ->
+                            runCatching {
+                                KaoChangOperate.withFaultHeatTransitionLock {
+                                    val config = AppConfig.getAppConfig()
+                                    check(
+                                        AppConfig.saveLowerBoardResetPreparedDurable(
+                                            resetRecordKey = ResetCloseoutStore.KEY_RESET_CLOSEOUT_RECORD,
+                                            resetRecordJson = JSON.toJSONString(prepared),
+                                            onlineStatus = if (prepared.kind == ResetKind.EMERGENCY) 3 else prepared.previousOnlineStatus,
+                                            isEnable = if (prepared.kind == ResetKind.EMERGENCY) 0 else config.isEnable,
+                                            orderBlockReason = reason,
+                                            homeQrHidden = AppConfigBean.HOME_QR_HIDDEN_HIDDEN,
+                                            scanBlockStatus = AppConfigBean.SCAN_BLOCK_STATUS_BLOCKED
+                                        )
+                                    ) { "复位准备证据与临时禁售原子落盘失败" }
+                                }
+                                HomeUiRefreshBridge.requestRefresh("lower_board_reset:prepared")
+                                true
+                            }.isSuccess
+                        },
+                        confirmServerBlock = {
+                            val latch = CountDownLatch(1)
+                            var confirmed = false
+                            DataManagementAPI.uploadDeviceInfo(source = "lower_board_reset_prepared") { code, content ->
+                                confirmed = ResetCloseoutPolicy.isServerBlockConfirmed(code, content)
+                                latch.countDown()
+                            }
+                            latch.await(10, TimeUnit.SECONDS) && confirmed
+                        },
+                        writeResetAndPersistResult = { prepared, writtenAtMs ->
+                            KaoChangOperate.withFaultHeatTransitionLock {
+                                val latest = resetStore.load()
+                                if (
+                                    latest?.phase != ResetCloseoutPhase.PREPARED ||
+                                    latest.resetId != prepared.resetId ||
+                                    latest.kind != prepared.kind
+                                ) {
+                                    ResetWriteResult.PERSIST_FAILED
+                                } else if (!KaoChangOperate.writeEmergencyResetAndBlockMechanicalCommands().isSuccess) {
+                                    ResetWriteResult.WRITE_FAILED
+                                } else if (resetStore.saveDurable(
+                                    latest.copy(
+                                        phase = ResetCloseoutPhase.RESET_WRITTEN,
+                                        resetWrittenAtMs = writtenAtMs
+                                    )
+                                )) {
+                                    ResetWriteResult.SUCCESS
+                                } else {
+                                    ResetWriteResult.PERSIST_FAILED
+                                }
+                            }
+                        },
+                        scheduleColdRestart = { EmergencyResetAppRestarter.scheduleAndTerminate(appContext) }
                     )
-                    val writeResult = KaoChangOperate.writeEmergencyResetAndBlockMechanicalCommands()
-                    val detail = "写入状态=${writeResult.status}，写入消息=${writeResult.message ?: "无"}；" +
-                        "紧急复位不等待动作空闲，也不做立即回读"
-                    if (writeResult.isSuccess) {
-                        val fenceDetail = KaoChangOperate.completeEmergencyResetWrite(
-                            preparedFence = preparedFence,
-                            writeSucceeded = true,
-                            reason = "测试页管理员确认紧急复位"
+                    val result = coordinator.execute(
+                            kind = kind,
+                            currentOnlineStatus = initialConfig.onlineStatus,
+                            currentOrderBlockReason = initialConfig.orderBlockReason.orEmpty(),
+                            currentHomeQrHidden = initialConfig.homeQrHidden,
+                            currentScanBlockStatus = initialConfig.scanBlockStatus
                         )
-                        AdminOperationLogger.w(
-                            action = "下位机紧急复位",
-                            page = AdminOperationLogger.PAGE_TEST,
-                            result = AdminOperationLogger.RESULT_DONE,
-                            detail = "$detail；$fenceDetail"
-                        )
-                        val restartScheduled = EmergencyResetAppRestarter.scheduleAndTerminate(appContext)
-                        if (restartScheduled) {
-                            "紧急复位已下发，App 正在冷重启"
-                        } else {
-                            "紧急复位已下发，但 App 冷重启安排失败。设备继续保持维护，请再次点击紧急复位重试"
-                        }
-                    } else {
-                        val fenceDetail = KaoChangOperate.completeEmergencyResetWrite(
-                            preparedFence = preparedFence,
-                            writeSucceeded = false,
-                            reason = "测试页紧急复位写入失败"
-                        )
-                        AdminOperationLogger.e(
-                            action = "下位机紧急复位",
-                            page = AdminOperationLogger.PAGE_TEST,
-                            result = AdminOperationLogger.RESULT_FAIL,
-                            detail = "$detail；$fenceDetail"
-                        )
-                        "紧急复位下发失败：${writeResult.status}${writeResult.message?.let { "（$it）" } ?: ""}\n" +
-                            fenceDetail
-                    }
+                    AdminOperationLogger.w(
+                        action = actionName,
+                        page = AdminOperationLogger.PAGE_TEST,
+                        result = if (result.success) AdminOperationLogger.RESULT_DONE else AdminOperationLogger.RESULT_FAIL,
+                        detail = result.reason
+                    )
+                    result.reason
                 }
                 binding.tvAtomicActionResult.text = resultText
             } catch (e: Exception) {
-                binding.tvAtomicActionResult.text = "紧急复位异常：${e.message}"
+                binding.tvAtomicActionResult.text = "$actionName 异常：${e.message}"
                 AdminOperationLogger.e(
-                    action = "下位机紧急复位",
+                    action = actionName,
                     page = AdminOperationLogger.PAGE_TEST,
                     result = AdminOperationLogger.RESULT_FAIL,
                     detail = "失败原因=${e.message}"
@@ -810,7 +794,12 @@ class TestFragment : Fragment() {
                 val summary = results.joinToString(separator = "\n") { read ->
                     "${read.label}=${formatBusinessActionRegisterValue(read)}"
                 }
-                binding.tvAtomicActionResult.text = summary
+                val resetNotice = runCatching { ResetCloseoutStore.sharedPreferences().load() }
+                    .getOrNull()
+                    ?.takeIf { ResetCloseoutPolicy.blocksOrders(it) }
+                    ?.let { "\n\n复位过程中读数仅供诊断，不代表机械已经回到初始位置。" }
+                    .orEmpty()
+                binding.tvAtomicActionResult.text = summary + resetNotice
                 LogUtils.d(
                     "测试下位机业务动作协议自检完成：" +
                         "Modbus串口地址=${AppConfig.getAppConfig().modbusAddress}，" +

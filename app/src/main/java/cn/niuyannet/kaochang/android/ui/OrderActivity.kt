@@ -21,6 +21,10 @@ import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContex
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutPhase
+import cn.niuyannet.kaochang.android.services.reset.PrepareOrderEvidenceResult
+import cn.niuyannet.kaochang.android.services.reset.ResetOrderItem
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.OrderProcessingStage
@@ -47,6 +51,8 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 abstract class OrderActivity: BaseSauceDetection() {
 
+    private val resetCloseoutStore by lazy { ResetCloseoutStore.sharedPreferences() }
+
     private data class DeliveryResult(
         val success: Boolean,
         val deliveredCount: Int,
@@ -67,6 +73,45 @@ abstract class OrderActivity: BaseSauceDetection() {
 
     private var processingDialog: MaterialDialog? = null
     private val processingStageListener: (OrderProcessingStage) -> Unit = { updateOrderProcessingStage(it) }
+
+    protected fun prepareResetOrderEvidence(orderMessage: String): PrepareOrderEvidenceResult {
+        val json = runCatching { JSON.parseObject(orderMessage) }.getOrNull()
+            ?: return PrepareOrderEvidenceResult.REJECTED
+        val orderNo = json.getString("order_no").orEmpty()
+        val items = runCatching {
+            JSON.parseArray(json.getString("goods_items"), KcOrderItem::class.java).map { item ->
+                ResetOrderItem(itemId = item.id.toLong(), quantity = item.quantity)
+            }
+        }.getOrNull() ?: return PrepareOrderEvidenceResult.REJECTED
+        if (orderNo.isBlank() || items.isEmpty()) return PrepareOrderEvidenceResult.REJECTED
+        if (!reconcileTerminalResetOrderEvidence(orderNo)) return PrepareOrderEvidenceResult.REJECTED
+        val config = AppConfig.getAppConfig()
+        return resetCloseoutStore.prepareOrderDurable(
+            orderNo = orderNo,
+            items = items,
+            previousOnlineStatus = config.onlineStatus,
+            previousOrderBlockReason = config.orderBlockReason.orEmpty()
+        )
+    }
+
+    private fun reconcileTerminalResetOrderEvidence(nextOrderNo: String): Boolean {
+        val existing = resetCloseoutStore.load() ?: return true
+        if (existing.phase != ResetCloseoutPhase.ORDER_ACTIVE) {
+            return false
+        }
+        val existingOrderNo = existing.orderNo ?: return false
+        if (existingOrderNo == nextOrderNo) return true
+        val terminal = OrderStateManager.readDurableTerminalStateForReset(existingOrderNo)
+        if (terminal != OrderStateManager.STATE_FINISHED && terminal != OrderStateManager.STATE_FAILED) {
+            return false
+        }
+        return resetCloseoutStore.clearOrderDurable(existingOrderNo)
+    }
+
+    protected fun clearResetOrderEvidence(orderNo: String): Boolean =
+        KaoChangOperate.withFaultHeatTransitionLock {
+            resetCloseoutStore.clearOrderDurable(orderNo)
+        }
 
     private fun orderEventStatusText(status: Int): String = when (status) {
         1 -> "1（开始夹取）"
@@ -355,6 +400,13 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                 }
                 orderCloseoutCommitted = terminalStatePersisted && orderClaimReleased
+                if (orderCloseoutCommitted && orderOutcome in setOf(
+                        OrderExecutionOutcome.SUCCESS,
+                        OrderExecutionOutcome.MECHANICAL_FAILED
+                    )
+                ) {
+                    resetCloseoutStore.clearOrderDurable(safeOrderNo)
+                }
                 orderCompleted = orderCompleted && OrderSupplementResumePolicy.shouldResume(orderOutcome)
                 withContext(Dispatchers.Main) {
                     val config = AppConfig.getAppConfig()

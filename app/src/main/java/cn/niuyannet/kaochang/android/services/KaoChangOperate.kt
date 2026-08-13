@@ -107,6 +107,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementRuntimeResum
 import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutPolicy
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
 import cn.niuyannet.kaochang.android.ui.OrderMoveStatusPolicy
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -750,6 +752,35 @@ object KaoChangOperate {
             actionGroupRecoveryVerified = false
         }
         HomeUiRefreshBridge.requestRefresh("emergency_reset:cold_start_maintenance")
+        return true
+    }
+
+    fun closeMechanicalStateAfterLowerBoardReset(): Boolean {
+        val committed = withFaultHeatTransitionLock {
+            val saved = AppConfig.saveLowerBoardResetLocalCloseoutDurable(
+                claimKey = OrderDeliveryClaimStore.KEY_ORDER_DELIVERY_CLAIM,
+                actionGroupSessionKey = SharedPreferenceActionGroupSessionStore.KEY_ACTION_GROUP_SESSION,
+                pausedSupplementSessionKey =
+                    SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION,
+                prefetchSessionKey =
+                    SharedPreferenceSupplementPrefetchSessionStore.KEY_SUPPLEMENT_PREFETCH_SESSION
+            )
+            if (!saved) return@withFaultHeatTransitionLock false
+            actionGroupLocks.clear()
+            serialSupplementFailureProof = null
+            supplementResumeSingleFlight.exit()
+            true
+        }
+        if (!committed) return false
+        OrderStateManager.releaseAllProcessingForEmergencyReset()
+        manualOutOrderRecoveryCoordinator.clearForEmergencyReset()
+        SupplementPauseController.clearForEmergencyReset()
+        lastActionGroupRecoveryFailureReason = null
+        HomeUiRefreshBridge.requestRefresh("lower_board_reset:local_closed")
+        logW(
+            LOG_ACTION_GROUP,
+            "下位机复位后已清理旧机械协调状态；烤盘、库存、搬盘和丢弃 journal 保持不变"
+        )
         return true
     }
 
@@ -1718,6 +1749,9 @@ object KaoChangOperate {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
             val config = AppConfig.getAppConfig()
+            if (config.orderBlockReason == AppConfigBean.ORDER_BLOCK_REASON_SYSTEM_RESET_IN_PROGRESS) {
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
+            }
             if (hasGuardedSupplementCloseoutResidue(config)) {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
@@ -3297,13 +3331,33 @@ object KaoChangOperate {
         orderContext: ActionGroupOrderContext?,
         panNo: Int
     ) {
-        if (telemetry.actionName != "out4" || orderContext == null || !orderContext.isValid()) {
+        if (
+            telemetry.actionName != "out4" ||
+            telemetry.eventPhase != AtomicActionExecutor.ACTION_EVENT_PHASE_FINISHED ||
+            orderContext == null ||
+            !orderContext.isValid()
+        ) {
             return
         }
         val status = when (telemetry.errorCode) {
             null -> ActionGroupOrderStatus.FINISHED
             AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED -> ActionGroupOrderStatus.ERROR
             else -> return
+        }
+        if (ResetCloseoutPolicy.isConfirmedOut4Delivery(telemetry)) {
+            val evidenceSaved = withFaultHeatTransitionLock {
+                ResetCloseoutStore.sharedPreferences().confirmOut4Durable(
+                    orderContext.orderNo,
+                    orderContext.itemId.toLong()
+                )
+            }
+            if (!evidenceSaved) {
+                enterActionGroupMaintenance(
+                    "out4 已成功但复位退款证据落盘失败：orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}",
+                    preserveMoveStatus = true
+                )
+                return
+            }
         }
         savePendingActionGroupOrderEvent(
             orderContext = orderContext,

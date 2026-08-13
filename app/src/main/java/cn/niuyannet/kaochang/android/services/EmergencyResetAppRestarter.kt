@@ -63,4 +63,16 @@ object EmergencyResetAppRestarter {
             }
         ).scheduleAndTerminate()
     }
+
+    fun cancelPendingRestart(context: Context) {
+        val appContext = context.applicationContext
+        val pendingIntent = PendingIntent.getActivity(
+            appContext,
+            RESTART_REQUEST_CODE,
+            Intent(appContext, StartInitActivity::class.java),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        ) ?: return
+        (appContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.cancel(pendingIntent)
+        pendingIntent.cancel()
+    }
 }

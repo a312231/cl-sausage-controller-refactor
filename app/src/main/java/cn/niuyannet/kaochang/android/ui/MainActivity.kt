@@ -29,6 +29,8 @@ import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.PowerLossRecoveryGuard
+import cn.niuyannet.kaochang.android.services.reset.PrepareOrderEvidenceResult
+import cn.niuyannet.kaochang.android.services.reset.ResetStartupCloseoutManager
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -205,6 +207,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
 
     override fun onResume() {
         super.onResume()
+        ResetStartupCloseoutManager.resumeIfNeeded(this)
         CameraMonitor.instance.startService(applicationContext)
         AppUpdateManager.onActivityResumed(this)
         HomeUiRefreshBridge.register(homeUiRefreshCallback)
@@ -257,7 +260,23 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                             OrderStateManager.recordBusyIgnored(orderNo)
                             reportBusyRejectedOrderFailure(orderMessage, orderNo, moveStatus, onlineStatus, actionGroupBusy)
                         } else {
-                            when (KaoChangOperate.acceptIncomingOrderForMechanicalDispatch(orderNo)) {
+                            val admission = KaoChangOperate.withFaultHeatTransitionLock {
+                                val evidence = prepareResetOrderEvidence(orderMessage)
+                                if (evidence == PrepareOrderEvidenceResult.REJECTED) {
+                                    KaoChangOperate.IncomingOrderMechanicalAdmission.BECAME_BUSY
+                                } else {
+                                    val result = KaoChangOperate.acceptIncomingOrderForMechanicalDispatch(orderNo)
+                                    if (result != KaoChangOperate.IncomingOrderMechanicalAdmission.ACCEPTED &&
+                                        evidence == PrepareOrderEvidenceResult.NEW
+                                    ) {
+                                        check(clearResetOrderEvidence(orderNo)) {
+                                            "接单失败后清理新建复位订单证据失败：orderNo=$orderNo"
+                                        }
+                                    }
+                                    result
+                                }
+                            }
+                            when (admission) {
                                 KaoChangOperate.IncomingOrderMechanicalAdmission.ACCEPTED -> Unit
                                 KaoChangOperate.IncomingOrderMechanicalAdmission.DUPLICATE ->
                                     return@runOnUiThread

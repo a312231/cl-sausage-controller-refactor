@@ -10,11 +10,16 @@ class EmergencyResetStartupSyncSourceTest {
     fun applicationStartup_shouldEstablishFenceBeforeAnyRemotePull() {
         val source = sourceText("app/src/main/java/cn/niuyannet/kaochang/android/MyApp.kt")
         val onCreate = functionBody(source, "override fun onCreate()")
+        val resetCloseout = onCreate.indexOf("ResetStartupCloseoutManager.resumeIfNeeded")
         val enforce = onCreate.indexOf("KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()")
         val dataSync = onCreate.indexOf("DataManagementAPI.dataSyncServer()")
 
+        assertTrue("Application 必须先恢复统一复位收口", resetCloseout >= 0 && resetCloseout < enforce)
         assertTrue("Application 必须先恢复紧急复位 fence，再决定是否拉云端数据", enforce >= 0 && enforce < dataSync)
-        assertTrue("fence 存在时必须跳过启动期云端配置和库存拉取", onCreate.contains("if (!emergencyResetPending)"))
+        assertTrue(
+            "任一复位栅栏存在时必须跳过启动期云端配置和库存拉取",
+            onCreate.contains("if (!lowerBoardResetPending && !emergencyResetPending)")
+        )
     }
 
     @Test
