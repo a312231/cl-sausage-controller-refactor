@@ -80,15 +80,18 @@ class SupplementPrefetchRecoveryWiringSourceTest {
             "private fun hasPausedSupplementSession"
         )
 
-        assertTrue(replan.contains("expectedMoveStatuses = setOf(1, 2)"))
+        assertTrue(replan.contains("closeOrConfirmAlreadyClosed("))
+        assertTrue(replan.contains("revision = session.mechanicalClaimRevision"))
+        assertTrue(replan.contains("resourceMask = session.resourceMask"))
+        assertTrue(replan.contains("supplementPrefetchSessionRepository.clearIfRevision("))
+        assertTrue(replan.contains("publishRuntimeStateWithHttpFallback("))
+        assertTrue(replan.contains("preserveMoveStatus = true"))
         assertTrue(finished.contains("expectedMoveStatus = 1"))
-        listOf(replan, finished).forEach { block ->
-            assertTrue(block.contains("releaseMechanicalMove("))
-            assertTrue(block.contains("idleMoveStatus = 0"))
-            assertTrue(block.contains("actionGroupLocks.release("))
-            assertTrue(block.contains("publishRuntimeStateWithHttpFallback("))
-            assertTrue(block.contains("preserveMoveStatus = true"))
-        }
+        assertTrue(finished.contains("releaseMechanicalMove("))
+        assertTrue(finished.contains("idleMoveStatus = 0"))
+        assertTrue(finished.contains("actionGroupLocks.release("))
+        assertTrue(finished.contains("publishRuntimeStateWithHttpFallback("))
+        assertTrue(finished.contains("preserveMoveStatus = true"))
     }
 
     @Test
