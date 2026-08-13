@@ -1,11 +1,19 @@
 package cn.niuyannet.kaochang.android.model
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.BeforeClass
 import org.junit.Test
 
 class KaoPanHelperSellableTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
 
     private val nowMs = 100_000L
 

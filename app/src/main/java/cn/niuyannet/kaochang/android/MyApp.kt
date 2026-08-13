@@ -5,7 +5,9 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
 import cn.niuyannet.kaochang.android.utils.LogUtils
+import cn.niuyannet.kaochang.scheduler.LegacySchedulerProfileA
 import com.alibaba.fastjson.parser.ParserConfig
 import com.lzy.okgo.OkGo
 import com.lzy.okgo.interceptor.HttpLoggingInterceptor
@@ -17,6 +19,7 @@ import kotlin.properties.Delegates
 class MyApp: Application() {
     override fun onCreate() {
         super.onCreate()
+        SchedulerProfileRuntime.bootstrapOrThrow(LegacySchedulerProfileA.ID.value)
         instance = this
         // 初始化日志系统
         LogUtils.init(this)

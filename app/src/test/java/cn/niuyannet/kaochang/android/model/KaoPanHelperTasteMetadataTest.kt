@@ -2,11 +2,19 @@ package cn.niuyannet.kaochang.android.model
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.BeforeClass
 import org.junit.Test
 
 class KaoPanHelperTasteMetadataTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
 
     @After
     fun tearDown() {

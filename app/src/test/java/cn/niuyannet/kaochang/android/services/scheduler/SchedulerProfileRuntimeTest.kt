@@ -10,6 +10,9 @@ class SchedulerProfileRuntimeTest {
 
     @Test
     fun activeProfile_isTheSingleCompleteLegacyAInstance() {
+        SchedulerProfileTestBootstrap.pinLegacyA()
+        SchedulerProfileTestBootstrap.pinLegacyA()
+
         val active = SchedulerProfileRuntime.activeProfile
 
         assertSame(active, SchedulerProfileRuntime.activeProfile)

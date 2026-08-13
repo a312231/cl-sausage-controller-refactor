@@ -4,14 +4,22 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Before
+import org.junit.BeforeClass
 import org.junit.Test
 
 class SupplementSuccessPanStateTest {
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
+
     @Before
     fun setUp() {
         LowToHighDemandGate.replaceStateStoreForTest(InMemoryLowToHighDemandStateStoreForTest())

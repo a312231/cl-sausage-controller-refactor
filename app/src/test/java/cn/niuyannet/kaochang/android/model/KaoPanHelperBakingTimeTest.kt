@@ -1,10 +1,18 @@
 package cn.niuyannet.kaochang.android.model
 
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import org.junit.Assert.assertEquals
+import org.junit.BeforeClass
 import org.junit.Test
 
 class KaoPanHelperBakingTimeTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
 
     @Test
     fun refreshActiveBakingTime_shouldOnlyUpdateBakingPans() {

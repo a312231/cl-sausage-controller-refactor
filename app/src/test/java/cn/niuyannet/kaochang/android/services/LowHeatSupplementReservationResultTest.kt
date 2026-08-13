@@ -3,13 +3,21 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.model.bean.Taste
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.BeforeClass
 import org.junit.Test
 
 class LowHeatSupplementReservationResultTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
 
     @Test
     fun formatNoSameTasteStockLog_shouldExplainMissingTasteAndAvailableStock() {

@@ -1,10 +1,18 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.BeforeClass
 import org.junit.Test
 
 class SupplementTasteMixPlannerTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
 
     @Test
     fun plan_shouldFillNewTasteDeficitFromNextBatch() {

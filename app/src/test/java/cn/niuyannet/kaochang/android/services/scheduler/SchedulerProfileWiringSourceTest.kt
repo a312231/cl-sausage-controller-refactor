@@ -64,18 +64,47 @@ class SchedulerProfileWiringSourceTest {
     }
 
     @Test
-    fun runtime_isFixedToAAndDoesNotExposeSelectionOrFallback() {
+    fun runtime_requiresExplicitProcessPinAndDoesNotExposeSelectionOrFallback() {
         val runtime = sourceFile(
             "app/src/main/java/cn/niuyannet/kaochang/android/services/scheduler/SchedulerProfileRuntime.kt"
         )
 
         assertEquals(1, occurrences(runtime, "LegacySchedulerProfileA.create()"))
-        assertTrue(runtime.contains("PinnedSchedulerProfile.create("))
-        assertTrue(runtime.contains("LegacySchedulerProfileA.ID.value"))
+        assertTrue(runtime.contains("ProcessLifetimeSchedulerProfilePin(catalog)"))
+        assertTrue(runtime.contains("fun bootstrapOrThrow(rawId: String?)"))
+        assertTrue(runtime.contains("processPin.requireActiveProfile()"))
+        assertFalse(runtime.contains("pin(LegacySchedulerProfileA.ID.value)"))
         assertFalse(runtime.contains("runCatching"))
         assertFalse(runtime.contains("fallback"))
         assertFalse(runtime.contains("fun switch"))
         assertFalse(runtime.contains("var activeProfile"))
+    }
+
+    @Test
+    fun myApp_pinsLegacyABeforeAnyOtherAppOwnedStartupAction() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/MyApp.kt")
+        val body = source.substring(
+            source.indexOf("override fun onCreate()"),
+            source.indexOf("companion object")
+        )
+        val executableLines = body.lineSequence()
+            .map { it.substringBefore("//").trim() }
+            .filter { it.isNotEmpty() && it != "override fun onCreate() {" }
+            .toList()
+        val superIndex = executableLines.indexOf("super.onCreate()")
+        val bootstrap =
+            "SchedulerProfileRuntime.bootstrapOrThrow(LegacySchedulerProfileA.ID.value)"
+
+        assertTrue("MyApp.onCreate must call super.onCreate", superIndex >= 0)
+        assertEquals("Scheduler pin must be the first app-owned action", bootstrap, executableLines[superIndex + 1])
+        listOf(
+            "instance = this",
+            "LogUtils.init(this)",
+            "KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()",
+            "DataManagementAPI.dataSyncServer()"
+        ).forEach { laterAction ->
+            assertTrue("$laterAction must run after scheduler pin", body.indexOf(bootstrap) < body.indexOf(laterAction))
+        }
     }
 
     @Test

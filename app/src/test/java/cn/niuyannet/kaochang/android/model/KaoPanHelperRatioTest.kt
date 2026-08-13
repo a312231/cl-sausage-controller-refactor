@@ -3,15 +3,23 @@ package cn.niuyannet.kaochang.android.model
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
+import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileTestBootstrap
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.After
 
 class KaoPanHelperRatioTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun pinSchedulerProfile() = SchedulerProfileTestBootstrap.pinLegacyA()
+    }
 
     @Before
     fun setUpAppConfig() {
