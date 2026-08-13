@@ -49,6 +49,30 @@ class SupplementMechanicalCloseoutCoordinator(
             )
             is OwnerRead.Success -> ownerRead.owner
         }
+        if (supplementOwner?.state == MechanicalClaimState.CLAIMED &&
+            resourceLocks.ownedMask(request.owner) == null
+        ) {
+            if (supplementOwner.owner != request.owner || supplementOwner.revision != request.revision) {
+                return@synchronized SupplementMechanicalCloseoutResult.Rejected(
+                    "已释放补肠 owner/revision 不匹配，拒绝确认收口"
+                )
+            }
+            val settled = classifyAlreadyClosedState()
+            if (settled == SupplementMechanicalCloseoutResult.ClosedIdle ||
+                settled == SupplementMechanicalCloseoutResult.ClosedKeepingOrder
+            ) {
+                return@synchronized try {
+                    clearSupplementOwner(request)
+                    settled
+                } catch (error: Throwable) {
+                    SupplementMechanicalCloseoutResult.Failed(
+                        "已释放补肠 session 耐久清理失败",
+                        error
+                    )
+                }
+            }
+            return@synchronized settled
+        }
         if (supplementOwner?.state != null) {
             return@synchronized closeOwned(request, supplementOwner)
         }

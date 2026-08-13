@@ -147,6 +147,7 @@ class ParallelSupplementOrderEntrySourceTest {
         assertTrue(block.contains("withFaultHeatTransitionLock"))
         assertTrue(block.contains("supplementPrefetchSessionRepository.load()"))
         assertTrue(block.contains("session.revision == preparation.revision"))
+        assertTrue(block.contains("hasCompletedParallelDeliveryCloseoutEvidence(session)"))
         assertTrue(block.contains("revision = session.mechanicalClaimRevision"))
         assertTrue(block.contains("resourceMask = session.resourceMask"))
         assertTrue(block.contains("closeOrConfirmAlreadyClosed"))
@@ -164,6 +165,7 @@ class ParallelSupplementOrderEntrySourceTest {
         val block = operate.substring(start, end)
 
         assertTrue(block.contains("completedDeliveryNeedsOnlyCloseout"))
+        assertTrue(block.contains("hasCompletedParallelDeliveryCloseoutEvidence(parallelSession)"))
         assertTrue(block.contains("!completedDeliveryNeedsOnlyCloseout"))
         assertTrue(block.contains("lockAlreadyOwned = !completedDeliveryNeedsOnlyCloseout"))
     }

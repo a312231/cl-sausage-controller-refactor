@@ -1856,9 +1856,7 @@ object KaoChangOperate {
         }
         if (parallelSession?.pendingOrderNo == orderNo) {
             val completedDeliveryNeedsOnlyCloseout =
-                parallelSession.prefetchLane == null &&
-                    parallelSession.deliveryLane?.currentAction == "in7" &&
-                    parallelSession.deliveryLane.panPlacementApplied
+                hasCompletedParallelDeliveryCloseoutEvidence(parallelSession)
             if (!completedDeliveryNeedsOnlyCloseout &&
                 !actionGroupLocks.tryAcquire(parallelSession.resourceMask, parallelSession.sessionId)
             ) {
@@ -1951,6 +1949,9 @@ object KaoChangOperate {
                     }
                     check(session.deliveryLane?.targetPanNo == preparation.targetPanNo) {
                         "双 lane 已完成会话目标盘已变化"
+                    }
+                    check(hasCompletedParallelDeliveryCloseoutEvidence(session)) {
+                        "双 lane 已完成会话缺少完整物理落盘证据"
                     }
                     supplementBatchIntentRepository.markCompleted(
                         preparation.batchId,
@@ -5245,6 +5246,18 @@ object KaoChangOperate {
             return@withFaultHeatTransitionLock false
         }
         clearOwner()
+    }
+
+    private fun hasCompletedParallelDeliveryCloseoutEvidence(
+        session: SupplementPrefetchPipelineSession
+    ): Boolean {
+        val delivery = session.deliveryLane ?: return false
+        return session.prefetchLane == null &&
+            delivery.currentAction == "in7" &&
+            delivery.lastConfirmedStage == "in7" &&
+            delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
+            delivery.boxDeductionApplied &&
+            delivery.panPlacementApplied
     }
 
     enum class PendingSupplementBatchHandling {

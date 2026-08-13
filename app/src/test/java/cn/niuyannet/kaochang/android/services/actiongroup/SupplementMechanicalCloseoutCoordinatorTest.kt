@@ -65,6 +65,43 @@ class SupplementMechanicalCloseoutCoordinatorTest {
     }
 
     @Test
+    fun closeOrConfirmAlreadyClosed_shouldClearClaimedSessionAfterResourcesAndMoveAlreadySettled() {
+        val fixture = fixture(
+            moveStatus = 0,
+            supplementOwnerState = MechanicalClaimState.CLAIMED,
+            acquireResource = false,
+            failMoveSaveStatuses = setOf(0, 1, 2)
+        )
+
+        val result = fixture.coordinator.closeOrConfirmAlreadyClosed(fixture.request)
+
+        assertEquals(SupplementMechanicalCloseoutResult.ClosedIdle, result)
+        assertNull(fixture.supplementOwner.snapshot())
+        assertNull(fixture.resources.ownedMask(fixture.request.owner))
+        assertEquals(0, fixture.moveStore.status)
+    }
+
+    @Test
+    fun closeOrConfirmAlreadyClosed_shouldClearClaimedSessionAndKeepExistingOrderAfterResourcesSettled() {
+        val fixture = fixture(
+            moveStatus = 2,
+            orderState = MechanicalClaimState.CLAIMED,
+            supplementOwnerState = MechanicalClaimState.CLAIMED,
+            acquireResource = false,
+            failMoveSaveStatuses = setOf(0, 1, 2)
+        )
+
+        val result = fixture.coordinator.closeOrConfirmAlreadyClosed(fixture.request)
+
+        assertEquals(SupplementMechanicalCloseoutResult.ClosedKeepingOrder, result)
+        assertNull(fixture.supplementOwner.snapshot())
+        assertEquals("order:existing", fixture.orderOwner.snapshot()?.owner)
+        assertEquals(MechanicalClaimState.CLAIMED, fixture.orderOwner.snapshot()?.state)
+        assertNull(fixture.resources.ownedMask(fixture.request.owner))
+        assertEquals(2, fixture.moveStore.status)
+    }
+
+    @Test
     fun closeOrConfirmAlreadyClosed_shouldKeepExistingOrderEvidence() {
         val fixture = fixture(
             moveStatus = 2,

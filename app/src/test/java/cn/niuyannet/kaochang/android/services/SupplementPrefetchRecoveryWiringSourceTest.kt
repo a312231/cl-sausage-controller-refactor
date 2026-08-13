@@ -83,6 +83,7 @@ class SupplementPrefetchRecoveryWiringSourceTest {
         assertTrue(replan.contains("closeOrConfirmAlreadyClosed("))
         assertTrue(replan.contains("revision = session.mechanicalClaimRevision"))
         assertTrue(replan.contains("resourceMask = session.resourceMask"))
+        assertTrue(replan.contains("hasCompletedParallelDeliveryCloseoutEvidence(session)"))
         assertTrue(replan.contains("supplementPrefetchSessionRepository.clearIfRevision("))
         assertTrue(replan.contains("publishRuntimeStateWithHttpFallback("))
         assertTrue(replan.contains("preserveMoveStatus = true"))
