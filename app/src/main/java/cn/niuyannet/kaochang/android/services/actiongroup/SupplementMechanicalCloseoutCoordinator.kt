@@ -27,16 +27,55 @@ class SupplementMechanicalCloseoutCoordinator(
 ) {
     fun close(request: SupplementMechanicalCloseoutRequest): SupplementMechanicalCloseoutResult =
         synchronized(transitionLock) {
-            if (request.owner.isBlank() || request.revision <= 0L || request.resourceMask == ResourceMask.none) {
-                return@synchronized SupplementMechanicalCloseoutResult.Rejected("补肠收口 key 无效")
-            }
-            val supplementOwner = readOwner(supplementOwnerStore)
-                ?: return@synchronized SupplementMechanicalCloseoutResult.Rejected("补肠 owner 不存在或读取失败")
+            validateRequest(request)?.let { return@synchronized it }
+            val supplementOwner = when (val ownerRead = readOwner(supplementOwnerStore)) {
+                is OwnerRead.Failed -> return@synchronized SupplementMechanicalCloseoutResult.Failed(
+                    "补肠 owner 读取失败，拒绝收口",
+                    ownerRead.cause
+                )
+                is OwnerRead.Success -> ownerRead.owner
+            } ?: return@synchronized SupplementMechanicalCloseoutResult.Rejected("补肠 owner 不存在")
+            closeOwned(request, supplementOwner)
+        }
+
+    fun closeOrConfirmAlreadyClosed(
+        request: SupplementMechanicalCloseoutRequest
+    ): SupplementMechanicalCloseoutResult = synchronized(transitionLock) {
+        validateRequest(request)?.let { return@synchronized it }
+        val supplementOwner = when (val ownerRead = readOwner(supplementOwnerStore)) {
+            is OwnerRead.Failed -> return@synchronized SupplementMechanicalCloseoutResult.Failed(
+                "补肠 owner 读取失败，拒绝收口",
+                ownerRead.cause
+            )
+            is OwnerRead.Success -> ownerRead.owner
+        }
+        if (supplementOwner?.state != null) {
+            return@synchronized closeOwned(request, supplementOwner)
+        }
+        if (supplementOwner != null &&
+            (supplementOwner.owner != request.owner || supplementOwner.revision != request.revision)
+        ) {
+            return@synchronized SupplementMechanicalCloseoutResult.Rejected(
+                "已清补肠 owner/revision 不匹配，拒绝确认收口"
+            )
+        }
+        if (resourceLocks.ownedMask(request.owner) != null) {
+            return@synchronized SupplementMechanicalCloseoutResult.Rejected(
+                "补肠 owner 已清但资源仍占用，拒绝确认收口"
+            )
+        }
+        classifyAlreadyClosedState()
+    }
+
+    private fun closeOwned(
+        request: SupplementMechanicalCloseoutRequest,
+        supplementOwner: MechanicalClaimOwnerSnapshot
+    ): SupplementMechanicalCloseoutResult {
             if (supplementOwner.owner != request.owner ||
                 supplementOwner.revision != request.revision ||
                 supplementOwner.state != MechanicalClaimState.CLAIMED
             ) {
-                return@synchronized SupplementMechanicalCloseoutResult.Rejected("补肠 owner/revision/state 不匹配")
+                return SupplementMechanicalCloseoutResult.Rejected("补肠 owner/revision/state 不匹配")
             }
 
             val orderRead = try {
@@ -45,7 +84,7 @@ class SupplementMechanicalCloseoutCoordinator(
                 OwnerRead.Failed(error)
             }
             val orderOwner = when (orderRead) {
-                is OwnerRead.Failed -> return@synchronized SupplementMechanicalCloseoutResult.Rejected(
+                is OwnerRead.Failed -> return SupplementMechanicalCloseoutResult.Rejected(
                     "订单 claim 读取失败，拒绝收口"
                 )
                 is OwnerRead.Success -> orderRead.owner
@@ -53,7 +92,7 @@ class SupplementMechanicalCloseoutCoordinator(
             val moveStatus = try {
                 moveStore.load()
             } catch (error: Throwable) {
-                return@synchronized SupplementMechanicalCloseoutResult.Failed(
+                return SupplementMechanicalCloseoutResult.Failed(
                     "moveStatus 读取失败，拒绝收口",
                     error
                 )
@@ -65,12 +104,12 @@ class SupplementMechanicalCloseoutCoordinator(
                     orderOwner.state == MechanicalClaimState.CLAIMED &&
                     orderOwner.revision > 0L &&
                     moveStatus == 2 -> true
-                else -> return@synchronized SupplementMechanicalCloseoutResult.Rejected(
+                else -> return SupplementMechanicalCloseoutResult.Rejected(
                     "订单 claim 与 moveStatus 不一致，拒绝收口"
                 )
             }
 
-            when (val resourceResult = resourceLocks.releaseIfOwnedAfterCommit(
+            return when (val resourceResult = resourceLocks.releaseIfOwnedAfterCommit(
                 owner = request.owner,
                 expectedMask = request.resourceMask
             ) {
@@ -101,6 +140,44 @@ class SupplementMechanicalCloseoutCoordinator(
                         )
                     }
             }
+    }
+
+    private fun classifyAlreadyClosedState(): SupplementMechanicalCloseoutResult {
+        val orderOwner = when (val orderRead = readOwner(orderOwnerStore)) {
+            is OwnerRead.Failed -> return SupplementMechanicalCloseoutResult.Failed(
+                "订单 claim 读取失败，拒绝确认收口",
+                orderRead.cause
+            )
+            is OwnerRead.Success -> orderRead.owner
+        }
+        val moveStatus = try {
+            moveStore.load()
+        } catch (error: Throwable) {
+            return SupplementMechanicalCloseoutResult.Failed(
+                "moveStatus 读取失败，拒绝确认收口",
+                error
+            )
+        }
+        return when {
+            orderOwner == null && moveStatus == 0 -> SupplementMechanicalCloseoutResult.ClosedIdle
+            orderOwner != null &&
+                orderOwner.owner.startsWith(OrderDeliveryClaimStore.OWNER_PREFIX) &&
+                orderOwner.state == MechanicalClaimState.CLAIMED &&
+                orderOwner.revision > 0L &&
+                moveStatus == 2 -> SupplementMechanicalCloseoutResult.ClosedKeepingOrder
+            else -> SupplementMechanicalCloseoutResult.Rejected(
+                "已清补肠 owner 与订单 claim/moveStatus 不一致，拒绝确认收口"
+            )
+        }
+    }
+
+    private fun validateRequest(
+        request: SupplementMechanicalCloseoutRequest
+    ): SupplementMechanicalCloseoutResult.Rejected? =
+        if (request.owner.isBlank() || request.revision <= 0L || request.resourceMask == ResourceMask.none) {
+            SupplementMechanicalCloseoutResult.Rejected("补肠收口 key 无效")
+        } else {
+            null
         }
 
     private fun clearSupplementOwner(request: SupplementMechanicalCloseoutRequest) {
@@ -122,11 +199,11 @@ class SupplementMechanicalCloseoutCoordinator(
         }
     }
 
-    private fun readOwner(store: MechanicalClaimOwnerStore): MechanicalClaimOwnerSnapshot? =
+    private fun readOwner(store: MechanicalClaimOwnerStore): OwnerRead =
         try {
-            store.snapshot()
-        } catch (_: Throwable) {
-            null
+            OwnerRead.Success(store.snapshot())
+        } catch (error: Throwable) {
+            OwnerRead.Failed(error)
         }
 
     private sealed class OwnerRead {

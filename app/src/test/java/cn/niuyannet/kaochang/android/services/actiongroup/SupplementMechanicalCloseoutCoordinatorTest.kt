@@ -23,6 +23,116 @@ class SupplementMechanicalCloseoutCoordinatorTest {
     }
 
     @Test
+    fun closeOrConfirmAlreadyClosed_shouldAcceptIdleEvidenceWithoutWritingState() {
+        val fixture = fixture(
+            moveStatus = 0,
+            supplementOwnerPresent = false,
+            acquireResource = false,
+            failMoveSaveStatuses = setOf(0, 1, 2)
+        )
+
+        val result = fixture.coordinator.closeOrConfirmAlreadyClosed(fixture.request)
+
+        assertEquals(SupplementMechanicalCloseoutResult.ClosedIdle, result)
+        assertNull(fixture.supplementOwner.snapshot())
+        assertEquals(0, fixture.moveStore.status)
+        assertNull(fixture.resources.ownedMask(fixture.request.owner))
+    }
+
+    @Test
+    fun closeOrConfirmAlreadyClosed_shouldAcceptRealClearedSessionShapeButRejectRevisionChange() {
+        val clearedSession = fixture(
+            moveStatus = 0,
+            supplementOwnerState = null,
+            acquireResource = false
+        )
+
+        assertEquals(
+            SupplementMechanicalCloseoutResult.ClosedIdle,
+            clearedSession.coordinator.closeOrConfirmAlreadyClosed(clearedSession.request)
+        )
+
+        val revisionChanged = fixture(
+            moveStatus = 0,
+            supplementOwnerState = null,
+            acquireResource = false
+        ).copyRequest(revision = 99L)
+        assertTrue(
+            revisionChanged.coordinator.closeOrConfirmAlreadyClosed(revisionChanged.request) is
+                SupplementMechanicalCloseoutResult.Rejected
+        )
+        assertEquals(0, revisionChanged.moveStore.status)
+    }
+
+    @Test
+    fun closeOrConfirmAlreadyClosed_shouldKeepExistingOrderEvidence() {
+        val fixture = fixture(
+            moveStatus = 2,
+            orderState = MechanicalClaimState.CLAIMED,
+            supplementOwnerPresent = false,
+            acquireResource = false,
+            failMoveSaveStatuses = setOf(0, 1, 2)
+        )
+
+        val result = fixture.coordinator.closeOrConfirmAlreadyClosed(fixture.request)
+
+        assertEquals(SupplementMechanicalCloseoutResult.ClosedKeepingOrder, result)
+        assertEquals(2, fixture.moveStore.status)
+        assertEquals("order:existing", fixture.orderOwner.snapshot()?.owner)
+        assertNull(fixture.resources.ownedMask(fixture.request.owner))
+    }
+
+    @Test
+    fun closeOrConfirmAlreadyClosed_shouldRejectMissingOwnerWhenResourceOrMoveEvidenceRemains() {
+        val resourceRemains = fixture(
+            moveStatus = 0,
+            supplementOwnerPresent = false,
+            acquireResource = true
+        )
+        assertTrue(
+            resourceRemains.coordinator.closeOrConfirmAlreadyClosed(resourceRemains.request) is
+                SupplementMechanicalCloseoutResult.Rejected
+        )
+        assertEquals(supplementMask, resourceRemains.resources.ownedMask(resourceRemains.request.owner))
+
+        val busyWithoutOwner = fixture(
+            moveStatus = 1,
+            supplementOwnerPresent = false,
+            acquireResource = false
+        )
+        assertTrue(
+            busyWithoutOwner.coordinator.closeOrConfirmAlreadyClosed(busyWithoutOwner.request) is
+                SupplementMechanicalCloseoutResult.Rejected
+        )
+        assertEquals(1, busyWithoutOwner.moveStore.status)
+    }
+
+    @Test
+    fun closeOrConfirmAlreadyClosed_shouldReturnStableFailureWhenEvidenceReadFails() {
+        val ownerReadFailure = fixture(
+            moveStatus = 0,
+            supplementOwnerPresent = false,
+            acquireResource = false,
+            failSupplementRead = true
+        )
+        assertTrue(
+            ownerReadFailure.coordinator.closeOrConfirmAlreadyClosed(ownerReadFailure.request) is
+                SupplementMechanicalCloseoutResult.Failed
+        )
+
+        val moveReadFailure = fixture(
+            moveStatus = 0,
+            supplementOwnerPresent = false,
+            acquireResource = false,
+            failMoveRead = true
+        )
+        assertTrue(
+            moveReadFailure.coordinator.closeOrConfirmAlreadyClosed(moveReadFailure.request) is
+                SupplementMechanicalCloseoutResult.Failed
+        )
+    }
+
+    @Test
     fun close_shouldReleaseOnlySupplementAndKeepMoveStatusWhenOrderAlreadyClaimed() {
         val fixture = fixture(moveStatus = 2, orderState = MechanicalClaimState.CLAIMED)
 
@@ -177,15 +287,19 @@ class SupplementMechanicalCloseoutCoordinatorTest {
         failMoveSaveStatuses: Set<Int> = failMoveSaveStatus?.let(::setOf) ?: emptySet(),
         failMoveRead: Boolean = false,
         failSupplementClear: Boolean = false,
+        failSupplementRead: Boolean = false,
+        supplementOwnerPresent: Boolean = true,
+        supplementOwnerState: MechanicalClaimState? = MechanicalClaimState.CLAIMED,
         acquireResource: Boolean = true,
         acquiredMask: Int = supplementMask,
         beforeSupplementClear: () -> Unit = {}
     ): Fixture {
         val transitionLock = Any()
         val supplementOwner = FakeOwnerStore(
-            owner = "in:session",
-            state = MechanicalClaimState.CLAIMED,
-            revision = 2L,
+            owner = if (supplementOwnerPresent) "in:session" else null,
+            state = if (supplementOwnerPresent) supplementOwnerState else null,
+            revision = if (supplementOwnerPresent) 2L else 0L,
+            failRead = failSupplementRead,
             failClear = failSupplementClear,
             beforeClear = beforeSupplementClear
         )

@@ -1855,7 +1855,13 @@ object KaoChangOperate {
             }
         }
         if (parallelSession?.pendingOrderNo == orderNo) {
-            if (!actionGroupLocks.tryAcquire(parallelSession.resourceMask, parallelSession.sessionId)) {
+            val completedDeliveryNeedsOnlyCloseout =
+                parallelSession.prefetchLane == null &&
+                    parallelSession.deliveryLane?.currentAction == "in7" &&
+                    parallelSession.deliveryLane.panPlacementApplied
+            if (!completedDeliveryNeedsOnlyCloseout &&
+                !actionGroupLocks.tryAcquire(parallelSession.resourceMask, parallelSession.sessionId)
+            ) {
                 logW(LOG_SUPPLEMENT, "双 lane 订单结束续作资源忙，保留 barrier：session=${parallelSession.sessionId}")
                 return false
             }
@@ -1871,7 +1877,7 @@ object KaoChangOperate {
             val resumed = handleParallelSupplementResumePreparation(
                 preparation,
                 reason,
-                lockAlreadyOwned = true,
+                lockAlreadyOwned = !completedDeliveryNeedsOnlyCloseout,
                 lockOwner = parallelSession.sessionId,
                 allowRuntimeDefer = true
             )
@@ -1930,20 +1936,60 @@ object KaoChangOperate {
         }
         is SupplementPrefetchResumePreparation.ReplanRemaining -> {
             runCatching {
-                supplementBatchIntentRepository.markCompleted(
-                    preparation.batchId,
-                    preparation.targetPanNo
-                )
-                check(
-                    releaseMechanicalMove(
-                        "双 lane 当前根完成",
-                        preparation.sessionId,
-                        supplementPipelineClaimOwnerStore(),
-                        expectedMoveStatuses = setOf(1, 2),
-                        idleMoveStatus = 0
+                val closeout = withFaultHeatTransitionLock {
+                    val session = requireNotNull(supplementPrefetchSessionRepository.load()) {
+                        "双 lane 已完成会话不存在"
+                    }
+                    check(session.sessionId == preparation.sessionId) {
+                        "双 lane 已完成会话 owner 已变化"
+                    }
+                    check(session.revision == preparation.revision) {
+                        "双 lane 已完成会话 revision 已变化"
+                    }
+                    check(session.batchId == preparation.batchId) {
+                        "双 lane 已完成会话 batch 已变化"
+                    }
+                    check(session.deliveryLane?.targetPanNo == preparation.targetPanNo) {
+                        "双 lane 已完成会话目标盘已变化"
+                    }
+                    supplementBatchIntentRepository.markCompleted(
+                        preparation.batchId,
+                        preparation.targetPanNo
                     )
-                ) { "双 lane 当前根 owner 条件释放失败" }
-                actionGroupLocks.release(preparation.sessionId)
+                    val result = SupplementMechanicalCloseoutCoordinator(
+                        transitionLock = faultHeatTransitionLock,
+                        supplementOwnerStore = supplementPipelineClaimOwnerStore(),
+                        orderOwnerStore = orderDeliveryClaimStore,
+                        moveStore = mechanicalMoveStatusStore,
+                        resourceLocks = actionGroupLocks
+                    ).closeOrConfirmAlreadyClosed(
+                        SupplementMechanicalCloseoutRequest(
+                            owner = preparation.sessionId,
+                            revision = session.mechanicalClaimRevision,
+                            resourceMask = session.resourceMask
+                        )
+                    )
+                    if (result == SupplementMechanicalCloseoutResult.ClosedIdle ||
+                        result == SupplementMechanicalCloseoutResult.ClosedKeepingOrder
+                    ) {
+                        supplementPrefetchSessionRepository.load()?.let { current ->
+                            check(current.sessionId == session.sessionId && current.revision == session.revision) {
+                                "双 lane 已完成会话在收口后发生变化"
+                            }
+                            check(
+                                supplementPrefetchSessionRepository.clearIfRevision(
+                                    current.sessionId,
+                                    current.revision
+                                )
+                            ) { "双 lane 已完成会话清理失败" }
+                        }
+                    }
+                    result
+                }
+                check(
+                    closeout == SupplementMechanicalCloseoutResult.ClosedIdle ||
+                        closeout == SupplementMechanicalCloseoutResult.ClosedKeepingOrder
+                ) { "双 lane 当前根精确收口失败：$closeout" }
                 publishRuntimeStateWithHttpFallback("双 lane 当前根已完成，等待重新规划")
             }.fold(
                 onSuccess = { true },

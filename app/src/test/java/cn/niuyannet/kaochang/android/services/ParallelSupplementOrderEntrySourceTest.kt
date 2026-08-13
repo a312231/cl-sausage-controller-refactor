@@ -138,13 +138,34 @@ class ParallelSupplementOrderEntrySourceTest {
     }
 
     @Test
-    fun completedDeliveryReplan_shouldReleaseAfterOrderHandoffMoveStatus() {
+    fun completedDeliveryReplan_shouldUseSessionBoundIdempotentCloseout() {
         val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
         val start = operate.indexOf("is SupplementPrefetchResumePreparation.ReplanRemaining ->")
         val end = operate.indexOf("is SupplementPrefetchResumePreparation.Ready ->", start)
         val block = operate.substring(start, end)
 
-        assertTrue(block.contains("expectedMoveStatuses = setOf(1, 2)"))
+        assertTrue(block.contains("withFaultHeatTransitionLock"))
+        assertTrue(block.contains("supplementPrefetchSessionRepository.load()"))
+        assertTrue(block.contains("session.revision == preparation.revision"))
+        assertTrue(block.contains("revision = session.mechanicalClaimRevision"))
+        assertTrue(block.contains("resourceMask = session.resourceMask"))
+        assertTrue(block.contains("closeOrConfirmAlreadyClosed"))
+        assertTrue(block.contains("SupplementMechanicalCloseoutResult.ClosedKeepingOrder"))
+        assertTrue(block.contains("supplementPrefetchSessionRepository.clearIfRevision"))
+        assertFalse(block.contains("expectedMoveStatuses = setOf(1, 2)"))
+        assertFalse(block.contains("actionGroupLocks.release(preparation.sessionId)"))
+    }
+
+    @Test
+    fun completedDeliveryReplan_shouldNotReacquireReleasedResourcesBeforePlanning() {
+        val operate = source("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
+        val start = operate.indexOf("suspend fun clearSupplementPauseAndResume")
+        val end = operate.indexOf("fun releaseOrderDeliveryMoveStatus", start)
+        val block = operate.substring(start, end)
+
+        assertTrue(block.contains("completedDeliveryNeedsOnlyCloseout"))
+        assertTrue(block.contains("!completedDeliveryNeedsOnlyCloseout"))
+        assertTrue(block.contains("lockAlreadyOwned = !completedDeliveryNeedsOnlyCloseout"))
     }
 
     @Test
