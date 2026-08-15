@@ -1201,7 +1201,7 @@ object KaoChangAlgorithm {
             val discarded = try {
                 KaoChangOperate.discardSausage(
                     kaoPan = kaoPan,
-                    source = "营业结束丢弃",
+                    source = BUSINESS_CLOSEOUT_DISCARD_SOURCE,
                     detail = "营业结束耐久收口",
                     automatic = false,
                     businessCloseout = true

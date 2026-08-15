@@ -3,6 +3,11 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 
+internal const val BUSINESS_CLOSEOUT_DISCARD_SOURCE = "营业结束丢弃"
+
+internal fun shouldRefreshTemperatureAfterDiscard(businessCloseout: Boolean): Boolean =
+    !businessCloseout
+
 internal interface BusinessCloseoutPendingStore {
     fun loadRaw(): String?
     fun saveRawDurably(raw: String): Boolean

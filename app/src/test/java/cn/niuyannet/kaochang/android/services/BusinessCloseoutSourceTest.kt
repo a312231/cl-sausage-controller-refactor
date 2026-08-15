@@ -143,6 +143,20 @@ class BusinessCloseoutSourceTest {
     }
 
     @Test
+    fun discard_shouldNotRefreshTemperatureForBusinessCloseout() {
+        val discard = functionBlock(
+            operateSource(),
+            "suspend fun discardSausage(",
+            "private fun isAutomaticMechanicalCommandStillAllowed("
+        )
+        val gate = discard.indexOf("shouldRefreshTemperatureAfterDiscard(businessCloseout)")
+        val refresh = discard.indexOf("refreshTemperatureAfterStablePanMutation(")
+
+        assertTrue("营业收口必须通过专用策略跳过温控刷新", gate >= 0)
+        assertTrue("温控刷新必须位于营业收口策略门禁内", refresh > gate)
+    }
+
+    @Test
     fun pauseBusiness_shouldRequireAllExistingWritesToSucceed() {
         val pause = functionBlock(
             operateSource(),

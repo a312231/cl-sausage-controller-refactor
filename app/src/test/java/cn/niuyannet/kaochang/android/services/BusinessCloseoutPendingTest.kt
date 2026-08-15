@@ -7,6 +7,12 @@ import org.junit.Test
 class BusinessCloseoutPendingTest {
 
     @Test
+    fun shouldRefreshTemperatureAfterDiscard_shouldSkipOnlyBusinessCloseout() {
+        assertFalse(shouldRefreshTemperatureAfterDiscard(businessCloseout = true))
+        assertTrue(shouldRefreshTemperatureAfterDiscard(businessCloseout = false))
+    }
+
+    @Test
     fun repository_shouldWriteOnlyWhenPendingStateChanges() {
         val store = MemoryBusinessCloseoutPendingStore()
         val repository = BusinessCloseoutPendingRepository(store)

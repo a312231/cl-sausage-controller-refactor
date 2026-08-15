@@ -9926,7 +9926,9 @@ object KaoChangOperate {
             )
             KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
             clearReturnBindingForSourceIfAny(kaoPan.positionSn)
-            refreshTemperatureAfterStablePanMutation("过保丢弃完成清空烤盘：pan=${kaoPan.positionSn}")
+            if (shouldRefreshTemperatureAfterDiscard(businessCloseout)) {
+                refreshTemperatureAfterStablePanMutation("过保丢弃完成清空烤盘：pan=${kaoPan.positionSn}")
+            }
             PanPhysicalStateDeltaReporter.reportPanChanged(
                 changedPan = kaoPan,
                 reason = "discardSausage_success:pan=${kaoPan.positionSn}:source=$source",
