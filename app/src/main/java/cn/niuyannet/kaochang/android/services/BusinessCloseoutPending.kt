@@ -88,3 +88,21 @@ internal fun canFinalizeBusinessCloseout(
     !recoveryBlocked &&
     !emergencyResetPending &&
     !hasSupplementEvidence
+
+internal fun canIssueBusinessCloseoutDiscardCommand(
+    onlineStatus: Int,
+    automaticRestSource: Boolean,
+    errorStatus: Int,
+    inspectionMode: Int,
+    faultHeatPauseActive: Int,
+    orderPending: Boolean,
+    recoveryBlocked: Boolean,
+    lowerPlatformBlocked: Boolean
+): Boolean = onlineStatus == 2 &&
+    automaticRestSource &&
+    errorStatus == 0 &&
+    inspectionMode == 0 &&
+    faultHeatPauseActive == 0 &&
+    !orderPending &&
+    !recoveryBlocked &&
+    !lowerPlatformBlocked

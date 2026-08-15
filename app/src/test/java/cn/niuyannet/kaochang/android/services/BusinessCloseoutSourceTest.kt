@@ -98,6 +98,63 @@ class BusinessCloseoutSourceTest {
     }
 
     @Test
+    fun closeout_shouldCommitRestUnderExistingLockAndPauseOnlyAfterFullGate() {
+        val source = algorithmSource()
+        val restGate = functionBlock(
+            source,
+            "private fun ensureBusinessCloseoutRestGate(",
+            "private fun currentBusinessCloseoutDiscardGate("
+        )
+        val closeout = functionBlock(
+            source,
+            "private suspend fun processBusinessCloseoutPendingIfAny(",
+            "private fun finalizeBusinessCloseoutIfAllClear("
+        )
+        val safetyGate = closeout.indexOf("currentBusinessCloseoutDiscardGate(")
+        val pause = closeout.indexOf("KaoChangOperate.pauseBusiness()")
+
+        assertTrue(restGate.contains("KaoChangOperate.withFaultHeatTransitionLock"))
+        assertTrue(restGate.contains("SupplementPauseController.shouldPauseForOrder()"))
+        assertTrue("停热必须晚于完整机械安全门禁", safetyGate >= 0 && pause > safetyGate)
+        assertTrue("停热失败必须保留 pending 并结束本轮", closeout.contains("if (!KaoChangOperate.pauseBusiness())"))
+    }
+
+    @Test
+    fun closeoutDiscard_shouldUseDedicatedLockedAdmissionAndContainOrdinaryException() {
+        val algorithm = algorithmSource()
+        val closeout = functionBlock(
+            algorithm,
+            "private suspend fun processBusinessCloseoutPendingIfAny(",
+            "private fun finalizeBusinessCloseoutIfAllClear("
+        )
+        val operate = functionBlock(
+            operateSource(),
+            "suspend fun discardSausage(",
+            "private fun isAutomaticMechanicalCommandStillAllowed("
+        )
+        val cancellation = closeout.indexOf("catch (cancelled: CancellationException)")
+        val ordinary = closeout.indexOf("catch (error: Exception)")
+
+        assertTrue(closeout.contains("businessCloseout = true"))
+        assertTrue(operate.contains("isBusinessCloseoutDiscardStillAllowed"))
+        assertTrue(operate.contains("admitDiscardCommandIntent("))
+        assertTrue("CancellationException 必须继续抛出", cancellation >= 0 && closeout.indexOf("throw cancelled", cancellation) > cancellation)
+        assertTrue("普通异常必须在收口层失败关闭", ordinary > cancellation)
+    }
+
+    @Test
+    fun pauseBusiness_shouldRequireAllExistingWritesToSucceed() {
+        val pause = functionBlock(
+            operateSource(),
+            "fun pauseBusiness()",
+            "/**\n     * 营业时间开始"
+        )
+
+        assertTrue(pause.contains("Boolean"))
+        assertTrue(pause.contains("area1.isSuccess && area2.isSuccess && area3.isSuccess"))
+    }
+
+    @Test
     fun legacyEndBusinessHours_shouldOnlyRequestDurableCloseout() {
         val endBusiness = functionBlock(
             operateSource(),

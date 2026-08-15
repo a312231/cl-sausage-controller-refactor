@@ -16,6 +16,7 @@ import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -1073,28 +1074,39 @@ object KaoChangAlgorithm {
         )
     }
 
-    private fun ensureBusinessCloseoutRestGate(config: AppConfigBean): Boolean {
-        if (SupplementPauseController.shouldPauseForOrder() || config.onlineStatus == 4) {
-            logBusinessCloseoutBlocked("订单尚未结束", config)
+    private fun ensureBusinessCloseoutRestGate(): Boolean {
+        var restStateChanged = false
+        var lockedBlockReason: String? = null
+        val restGateReady = KaoChangOperate.withFaultHeatTransitionLock {
+            val lockedConfig = AppConfig.getAppConfig()
+            if (SupplementPauseController.shouldPauseForOrder() || lockedConfig.onlineStatus == 4) {
+                lockedBlockReason = "订单尚未结束"
+                false
+            } else if (lockedConfig.onlineStatus == 1) {
+                val previousOnlineStatus = lockedConfig.onlineStatus
+                val previousRestStatusSource = lockedConfig.restStatusSource
+                lockedConfig.onlineStatus = 2
+                lockedConfig.restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
+                runCatching {
+                    AppConfig.saveAppConfigDurable(lockedConfig)
+                    restStateChanged = true
+                    true
+                }.getOrElse { error ->
+                    lockedConfig.onlineStatus = previousOnlineStatus
+                    lockedConfig.restStatusSource = previousRestStatusSource
+                    lockedBlockReason = "营业结束休息态落盘失败：${error.message}"
+                    false
+                }
+            } else {
+                true
+            }
+        }
+        if (!restGateReady) {
+            val latest = AppConfig.getAppConfig()
+            logBusinessCloseoutBlocked(lockedBlockReason ?: "休息态提交被拒绝", latest)
             return false
         }
-        if (config.onlineStatus == 1) {
-            val previousOnlineStatus = config.onlineStatus
-            val previousRestStatusSource = config.restStatusSource
-            config.onlineStatus = 2
-            config.restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
-            val saved = runCatching {
-                AppConfig.saveAppConfigDurable(config)
-                true
-            }.getOrElse { error ->
-                config.onlineStatus = previousOnlineStatus
-                config.restStatusSource = previousRestStatusSource
-                logE(LOG_DEVICE, "营业结束休息态落盘失败，保留 pending：${error.message}")
-                false
-            }
-            if (!saved) {
-                return false
-            }
+        if (restStateChanged) {
             HomeUiRefreshBridge.requestRefresh("business_closeout:rest_gate")
             SendServerHelper.publishServiceUpdateStatus()
         }
@@ -1106,10 +1118,6 @@ object KaoChangAlgorithm {
         ) {
             logBusinessCloseoutBlocked("当前状态不允许自动营业收口", latest)
             return false
-        }
-        if (!businessCloseoutHeatingPausedInProcess) {
-            KaoChangOperate.pauseBusiness()
-            businessCloseoutHeatingPausedInProcess = true
         }
         return true
     }
@@ -1138,16 +1146,22 @@ object KaoChangAlgorithm {
         if (!businessCloseoutPendingRepository.isPending()) {
             return false
         }
-        val config = AppConfig.getAppConfig()
-        if (!ensureBusinessCloseoutRestGate(config)) {
-            return true
-        }
-        if (finalizeBusinessCloseoutIfAllClear()) {
+        if (!ensureBusinessCloseoutRestGate()) {
             return true
         }
         val latest = AppConfig.getAppConfig()
         if (!currentBusinessCloseoutDiscardGate(latest)) {
             logBusinessCloseoutBlocked("订单、故障、检修、通信或机械恢复门禁未清", latest)
+            return true
+        }
+        if (!businessCloseoutHeatingPausedInProcess) {
+            if (!KaoChangOperate.pauseBusiness()) {
+                logBusinessCloseoutBlocked("三区停热未全部确认成功", AppConfig.getAppConfig())
+                return true
+            }
+            businessCloseoutHeatingPausedInProcess = true
+        }
+        if (finalizeBusinessCloseoutIfAllClear()) {
             return true
         }
 
@@ -1184,12 +1198,24 @@ object KaoChangAlgorithm {
                 logBusinessCloseoutBlocked("下一盘丢弃前门禁已变化", beforeDiscard)
                 return true
             }
-            val discarded = KaoChangOperate.discardSausage(
-                kaoPan = kaoPan,
-                source = "营业结束丢弃",
-                detail = "营业结束耐久收口",
-                automatic = false
-            )
+            val discarded = try {
+                KaoChangOperate.discardSausage(
+                    kaoPan = kaoPan,
+                    source = "营业结束丢弃",
+                    detail = "营业结束耐久收口",
+                    automatic = false,
+                    businessCloseout = true
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                logE(
+                    LOG_DEVICE,
+                    "营业结束丢弃异常，保留 pending 并停止本轮：pan=${kaoPan.positionSn}，" +
+                        "error=${error.message ?: error.javaClass.simpleName}"
+                )
+                return true
+            }
             if (!discarded) {
                 logBusinessCloseoutBlocked("烤盘${kaoPan.positionSn}丢弃未确认成功，停止本轮", AppConfig.getAppConfig())
                 return true

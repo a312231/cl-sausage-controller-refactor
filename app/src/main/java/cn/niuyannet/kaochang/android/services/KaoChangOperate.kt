@@ -4787,13 +4787,14 @@ object KaoChangOperate {
 
     private fun admitDiscardCommandIntent(
         owner: String,
-        automatic: Boolean
+        automatic: Boolean,
+        businessCloseout: Boolean = false
     ): AutomaticMechanicalCommandAdmissionResult = AutomaticMechanicalCommandAdmissionCoordinator(
         transitionLock = faultHeatTransitionLock,
         orderPending = SupplementPauseController::shouldPauseForOrder,
         currentOwner = { discardJournalStore.load()?.owner },
         currentMoveStatus = mechanicalMoveStatusStore::load,
-        automaticCommandAllowed = ::isAutomaticDiscardStillAllowed,
+        automaticCommandAllowed = { isDiscardCommandStillAllowed(owner, businessCloseout) },
         emergencyResetRecoveryPending = ::isEmergencyResetRecoveryPending,
         saveCommandIntent = {
             val current = discardJournalStore.load()
@@ -9736,7 +9737,8 @@ object KaoChangOperate {
         kaoPan: KaoPan,
         source: String = "过保到期",
         detail: String? = null,
-        automatic: Boolean = true
+        automatic: Boolean = true,
+        businessCloseout: Boolean = false
     ) :Boolean {
         val owner = "discard:${kaoPan.positionSn}:${System.currentTimeMillis()}"
         val tasteLabel = getPanTasteLabel(kaoPan)
@@ -9762,11 +9764,13 @@ object KaoChangOperate {
                 ownerStore = discardClaimOwnerStore(discardJournal),
                 allowedMoveStatuses = setOf(0),
                 claimedMoveStatus = 4,
-                requireSupplementGate = automatic
+                requireSupplementGate = automatic && !businessCloseout,
+                claimGate = { !businessCloseout || isBusinessCloseoutDiscardStillAllowed(owner) }
             )
         ) {
             return false
         }
+        val requiresLockedAdmission = automatic || businessCloseout
         if (automatic && !isAutomaticDiscardStillAllowed()) {
             val released = releaseMechanicalMove(
                 "过保丢弃认领后订单门禁失败",
@@ -9798,7 +9802,11 @@ object KaoChangOperate {
                 runningTimeoutMs = 120_000L,
                 requireRunningBeforeIdleSuccess = true
             ) {
-                when (val admission = admitDiscardCommandIntent(owner, automatic)) {
+                when (val admission = admitDiscardCommandIntent(
+                    owner = owner,
+                    automatic = requiresLockedAdmission,
+                    businessCloseout = businessCloseout
+                )) {
                     AutomaticMechanicalCommandAdmissionResult.Admitted -> commandAttempted = true
                     is AutomaticMechanicalCommandAdmissionResult.Rejected -> {
                         throw AutomaticMechanicalDispatchPreemptedException()
@@ -9982,6 +9990,36 @@ object KaoChangOperate {
 
     private fun isAutomaticDiscardStillAllowed(): Boolean =
         isAutomaticMechanicalCommandStillAllowed()
+
+    private fun isDiscardCommandStillAllowed(owner: String, businessCloseout: Boolean): Boolean =
+        if (businessCloseout) {
+            isBusinessCloseoutDiscardStillAllowed(owner)
+        } else {
+            isAutomaticDiscardStillAllowed()
+        }
+
+    private fun isBusinessCloseoutDiscardStillAllowed(owner: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        val recoveryBlocked = !actionGroupRecoveryVerified ||
+            actionGroupSessionStore.load() != null ||
+            panMoveJournalStore.load() != null ||
+            discardJournalStore.load()?.owner?.let { it != owner } == true ||
+            hasBlockingSupplementPrefetchEvidence()
+        return canIssueBusinessCloseoutDiscardCommand(
+            onlineStatus = config.onlineStatus,
+            automaticRestSource = AppConfig.normalizeRestStatusSource(config.restStatusSource) ==
+                AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS,
+            errorStatus = config.errorStatus,
+            inspectionMode = config.inspectionMode,
+            faultHeatPauseActive = config.faultHeatPauseActive,
+            orderPending = SupplementPauseController.shouldPauseForOrder(),
+            recoveryBlocked = recoveryBlocked,
+            lowerPlatformBlocked = AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                config.lowerPlatformStatus,
+                config.lowerPlatformIsolationActionName
+            )
+        )
+    }
     /**
      * 读取烤盘温度
      * area 1，2，3区
@@ -10568,12 +10606,11 @@ object KaoChangOperate {
      * 暂停营业时间
      * 停止加热和保温
      */
-    fun pauseBusiness() {
-        //1，2，3 区停止保温
-        writeAreaTargetTemperatureRaw(1, 0, "pauseBusiness")
-        writeAreaTargetTemperatureRaw(2, 0, "pauseBusiness")
-        writeAreaTargetTemperatureRaw(3, 0, "pauseBusiness")
-
+    fun pauseBusiness(): Boolean {
+        val area1 = writeAreaTargetTemperatureRaw(1, 0, "pauseBusiness")
+        val area2 = writeAreaTargetTemperatureRaw(2, 0, "pauseBusiness")
+        val area3 = writeAreaTargetTemperatureRaw(3, 0, "pauseBusiness")
+        return area1.isSuccess && area2.isSuccess && area3.isSuccess
     }
 
     /**
