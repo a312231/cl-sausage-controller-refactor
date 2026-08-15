@@ -288,6 +288,90 @@ class HighCurrentTrafficModeSourceTest {
         )
     }
 
+    @Test
+    fun highHeatSupplementPaths_shouldDurablyDisarmTimerBeforeHardwareDispatch() {
+        val source = sourceText()
+        val stableHigh = functionBlock(
+            source,
+            "suspend fun highTrafficMode(",
+            "/**\n     * 低并发内部高并发残留收口专用收尾。"
+        )
+        val lowToHigh = functionBlock(
+            source,
+            "private suspend fun lowTrafficModeTransition(",
+            "private suspend fun moveOldLowHeatGroupToFront("
+        )
+        val normalLaunch = functionBlock(
+            source,
+            "private suspend fun addHighHeatSausage(",
+            "private suspend fun resumeIncompleteHighHeatSupplement("
+        )
+        val resumeLaunch = functionBlock(
+            source,
+            "private suspend fun resumeIncompleteHighHeatSupplement(",
+            "/**\n     * 检查 25~33 补热区是否已经烤熟。"
+        )
+
+        assertDisarmBeforeHighHeatMove(lowToHigh, "低转高25~33新批次")
+        assertDisarmBeforeHighHeatMove(normalLaunch, "高并发稳态25~33新批次")
+        assertDisarmBeforeHighHeatMove(resumeLaunch, "25~33未完成批次续补")
+        assertPendingDisarmBeforeResume(stableHigh, "高并发稳态pending续补")
+        assertPendingDisarmBeforeResume(lowToHigh, "低转高pending续补")
+    }
+
+    @Test
+    fun highHeatReturn_shouldClearBindingBeforeArmingTimer() {
+        val source = sourceText()
+        val returnBlock = functionBlock(
+            source,
+            "private suspend fun checkHighHeatSausage(",
+            "private fun highHeatReturnPauseReason("
+        )
+        val returnCleared = returnBlock.indexOf("if (returnCleared)")
+        val clearBinding = returnBlock.indexOf(
+            "clearCompletedHeatReturnBindingIfSourcesCleared(",
+            returnCleared
+        )
+        val armTimer = returnBlock.indexOf("armHighToLowTimerIfSafe(", returnCleared)
+
+        assertTrue("必须在25~33整批回搬清空后才处理计时", returnCleared >= 0)
+        assertTrue("必须先清理回搬 binding", clearBinding > returnCleared)
+        assertTrue("必须在 binding 收口后才允许计时", armTimer > clearBinding)
+    }
+
+    @Test
+    fun highToLowTimeout_shouldRestoreOrArmDurableTimerInsteadOfUsingZeroMemoryAnchor() {
+        val source = sourceText()
+        val timeoutBlock = functionBlock(
+            source,
+            "private fun checkSwitchToLow(",
+            "/**\n     * 计算距离当日营业结束的剩余时间。"
+        )
+
+        assertTrue(
+            "高转低判断必须先恢复或安全建立耐久锚点",
+            timeoutBlock.contains("restoreOrArmHighToLowTimerIfSafe(")
+        )
+        assertFalse(
+            "不能再以内存0值直接无条件建立锚点",
+            timeoutBlock.contains("if (lastFillPitTime <= 0L)")
+        )
+    }
+
+    private fun assertDisarmBeforeHighHeatMove(functionBlock: String, pathName: String) {
+        val disarm = functionBlock.indexOf("disarmHighToLowTimerBeforeHighHeatMove(")
+        val hardwareMove = functionBlock.indexOf("moveSausagesToKaoPansByTaste(")
+        assertTrue("$pathName 必须存在计时失效入口", disarm >= 0)
+        assertTrue("$pathName 必须在硬件补肠调用前完成耐久失效", hardwareMove > disarm)
+    }
+
+    private fun assertPendingDisarmBeforeResume(functionBlock: String, pathName: String) {
+        val disarm = functionBlock.indexOf("disarmHighToLowTimerForPendingHighHeatIntent(")
+        val pendingResume = functionBlock.indexOf("handlePendingSupplementBatchIfAny(")
+        assertTrue("$pathName 必须存在计时失效入口", disarm >= 0)
+        assertTrue("$pathName 必须在pending恢复入口前完成耐久失效", pendingResume > disarm)
+    }
+
     private fun sourceText(): String {
         val sourceFile = listOf(
             File("src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt"),

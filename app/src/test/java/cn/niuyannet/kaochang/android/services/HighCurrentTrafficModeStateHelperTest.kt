@@ -12,6 +12,21 @@ import org.junit.Test
 class HighCurrentTrafficModeStateHelperTest {
 
     @Test
+    fun canArmHighToLowTimer_shouldRequireStableHighModeAndClearedEvidence() {
+        assertTrue(
+            canArmHighToLowTimer(
+                modeType = 2,
+                transitionMode = 0,
+                highHeatZoneClear = true,
+                hasPendingHighHeatEvidence = false
+            )
+        )
+        assertFalse(canArmHighToLowTimer(2, 1, true, false))
+        assertFalse(canArmHighToLowTimer(2, 0, false, false))
+        assertFalse(canArmHighToLowTimer(2, 0, true, true))
+    }
+
+    @Test
     fun resolveLowToHighTransitionIdleState_shouldKeepHighModeWhenSchedulingIsDisabled() {
         val resolved = resolveLowToHighTransitionIdleState(
             currentModeType = 2,
@@ -94,7 +109,7 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
-    fun recordSupplementLaunch_shouldRefreshTrackingWhenTransitionStartsNewBatch() {
+    fun recordSupplementLaunch_shouldRecordBatchSizeWithoutMovingTimerAnchor() {
         val previous = HighTrafficSupplementTrackingState(
             pitCount = 0,
             lastFillPitTime = 1_000L
@@ -102,12 +117,11 @@ class HighCurrentTrafficModeStateHelperTest {
 
         val updated = recordHighTrafficSupplementLaunch(
             previous = previous,
-            filledCount = 9,
-            now = 20_000L
+            filledCount = 9
         )
 
         assertEquals(9, updated.pitCount)
-        assertEquals(20_000L, updated.lastFillPitTime)
+        assertEquals(1_000L, updated.lastFillPitTime)
     }
 
     @Test
@@ -119,8 +133,7 @@ class HighCurrentTrafficModeStateHelperTest {
 
         val updated = recordHighTrafficSupplementLaunch(
             previous = previous,
-            filledCount = 0,
-            now = 99_999L
+            filledCount = 0
         )
 
         assertEquals(previous, updated)
@@ -136,12 +149,11 @@ class HighCurrentTrafficModeStateHelperTest {
         val updated = recordHighTrafficSupplementLaunchOutcome(
             previous = previous,
             requestedTargetCount = 2,
-            movedCount = 2,
-            now = 20_000L
+            movedCount = 2
         )
 
         assertEquals(2, updated.pitCount)
-        assertEquals(20_000L, updated.lastFillPitTime)
+        assertEquals(1_000L, updated.lastFillPitTime)
     }
 
     @Test
@@ -154,12 +166,11 @@ class HighCurrentTrafficModeStateHelperTest {
         val updated = recordHighTrafficSupplementLaunchOutcome(
             previous = previous,
             requestedTargetCount = 9,
-            movedCount = 2,
-            now = 20_000L
+            movedCount = 2
         )
 
         assertEquals("异常中断残缺批次不能记成 2 根小批次，否则恢复后不会续补 27~33", 0, updated.pitCount)
-        assertEquals(20_000L, updated.lastFillPitTime)
+        assertEquals(1_000L, updated.lastFillPitTime)
         assertTrue(
             shouldResumeIncompleteHighHeatBatch(
                 pitCount = updated.pitCount,

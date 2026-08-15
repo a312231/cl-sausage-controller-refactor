@@ -111,23 +111,21 @@ internal fun resolveLowToHighTransitionCompletionState(
 
 internal fun recordHighTrafficSupplementLaunch(
     previous: HighTrafficSupplementTrackingState,
-    filledCount: Int,
-    now: Long
+    filledCount: Int
 ): HighTrafficSupplementTrackingState {
     if (filledCount <= 0) {
         return previous
     }
     return HighTrafficSupplementTrackingState(
         pitCount = filledCount,
-        lastFillPitTime = now
+        lastFillPitTime = previous.lastFillPitTime
     )
 }
 
 internal fun recordHighTrafficSupplementLaunchOutcome(
     previous: HighTrafficSupplementTrackingState,
     requestedTargetCount: Int,
-    movedCount: Int,
-    now: Long
+    movedCount: Int
 ): HighTrafficSupplementTrackingState {
     if (movedCount <= 0) {
         return previous
@@ -135,12 +133,12 @@ internal fun recordHighTrafficSupplementLaunchOutcome(
     if (requestedTargetCount > 0 && movedCount < requestedTargetCount) {
         return HighTrafficSupplementTrackingState(
             pitCount = 0,
-            lastFillPitTime = now
+            lastFillPitTime = previous.lastFillPitTime
         )
     }
     return HighTrafficSupplementTrackingState(
         pitCount = movedCount,
-        lastFillPitTime = now
+        lastFillPitTime = previous.lastFillPitTime
     )
 }
 
@@ -321,6 +319,16 @@ internal fun shouldSwitchHighToLowByTimeout(
     val thresholdMs = timeThresholdLowMinutes * 60 * 1000L
     return now - lastFillPitTime > thresholdMs
 }
+
+internal fun canArmHighToLowTimer(
+    modeType: Int,
+    transitionMode: Int,
+    highHeatZoneClear: Boolean,
+    hasPendingHighHeatEvidence: Boolean
+): Boolean = modeType == 2 &&
+    transitionMode == 0 &&
+    highHeatZoneClear &&
+    !hasPendingHighHeatEvidence
 
 internal fun canFinishHighToLowDrain(
     frontSausageCount: Int,

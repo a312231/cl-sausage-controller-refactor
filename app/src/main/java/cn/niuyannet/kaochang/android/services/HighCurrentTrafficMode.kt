@@ -22,8 +22,13 @@ object HighCurrentTrafficMode {
     /** 已触发的高并发补肠坑位计数，仅用于状态观察。 */
     private var pitCount = 0
 
-    /** 最近一次高并发补肠成功时间，用于判断高转低。 */
+    /** 25~33 整批回搬安全收口后的高转低计时锚点。 */
     private var lastFillPitTime = 0L
+
+    private val highToLowTimerRepository = HighToLowTimerStateRepository(
+        SharedPreferenceHighToLowTimerStateStore()
+    )
+    private var timerStateRestoredInProcess = false
 
     private var lastHighTrafficSnapshot: String? = null
     private var lastLowToHighPartialWaitSnapshot: LowToHighPartialWaitLogSnapshot? = null
@@ -73,14 +78,12 @@ object HighCurrentTrafficMode {
 
     private fun recordSupplementLaunch(
         filledCount: Int,
-        now: Long,
         reason: String
     ) {
         applySupplementTrackingState(
             nextState = recordHighTrafficSupplementLaunch(
                 previous = currentSupplementTrackingState(),
-                filledCount = filledCount,
-                now = now
+                filledCount = filledCount
             ),
             reason = reason
         )
@@ -89,15 +92,13 @@ object HighCurrentTrafficMode {
     private fun recordSupplementLaunchOutcome(
         requestedTargetCount: Int,
         movedCount: Int,
-        now: Long,
         reason: String
     ) {
         applySupplementTrackingState(
             nextState = recordHighTrafficSupplementLaunchOutcome(
                 previous = currentSupplementTrackingState(),
                 requestedTargetCount = requestedTargetCount,
-                movedCount = movedCount,
-                now = now
+                movedCount = movedCount
             ),
             reason = reason
         )
@@ -108,6 +109,92 @@ object HighCurrentTrafficMode {
             nextState = currentSupplementTrackingState().copy(pitCount = 0),
             reason = reason
         )
+    }
+
+    private fun disarmHighToLowTimerDurably(reason: String): Boolean {
+        if (!highToLowTimerRepository.disarmDurably()) {
+            LogUtils.e(TAG, "【并发切换】高转低计时失效落盘失败：reason=$reason")
+            return false
+        }
+        lastFillPitTime = 0L
+        timerStateRestoredInProcess = true
+        return true
+    }
+
+    private fun disarmHighToLowTimerBeforeHighHeatMove(reason: String): Boolean {
+        if (disarmHighToLowTimerDurably(reason)) {
+            return true
+        }
+        LogUtils.e(TAG, "【并发切换】为避免旧计时误触发高转低，本次不启动25~33补肠：reason=$reason")
+        return false
+    }
+
+    private fun disarmHighToLowTimerForPendingHighHeatIntent(
+        intent: SupplementBatchIntent?,
+        reason: String
+    ): Boolean {
+        val hasPendingHighHeatTarget = intent
+            ?.remainingTargets()
+            ?.any { it.resolvedOriginBatchType() == SupplementBatchType.HIGH_HEAT_25_33 }
+            ?: false
+        return !hasPendingHighHeatTarget || disarmHighToLowTimerBeforeHighHeatMove(reason)
+    }
+
+    private fun armHighToLowTimerIfSafe(
+        highHeatZoneClear: Boolean,
+        reason: String
+    ): Boolean {
+        val config = AppConfig.getAppConfig()
+        if (config.modeType != 2 || config.transitionMode != 0 || !highHeatZoneClear) {
+            return false
+        }
+        val hasPendingHighHeatEvidence = KaoChangOperate
+            .maintenanceKaoPanIntentForUi()
+            ?.targets
+            ?.any {
+                !it.cancelledByFaultTimeout &&
+                    !it.skippedBySupplyDegrade &&
+                    it.resolvedOriginBatchType() == SupplementBatchType.HIGH_HEAT_25_33
+            }
+            ?: false
+        if (
+            !canArmHighToLowTimer(
+                modeType = config.modeType,
+                transitionMode = config.transitionMode,
+                highHeatZoneClear = highHeatZoneClear,
+                hasPendingHighHeatEvidence = hasPendingHighHeatEvidence
+            )
+        ) {
+            return false
+        }
+        val now = System.currentTimeMillis()
+        if (!highToLowTimerRepository.armDurably(now)) {
+            LogUtils.e(TAG, "【并发切换】高转低计时锚点落盘失败，保持未计时：reason=$reason")
+            return false
+        }
+        lastFillPitTime = now
+        timerStateRestoredInProcess = true
+        LogUtils.i(TAG, "【并发切换】高转低计时已从安全收口点开始：reason=$reason，anchorAtMs=$now")
+        return true
+    }
+
+    private fun restoreOrArmHighToLowTimerIfSafe(
+        kaoPanList: List<KaoPan>,
+        reason: String
+    ): Boolean {
+        if (timerStateRestoredInProcess && lastFillPitTime > 0L) {
+            return true
+        }
+        val highHeatZoneClear = TrafficModeHelper
+            .getTrafficModePositions(25, 33, kaoPanList)
+            .none { it.isHasSausage }
+        if (!highHeatZoneClear) {
+            if (!timerStateRestoredInProcess) {
+                disarmHighToLowTimerDurably("进程恢复时25~33尚未清空")
+            }
+            return false
+        }
+        return armHighToLowTimerIfSafe(highHeatZoneClear = highHeatZoneClear, reason = reason)
     }
 
     private fun clearLowToHighPartialWaitSnapshot() {
@@ -291,6 +378,13 @@ object HighCurrentTrafficMode {
                         "【高并发补肠】25~33 持久化批次证据不可信，阻断 pending 自动续补：" +
                             "persistedBatchState=$persistedBatchState，batchId=${activeIntent?.batchId}"
                     )
+                    KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
+                } else if (
+                    !disarmHighToLowTimerForPendingHighHeatIntent(
+                        activeIntent,
+                        "高并发正常态pending续补"
+                    )
+                ) {
                     KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
                 } else {
                     KaoChangOperate.handlePendingSupplementBatchIfAny(
@@ -573,6 +667,13 @@ object HighCurrentTrafficMode {
                     "persistedBatchState=$persistedBatchStateBeforePending，batchId=${activeIntentBeforePending?.batchId}"
             )
             KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
+        } else if (
+            !disarmHighToLowTimerForPendingHighHeatIntent(
+                activeIntentBeforePending,
+                "低转高过渡pending续补"
+            )
+        ) {
+            KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
         } else {
             KaoChangOperate.handlePendingSupplementBatchIfAny(
                 allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
@@ -657,7 +758,10 @@ object HighCurrentTrafficMode {
                 )
             }
 
-            val movedCount = if (validInitialPlan) {
+            val movedCount = if (
+                validInitialPlan &&
+                disarmHighToLowTimerBeforeHighHeatMove("低转高过渡启动25~33高并发补肠")
+            ) {
                 reportPlannedPanState(
                     pans = list1_21 + list25_33,
                     reason = "低转高25~33实际数量补肠规划已确定",
@@ -681,7 +785,6 @@ object HighCurrentTrafficMode {
                 recordSupplementLaunchOutcome(
                     requestedTargetCount = targets.size,
                     movedCount = movedCount,
-                    now = System.currentTimeMillis(),
                     reason = "低转高过渡启动25~33高并发补肠"
                 )
                 LogUtils.i(
@@ -1239,6 +1342,9 @@ object HighCurrentTrafficMode {
                 reason = "高并发25~33实际数量补肠规划已确定",
                 source = "high_heat_25_33_planned"
             )
+            if (!disarmHighToLowTimerBeforeHighHeatMove("高并发正常态向25~33批量补肠")) {
+                return 0
+            }
             KaoChangOperate.heating(3)
             val targets = plannedTargets.map { target ->
                 KaoChangOperate.SupplementTarget(
@@ -1255,7 +1361,6 @@ object HighCurrentTrafficMode {
                 recordSupplementLaunchOutcome(
                     requestedTargetCount = targets.size,
                     movedCount = movedCount,
-                    now = System.currentTimeMillis(),
                     reason = "高并发正常态向25~33批量补肠"
                 )
                 if (movedCount < targets.size) {
@@ -1297,6 +1402,9 @@ object HighCurrentTrafficMode {
             source = "high_heat_25_33_resume_planned"
         )
 
+        if (!disarmHighToLowTimerBeforeHighHeatMove(reason)) {
+            return 0
+        }
         KaoChangOperate.heating(3)
         LogUtils.i(
             TAG,
@@ -1316,7 +1424,6 @@ object HighCurrentTrafficMode {
         if (movedCount > 0) {
             recordSupplementLaunch(
                 filledCount = movedCount,
-                now = System.currentTimeMillis(),
                 reason = reason
             )
             LogUtils.i(
@@ -1426,6 +1533,10 @@ object HighCurrentTrafficMode {
                     types = setOf(SupplementBatchType.HIGH_HEAT_25_33),
                     sourcePositionsWithSausage = list25_33.filter { it.isHasSausage }.map { it.positionSn }.toSet(),
                     reason = "高并发25~33补热区回搬完成"
+                )
+                armHighToLowTimerIfSafe(
+                    highHeatZoneClear = returnCleared,
+                    reason = "25~33整批成熟并成功回搬收口"
                 )
             } else if (pausedReason != null) {
                 LogUtils.i(
@@ -1744,14 +1855,15 @@ object HighCurrentTrafficMode {
             }
         }
 
-        val currentTime = System.currentTimeMillis()
-        if (lastFillPitTime <= 0L) {
-            applySupplementTrackingState(
-                nextState = currentSupplementTrackingState().copy(lastFillPitTime = currentTime),
-                reason = "高并发稳态建立高转低计时锚点，boxSupplyAvailable=$boxSupplyAvailable"
+        if (
+            !restoreOrArmHighToLowTimerIfSafe(
+                kaoPanList = kaoPanList,
+                reason = "高并发稳态建立或恢复高转低计时锚点，boxSupplyAvailable=$boxSupplyAvailable"
             )
+        ) {
             return
         }
+        val currentTime = System.currentTimeMillis()
         val timeSinceLastFill = currentTime - lastFillPitTime
         val timeThresholdLowMinutes = AppConfig.getAppConfig().timeThresholdLow
         if (shouldSwitchHighToLowByTimeout(lastFillPitTime, currentTime, timeThresholdLowMinutes)) {
