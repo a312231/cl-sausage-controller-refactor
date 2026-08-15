@@ -202,8 +202,12 @@ class BusinessCloseoutSourceTest {
             "fun finalizeBusinessCloseoutAfterManualPanClear()"
         )
         assertTrue(prepare.contains("businessCloseoutPendingRepository.isPending()"))
-        assertTrue(prepare.contains("foldBusinessCloseoutManualTakeoverToMaintenance(config)"))
+        assertTrue(prepare.contains("config.onlineStatus = 3"))
+        assertTrue(prepare.contains("config.isEnable = 0"))
+        assertFalse(prepare.contains("config.errorStatus ="))
+        assertFalse(prepare.contains("config.modeType ="))
         assertTrue(prepare.contains("AppConfig.saveAppConfigDurable(config)"))
+        assertTrue(prepare.contains("HomeUiRefreshBridge.requestRefresh("))
 
         val wrapper = functionBlock(
             maintenanceSource(),

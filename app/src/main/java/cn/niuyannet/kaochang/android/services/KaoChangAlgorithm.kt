@@ -246,9 +246,11 @@ object KaoChangAlgorithm {
         val previousOnlineStatus = config.onlineStatus
         val previousIsEnable = config.isEnable
         val previousRestStatusSource = config.restStatusSource
-        foldBusinessCloseoutManualTakeoverToMaintenance(config)
+        config.onlineStatus = 3
+        config.isEnable = 0
         return runCatching {
             AppConfig.saveAppConfigDurable(config)
+            HomeUiRefreshBridge.requestRefresh("business_closeout:manual_takeover")
             logI(LOG_DEVICE, "人工清盘接管营业收口：已耐久进入维护态并关闭算法")
             true
         }.getOrElse { error ->
