@@ -195,6 +195,27 @@ class BusinessCloseoutSourceTest {
     }
 
     @Test
+    fun maintenancePanClear_shouldEnterMaintenanceBeforeTakingOverCloseout() {
+        val prepare = functionBlock(
+            algorithmSource(),
+            "fun prepareBusinessCloseoutForManualPanClear()",
+            "fun finalizeBusinessCloseoutAfterManualPanClear()"
+        )
+        assertTrue(prepare.contains("businessCloseoutPendingRepository.isPending()"))
+        assertTrue(prepare.contains("foldBusinessCloseoutManualTakeoverToMaintenance(config)"))
+        assertTrue(prepare.contains("AppConfig.saveAppConfigDurable(config)"))
+
+        val wrapper = functionBlock(
+            maintenanceSource(),
+            "private suspend fun takeOverBusinessCloseoutDiscardIfNeeded(",
+            "private fun performClearAll("
+        )
+        val enterMaintenance = wrapper.indexOf("prepareBusinessCloseoutForManualPanClear()")
+        val takeover = wrapper.indexOf("takeOverBusinessCloseoutDiscardForManualPanClear(reason)")
+        assertTrue("必须先进入维护态，再按既有策略接管丢弃 journal", enterMaintenance >= 0 && takeover > enterMaintenance)
+    }
+
+    @Test
     fun maintenancePanClear_shouldFinalizePendingAsLowConcurrencyAfterPanClear() {
         val finalize = functionBlock(
             algorithmSource(),

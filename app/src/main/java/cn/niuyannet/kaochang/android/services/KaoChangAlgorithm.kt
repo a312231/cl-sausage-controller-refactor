@@ -238,6 +238,28 @@ object KaoChangAlgorithm {
         return true
     }
 
+    fun prepareBusinessCloseoutForManualPanClear(): Boolean {
+        if (!businessCloseoutPendingRepository.isPending()) {
+            return true
+        }
+        val config = AppConfig.getAppConfig()
+        val previousOnlineStatus = config.onlineStatus
+        val previousIsEnable = config.isEnable
+        val previousRestStatusSource = config.restStatusSource
+        foldBusinessCloseoutManualTakeoverToMaintenance(config)
+        return runCatching {
+            AppConfig.saveAppConfigDurable(config)
+            logI(LOG_DEVICE, "人工清盘接管营业收口：已耐久进入维护态并关闭算法")
+            true
+        }.getOrElse { error ->
+            config.onlineStatus = previousOnlineStatus
+            config.isEnable = previousIsEnable
+            config.restStatusSource = previousRestStatusSource
+            logE(LOG_DEVICE, "人工清盘接管营业收口进入维护态失败，保留 pending：${error.message}")
+            false
+        }
+    }
+
     fun finalizeBusinessCloseoutAfterManualPanClear(): Boolean {
         if (!businessCloseoutPendingRepository.isPending()) {
             return true

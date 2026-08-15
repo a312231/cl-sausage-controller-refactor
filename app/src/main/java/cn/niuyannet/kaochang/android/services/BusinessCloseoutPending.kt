@@ -18,6 +18,11 @@ internal fun foldBusinessCloseoutAfterManualPanClear(config: AppConfigBean) {
     config.highConcurrencyResidualDrain = 0
 }
 
+internal fun foldBusinessCloseoutManualTakeoverToMaintenance(config: AppConfigBean) {
+    config.onlineStatus = 3
+    config.isEnable = 0
+}
+
 internal interface BusinessCloseoutPendingStore {
     fun loadRaw(): String?
     fun saveRawDurably(raw: String): Boolean

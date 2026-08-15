@@ -44,4 +44,25 @@ class BusinessCloseoutManualTakeoverTest {
         assertEquals(AppConfigBean.ERROR_STATUS_HARDWARE, config.errorStatus)
         assertEquals(0, config.isEnable)
     }
+
+    @Test
+    fun manualTakeoverFold_shouldEnterMaintenanceWithoutChangingConcurrencyOrError() {
+        val config = AppConfigBean().apply {
+            onlineStatus = 2
+            isEnable = 1
+            errorStatus = AppConfigBean.ERROR_STATUS_NORMAL
+            modeType = 2
+            transitionMode = 2
+            highConcurrencyResidualDrain = 1
+        }
+
+        foldBusinessCloseoutManualTakeoverToMaintenance(config)
+
+        assertEquals(3, config.onlineStatus)
+        assertEquals(0, config.isEnable)
+        assertEquals(AppConfigBean.ERROR_STATUS_NORMAL, config.errorStatus)
+        assertEquals(2, config.modeType)
+        assertEquals(2, config.transitionMode)
+        assertEquals(1, config.highConcurrencyResidualDrain)
+    }
 }

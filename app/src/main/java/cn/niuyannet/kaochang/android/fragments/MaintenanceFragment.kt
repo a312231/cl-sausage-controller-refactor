@@ -1399,6 +1399,13 @@ class MaintenanceFragment : Fragment() {
     }
 
     private suspend fun takeOverBusinessCloseoutDiscardIfNeeded(reason: String): Boolean {
+        val prepared = withContext(Dispatchers.IO) {
+            KaoChangAlgorithm.prepareBusinessCloseoutForManualPanClear()
+        }
+        if (!prepared) {
+            ToastUtils.showLong("营业收口未能进入维护态，请重试")
+            return false
+        }
         val result = withContext(Dispatchers.IO) {
             KaoChangOperate.takeOverBusinessCloseoutDiscardForManualPanClear(reason)
         }
