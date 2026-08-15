@@ -1501,6 +1501,16 @@ class MaintenanceFragment : Fragment() {
                 FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击清空烤盘")
                 KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
+                val closeoutFinalized = withContext(Dispatchers.IO) {
+                    KaoChangAlgorithm.finalizeBusinessCloseoutAfterManualPanClear()
+                }
+                if (!closeoutFinalized) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showLong("营业收口状态未完成，请确认烤盘已清空后重试")
+                    clearPanCooldownJob = null
+                    return@launch
+                }
                 clearRuntimeStateAfterManualPanReset("点击清空烤盘")
                 AdminOperationLogger.i(
                     action = "清空烤盘",
@@ -1626,6 +1636,16 @@ class MaintenanceFragment : Fragment() {
                 FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击丢弃所有烤肠并重置烤盘")
                 KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
+                val closeoutFinalized = withContext(Dispatchers.IO) {
+                    KaoChangAlgorithm.finalizeBusinessCloseoutAfterManualPanClear()
+                }
+                if (!closeoutFinalized) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showLong("营业收口状态未完成，请确认烤盘已清空后重试")
+                    resetPanCooldownJob = null
+                    return@launch
+                }
                 clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
                 AdminOperationLogger.i(
                     action = "丢弃所有烤肠并重置烤盘",

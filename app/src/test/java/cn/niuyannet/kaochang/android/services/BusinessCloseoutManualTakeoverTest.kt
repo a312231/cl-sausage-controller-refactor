@@ -1,5 +1,7 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,5 +22,26 @@ class BusinessCloseoutManualTakeoverTest {
         assertTrue(canManuallyTakeOverBusinessCloseoutDiscard(businessCloseout))
         assertFalse(canManuallyTakeOverBusinessCloseoutDiscard(expiredDiscard))
         assertFalse(canManuallyTakeOverBusinessCloseoutDiscard(null))
+    }
+
+    @Test
+    fun manualPanClearFold_shouldOnlyResetConcurrencyFields() {
+        val config = AppConfigBean().apply {
+            modeType = 2
+            transitionMode = 2
+            highConcurrencyResidualDrain = 1
+            onlineStatus = 3
+            errorStatus = AppConfigBean.ERROR_STATUS_HARDWARE
+            isEnable = 0
+        }
+
+        foldBusinessCloseoutAfterManualPanClear(config)
+
+        assertEquals(1, config.modeType)
+        assertEquals(0, config.transitionMode)
+        assertEquals(0, config.highConcurrencyResidualDrain)
+        assertEquals(3, config.onlineStatus)
+        assertEquals(AppConfigBean.ERROR_STATUS_HARDWARE, config.errorStatus)
+        assertEquals(0, config.isEnable)
     }
 }

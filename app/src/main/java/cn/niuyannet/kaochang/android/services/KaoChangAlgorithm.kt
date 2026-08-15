@@ -238,6 +238,41 @@ object KaoChangAlgorithm {
         return true
     }
 
+    fun finalizeBusinessCloseoutAfterManualPanClear(): Boolean {
+        if (!businessCloseoutPendingRepository.isPending()) {
+            return true
+        }
+        if (KaoPanHelper.getKaoPanList().any { it.isHasSausage }) {
+            return false
+        }
+        val config = AppConfig.getAppConfig()
+        val previousModeType = config.modeType
+        val previousTransitionMode = config.transitionMode
+        val previousResidualDrain = config.highConcurrencyResidualDrain
+        foldBusinessCloseoutAfterManualPanClear(config)
+        val committed = runCatching {
+            AppConfig.saveAppConfigDurable(config)
+            true
+        }.getOrElse { error ->
+            config.modeType = previousModeType
+            config.transitionMode = previousTransitionMode
+            config.highConcurrencyResidualDrain = previousResidualDrain
+            logE(LOG_DEVICE, "人工清盘后的营业收口低并发提交失败，保留 pending：${error.message}")
+            false
+        }
+        if (!committed) {
+            return false
+        }
+        if (!businessCloseoutPendingRepository.clearDurably()) {
+            logE(LOG_DEVICE, "人工清盘已提交低并发，但营业结束 pending 清理失败，等待人工重试")
+            return false
+        }
+        businessCloseoutHeatingPausedInProcess = false
+        lastBusinessCloseoutBlockKey = ""
+        logI(LOG_DEVICE, "人工清盘已完成营业收口：保持维护态并提交低并发")
+        return true
+    }
+
     fun recoverBusinessStartIfNeeded(source: String): Boolean {
         val config = AppConfig.getAppConfig()
         if (businessCloseoutPendingRepository.isPending()) {

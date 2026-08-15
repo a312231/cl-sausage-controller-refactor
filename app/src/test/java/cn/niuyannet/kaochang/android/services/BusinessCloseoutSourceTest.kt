@@ -195,6 +195,35 @@ class BusinessCloseoutSourceTest {
     }
 
     @Test
+    fun maintenancePanClear_shouldFinalizePendingAsLowConcurrencyAfterPanClear() {
+        val finalize = functionBlock(
+            algorithmSource(),
+            "fun finalizeBusinessCloseoutAfterManualPanClear()",
+            "fun recoverBusinessStartIfNeeded("
+        )
+        assertTrue(finalize.contains("businessCloseoutPendingRepository.isPending()"))
+        assertTrue(finalize.contains("KaoPanHelper.getKaoPanList().any { it.isHasSausage }"))
+        assertTrue(finalize.contains("foldBusinessCloseoutAfterManualPanClear(config)"))
+        val durableSave = finalize.indexOf("AppConfig.saveAppConfigDurable(config)")
+        val clearPending = finalize.indexOf("businessCloseoutPendingRepository.clearDurably()")
+        assertTrue("必须先耐久提交低并发再清 pending", durableSave >= 0 && clearPending > durableSave)
+
+        val maintenance = maintenanceSource()
+        val clearAll = functionBlock(
+            maintenance,
+            "private fun performClearAll(",
+            "private fun showConfirmDiscardAndResetPanDialog()"
+        )
+        val reset = functionBlock(
+            maintenance,
+            "private fun performDiscardAndResetPan()",
+            "@SuppressLint(\"NotifyDataSetChanged\")"
+        )
+        assertFinalizeAfterPanClear(clearAll)
+        assertFinalizeAfterPanClear(reset)
+    }
+
+    @Test
     fun pauseBusiness_shouldRequireAllExistingWritesToSucceed() {
         val pause = functionBlock(
             operateSource(),
@@ -235,6 +264,12 @@ class BusinessCloseoutSourceTest {
         val takeover = block.indexOf("takeOverBusinessCloseoutDiscardIfNeeded(")
         val idleWait = block.indexOf("waitUntilMachineIdleOrTimeout(")
         assertTrue("人工接管营业收口残留必须早于机械空闲等待", takeover >= 0 && idleWait > takeover)
+    }
+
+    private fun assertFinalizeAfterPanClear(block: String) {
+        val panClear = block.indexOf("KaoPanHelper.clearKaoPan()")
+        val finalize = block.indexOf("finalizeBusinessCloseoutAfterManualPanClear()")
+        assertTrue("人工清盘后必须完成营业收口低并发提交", panClear >= 0 && finalize > panClear)
     }
 
     private fun sourceText(relativePath: String): String {
