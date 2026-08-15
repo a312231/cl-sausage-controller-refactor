@@ -8,6 +8,9 @@ internal const val BUSINESS_CLOSEOUT_DISCARD_SOURCE = "营业结束丢弃"
 internal fun shouldRefreshTemperatureAfterDiscard(businessCloseout: Boolean): Boolean =
     !businessCloseout
 
+internal fun canManuallyTakeOverBusinessCloseoutDiscard(journal: DiscardJournal?): Boolean =
+    journal?.source == BUSINESS_CLOSEOUT_DISCARD_SOURCE
+
 internal interface BusinessCloseoutPendingStore {
     fun loadRaw(): String?
     fun saveRawDurably(raw: String): Boolean

@@ -169,6 +169,32 @@ class BusinessCloseoutSourceTest {
     }
 
     @Test
+    fun maintenancePanClear_shouldTakeOverBusinessCloseoutDiscardBeforeWaitingForIdle() {
+        val operate = operateSource()
+        val takeover = functionBlock(
+            operate,
+            "suspend fun takeOverBusinessCloseoutDiscardForManualPanClear(",
+            "suspend fun confirmDiscardJournalRecovery("
+        )
+        assertTrue(takeover.contains("DiscardPhysicalResult.DISCARDED"))
+
+        val maintenance = maintenanceSource()
+        val clearAll = functionBlock(
+            maintenance,
+            "private fun performClearAll(",
+            "private fun showConfirmDiscardAndResetPanDialog()"
+        )
+        val reset = functionBlock(
+            maintenance,
+            "private fun performDiscardAndResetPan()",
+            "@SuppressLint(\"NotifyDataSetChanged\")"
+        )
+
+        assertTakeoverBeforeIdleWait(clearAll)
+        assertTakeoverBeforeIdleWait(reset)
+    }
+
+    @Test
     fun pauseBusiness_shouldRequireAllExistingWritesToSucceed() {
         val pause = functionBlock(
             operateSource(),
@@ -200,6 +226,16 @@ class BusinessCloseoutSourceTest {
     private fun operateSource(): String = sourceText(
         "src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
     )
+
+    private fun maintenanceSource(): String = sourceText(
+        "src/main/java/cn/niuyannet/kaochang/android/fragments/MaintenanceFragment.kt"
+    )
+
+    private fun assertTakeoverBeforeIdleWait(block: String) {
+        val takeover = block.indexOf("takeOverBusinessCloseoutDiscardIfNeeded(")
+        val idleWait = block.indexOf("waitUntilMachineIdleOrTimeout(")
+        assertTrue("人工接管营业收口残留必须早于机械空闲等待", takeover >= 0 && idleWait > takeover)
+    }
 
     private fun sourceText(relativePath: String): String {
         val candidates = listOf(File(relativePath), File("app/$relativePath"))

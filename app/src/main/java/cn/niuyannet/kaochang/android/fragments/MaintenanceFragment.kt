@@ -1398,6 +1398,16 @@ class MaintenanceFragment : Fragment() {
         }
     }
 
+    private suspend fun takeOverBusinessCloseoutDiscardIfNeeded(reason: String): Boolean {
+        val result = withContext(Dispatchers.IO) {
+            KaoChangOperate.takeOverBusinessCloseoutDiscardForManualPanClear(reason)
+        }
+        if (!result.ok) {
+            ToastUtils.showLong(result.reason)
+        }
+        return result.ok
+    }
+
     private fun performClearAll(staleClaim: OrderDeliveryClaim?) {
         if (clearPanCooldownJob?.isActive == true) return
         if (staleClaim != null && !OrderStateManager.canCloseStaleClaim(staleClaim.orderNo)) {
@@ -1418,6 +1428,12 @@ class MaintenanceFragment : Fragment() {
         clearPanCooldownJob = lifecycleScope.launch {
             val adminBusy = beginAdminBusy("维护页清空烤盘")
             try {
+                if (!takeOverBusinessCloseoutDiscardIfNeeded("维护页清空烤盘接管营业收口残留")) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    clearPanCooldownJob = null
+                    return@launch
+                }
                 val staleClaimClosed = if (staleClaim != null) {
                     binding.tvCooldownHint.text = "正在核对并释放订单 ${staleClaim.orderNo}"
                     val closeout = withContext(Dispatchers.IO) {
@@ -1561,6 +1577,12 @@ class MaintenanceFragment : Fragment() {
         resetPanCooldownJob = lifecycleScope.launch {
             val adminBusy = beginAdminBusy("维护页丢弃所有烤肠并重置烤盘")
             try {
+                if (!takeOverBusinessCloseoutDiscardIfNeeded("维护页丢弃并重置接管营业收口残留")) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    resetPanCooldownJob = null
+                    return@launch
+                }
                 val idleReady = waitUntilMachineIdleOrTimeout(
                     reason = "维护页点击重置烤盘等待空闲",
                     waitingText = "等待机械动作完成后重置烤盘",

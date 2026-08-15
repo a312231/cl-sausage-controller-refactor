@@ -1316,6 +1316,21 @@ object KaoChangOperate {
         val panCleared: Boolean = false
     )
 
+    suspend fun takeOverBusinessCloseoutDiscardForManualPanClear(
+        reason: String
+    ): DiscardJournalRecoveryResult {
+        val journal = pendingDiscardJournalForRecovery()
+            ?: return DiscardJournalRecoveryResult(true, "没有营业收口丢弃残留")
+        if (!canManuallyTakeOverBusinessCloseoutDiscard(journal)) {
+            return DiscardJournalRecoveryResult(
+                false,
+                "存在非营业收口丢弃残留，拒绝自动接管",
+                journal.positionSn
+            )
+        }
+        return confirmDiscardJournalRecovery(DiscardPhysicalResult.DISCARDED, reason)
+    }
+
     suspend fun confirmDiscardJournalRecovery(
         physicalResult: DiscardPhysicalResult?,
         reason: String
