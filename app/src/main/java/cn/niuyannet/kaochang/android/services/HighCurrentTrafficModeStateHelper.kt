@@ -324,11 +324,19 @@ internal fun canArmHighToLowTimer(
     modeType: Int,
     transitionMode: Int,
     highHeatZoneClear: Boolean,
-    hasPendingHighHeatEvidence: Boolean
+    hasPendingHighHeatEvidence: Boolean,
+    recoveryBlocked: Boolean
 ): Boolean = modeType == 2 &&
     transitionMode == 0 &&
     highHeatZoneClear &&
-    !hasPendingHighHeatEvidence
+    !hasPendingHighHeatEvidence &&
+    !recoveryBlocked
+
+internal fun shouldReuseHighToLowTimerAnchor(
+    timerStateRestoredInProcess: Boolean,
+    anchorAtMs: Long,
+    recoveryBlocked: Boolean
+): Boolean = timerStateRestoredInProcess && anchorAtMs > 0L && !recoveryBlocked
 
 internal fun canFinishHighToLowDrain(
     frontSausageCount: Int,

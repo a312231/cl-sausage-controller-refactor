@@ -57,6 +57,17 @@ class HighToLowTimerStateTest {
     }
 
     @Test
+    fun armDurably_shouldKeepDisarmedStateWhenDurableWriteFails() {
+        val store = MemoryHighToLowTimerStateStore(saveSucceeds = false)
+        val repository = HighToLowTimerStateRepository(store)
+
+        assertFalse(repository.armDurably(100L))
+
+        assertEquals(1, store.saveCount)
+        assertEquals(HighToLowTimerState(), store.state)
+    }
+
+    @Test
     fun decode_shouldFailClosedForCorruptOrInvalidArmedState() {
         assertEquals(
             HighToLowTimerState(armed = true, anchorAtMs = 100L),

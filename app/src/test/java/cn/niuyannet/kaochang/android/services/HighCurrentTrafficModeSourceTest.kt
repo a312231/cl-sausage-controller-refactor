@@ -301,6 +301,11 @@ class HighCurrentTrafficModeSourceTest {
             "private suspend fun lowTrafficModeTransition(",
             "private suspend fun moveOldLowHeatGroupToFront("
         )
+        val highToLow = functionBlock(
+            source,
+            "private suspend fun highTrafficModeTransition(",
+            "private suspend fun finishHighToLowCloseout("
+        )
         val normalLaunch = functionBlock(
             source,
             "private suspend fun addHighHeatSausage(",
@@ -317,6 +322,33 @@ class HighCurrentTrafficModeSourceTest {
         assertDisarmBeforeHighHeatMove(resumeLaunch, "25~33未完成批次续补")
         assertPendingDisarmBeforeResume(stableHigh, "高并发稳态pending续补")
         assertPendingDisarmBeforeResume(lowToHigh, "低转高pending续补")
+        assertPendingDisarmBeforeResume(highToLow, "高转低pending续补")
+    }
+
+    @Test
+    fun highToLowTimerRestore_shouldCheckRecoveryGateBeforeTrustingCachedAnchor() {
+        val source = sourceText()
+        val restoreBlock = functionBlock(
+            source,
+            "private fun restoreOrArmHighToLowTimerIfSafe(",
+            "private fun clearLowToHighPartialWaitSnapshot("
+        )
+        val recoveryGate = restoreBlock.indexOf("isActionGroupRecoveryBlocked()")
+        val cachedAnchor = restoreBlock.indexOf("shouldReuseHighToLowTimerAnchor(")
+        val disarm = restoreBlock.indexOf("disarmHighToLowTimerDurably(")
+        val disarmBlock = functionBlock(
+            source,
+            "private fun disarmHighToLowTimerDurably(",
+            "private fun disarmHighToLowTimerBeforeHighHeatMove("
+        )
+        val clearMemoryAnchor = disarmBlock.indexOf("lastFillPitTime = 0L")
+        val durableWrite = disarmBlock.indexOf("highToLowTimerRepository.disarmDurably()")
+
+        assertTrue("必须读取当前动作恢复门禁", recoveryGate >= 0)
+        assertTrue("必须先检查恢复门禁再信任内存锚点", cachedAnchor > recoveryGate)
+        assertTrue("恢复门禁阻塞时必须失效当前计时", disarm > recoveryGate)
+        assertTrue("即使落盘失败也必须先作废本进程锚点", clearMemoryAnchor >= 0)
+        assertTrue("本进程锚点必须在耐久写入前作废", durableWrite > clearMemoryAnchor)
     }
 
     @Test

@@ -18,12 +18,22 @@ class HighCurrentTrafficModeStateHelperTest {
                 modeType = 2,
                 transitionMode = 0,
                 highHeatZoneClear = true,
-                hasPendingHighHeatEvidence = false
+                hasPendingHighHeatEvidence = false,
+                recoveryBlocked = false
             )
         )
-        assertFalse(canArmHighToLowTimer(2, 1, true, false))
-        assertFalse(canArmHighToLowTimer(2, 0, false, false))
-        assertFalse(canArmHighToLowTimer(2, 0, true, true))
+        assertFalse(canArmHighToLowTimer(2, 1, true, false, false))
+        assertFalse(canArmHighToLowTimer(2, 0, false, false, false))
+        assertFalse(canArmHighToLowTimer(2, 0, true, true, false))
+        assertFalse(canArmHighToLowTimer(2, 0, true, false, true))
+    }
+
+    @Test
+    fun shouldReuseHighToLowTimerAnchor_shouldRejectCachedAnchorWhenRecoveryIsBlocked() {
+        assertTrue(shouldReuseHighToLowTimerAnchor(true, 1_000L, false))
+        assertFalse(shouldReuseHighToLowTimerAnchor(true, 1_000L, true))
+        assertFalse(shouldReuseHighToLowTimerAnchor(false, 1_000L, false))
+        assertFalse(shouldReuseHighToLowTimerAnchor(true, 0L, false))
     }
 
     @Test

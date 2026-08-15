@@ -112,12 +112,12 @@ object HighCurrentTrafficMode {
     }
 
     private fun disarmHighToLowTimerDurably(reason: String): Boolean {
+        lastFillPitTime = 0L
+        timerStateRestoredInProcess = true
         if (!highToLowTimerRepository.disarmDurably()) {
             LogUtils.e(TAG, "【并发切换】高转低计时失效落盘失败：reason=$reason")
             return false
         }
-        lastFillPitTime = 0L
-        timerStateRestoredInProcess = true
         return true
     }
 
@@ -142,10 +142,16 @@ object HighCurrentTrafficMode {
 
     private fun armHighToLowTimerIfSafe(
         highHeatZoneClear: Boolean,
+        recoveryBlocked: Boolean,
         reason: String
     ): Boolean {
         val config = AppConfig.getAppConfig()
-        if (config.modeType != 2 || config.transitionMode != 0 || !highHeatZoneClear) {
+        if (
+            config.modeType != 2 ||
+            config.transitionMode != 0 ||
+            !highHeatZoneClear ||
+            recoveryBlocked
+        ) {
             return false
         }
         val hasPendingHighHeatEvidence = KaoChangOperate
@@ -162,7 +168,8 @@ object HighCurrentTrafficMode {
                 modeType = config.modeType,
                 transitionMode = config.transitionMode,
                 highHeatZoneClear = highHeatZoneClear,
-                hasPendingHighHeatEvidence = hasPendingHighHeatEvidence
+                hasPendingHighHeatEvidence = hasPendingHighHeatEvidence,
+                recoveryBlocked = recoveryBlocked
             )
         ) {
             return false
@@ -182,7 +189,18 @@ object HighCurrentTrafficMode {
         kaoPanList: List<KaoPan>,
         reason: String
     ): Boolean {
-        if (timerStateRestoredInProcess && lastFillPitTime > 0L) {
+        val recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked()
+        if (recoveryBlocked) {
+            disarmHighToLowTimerDurably("动作恢复门禁阻塞，暂停高转低计时")
+            return false
+        }
+        if (
+            shouldReuseHighToLowTimerAnchor(
+                timerStateRestoredInProcess = timerStateRestoredInProcess,
+                anchorAtMs = lastFillPitTime,
+                recoveryBlocked = recoveryBlocked
+            )
+        ) {
             return true
         }
         val highHeatZoneClear = TrafficModeHelper
@@ -194,7 +212,11 @@ object HighCurrentTrafficMode {
             }
             return false
         }
-        return armHighToLowTimerIfSafe(highHeatZoneClear = highHeatZoneClear, reason = reason)
+        return armHighToLowTimerIfSafe(
+            highHeatZoneClear = highHeatZoneClear,
+            recoveryBlocked = recoveryBlocked,
+            reason = reason
+        )
     }
 
     private fun clearLowToHighPartialWaitSnapshot() {
@@ -1104,6 +1126,13 @@ object HighCurrentTrafficMode {
                         "persistedBatchState=$persistedBatchState，batchId=${pendingHighHeatIntent.batchId}"
                 )
                 KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
+            } else if (
+                !disarmHighToLowTimerForPendingHighHeatIntent(
+                    pendingHighHeatIntent,
+                    "高转低过渡pending续补"
+                )
+            ) {
+                KaoChangOperate.PendingSupplementBatchHandling.BLOCKED
             } else {
                 KaoChangOperate.handlePendingSupplementBatchIfAny(
                     allowedTypes = setOf(SupplementBatchType.HIGH_HEAT_25_33),
@@ -1536,6 +1565,7 @@ object HighCurrentTrafficMode {
                 )
                 armHighToLowTimerIfSafe(
                     highHeatZoneClear = returnCleared,
+                    recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked(),
                     reason = "25~33整批成熟并成功回搬收口"
                 )
             } else if (pausedReason != null) {
