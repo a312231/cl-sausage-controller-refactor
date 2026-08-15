@@ -157,6 +157,18 @@ class BusinessCloseoutSourceTest {
     }
 
     @Test
+    fun closeoutDiscardAdmission_shouldUseLocalModbusSnapshotWithoutProbe() {
+        val gate = functionBlock(
+            operateSource(),
+            "private fun isBusinessCloseoutDiscardStillAllowed(",
+            "/**\n     * 读取烤盘温度"
+        )
+
+        assertTrue(gate.contains("VMModbusHelper.currentDiagnosisSnapshot().connected"))
+        assertFalse("状态锁内不得主动探测 Modbus", gate.contains("VMModbusHelper.connectStatus()"))
+    }
+
+    @Test
     fun pauseBusiness_shouldRequireAllExistingWritesToSucceed() {
         val pause = functionBlock(
             operateSource(),

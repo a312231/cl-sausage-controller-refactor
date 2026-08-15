@@ -90,15 +90,16 @@ class BusinessCloseoutPendingTest {
 
     @Test
     fun canIssueBusinessCloseoutDiscardCommand_shouldKeepSafetyChecksWithoutAlgorithmSwitch() {
-        assertTrue(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(4, true, 0, 0, 0, false, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, false, 0, 0, 0, false, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, true, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 2, 0, 0, false, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 1, 0, false, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 1, false, false, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, true, false))
-        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, false, true))
+        assertTrue(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(4, true, 0, 0, 0, false, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, false, 0, 0, 0, false, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, true, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 2, 0, 0, false, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 1, 0, false, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 1, false, false, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, true, false, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, false, true, true))
+        assertFalse(canIssueBusinessCloseoutDiscardCommand(2, true, 0, 0, 0, false, false, false, false))
     }
 
     private class MemoryBusinessCloseoutPendingStore(

@@ -102,7 +102,8 @@ internal fun canIssueBusinessCloseoutDiscardCommand(
     faultHeatPauseActive: Int,
     orderPending: Boolean,
     recoveryBlocked: Boolean,
-    lowerPlatformBlocked: Boolean
+    lowerPlatformBlocked: Boolean,
+    modbusMasterAvailable: Boolean
 ): Boolean = onlineStatus == 2 &&
     automaticRestSource &&
     errorStatus == 0 &&
@@ -110,4 +111,5 @@ internal fun canIssueBusinessCloseoutDiscardCommand(
     faultHeatPauseActive == 0 &&
     !orderPending &&
     !recoveryBlocked &&
-    !lowerPlatformBlocked
+    !lowerPlatformBlocked &&
+    modbusMasterAvailable

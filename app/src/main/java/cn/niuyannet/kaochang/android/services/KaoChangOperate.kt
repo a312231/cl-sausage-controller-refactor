@@ -10019,7 +10019,8 @@ object KaoChangOperate {
             lowerPlatformBlocked = AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
                 config.lowerPlatformStatus,
                 config.lowerPlatformIsolationActionName
-            )
+            ),
+            modbusMasterAvailable = VMModbusHelper.currentDiagnosisSnapshot().connected
         )
     }
     /**
