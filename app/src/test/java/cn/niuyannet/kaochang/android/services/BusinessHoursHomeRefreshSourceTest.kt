@@ -18,9 +18,9 @@ class BusinessHoursHomeRefreshSourceTest {
     }
 
     @Test
-    fun endBusinessHours_shouldRefreshHomeWhenOnlineStatusChanges() {
-        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt")
-        val body = extractFunctionBody(source, "suspend fun endBusinessHours")
+    fun businessCloseoutRestGate_shouldRefreshHomeWhenOnlineStatusChanges() {
+        val source = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangAlgorithm.kt")
+        val body = extractFunctionBody(source, "private fun ensureBusinessCloseoutRestGate")
 
         assertTrue(
             "营业时间结束自动修改 onlineStatus 后必须刷新首页",

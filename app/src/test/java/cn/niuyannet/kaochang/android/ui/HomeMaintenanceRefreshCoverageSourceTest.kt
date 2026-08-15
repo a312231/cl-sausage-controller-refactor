@@ -16,9 +16,9 @@ class HomeMaintenanceRefreshCoverageSourceTest {
         val violations = sources.flatMap { (sourceName, source) -> analyze(sourceName, source) }
 
         assertEquals(
-            "当前主源码中锚定正则 `.onlineStatus = 3` 应只命中 11 处真实维护态赋值；" +
+            "当前主源码中锚定正则 `.onlineStatus = 3` 应只命中 9 处真实维护态赋值；" +
                 "新增命中点必须补首页刷新或显式白名单",
-                11,
+                9,
             assignments.size
         )
         assertTrue(

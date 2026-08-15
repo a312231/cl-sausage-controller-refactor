@@ -10676,65 +10676,9 @@ object KaoChangOperate {
      * 若后台已手动设为维护中/待投运，不覆盖。
      */
     suspend fun endBusinessHours(config: AppConfigBean){
-        if (config.errorStatus != 0) {
-            config.onlineStatus = 3
-            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
-            AppConfig.saveAppConfig(config)
-            HomeUiRefreshBridge.requestRefresh("business_end:fault")
-            logW(
-                LOG_DEVICE,
-                "营业时间结束：检测到设备故障标记，保持维护中 | errorStatus=${config.errorStatus}(0=正常, 非0=故障), " +
-                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
-            )
-            SendServerHelper.publishServiceUpdateStatus()
-            return
-        }
-        if (config.onlineStatus != 1) {
-            logD(
-                LOG_DEVICE,
-                "营业时间结束：当前状态非运营中，跳过自动切换休息中（尊重后台设置） | " +
-                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
-            )
-            return
-        }
-        // 当前是运营中，自动切换为休息中
-        config.apply {
-            onlineStatus = 2
-            restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
-        }
-        AppConfig.saveAppConfig(config)
-        HomeUiRefreshBridge.requestRefresh("business_end:operating_to_rest")
-        logD(
-            LOG_DEVICE,
-            "营业时间结束：已自动切换为休息中（2），" +
-                "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
+        KaoChangAlgorithm.requestBusinessCloseout(
+            "兼容入口 endBusinessHours：onlineStatus=${config.onlineStatus}，errorStatus=${config.errorStatus}"
         )
-        //同步更新云端状态
-        SendServerHelper.publishServiceUpdateStatus()
-        //执行丢弃操作
-        try {
-            KaoChangAlgorithm.resetKaoPan()
-        } catch (e: Exception) {
-            // 营业结束时若重置烤盘失败，不应抛未实现异常导致崩溃；
-            // 这里降级为维护中并上报，等待人工排查。
-            config.errorStatus = 2
-            config.onlineStatus = 3
-            config.errorCode = FaultCode.KAOPAN_RESET_FAILED.name
-            config.errorCategory = FaultCode.KAOPAN_RESET_FAILED.category.display
-            config.errorReason = "营业结束重置烤盘失败：${e.javaClass.simpleName}：${e.message}"
-            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
-            AppConfig.saveAppConfig(config)
-            HomeUiRefreshBridge.requestRefresh("business_end:reset_failed")
-            logE(
-                LOG_DEVICE,
-                "营业时间结束：重置烤盘失败，已降级为维护中并上报 | " +
-                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}, " +
-                    "errorStatus=${config.errorStatus}(2=设备故障), " +
-                    "exception=${e.javaClass.simpleName}, message=${e.message}",
-                e
-            )
-            SendServerHelper.publishServiceUpdateStatus()
-        }
     }
 
     /**
