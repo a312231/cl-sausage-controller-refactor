@@ -44,6 +44,7 @@ object LogUtils {
         "【配置迁移】",
         "【下位机测试】",
         "【取肠语音】",
+        "【故障停热诊断】recovered=true",
         "动作组恢复失败",
         "Modbus 重连"
     )

@@ -56,6 +56,7 @@ object DataManagementAPI {
         admissionAllowed = { !KaoChangOperate.hasPendingEmergencyResetRecovery() }
     )
     private val helperScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val snapshotSyncFailureLogPolicy = SnapshotSyncFailureLogPolicy()
     private const val LOG_SYNC = "云端同步"
     private const val PRODUCT_CATALOG_REFRESH_MIN_INTERVAL_MS = 5_000L
     @Volatile
@@ -68,6 +69,11 @@ object DataManagementAPI {
     private var lastRemoteProductCatalogEmpty = false
     private val productCatalogRefreshLock = Any()
     private val productCatalogRefreshCallbacks = mutableListOf<(ProductCatalogRefreshResult) -> Unit>()
+
+    internal fun dispatchSnapshotErrorIo(task: () -> Unit): Boolean = runCatching {
+        val job = helperScope.launch { task() }
+        !job.isCancelled
+    }.getOrDefault(false)
 
     data class RemoteDeviceStateRefreshResult(
         val success: Boolean,
@@ -1353,18 +1359,57 @@ object DataManagementAPI {
             sellableRulesSignature = sellableRulesSignature
         ) { code, content ->
             if (code != 0) {
-                recordCloudSyncFailure(
-                    type = CloudSyncRetryStore.Type.SNAPSHOT,
-                    payload = snapshotPayload.toJSONString(),
-                    error = "code=$code, content=$content"
+                SnapshotUploadFailureCompletion.complete(
+                    persistFailure = {
+                        recordCloudSyncFailure(
+                            type = CloudSyncRetryStore.Type.SNAPSHOT,
+                            payload = snapshotPayload.toJSONString(),
+                            error = "code=$code, content=$content"
+                        )
+                    },
+                    processEvidence = { pending ->
+                        val httpEvidence = SnapshotHttpErrorEvidenceCodec.decode(content)
+                        val cloudReason = if (httpEvidence == null) {
+                            CloudSnapshotReportResponseParser.parse(content).reason
+                        } else {
+                            SnapshotHttpErrorEvidenceCodec.IDENTITY_REASON
+                        }
+                        val logDecision = snapshotSyncFailureLogPolicy.evaluate(
+                            SnapshotSyncFailureIdentity.create(
+                                callbackCode = code,
+                                cloudReason = cloudReason,
+                                physicalPanDeltaSeq = physicalPanDeltaSeq,
+                                snapshotHash = effectiveSnapshotHash,
+                                snapshotReason = snapshotReason,
+                                forceFullSnapshot = forceFullSnapshot,
+                                httpEvidence = httpEvidence
+                            ),
+                            nowMs = System.currentTimeMillis()
+                        )
+                        if (logDecision != null) {
+                            val emission = if (logDecision.stateChanged) "edge" else "periodic_summary"
+                            val failureEvidence = if (httpEvidence == null) {
+                                "cloudResponse（云端原始响应）=$content"
+                            } else {
+                                "transportStatus=${httpEvidence.httpStatus ?: "null"}, " +
+                                    "transportExceptionType=${httpEvidence.exceptionType ?: "null"}, " +
+                                    "transportExceptionMessage=${httpEvidence.exceptionMessage ?: "null"}, " +
+                                    "transportResponseBody=${httpEvidence.responseBody ?: "null"}"
+                            }
+                            logE(
+                                "设备数据快照同步失败：emission=$emission, " +
+                                    "suppressedCount=${logDecision.suppressedCount}, " +
+                                    "pendingFailureCount=${pending.failureCount}, 已持久化待补传，" +
+                                    "$snapshotSummary, code=$code, cloudReason=$cloudReason, " +
+                                    failureEvidence
+                            )
+                        }
+                    },
+                    notifyResult = { success -> onResult?.invoke(success) }
                 )
-                logE(
-                    "设备数据快照同步失败：" +
-                        "$snapshotSummary, code=$code, cloudResponse（云端原始响应）=$content"
-                )
-                onResult?.invoke(false)
             } else {
                 val reportResult = CloudSnapshotReportResponseParser.parse(content)
+                snapshotSyncFailureLogPolicy.reset()
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.SNAPSHOT)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.KAO_PAN)
                 clearCloudSyncFailureIfNeeded(CloudSyncRetryStore.Type.STOCK)
@@ -1396,16 +1441,7 @@ object DataManagementAPI {
         type: CloudSyncRetryStore.Type,
         payload: String,
         error: String
-    ) {
-        val pending = CloudSyncRetryStore.recordFailure(type, payload, error)
-        logCloudSyncFile(
-            "HTTP上传失败，已持久化待补传：" +
-                "type=${CloudSyncRetryStore.typeText(type)}，" +
-                "failureCount=${pending.failureCount}，" +
-                "lastFailureAt=${pending.lastFailureAtMillis}，" +
-                "lastError=${pending.lastError}"
-        )
-    }
+    ): CloudSyncRetryStore.PendingPayload = CloudSyncRetryStore.recordFailure(type, payload, error)
 
     private fun clearCloudSyncFailureIfNeeded(type: CloudSyncRetryStore.Type) {
         val cleared = CloudSyncRetryStore.markSucceeded(type) ?: return

@@ -70,7 +70,7 @@ object KaoChangAlgorithm {
     private var lastPollStateSnapshot: String? = null
     private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
-    private var lastFaultHeatDiagnosticLogKey: String? = null
+    private val faultHeatDiagnosticLogPolicy = FaultHeatDiagnosticLogPolicy()
     private val faultCloseoutLogGate = RepeatedLogGate(summaryIntervalMs = null)
     private var orphanDeliveryBusyRecoveryCandidate: String? = null
     private var lastOrphanDeliveryBusyRecoveryAttemptAtMs: Long = 0L
@@ -183,15 +183,29 @@ object KaoChangAlgorithm {
             isRunning,
             config.faultHeatPauseActive
         ).joinToString("|")
-        if (lastFaultHeatDiagnosticLogKey == logKey) {
-            return
-        }
-        lastFaultHeatDiagnosticLogKey = logKey
+        val decision = faultHeatDiagnosticLogPolicy.evaluate(logKey, System.currentTimeMillis()) ?: return
+        val emission = if (decision.stateChanged) "edge" else "periodic_summary"
         logW(
             LOG_DEVICE,
-            "【故障停热诊断】stage=$stage，" +
+            "【故障停热诊断】emission=$emission，suppressedCount=${decision.suppressedCount}，stage=$stage，" +
                 faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
         )
+    }
+
+    private fun logFaultHeatDiagnosticRecoveryIfNeeded(
+        config: AppConfigBean,
+        currentTime: String,
+        isWithinBusinessHours: Boolean
+    ) {
+        val decision = faultHeatDiagnosticLogPolicy.evaluate(state = null, nowMs = System.currentTimeMillis())
+            ?: return
+        if (decision.kind == FaultHeatDiagnosticLogPolicy.Kind.RECOVERED) {
+            logI(
+                LOG_DEVICE,
+                "【故障停热诊断】recovered=true，" +
+                    faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
+            )
+        }
     }
 
     private fun residualDrainText(value: Int): String = when (value) {
@@ -851,8 +865,10 @@ object KaoChangAlgorithm {
         captureBusinessCloseoutBeforeEarlyReturns(config, isWithinBusinessHours)
 
         if (config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL) {
-            lastFaultHeatDiagnosticLogKey = null
             faultCloseoutLogGate.reset()
+            if (isWithinBusinessHours) {
+                logFaultHeatDiagnosticRecoveryIfNeeded(config, currentTime, isWithinBusinessHours)
+            }
         }
 
         if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {

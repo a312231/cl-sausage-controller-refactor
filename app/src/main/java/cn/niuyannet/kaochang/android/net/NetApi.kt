@@ -451,20 +451,13 @@ object NetApi {
                         )
                         callback?.invoke(0, body)
                     } else {
-                        val errorMessage =
-                            "云端未接收设备数据快照：$snapshotContext, reason=${result.reason}, raw=$body"
-                        LogUtils.e("【网络请求】$errorMessage")
-                        callback?.invoke(1, errorMessage)
+                        callback?.invoke(1, body)
                     }
                 }
 
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
-                    LogUtils.e(
-                        "【网络请求】上报设备数据快照失败：" +
-                            "$snapshotContext, error=${response?.exception?.message}"
-                    )
-                    callback?.invoke(1, response?.body())
+                    SnapshotHttpErrorCallback.deliver(response, callback)
                 }
             })
     }

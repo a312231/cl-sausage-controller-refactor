@@ -71,7 +71,10 @@ class AlgorithmFaultDiagnosticsSourceTest {
             .let { if (it >= 0) it else source.length }
         val pollBlock = source.substring(pollStart, pollEnd)
 
-        assertTrue("故障恢复后必须清空诊断去重状态", pollBlock.contains("lastFaultHeatDiagnosticLogKey = null"))
+        assertTrue(
+            "故障恢复后必须结束诊断 episode 并允许后续首次问题重新输出",
+            pollBlock.contains("logFaultHeatDiagnosticRecoveryIfNeeded(config, currentTime, isWithinBusinessHours)")
+        )
         assertTrue("故障恢复后必须重置收口摘要去重状态", pollBlock.contains("faultCloseoutLogGate.reset()"))
     }
 
