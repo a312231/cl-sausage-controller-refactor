@@ -333,6 +333,14 @@ object LowCurrentTrafficMode {
     ): Boolean {
         val list1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, list)
         val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        if (activeIntent != null) {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】存在活动补肠意图，generic 残缺组续补不重建物理空洞：" +
+                    "group=$groupName，batchId=${activeIntent.batchId}"
+            )
+            return false
+        }
         val resumeTargets = LowHeatSupplementResumePlanner.planResumeTargets(list1_9, supplementGroup, activeIntent)
         if (resumeTargets.isEmpty()) {
             return false
@@ -343,27 +351,41 @@ object LowCurrentTrafficMode {
             "low_heat_resume_planned"
         )
 
-        TEMPERATURE_OFF = 0
-        KaoChangOperate.heating(2)
         LogUtils.i(
             TAG,
             "【低并发补肠】续补 $groupName 未完成批次：目标烤盘=${resumeTargets.joinToString(",") { it.positionSn.toString() }}，" +
                 "口味=${resumeTargets.joinToString(",") { it.tasteCode }}，" +
                 "回搬目标=${resumeTargets.joinToString(",") { "${it.positionSn}->${it.returnPositionSn ?: "未知"}" }}"
         )
-        val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+        val attempt = KaoChangOperate.moveSausagesToKaoPansForResume(
             resumeTargets.map {
                 KaoChangOperate.SupplementTarget(
                     it.kaoPan,
                     it.tasteCode,
                     returnPositionSn = it.returnPositionSn
                 )
+            },
+            batchTypeOverride = if (groupName == "13~15") {
+                SupplementBatchType.LOW_HEAT_13_15
+            } else {
+                SupplementBatchType.LOW_HEAT_16_18
+            },
+            onAdmitted = {
+                TEMPERATURE_OFF = 0
+                KaoChangOperate.heating(2)
             }
         )
-        restoreFrontReservationsAfterLowHeatResume(list1_9, resumeTargets)
+        if (!attempt.admitted) {
+            LogUtils.w(TAG, "【低并发补肠】续补 $groupName 未获批或未移动，本轮不恢复前区预留")
+            return false
+        }
+        if (attempt.movedCount > 0) {
+            restoreFrontReservationsAfterLowHeatResume(list1_9, resumeTargets)
+        }
         LogUtils.i(
             TAG,
-            "【低并发补肠】续补 $groupName 未完成批次结束：目标数=${resumeTargets.size}，完成数=$movedCount"
+            "【低并发补肠】续补 $groupName 未完成批次结束：目标数=${resumeTargets.size}，" +
+                "完成数=${attempt.movedCount}，batchId=${attempt.batchId}"
         )
         return true
     }

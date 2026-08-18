@@ -48,6 +48,143 @@ class SupplementBatchIntentRepositoryTest {
     }
 
     @Test
+    fun begin_shouldRejectDuplicateReturnPositionsInsideNewBatch() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+
+        val intent = repository.begin(
+            listOf(
+                target(13, "A", returnPositionSn = 2),
+                target(14, "A", returnPositionSn = 2)
+            ),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )
+
+        assertNull(intent)
+        assertNull(store.intent)
+    }
+
+    @Test
+    fun begin_shouldRejectReturnPositionAlreadyOwnedByRetainedBinding() {
+        val store = MemorySupplementBatchIntentStore()
+        val repository = repository(store)
+        val existing = repository.begin(
+            listOf(target(16, "A", returnPositionSn = 1)),
+            typeOverride = SupplementBatchType.LOW_HEAT_16_18
+        )!!
+        repository.markCompleted(existing.batchId, 16)
+
+        val rejected = repository.begin(
+            listOf(target(13, "A", returnPositionSn = 1)),
+            typeOverride = SupplementBatchType.LOW_HEAT_13_15
+        )
+
+        assertNull(rejected)
+        assertEquals(listOf(16), store.intent?.targets?.map { it.positionSn })
+        assertEquals(listOf(1), store.intent?.targets?.map { it.returnPositionSn })
+    }
+
+    @Test
+    fun loadActive_shouldPersistStableDuplicateReturnConflictEvidenceOnlyOnce() {
+        val store = MemorySupplementBatchIntentStore().apply {
+            intent = duplicateReturnIntent()
+        }
+        val repository = repository(store)
+
+        val first = repository.loadActive()!!
+        val firstFingerprint = first.returnBindingConflictFingerprint
+        val firstDetectedAt = first.returnBindingConflictDetectedAtMs
+        val savesAfterFirstLoad = store.saveCount
+        val second = repository.loadActive()!!
+
+        assertTrue(first.returnBindingConflictActive)
+        assertTrue(first.requiresAnyManualConfirmation())
+        assertTrue(firstFingerprint.isNotBlank())
+        assertTrue(first.returnBindingConflictDetails.contains("13->1"))
+        assertTrue(first.returnBindingConflictDetails.contains("16->1"))
+        assertEquals(1000L, firstDetectedAt)
+        assertEquals(firstFingerprint, second.returnBindingConflictFingerprint)
+        assertEquals(firstDetectedAt, second.returnBindingConflictDetectedAtMs)
+        assertEquals(savesAfterFirstLoad, store.saveCount)
+    }
+
+    @Test
+    fun confirmManualSafety_shouldNotClearDuplicateReturnConflictOrOtherFailure() {
+        val store = MemorySupplementBatchIntentStore().apply {
+            intent = duplicateReturnIntent().apply {
+                requiresManualConfirm = true
+                failedActionName = "in6"
+                failureMessage = "原机械故障"
+            }
+        }
+        val repository = repository(store)
+        repository.loadActive()
+
+        val confirmed = repository.confirmManualSafety("普通现场确认")
+
+        assertNull(confirmed)
+        val retained = repository.loadActive()!!
+        assertTrue(retained.returnBindingConflictActive)
+        assertTrue(retained.requiresManualConfirm)
+        assertTrue(retained.requiresAnyManualConfirmation())
+        assertEquals("in6", retained.failedActionName)
+        assertEquals("原机械故障", retained.failureMessage)
+    }
+
+    @Test
+    fun resolveReturnBindingConflict_shouldRequireExactRevisionAndAllConflictSourcesEmpty() {
+        val store = MemorySupplementBatchIntentStore().apply { intent = duplicateReturnIntent() }
+        val repository = repository(store)
+        val snapshot = repository.returnBindingConflictSnapshot()!!
+
+        assertFalse(
+            repository.resolveReturnBindingConflictAfterSourcesCleared(
+                expectedBatchId = snapshot.batchId,
+                expectedUpdatedAtMs = snapshot.updatedAtMs + 1,
+                expectedFingerprint = snapshot.fingerprint,
+                confirmedEmptySourcePositions = setOf(13, 16)
+            )
+        )
+        assertFalse(
+            repository.resolveReturnBindingConflictAfterSourcesCleared(
+                expectedBatchId = snapshot.batchId,
+                expectedUpdatedAtMs = snapshot.updatedAtMs,
+                expectedFingerprint = snapshot.fingerprint,
+                confirmedEmptySourcePositions = setOf(13)
+            )
+        )
+        assertTrue(store.intent!!.returnBindingConflictActive)
+    }
+
+    @Test
+    fun resolveReturnBindingConflict_shouldRemoveOnlyConflictEvidenceAndPreserveOtherManualFailure() {
+        val store = MemorySupplementBatchIntentStore().apply {
+            intent = duplicateReturnIntent().apply {
+                requiresManualConfirm = true
+                failedActionName = "in6"
+                failureMessage = "原机械故障"
+            }
+        }
+        val repository = repository(store)
+        val snapshot = repository.returnBindingConflictSnapshot()!!
+
+        val resolved = repository.resolveReturnBindingConflictAfterSourcesCleared(
+            expectedBatchId = snapshot.batchId,
+            expectedUpdatedAtMs = snapshot.updatedAtMs,
+            expectedFingerprint = snapshot.fingerprint,
+            confirmedEmptySourcePositions = setOf(13, 16)
+        )
+
+        assertTrue(resolved)
+        val retainedFailure = repository.loadActive()!!
+        assertTrue(retainedFailure.targets.isEmpty())
+        assertFalse(retainedFailure.returnBindingConflictActive)
+        assertTrue(retainedFailure.requiresManualConfirm)
+        assertEquals("in6", retainedFailure.failedActionName)
+        assertEquals("原机械故障", retainedFailure.failureMessage)
+    }
+
+    @Test
     fun begin_withoutOverride_shouldKeepLegacyInferenceForFullLowInitialization() {
         val store = MemorySupplementBatchIntentStore()
         val repository = repository(store)
@@ -525,7 +662,7 @@ class SupplementBatchIntentRepositoryTest {
         )!!
         repository.markCompleted(low.batchId, 18)
         val high = repository.begin(
-            listOf(target(25, "A", returnPositionSn = 1)),
+            listOf(target(25, "A", returnPositionSn = 2)),
             typeOverride = SupplementBatchType.HIGH_HEAT_25_33
         )!!
         repository.markCompleted(high.batchId, 25)
@@ -544,7 +681,7 @@ class SupplementBatchIntentRepositoryTest {
                 originBatchId = low.batchId,
                 originBatchType = SupplementBatchType.LOW_HEAT_16_18,
                 sourcePositionSn = 25,
-                returnPositionSn = 1
+                returnPositionSn = 2
             )
         )
     }
@@ -900,6 +1037,32 @@ class SupplementBatchIntentRepositoryTest {
             returnPositionSn
         )
 
+    private fun duplicateReturnIntent(): SupplementBatchIntent =
+        SupplementBatchIntent(
+            batchId = "legacy-duplicate",
+            type = SupplementBatchType.LOW_HEAT_13_15,
+            createdAtMs = 500L,
+            updatedAtMs = 600L,
+            targets = mutableListOf(
+                SupplementBatchIntentTarget(
+                    positionSn = 13,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = true,
+                    originBatchId = "low-13",
+                    originBatchType = SupplementBatchType.LOW_HEAT_13_15
+                ),
+                SupplementBatchIntentTarget(
+                    positionSn = 16,
+                    tasteCode = "A",
+                    returnPositionSn = 1,
+                    completed = true,
+                    originBatchId = "low-16",
+                    originBatchType = SupplementBatchType.LOW_HEAT_16_18
+                )
+            )
+        )
+
     private fun repository(
         store: SupplementBatchIntentStore,
         clock: () -> Long = { 1000L }
@@ -913,10 +1076,12 @@ class SupplementBatchIntentRepositoryTest {
 
     private class MemorySupplementBatchIntentStore : SupplementBatchIntentStore {
         var intent: SupplementBatchIntent? = null
+        var saveCount: Int = 0
 
         override fun load(): SupplementBatchIntent? = intent
 
         override fun save(intent: SupplementBatchIntent) {
+            saveCount++
             this.intent = intent.copy(targets = intent.targets.map { it.copy() }.toMutableList())
         }
 

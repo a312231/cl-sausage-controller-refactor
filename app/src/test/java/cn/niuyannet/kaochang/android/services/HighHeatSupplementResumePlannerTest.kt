@@ -103,7 +103,7 @@ class HighHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun planResumeTargets_shouldRestoreReturnPositionFromIntentWhenFrontReservationWasCleared() {
+    fun planResumeTargets_shouldNotRebuildPhysicalGapWhenActiveIntentExists() {
         val front = (1..21).map { position -> frontPan(position, "A", reserved = false) }
         val group = (25..33).map { position ->
             supplementPan(position, if (position == 25) "A" else null, hasSausage = position == 25)
@@ -123,9 +123,7 @@ class HighHeatSupplementResumePlannerTest {
 
         val result = HighHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
 
-        assertEquals((26..33).toList(), result.map { it.positionSn })
-        assertEquals((2..9).toList(), result.map { it.returnPositionSn })
-        assertEquals(List(8) { "A" }, result.map { it.tasteCode })
+        assertTrue(result.isEmpty())
     }
 
     @Test
@@ -159,7 +157,7 @@ class HighHeatSupplementResumePlannerTest {
 
         assertEquals((26..33).toList(), result.map { it.positionSn })
         assertEquals("C", result.first { it.positionSn == 26 }.tasteCode)
-        assertEquals("C", group[1].taste.tasteCode)
+        assertNull(group[1].taste)
     }
 
     @Test

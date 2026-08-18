@@ -59,7 +59,7 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun planResumeTargets_shouldRestoreReturnPositionFromIntentWhenFrontReservationWasCleared() {
+    fun planResumeTargets_shouldNotRebuildPhysicalGapWhenActiveIntentExists() {
         val front = (1..9).map { position ->
             frontPan(position, "A", reserved = false)
         }
@@ -80,9 +80,7 @@ class LowHeatSupplementResumePlannerTest {
 
         val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
 
-        assertEquals(listOf(17, 18), result.map { it.positionSn })
-        assertEquals(listOf(2, 3), result.map { it.returnPositionSn })
-        assertEquals(listOf("A", "A"), result.map { it.tasteCode })
+        assertTrue(result.isEmpty())
     }
 
     @Test
@@ -149,7 +147,7 @@ class LowHeatSupplementResumePlannerTest {
     }
 
     @Test
-    fun planResumeTargets_shouldUseSafeFrontReservationWithUnrelatedActiveIntent() {
+    fun planResumeTargets_shouldNotBorrowReservationFromUnrelatedActiveIntent() {
         val front = (1..9).map { position ->
             frontPan(position, "A", reserved = position in 2..3)
         }
@@ -173,12 +171,11 @@ class LowHeatSupplementResumePlannerTest {
 
         val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
 
-        assertEquals(listOf(14), result.map { it.positionSn })
-        assertEquals(listOf(3), result.map { it.returnPositionSn })
+        assertTrue(result.isEmpty())
     }
 
     @Test
-    fun planResumeTargets_shouldPreferIntentTasteOverStaleTargetPanTaste() {
+    fun planResumeTargets_shouldNotMutateTargetTasteWhenActiveIntentExists() {
         val front = (1..9).map { position -> frontPan(position, "A", reserved = false) }
         val target14 = supplementPan(14, "B", hasSausage = false)
         val group = listOf(
@@ -200,8 +197,8 @@ class LowHeatSupplementResumePlannerTest {
 
         val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group, intent)
 
-        assertEquals(listOf("A"), result.map { it.tasteCode })
-        assertEquals("A", target14.taste.tasteCode)
+        assertTrue(result.isEmpty())
+        assertEquals("B", target14.taste.tasteCode)
     }
 
     @Test
@@ -219,7 +216,7 @@ class LowHeatSupplementResumePlannerTest {
         val result = LowHeatSupplementResumePlanner.planResumeTargets(front, group)
 
         assertEquals(listOf("A"), result.map { it.tasteCode })
-        assertEquals("A", target13.taste.tasteCode)
+        assertEquals("B", target13.taste.tasteCode)
     }
 
     @Test
@@ -276,7 +273,7 @@ class LowHeatSupplementResumePlannerTest {
 
         assertEquals(listOf(15), result.map { it.positionSn })
         assertEquals(listOf("C"), result.map { it.tasteCode })
-        assertEquals("C", group[2].taste.tasteCode)
+        assertEquals(null, group[2].taste)
     }
 
     @Test

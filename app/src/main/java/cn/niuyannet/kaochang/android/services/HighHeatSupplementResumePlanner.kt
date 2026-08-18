@@ -158,40 +158,25 @@ internal object HighHeatSupplementResumePlanner {
         if (occupiedCount == 0 || emptyPans.isEmpty()) {
             return emptyList()
         }
+        if (activeIntent != null) {
+            return emptyList()
+        }
 
         val reservedFrontPans = frontPans
             .filter { !it.isHasSausage && !it.taste?.tasteCode.isNullOrBlank() }
             .sortedBy { it.positionSn }
         val groupStart = sortedGroup.firstOrNull()?.positionSn ?: return emptyList()
-        val groupPositions = sortedGroup.map { it.positionSn }.toSet()
-        val intentTargetsByPosition = activeIntent
-            ?.takeIf { it.type == SupplementBatchType.HIGH_HEAT_25_33 }
-            ?.targets
-            ?.filter {
-                !it.cancelledByFaultTimeout &&
-                    !it.skippedBySupplyDegrade &&
-                    it.positionSn in groupPositions
-            }
-            ?.associateBy { it.positionSn }
-            .orEmpty()
-
         return emptyPans.mapNotNull { targetPan ->
-            val intentTarget = intentTargetsByPosition[targetPan.positionSn]
             val reservedFrontPan = reservedFrontPanForGroupPosition(targetPan, groupStart, reservedFrontPans)
             val tasteCode = targetPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
-                ?: intentTarget?.tasteCode?.takeIf { it.isNotBlank() }
                 ?: reservedFrontPan?.taste?.tasteCode?.takeIf { it.isNotBlank() }
             if (tasteCode.isNullOrBlank()) {
                 return@mapNotNull null
             }
-            if (targetPan.taste?.tasteCode.isNullOrBlank()) {
-                targetPan.taste = Taste(tasteCode)
-            }
             ResumeTarget(
                 kaoPan = targetPan,
                 tasteCode = tasteCode,
-                returnPositionSn = intentTarget?.returnPositionSn?.takeIf { it in 1..21 }
-                    ?: reservedFrontPan?.positionSn
+                returnPositionSn = reservedFrontPan?.positionSn
             )
         }
     }

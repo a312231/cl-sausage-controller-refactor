@@ -1412,8 +1412,16 @@ object HighCurrentTrafficMode {
     ): Int {
         val list1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, list)
         val list25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, list)
-        TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
         val activeIntent = KaoChangOperate.activeSupplementBatchIntentForUi()
+        if (activeIntent != null) {
+            LogUtils.w(
+                TAG,
+                "【高并发补肠】存在活动补肠意图，generic 25~33 残缺续补不重建物理空洞：" +
+                    "reason=$reason，batchId=${activeIntent.batchId}"
+            )
+            return 0
+        }
+        TrafficModeHelper.fillMissingTasteReservations(list1_21, listBox)
         val resumeTargets = HighHeatSupplementResumePlanner.planResumeTargets(list1_21, list25_33, activeIntent)
         if (resumeTargets.isEmpty()) {
             LogUtils.w(
@@ -1434,13 +1442,12 @@ object HighCurrentTrafficMode {
         if (!disarmHighToLowTimerBeforeHighHeatMove(reason)) {
             return 0
         }
-        KaoChangOperate.heating(3)
         LogUtils.i(
             TAG,
             "【高并发补肠】续补 25~33 未完成批次：reason=$reason，目标烤盘=${resumeTargets.map { it.positionSn }}，" +
                 "回搬目标=${resumeTargets.map { "${it.positionSn}->${it.returnPositionSn ?: "未知"}" }}"
         )
-        val movedCount = KaoChangOperate.moveSausagesToKaoPansByTaste(
+        val attempt = KaoChangOperate.moveSausagesToKaoPansForResume(
             resumeTargets.map { target ->
                 KaoChangOperate.SupplementTarget(
                     target.kaoPan,
@@ -1448,21 +1455,25 @@ object HighCurrentTrafficMode {
                     returnPositionSn = target.returnPositionSn
                 )
             },
-            batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33
+            batchTypeOverride = SupplementBatchType.HIGH_HEAT_25_33,
+            onAdmitted = { KaoChangOperate.heating(3) }
         )
-        if (movedCount > 0) {
+        if (attempt.movedCount > 0) {
             recordSupplementLaunch(
-                filledCount = movedCount,
+                filledCount = attempt.movedCount,
                 reason = reason
             )
             LogUtils.i(
                 TAG,
-                "【高并发补肠】25~33 未完成批次续补完成：movedCount=$movedCount，lastFillPitTime=$lastFillPitTime"
+                "【高并发补肠】25~33 未完成批次续补完成：movedCount=${attempt.movedCount}，" +
+                    "batchId=${attempt.batchId}，lastFillPitTime=$lastFillPitTime"
             )
+        } else if (attempt.admitted) {
+            LogUtils.w(TAG, "【高并发补肠】25~33 续补批次已接管但本轮移动0根：reason=$reason，batchId=${attempt.batchId}")
         } else {
             LogUtils.w(TAG, "【高并发补肠】25~33 未完成批次本轮续补未移动烤肠：reason=$reason")
         }
-        return movedCount
+        return attempt.movedCount
     }
 
     /**

@@ -392,7 +392,10 @@ class HighCurrentTrafficModeSourceTest {
 
     private fun assertDisarmBeforeHighHeatMove(functionBlock: String, pathName: String) {
         val disarm = functionBlock.indexOf("disarmHighToLowTimerBeforeHighHeatMove(")
-        val hardwareMove = functionBlock.indexOf("moveSausagesToKaoPansByTaste(")
+        val hardwareMove = listOf(
+            functionBlock.indexOf("moveSausagesToKaoPansByTaste("),
+            functionBlock.indexOf("moveSausagesToKaoPansForResume(")
+        ).filter { it >= 0 }.minOrNull() ?: -1
         assertTrue("$pathName 必须存在计时失效入口", disarm >= 0)
         assertTrue("$pathName 必须在硬件补肠调用前完成耐久失效", hardwareMove > disarm)
     }

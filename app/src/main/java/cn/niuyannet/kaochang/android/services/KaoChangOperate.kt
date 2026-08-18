@@ -236,6 +236,41 @@ object KaoChangOperate {
         val pauseEndResult: FaultHeatPauseManager.EndPauseResult?
     )
 
+    internal data class SupplementBatchAttemptResult(
+        val admitted: Boolean,
+        val movedCount: Int,
+        val batchId: String?
+    )
+
+    internal data class ReturnBindingConflictCloseoutEvidence(
+        val moveStatus: Int,
+        val hasProcessingOrder: Boolean,
+        val hasOrderPause: Boolean,
+        val hasOrderDeliveryClaim: Boolean,
+        val actionSessionAbsent: Boolean,
+        val pausedSessionAbsent: Boolean,
+        val prefetchEvidenceAbsent: Boolean,
+        val hasPanMoveJournal: Boolean,
+        val hasDiscardJournal: Boolean,
+        val resourceLocksIdle: Boolean
+    )
+
+    internal fun returnBindingConflictCloseoutRejection(
+        evidence: ReturnBindingConflictCloseoutEvidence
+    ): String? = when {
+        evidence.moveStatus != 0 -> "机械状态非空闲"
+        evidence.hasProcessingOrder -> "存在处理中订单"
+        evidence.hasOrderPause -> "订单正在等待机械动作"
+        evidence.hasOrderDeliveryClaim -> "存在订单出餐claim"
+        !evidence.actionSessionAbsent -> "存在或损坏的动作组会话"
+        !evidence.pausedSessionAbsent -> "存在或损坏的暂停补肠会话"
+        !evidence.prefetchEvidenceAbsent -> "存在或损坏的双lane预取证据"
+        evidence.hasPanMoveJournal -> "存在搬盘journal"
+        evidence.hasDiscardJournal -> "存在丢弃journal"
+        !evidence.resourceLocksIdle -> "动作组资源锁未释放"
+        else -> null
+    }
+
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     /**
      * 机械动作对象内部的主线程作用域。
@@ -265,6 +300,8 @@ object KaoChangOperate {
     private val panMoveJournalStore = SharedPreferencePanMoveJournalStore()
     private val supplementBatchIntentRepository =
         SupplementBatchIntentRepository(SharedPreferenceSupplementBatchIntentStore())
+    @Volatile
+    private var lastReturnBindingConflictMaintenanceFingerprint: String? = null
     private val orphanSupplementReturnCoordinator = OrphanSupplementReturnCoordinator(
         repository = supplementBatchIntentRepository,
         savePansDurable = { pans -> KaoPanHelper.saveKaoPanListDurable(pans) }
@@ -3946,6 +3983,12 @@ object KaoChangOperate {
         val actionSession = actionGroupSessionStore.load()
         val pausedSession = pausedSupplementSessionStore.load()
         val pendingIntent = supplementBatchIntentRepository.loadActive()
+        if (pendingIntent?.returnBindingConflictActive == true) {
+            return ManualDeviceRecoveryCloseoutResult(
+                false,
+                "回搬目标存在重复所有者，通用人工恢复不能解除专用门禁"
+            )
+        }
         val expectedOwners = listOfNotNull(
             prefetchSession?.let { it.sessionId to it.resourceMask },
             actionSession?.let { it.sessionId to it.resourceMask },
@@ -3961,7 +4004,7 @@ object KaoChangOperate {
         if (mismatchedOwner != null) {
             return ManualDeviceRecoveryCloseoutResult(false, "本地资源占用与恢复记录不一致，请重新检查设备状态")
         }
-        if (prefetchSession != null && pendingIntent?.requiresManualConfirm == true) {
+        if (prefetchSession != null && pendingIntent?.requiresAnyManualConfirmation() == true) {
             val marked = runCatching {
                 supplementBatchIntentRepository.markManualConfirmStrategyPrefetchPreserveRemaining(
                     pendingIntent.batchId,
@@ -3976,7 +4019,7 @@ object KaoChangOperate {
             }
         }
 
-        if (pendingIntent?.requiresManualConfirm == true) {
+        if (pendingIntent?.requiresAnyManualConfirmation() == true) {
             val confirmed = runCatching {
                 supplementBatchIntentRepository.confirmManualSafetyPreservingRemainingTargets(reason)
             }.getOrNull()
@@ -4748,6 +4791,9 @@ object KaoChangOperate {
     }
 
     private fun ensureSupplementBatchStartAllowedLocked(stage: String): Boolean {
+        if (enforceReturnBindingConflictMaintenanceLocked(stage)) {
+            return false
+        }
         val config = AppConfig.getAppConfig()
         val decision = SupplementStartGate.evaluate(
             onlineStatus = config.onlineStatus,
@@ -4766,6 +4812,43 @@ object KaoChangOperate {
                 "pendingDisableActionGroupV2（待关闭动作组标记）=${config.pendingDisableActionGroupV2}"
         )
         return false
+    }
+
+    private fun enforceReturnBindingConflictMaintenanceLocked(stage: String): Boolean {
+        val conflict = supplementBatchIntentRepository.returnBindingConflictSnapshot()
+        if (conflict == null) {
+            lastReturnBindingConflictMaintenanceFingerprint = null
+            return false
+        }
+        val config = AppConfig.getAppConfig()
+        val stateDrifted = config.isEnable != 0 || config.inspectionMode != 1 || config.onlineStatus != 3
+        val fingerprintChanged = lastReturnBindingConflictMaintenanceFingerprint != conflict.fingerprint
+        if (stateDrifted || fingerprintChanged) {
+            config.isEnable = 0
+            config.inspectionMode = 1
+            config.onlineStatus = 3
+            AppConfig.saveAppConfigDurable(config)
+            HomeUiRefreshBridge.requestRefresh("return_binding_conflict:maintenance")
+            lastReturnBindingConflictMaintenanceFingerprint = conflict.fingerprint
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠回搬绑定冲突】已锁定维护状态并禁止自动机械动作：stage=$stage，" +
+                    "batchId=${conflict.batchId}，conflicts=${conflict.details}"
+            )
+            operateScope.launch {
+                val runtimePublished = SendServerHelper.publishServiceUpdateStatus()
+                val availablePublished = SendServerHelper.publishAvailableState("return_binding_conflict:maintenance")
+                if (!runtimePublished || !availablePublished) {
+                    logW(
+                        LOG_DEVICE,
+                        "补肠回搬绑定冲突维护状态上报不完整，回退HTTP：" +
+                            "runtimePublished=$runtimePublished，availablePublished=$availablePublished"
+                    )
+                    DataManagementAPI.uploadDeviceInfo()
+                }
+            }
+        }
+        return true
     }
 
     private fun claimPreparedSupplementMove(
@@ -5346,12 +5429,21 @@ object KaoChangOperate {
 
     fun pendingSupplementBatchRequiresManualConfirm(): SupplementBatchIntent? {
         val intent = supplementBatchIntentRepository.loadActive() ?: return null
-        return if (intent.requiresManualConfirm) intent else null
+        return if (intent.requiresAnyManualConfirmation()) intent else null
     }
+
+    fun returnBindingConflictSnapshot(): ReturnBindingConflictSnapshot? =
+        supplementBatchIntentRepository.returnBindingConflictSnapshot()
 
     suspend fun confirmPendingSupplementBatchSafety(reason: String): ManualSupplementConfirmResult {
         val pending = pendingSupplementBatchRequiresManualConfirm()
             ?: return ManualSupplementConfirmResult(false, "当前没有待确认批次")
+        if (pending.returnBindingConflictActive) {
+            return ManualSupplementConfirmResult(
+                false,
+                "回搬目标存在重复所有者，普通确认不能解除：${pending.returnBindingConflictDetails}"
+            )
+        }
         when (val evidence = readSupplementPrefetchEvidence()) {
             DurableEvidenceReadResult.Absent -> Unit
             is DurableEvidenceReadResult.Corrupted -> {
@@ -5534,11 +5626,27 @@ object KaoChangOperate {
     }
 
     fun clearPendingSupplementBatchIntent(reason: String) {
+        val conflict = supplementBatchIntentRepository.returnBindingConflictSnapshot()
+        if (conflict != null) {
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠回搬绑定冲突】拒绝普通清除intent：reason=$reason，conflicts=${conflict.details}"
+            )
+            return
+        }
         supplementBatchIntentRepository.clear(reason)
     }
 
     fun clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(reason: String): Boolean {
         val intent = supplementBatchIntentRepository.loadActive()
+        if (intent?.returnBindingConflictActive == true) {
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠回搬绑定冲突】拒绝绕过专用收口清除intent：reason=$reason，" +
+                    "conflicts=${intent.returnBindingConflictDetails}"
+            )
+            return false
+        }
         if (intent != null && intent.remainingTargets().isEmpty() && intent.retainedCompletedHeatReturnTargets().isNotEmpty()) {
             logD(
                 LOG_SUPPLEMENT,
@@ -5563,6 +5671,61 @@ object KaoChangOperate {
         return supplementBatchIntentRepository.clearPendingTargetsRetainingCompletedHeatReturnBindings(reason)
     }
 
+    fun resolveReturnBindingConflictAfterAllSourcesCleared(
+        expected: ReturnBindingConflictSnapshot,
+        reason: String
+    ): ManualSupplementConfirmResult = withFaultHeatTransitionLock {
+        val current = supplementBatchIntentRepository.returnBindingConflictSnapshot()
+            ?: return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "当前没有回搬绑定冲突")
+        if (current.batchId != expected.batchId ||
+            current.updatedAtMs != expected.updatedAtMs ||
+            current.fingerprint != expected.fingerprint
+        ) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "冲突意图已变化，请刷新后重新核对")
+        }
+        val config = AppConfig.getAppConfig()
+        val orderClaimPresent = runCatching { orderDeliveryClaimStore.load() != null }.getOrElse {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "订单claim证据读取失败，禁止收口绑定")
+        }
+        val closeoutRejection = returnBindingConflictCloseoutRejection(
+            ReturnBindingConflictCloseoutEvidence(
+                moveStatus = config.moveStatus,
+                hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
+                hasOrderPause = SupplementPauseController.shouldPauseForOrder(),
+                hasOrderDeliveryClaim = orderClaimPresent,
+                actionSessionAbsent = actionGroupSessionStore.readEvidence() is DurableEvidenceReadResult.Absent,
+                pausedSessionAbsent = pausedSupplementSessionStore.readEvidence() is DurableEvidenceReadResult.Absent,
+                prefetchEvidenceAbsent = readSupplementPrefetchEvidence() is DurableEvidenceReadResult.Absent,
+                hasPanMoveJournal = panMoveJournalStore.load() != null,
+                hasDiscardJournal = discardJournalStore.load() != null,
+                resourceLocksIdle = actionGroupLocks.isIdle()
+            )
+        )
+        if (closeoutRejection != null) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "$closeoutRejection，禁止收口绑定")
+        }
+        val heatPans = KaoPanHelper.getKaoPanList().filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
+        val occupied = heatPans.filter { it.isHasSausage }.map { it.positionSn }
+        if (occupied.isNotEmpty()) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(
+                false,
+                "补热源盘仍有烤肠，必须现场清空后再收口：$occupied"
+            )
+        }
+        val resolved = supplementBatchIntentRepository.resolveReturnBindingConflictAfterSourcesCleared(
+            expectedBatchId = expected.batchId,
+            expectedUpdatedAtMs = expected.updatedAtMs,
+            expectedFingerprint = expected.fingerprint,
+            confirmedEmptySourcePositions = heatPans.map { it.positionSn }.toSet()
+        )
+        if (!resolved) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "冲突绑定未能按精确来源收口")
+        }
+        lastReturnBindingConflictMaintenanceFingerprint = null
+        logW(LOG_SUPPLEMENT, "【补肠回搬绑定冲突】全部补热源盘已确认清空，完成无机械绑定收口：reason=$reason")
+        ManualSupplementConfirmResult(true, "冲突绑定已收口，设备保持维护状态，需另行确认恢复")
+    }
+
     fun activeSupplementBatchTargetPositions(types: Set<SupplementBatchType>): Set<Int> {
         val intent = supplementBatchIntentRepository.loadActive() ?: return emptySet()
         return intent.remainingTargets()
@@ -5577,10 +5740,14 @@ object KaoChangOperate {
     }
 
     fun activeSupplementBatchIntentForUi(): SupplementBatchIntent? {
+        val intent = supplementBatchIntentRepository.loadActive() ?: return null
+        withFaultHeatTransitionLock {
+            enforceReturnBindingConflictMaintenanceLocked("算法轮询活动意图查询")
+        }
         if (isActionGroupRecoveryBlocked()) {
             return null
         }
-        return supplementBatchIntentRepository.loadActive()
+        return intent
     }
 
     fun maintenanceKaoPanIntentForUi(): SupplementBatchIntent? {
@@ -5751,6 +5918,9 @@ object KaoChangOperate {
         isBeforeCloseWindow: Boolean
     ): PendingSupplementBatchHandling {
         val intent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
+        if (withFaultHeatTransitionLock { enforceReturnBindingConflictMaintenanceLocked(reason) }) {
+            return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
+        }
         if (intent.remainingTargets().isEmpty()) {
             logD(
                 LOG_SUPPLEMENT,
@@ -6059,12 +6229,37 @@ object KaoChangOperate {
         )
     }
 
+    internal suspend fun moveSausagesToKaoPansForResume(
+        targets: List<SupplementTarget>,
+        batchTypeOverride: SupplementBatchType,
+        onAdmitted: () -> Unit
+    ): SupplementBatchAttemptResult {
+        var admittedBatchId: String? = null
+        val movedCount = moveSausagesToKaoPansByTasteInternal(
+            targets = targets,
+            existingBatchId = null,
+            createIntent = true,
+            stageForSerial = "补热残缺组恢复",
+            batchTypeOverride = batchTypeOverride,
+            admissionObserver = { batchId ->
+                admittedBatchId = batchId
+                onAdmitted()
+            }
+        )
+        return SupplementBatchAttemptResult(
+            admitted = admittedBatchId != null,
+            movedCount = movedCount,
+            batchId = admittedBatchId
+        )
+    }
+
     private suspend fun moveSausagesToKaoPansByTasteInternal(
         targets: List<SupplementTarget>,
         existingBatchId: String?,
         createIntent: Boolean,
         stageForSerial: String,
-        batchTypeOverride: SupplementBatchType? = null
+        batchTypeOverride: SupplementBatchType? = null,
+        admissionObserver: (String) -> Unit = {}
     ): Int {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
@@ -6120,6 +6315,9 @@ object KaoChangOperate {
             val batchType = batchTypeOverride ?: batchId?.let {
                 supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
             }
+            if (existingBatchId == null && batchId != null) {
+                admissionObserver(batchId)
+            }
             return moveSausagesToKaoPansByTasteSerial(executableTargets, stageForSerial, batchId, batchType)
         }
         if (AppConfig.getAppConfig().errorStatus > 0) {
@@ -6165,6 +6363,9 @@ object KaoChangOperate {
             } else {
                 existingBatchId
             }
+            if (existingBatchId == null && batchId != null) {
+                admissionObserver(batchId)
+            }
             return moveSausagesToKaoPansByTasteSerial(
                 plannedMoves.map {
                     SupplementTarget(
@@ -6194,6 +6395,9 @@ object KaoChangOperate {
                 ?: return 0
         } else {
             existingBatchId
+        }
+        if (existingBatchId == null && batchId != null) {
+            admissionObserver(batchId)
         }
 
         if (shouldPauseSupplementForOrder("补肠预取流水线启动前")) {
@@ -8734,6 +8938,10 @@ object KaoChangOperate {
         operationReason: String,
         ownerPrefix: String
     ): Boolean {
+        if (withFaultHeatTransitionLock { enforceReturnBindingConflictMaintenanceLocked("搬盘入口") }) {
+            logW(LOG_PAN_MOVE, "回搬目标存在重复所有者，拒绝启动搬盘")
+            return false
+        }
         val sourcePosition = kaoPan.positionSn
         val targetPosition = newKaoPan.positionSn
         if (sourcePosition==targetPosition){
