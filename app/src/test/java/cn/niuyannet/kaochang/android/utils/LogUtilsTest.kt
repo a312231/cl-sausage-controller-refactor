@@ -7,6 +7,29 @@ import org.junit.Test
 class LogUtilsTest {
 
     @Test
+    fun faultHeatDiagnostic_edgesSummariesAndRecovery_shouldReachDeviceLogFile() {
+        assertTrue(
+            LogUtils.shouldWriteToFileForTest(
+                "W",
+                "[设备状态] 【故障停热诊断】emission=edge，suppressedCount=0，stage=error_status_before_fault_stop"
+            )
+        )
+        assertTrue(
+            LogUtils.shouldWriteToFileForTest(
+                "W",
+                "[设备状态] 【故障停热诊断】emission=periodic_summary，suppressedCount=180，stage=not_within_business_hours_before_return"
+            )
+        )
+        assertTrue(
+            LogUtils.shouldWriteToFileForTest(
+                "I",
+                "[设备状态] 【故障停热诊断】recovered=true，currentTime=09:30:00"
+            )
+        )
+        assertFalse(LogUtils.shouldWriteToFileForTest("I", "普通INFO恢复日志"))
+    }
+
+    @Test
     fun shouldWriteToFileForTest_shouldKeepActionGroupBracketLogs() {
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【补肠】补肠完成：目标烤盘=1"))
         assertTrue(LogUtils.shouldWriteToFileForTest("D", "【动作组】第1/3根 out1（从烤盘取熟肠到穿签位）开始"))

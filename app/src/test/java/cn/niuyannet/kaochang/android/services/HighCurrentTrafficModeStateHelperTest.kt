@@ -3,6 +3,9 @@ package cn.niuyannet.kaochang.android.services
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.init.AppConfigBean
+import cn.niuyannet.kaochang.scheduler.HighToLowDemandInput
+import cn.niuyannet.kaochang.scheduler.LegacyDemandTimeoutTransitionStrategy
+import cn.niuyannet.kaochang.scheduler.TrafficTransitionOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -10,6 +13,70 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HighCurrentTrafficModeStateHelperTest {
+
+    @Test
+    fun highToLowCoreTimeout_shouldMatchFrozen2548FormulaAfterAnchorNormalization() {
+        val strategy = LegacyDemandTimeoutTransitionStrategy()
+        val cases = listOf(
+            TimeoutCase("zero anchor", 0L, 80_001L, 1),
+            TimeoutCase("negative anchor", -1L, 80_001L, 1),
+            TimeoutCase("minimum anchor", Long.MIN_VALUE, 80_001L, 1),
+            TimeoutCase("zero threshold", 10_000L, 20_000L, 0),
+            TimeoutCase("negative threshold", 10_000L, 20_000L, -1),
+            TimeoutCase("exact threshold", 10_000L, 70_000L, 1),
+            TimeoutCase("after threshold", 10_000L, 70_001L, 1),
+            TimeoutCase("clock before anchor", 10_000L, 9_999L, 1),
+            TimeoutCase("threshold int overflow", 1L, Long.MAX_VALUE, Int.MAX_VALUE),
+            TimeoutCase("elapsed long overflow", 1L, Long.MIN_VALUE, 1),
+            TimeoutCase("wrapped elapsed remains below threshold", Long.MAX_VALUE, Long.MIN_VALUE, 1)
+        )
+
+        cases.forEach { case ->
+            val outcome = strategy.planHighToLow(
+                HighToLowDemandInput(
+                    remainingUntilCloseMs = -1L,
+                    beforeCloseMinutes = 30,
+                    nowMs = case.nowMs,
+                    lastHighSupplementTimeMs = validHighSupplementTime(case.rawAnchorMs),
+                    inactivityThresholdMinutes = case.thresholdMinutes
+                )
+            )
+            assertFalse(
+                "${case.name}: timeout-only input must not produce close outcome",
+                outcome == TrafficTransitionOutcome.HIGH_TO_LOW_BEFORE_CLOSE
+            )
+            assertEquals(
+                case.name,
+                p2548TimeoutOracle(case.rawAnchorMs, case.nowMs, case.thresholdMinutes),
+                outcome == TrafficTransitionOutcome.HIGH_TO_LOW_INACTIVITY_TIMEOUT
+            )
+        }
+    }
+
+    @Test
+    fun canArmHighToLowTimer_shouldRequireStableHighModeAndClearedEvidence() {
+        assertTrue(
+            canArmHighToLowTimer(
+                modeType = 2,
+                transitionMode = 0,
+                highHeatZoneClear = true,
+                hasPendingHighHeatEvidence = false,
+                recoveryBlocked = false
+            )
+        )
+        assertFalse(canArmHighToLowTimer(2, 1, true, false, false))
+        assertFalse(canArmHighToLowTimer(2, 0, false, false, false))
+        assertFalse(canArmHighToLowTimer(2, 0, true, true, false))
+        assertFalse(canArmHighToLowTimer(2, 0, true, false, true))
+    }
+
+    @Test
+    fun shouldReuseHighToLowTimerAnchor_shouldRejectCachedAnchorWhenRecoveryIsBlocked() {
+        assertTrue(shouldReuseHighToLowTimerAnchor(true, 1_000L, false))
+        assertFalse(shouldReuseHighToLowTimerAnchor(true, 1_000L, true))
+        assertFalse(shouldReuseHighToLowTimerAnchor(false, 1_000L, false))
+        assertFalse(shouldReuseHighToLowTimerAnchor(true, 0L, false))
+    }
 
     @Test
     fun resolveLowToHighTransitionIdleState_shouldKeepHighModeWhenSchedulingIsDisabled() {
@@ -94,7 +161,7 @@ class HighCurrentTrafficModeStateHelperTest {
     }
 
     @Test
-    fun recordSupplementLaunch_shouldRefreshTrackingWhenTransitionStartsNewBatch() {
+    fun recordSupplementLaunch_shouldRecordBatchSizeWithoutMovingTimerAnchor() {
         val previous = HighTrafficSupplementTrackingState(
             pitCount = 0,
             lastFillPitTime = 1_000L
@@ -102,12 +169,11 @@ class HighCurrentTrafficModeStateHelperTest {
 
         val updated = recordHighTrafficSupplementLaunch(
             previous = previous,
-            filledCount = 9,
-            now = 20_000L
+            filledCount = 9
         )
 
         assertEquals(9, updated.pitCount)
-        assertEquals(20_000L, updated.lastFillPitTime)
+        assertEquals(1_000L, updated.lastFillPitTime)
     }
 
     @Test
@@ -119,8 +185,7 @@ class HighCurrentTrafficModeStateHelperTest {
 
         val updated = recordHighTrafficSupplementLaunch(
             previous = previous,
-            filledCount = 0,
-            now = 99_999L
+            filledCount = 0
         )
 
         assertEquals(previous, updated)
@@ -136,12 +201,11 @@ class HighCurrentTrafficModeStateHelperTest {
         val updated = recordHighTrafficSupplementLaunchOutcome(
             previous = previous,
             requestedTargetCount = 2,
-            movedCount = 2,
-            now = 20_000L
+            movedCount = 2
         )
 
         assertEquals(2, updated.pitCount)
-        assertEquals(20_000L, updated.lastFillPitTime)
+        assertEquals(1_000L, updated.lastFillPitTime)
     }
 
     @Test
@@ -154,12 +218,11 @@ class HighCurrentTrafficModeStateHelperTest {
         val updated = recordHighTrafficSupplementLaunchOutcome(
             previous = previous,
             requestedTargetCount = 9,
-            movedCount = 2,
-            now = 20_000L
+            movedCount = 2
         )
 
         assertEquals("异常中断残缺批次不能记成 2 根小批次，否则恢复后不会续补 27~33", 0, updated.pitCount)
-        assertEquals(20_000L, updated.lastFillPitTime)
+        assertEquals(1_000L, updated.lastFillPitTime)
         assertTrue(
             shouldResumeIncompleteHighHeatBatch(
                 pitCount = updated.pitCount,
@@ -1392,5 +1455,24 @@ class HighCurrentTrafficModeStateHelperTest {
         completed = false,
         originBatchId = batchId,
         originBatchType = SupplementBatchType.HIGH_HEAT_25_33
+    )
+
+    private fun p2548TimeoutOracle(
+        rawAnchorMs: Long,
+        nowMs: Long,
+        thresholdMinutes: Int
+    ): Boolean {
+        if (rawAnchorMs <= 0L || thresholdMinutes <= 0) {
+            return false
+        }
+        val thresholdMs = thresholdMinutes * 60 * 1000L
+        return nowMs - rawAnchorMs > thresholdMs
+    }
+
+    private data class TimeoutCase(
+        val name: String,
+        val rawAnchorMs: Long,
+        val nowMs: Long,
+        val thresholdMinutes: Int
     )
 }

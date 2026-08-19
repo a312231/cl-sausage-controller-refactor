@@ -183,6 +183,14 @@ object OrderStateManager {
         persistTerminalStateDurable(orderNo, STATE_FAILED, "FAILED")
 
     @Synchronized
+    fun readDurableTerminalStateForReset(orderNo: String): Int? = try {
+        getPersistedOrderStateForStaleCloseout(orderNo)?.state
+    } catch (error: IllegalStateException) {
+        LogUtils.e("【订单状态机】复位证据对账失败：orderNo=$orderNo，error=${error.message}")
+        null
+    }
+
+    @Synchronized
     fun ensureTerminalForStaleCloseoutDurable(orderNo: String): Int? {
         val existingState = try {
             getPersistedOrderStateForStaleCloseout(orderNo)?.state

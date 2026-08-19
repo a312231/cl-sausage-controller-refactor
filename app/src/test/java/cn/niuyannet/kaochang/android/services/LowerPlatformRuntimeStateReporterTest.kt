@@ -5,8 +5,28 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class LowerPlatformRuntimeStateReporterTest {
+
+    @Test
+    fun deferredIsolationApi_shouldPersistWithoutPublishingUntilExplicitPublish() {
+        val source = sourceText()
+        val persist = functionBlock(
+            source,
+            "fun persistIsolated(",
+            "fun publishPersistedIsolation("
+        )
+        val publish = functionBlock(
+            source,
+            "fun publishPersistedIsolation(",
+            "fun markIsolated("
+        )
+
+        assertTrue(persist.contains("LowerPlatformEpisodeReducer.transaction("))
+        assertFalse(persist.contains("publishOrFallback("))
+        assertTrue(publish.contains("publishOrFallback("))
+    }
 
     @Test
     fun applySupplyDegraded_shouldNotDowngradeActiveMechanicalIsolation() {
@@ -26,6 +46,19 @@ class LowerPlatformRuntimeStateReporterTest {
         assertEquals(AppConfigBean.SUPPLEMENT_ENABLED_NO, config.supplementEnabled)
         assertEquals("in4", config.lowerPlatformIsolationActionName)
     }
+
+    private fun functionBlock(source: String, startMarker: String, endMarker: String): String {
+        val start = source.indexOf(startMarker)
+        require(start >= 0) { "missing start marker: $startMarker" }
+        val end = source.indexOf(endMarker, start + startMarker.length)
+        require(end > start) { "missing end marker: $endMarker" }
+        return source.substring(start, end)
+    }
+
+    private fun sourceText(): String = listOf(
+        File("app/src/main/java/cn/niuyannet/kaochang/android/services/LowerPlatformRuntimeStateReporter.kt"),
+        File("src/main/java/cn/niuyannet/kaochang/android/services/LowerPlatformRuntimeStateReporter.kt")
+    ).first { it.isFile }.readText().replace("\r\n", "\n")
 
     @Test
     fun applyLowerPlatformIsolated_shouldDisableSupplementWithoutBlockingOrdersOrMaintenance() {

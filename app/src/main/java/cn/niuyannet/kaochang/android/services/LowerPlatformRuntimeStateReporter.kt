@@ -58,11 +58,11 @@ object LowerPlatformRuntimeStateReporter {
         config.orderBlockReason = ""
     }
 
-    fun markIsolated(
+    fun persistIsolated(
         reason: String,
         actionName: String,
         details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails(requiresManualConfirm = true)
-    ) {
+    ): LowerPlatformEpisodeReducer.StateSnapshot {
         val config = AppConfig.getAppConfig()
         val previousLowerPlatformStatus = config.lowerPlatformStatus
         val previousIsolationActionName = config.lowerPlatformIsolationActionName
@@ -79,7 +79,7 @@ object LowerPlatformRuntimeStateReporter {
             config.lowerPlatformIsolationActionName = actionName
         }
         LogUtils.e(
-            "【下平台隔离】补肠链路已隔离，不切整机维护，已停止自动补肠：" +
+            "【下平台隔离】补肠链路隔离已耐久保存，已停止自动补肠：" +
                 "lowerPlatformStatus=$previousLowerPlatformStatus->${config.lowerPlatformStatus}，" +
                 "lowerPlatformIsolationActionName=$previousIsolationActionName->$actionName，" +
                 "supplementEnabled=$previousSupplementEnabled->${config.supplementEnabled}，" +
@@ -88,7 +88,19 @@ object LowerPlatformRuntimeStateReporter {
                 "onlineStatus=${config.onlineStatus}，errorStatus=${config.errorStatus}，isEnable=${config.isEnable}，" +
                 "reason=$reason"
         )
-        publishOrFallback("runtime_state:lower_platform_isolated", tx.snapshot)
+        return tx.snapshot
+    }
+
+    fun publishPersistedIsolation(snapshot: LowerPlatformEpisodeReducer.StateSnapshot) {
+        publishOrFallback("runtime_state:lower_platform_isolated", snapshot)
+    }
+
+    fun markIsolated(
+        reason: String,
+        actionName: String,
+        details: LowerPlatformEpisodeDetails = LowerPlatformEpisodeDetails(requiresManualConfirm = true)
+    ) {
+        publishPersistedIsolation(persistIsolated(reason, actionName, details))
     }
 
     fun applySuccessfulSupplyBoxTake(

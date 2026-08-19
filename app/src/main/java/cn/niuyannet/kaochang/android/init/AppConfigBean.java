@@ -29,6 +29,7 @@ public class AppConfigBean implements Serializable {
     public static final int SUPPLEMENT_ENABLED_YES = 1;
     public static final String ORDER_BLOCK_REASON_DISPATCH_SAFETY_CHECKING = "DISPATCH_SAFETY_CHECKING";
     public static final String ORDER_BLOCK_REASON_LOWER_PLATFORM_RECOVERY_REQUIRED = "LOWER_PLATFORM_RECOVERY_REQUIRED";
+    public static final String ORDER_BLOCK_REASON_SYSTEM_RESET_IN_PROGRESS = "SYSTEM_RESET_IN_PROGRESS";
     public static final String DEFAULT_API_BASE_URL = "https://iotadmin.cheerluck.com/prod-api/api/app/device";
 
     // MQTT 与云端通信配置

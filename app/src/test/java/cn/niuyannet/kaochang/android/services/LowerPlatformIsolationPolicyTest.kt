@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineTask
+import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalClaimState
 import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementActionLifecycle
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
@@ -15,6 +16,148 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LowerPlatformIsolationPolicyTest {
+
+    @Test
+    fun parallelSemiFaultClosure_shouldAllowOnlyFreshIn1ToIn3WithMatchingPhysicalFacts() {
+        val delivery = SupplementPrefetchLaneCheckpoint(
+            sourceBoxNo = 9,
+            sourceBoxCandidates = listOf(9),
+            targetPanNo = 28,
+            currentAction = "in1",
+            lifecycle = SupplementActionLifecycle.TERMINAL_CONFIRMED,
+            lastConfirmedStage = "in1"
+        )
+        val session = SupplementPrefetchPipelineSession(
+            sessionId = "session-semi-fault",
+            resourceMask = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above,
+            deliveryLane = delivery,
+            mechanicalClaimState = MechanicalClaimState.CLAIMED,
+            mechanicalClaimRevision = 3L
+        )
+
+        assertTrue(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                actionName = "in1",
+                sourceBoxNo = 9,
+                targetPanNo = 28,
+                result = failed(AtomicActionCodes.IN1_X_RESET_FAILED, fresh = true),
+                session = session,
+                expectedSessionId = session.sessionId,
+                laneRole = SupplementLaneRole.DELIVERY,
+                durableStateSaved = true
+            )
+        )
+        assertTrue(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                actionName = "in2",
+                sourceBoxNo = 9,
+                targetPanNo = 28,
+                result = failed(AtomicActionCodes.X_RESET_FAILED, fresh = true),
+                session = session.copy(
+                    deliveryLane = delivery.copy(currentAction = "in2", lastConfirmedStage = "in2")
+                ),
+                expectedSessionId = session.sessionId,
+                laneRole = SupplementLaneRole.DELIVERY,
+                durableStateSaved = true
+            )
+        )
+        assertTrue(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                actionName = "in3",
+                sourceBoxNo = 9,
+                targetPanNo = 28,
+                result = failed(AtomicActionCodes.IN3_X_RESET_FAILED, fresh = true),
+                session = session.copy(
+                    deliveryLane = delivery.copy(
+                        currentAction = "in3",
+                        lastConfirmedStage = "in3",
+                        boxDeductionApplied = true
+                    )
+                ),
+                expectedSessionId = session.sessionId,
+                laneRole = SupplementLaneRole.DELIVERY,
+                durableStateSaved = true
+            )
+        )
+
+        listOf(
+            "in4" to failed(AtomicActionCodes.PARAM_ERROR, fresh = true),
+            "in1" to failed(AtomicActionCodes.IN1_X_RESET_FAILED, fresh = false)
+        ).forEach { (action, result) ->
+            assertFalse(
+                ParallelSupplementSemiFaultClosurePolicy.canClose(
+                    action,
+                    9,
+                    28,
+                    result,
+                    session.copy(deliveryLane = delivery.copy(currentAction = action, lastConfirmedStage = action)),
+                    session.sessionId,
+                    SupplementLaneRole.DELIVERY,
+                    durableStateSaved = true
+                )
+            )
+        }
+        assertFalse(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                "in1", 9, 28, AtomicActionResult.ModbusError("drop"), session,
+                session.sessionId, SupplementLaneRole.DELIVERY, durableStateSaved = true
+            )
+        )
+        assertFalse(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                "in1", 9, 28, AtomicActionResult.Timeout("timeout"), session,
+                session.sessionId, SupplementLaneRole.DELIVERY, durableStateSaved = true
+            )
+        )
+        assertFalse(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                "in1", 9, 28, failed(AtomicActionCodes.IN1_X_RESET_FAILED, fresh = true), session,
+                session.sessionId, SupplementLaneRole.DELIVERY, durableStateSaved = false
+            )
+        )
+        assertFalse(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                "in1", 9, 28, failed(AtomicActionCodes.IN1_X_RESET_FAILED, fresh = true),
+                session.copy(resourceMask = ResourceMask.bottom), session.sessionId,
+                SupplementLaneRole.DELIVERY, durableStateSaved = true
+            )
+        )
+
+        val completedDelivery = delivery.copy(
+            currentAction = "in7",
+            lastConfirmedStage = "in7",
+            lifecycle = SupplementActionLifecycle.PHYSICAL_APPLIED,
+            boxDeductionApplied = true,
+            panPlacementApplied = true
+        )
+        val failedPrefetch = SupplementPrefetchLaneCheckpoint(
+            sourceBoxNo = 10,
+            sourceBoxCandidates = listOf(10),
+            targetPanNo = 29,
+            currentAction = "in1",
+            lifecycle = SupplementActionLifecycle.TERMINAL_CONFIRMED,
+            lastConfirmedStage = "in1"
+        )
+        val prefetchSession = session.copy(
+            deliveryLane = completedDelivery,
+            prefetchLane = failedPrefetch
+        )
+        assertTrue(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                "in1", 10, 29, failed(AtomicActionCodes.IN1_X_RESET_FAILED, fresh = true),
+                prefetchSession, session.sessionId, SupplementLaneRole.PREFETCH, durableStateSaved = true
+            )
+        )
+        assertFalse(
+            ParallelSupplementSemiFaultClosurePolicy.canClose(
+                "in1", 10, 29, failed(AtomicActionCodes.IN1_X_RESET_FAILED, fresh = true),
+                prefetchSession.copy(
+                    deliveryLane = completedDelivery.copy(lifecycle = SupplementActionLifecycle.TERMINAL_CONFIRMED)
+                ),
+                session.sessionId, SupplementLaneRole.PREFETCH, durableStateSaved = true
+            )
+        )
+    }
 
     @Test
     fun rawTimeout_shouldNeverBypassExplicitTerminalStateResolution() {
@@ -286,6 +429,6 @@ class LowerPlatformIsolationPolicyTest {
         assertFalse(reason.contains("维护"))
     }
 
-    private fun failed(code: Int): AtomicActionResult.Failed =
-        AtomicActionResult.Failed(code, "failure")
+    private fun failed(code: Int, fresh: Boolean = false): AtomicActionResult.Failed =
+        AtomicActionResult.Failed(code, "failure", freshExecutionObserved = fresh)
 }

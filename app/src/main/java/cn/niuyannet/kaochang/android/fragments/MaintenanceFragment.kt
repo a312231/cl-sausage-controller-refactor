@@ -1220,6 +1220,20 @@ class MaintenanceFragment : Fragment() {
         }
 
         binding.btnConfirmSupplementSafety.setOnClickListener {
+            val returnConflict = KaoChangOperate.returnBindingConflictSnapshot()
+            if (returnConflict != null) {
+                AlertDialog.Builder(requireContext())
+                    .setTitle("回搬目标重复绑定，设备已进入维护")
+                    .setMessage(
+                        "检测到多个补热源盘指向同一前区工位，普通确认不能解除。\n\n" +
+                            "冲突=${returnConflict.details}\n\n" +
+                            "请先现场确认，并使用现有“清空烤盘”或“丢弃所有烤肠并重置烤盘”流程清空全部补热源盘。" +
+                            "清盘完成后 App 只会无机械地收口冲突绑定，不会自动恢复营业。"
+                    )
+                    .setPositiveButton("我知道了", null)
+                    .show()
+                return@setOnClickListener
+            }
             val intent = KaoChangOperate.pendingSupplementBatchRequiresManualConfirm()
             if (intent == null && !LowerPlatformRuntimeStateReporter.shouldRecoverAfterManualLowerPlatformAction(AppConfig.getAppConfig())) {
                 ToastUtils.showShort("当前没有需要人工确认的续补批次")
@@ -1410,8 +1424,26 @@ class MaintenanceFragment : Fragment() {
         }
     }
 
+    private suspend fun takeOverBusinessCloseoutDiscardIfNeeded(reason: String): Boolean {
+        val prepared = withContext(Dispatchers.IO) {
+            KaoChangAlgorithm.prepareBusinessCloseoutForManualPanClear()
+        }
+        if (!prepared) {
+            ToastUtils.showLong("营业收口未能进入维护态，请重试")
+            return false
+        }
+        val result = withContext(Dispatchers.IO) {
+            KaoChangOperate.takeOverBusinessCloseoutDiscardForManualPanClear(reason)
+        }
+        if (!result.ok) {
+            ToastUtils.showLong(result.reason)
+        }
+        return result.ok
+    }
+
     private fun performClearAll(staleClaim: OrderDeliveryClaim?) {
         if (clearPanCooldownJob?.isActive == true) return
+        val expectedReturnConflict = KaoChangOperate.returnBindingConflictSnapshot()
         if (staleClaim != null && !OrderStateManager.canCloseStaleClaim(staleClaim.orderNo)) {
             ToastUtils.showLong("存在其他处理中订单，或当前订单尚未形成可安全收口的终态")
             return
@@ -1430,6 +1462,12 @@ class MaintenanceFragment : Fragment() {
         clearPanCooldownJob = lifecycleScope.launch {
             val adminBusy = beginAdminBusy("维护页清空烤盘")
             try {
+                if (!takeOverBusinessCloseoutDiscardIfNeeded("维护页清空烤盘接管营业收口残留")) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    clearPanCooldownJob = null
+                    return@launch
+                }
                 val staleClaimClosed = if (staleClaim != null) {
                     binding.tvCooldownHint.text = "正在核对并释放订单 ${staleClaim.orderNo}"
                     val closeout = withContext(Dispatchers.IO) {
@@ -1495,8 +1533,35 @@ class MaintenanceFragment : Fragment() {
                     source = "maintenance_pan_clear_all"
                 )
                 FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击清空烤盘")
-                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
+                val conflictCloseout = if (expectedReturnConflict != null) {
+                    withContext(Dispatchers.IO) {
+                        KaoChangOperate.resolveReturnBindingConflictAfterAllSourcesCleared(
+                            expectedReturnConflict,
+                            "维护页清空烤盘后专用收口"
+                        )
+                    }
+                } else {
+                    KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击清空烤盘")
+                    null
+                }
+                if (conflictCloseout?.ok == false) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showLong("烤盘已清空，但冲突绑定仍保留：${conflictCloseout.reason}")
+                    clearPanCooldownJob = null
+                    return@launch
+                }
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击清空烤盘", force = true)
+                val closeoutFinalized = withContext(Dispatchers.IO) {
+                    KaoChangAlgorithm.finalizeBusinessCloseoutAfterManualPanClear()
+                }
+                if (!closeoutFinalized) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showLong("营业收口状态未完成，请确认烤盘已清空后重试")
+                    clearPanCooldownJob = null
+                    return@launch
+                }
                 clearRuntimeStateAfterManualPanReset("点击清空烤盘")
                 AdminOperationLogger.i(
                     action = "清空烤盘",
@@ -1559,6 +1624,7 @@ class MaintenanceFragment : Fragment() {
 
     private fun performDiscardAndResetPan() {
         if (resetPanCooldownJob?.isActive == true) return
+        val expectedReturnConflict = KaoChangOperate.returnBindingConflictSnapshot()
 
         AdminOperationLogger.i(
             action = "丢弃所有烤肠并重置烤盘",
@@ -1573,6 +1639,12 @@ class MaintenanceFragment : Fragment() {
         resetPanCooldownJob = lifecycleScope.launch {
             val adminBusy = beginAdminBusy("维护页丢弃所有烤肠并重置烤盘")
             try {
+                if (!takeOverBusinessCloseoutDiscardIfNeeded("维护页丢弃并重置接管营业收口残留")) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    resetPanCooldownJob = null
+                    return@launch
+                }
                 val idleReady = waitUntilMachineIdleOrTimeout(
                     reason = "维护页点击重置烤盘等待空闲",
                     waitingText = "等待机械动作完成后重置烤盘",
@@ -1614,8 +1686,35 @@ class MaintenanceFragment : Fragment() {
                     source = "maintenance_pan_reset_all"
                 )
                 FaultHeatPauseManager.clearFaultHeatPauseSilently("维护页点击丢弃所有烤肠并重置烤盘")
-                KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
+                val conflictCloseout = if (expectedReturnConflict != null) {
+                    withContext(Dispatchers.IO) {
+                        KaoChangOperate.resolveReturnBindingConflictAfterAllSourcesCleared(
+                            expectedReturnConflict,
+                            "维护页丢弃全部并重置后专用收口"
+                        )
+                    }
+                } else {
+                    KaoChangOperate.clearPendingSupplementBatchIntent("维护页点击丢弃所有烤肠并重置烤盘")
+                    null
+                }
+                if (conflictCloseout?.ok == false) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showLong("烤盘已重置，但冲突绑定仍保留：${conflictCloseout.reason}")
+                    resetPanCooldownJob = null
+                    return@launch
+                }
                 KaoChangOperate.stopAllHeatingIfNoSausage("维护页点击丢弃所有烤肠并重置烤盘", force = true)
+                val closeoutFinalized = withContext(Dispatchers.IO) {
+                    KaoChangAlgorithm.finalizeBusinessCloseoutAfterManualPanClear()
+                }
+                if (!closeoutFinalized) {
+                    binding.tvCooldownHint.text = ""
+                    setMaintenanceActionButtonsEnabled(true)
+                    ToastUtils.showLong("营业收口状态未完成，请确认烤盘已清空后重试")
+                    resetPanCooldownJob = null
+                    return@launch
+                }
                 clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")
                 AdminOperationLogger.i(
                     action = "丢弃所有烤肠并重置烤盘",

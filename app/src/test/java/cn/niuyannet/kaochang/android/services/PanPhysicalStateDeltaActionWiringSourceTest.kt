@@ -81,15 +81,15 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
     fun supplementPlanning_shouldPublishPhysicalDeltaBeforeMechanicalDispatch() {
         val lowSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/LowCurrentTrafficMode.kt")
         listOf(
-            "private suspend fun initLowTrafficMode(" to "low_initialization_planned",
-            "private suspend fun resumeLowInitialization(" to "low_initialization_resume_planned",
-            "private suspend fun resumeLowHeatSupplementGroup(" to "low_heat_resume_planned"
-        ).forEach { (functionName, expectedSource) ->
+            Triple("private suspend fun initLowTrafficMode(", "low_initialization_planned", "KaoChangOperate.moveSausagesToKaoPansByTaste("),
+            Triple("private suspend fun resumeLowInitialization(", "low_initialization_resume_planned", "KaoChangOperate.moveSausagesToKaoPansByTaste("),
+            Triple("private suspend fun resumeLowHeatSupplementGroup(", "low_heat_resume_planned", "KaoChangOperate.moveSausagesToKaoPansForResume(")
+        ).forEach { (functionName, expectedSource, dispatchCall) ->
             val body = extractFunctionBody(lowSource, functionName)
             assertOrder(
                 body,
                 "\"$expectedSource\"",
-                "KaoChangOperate.moveSausagesToKaoPansByTaste(",
+                dispatchCall,
                 "$functionName 必须在机械补肠前同步规划状态"
             )
         }
@@ -110,16 +110,16 @@ class PanPhysicalStateDeltaActionWiringSourceTest {
 
         val highSource = sourceFile("app/src/main/java/cn/niuyannet/kaochang/android/services/HighCurrentTrafficMode.kt")
         listOf(
-            "private suspend fun initHighTrafficMode(" to "high_initialization_planned",
-            "private suspend fun resumeHighInitialization(" to "high_initialization_resume_planned",
-            "private suspend fun addHighHeatSausage(" to "high_heat_25_33_planned",
-            "private suspend fun resumeIncompleteHighHeatSupplement(" to "high_heat_25_33_resume_planned"
-        ).forEach { (functionName, expectedSource) ->
+            Triple("private suspend fun initHighTrafficMode(", "high_initialization_planned", "KaoChangOperate.moveSausagesToKaoPansByTaste("),
+            Triple("private suspend fun resumeHighInitialization(", "high_initialization_resume_planned", "KaoChangOperate.moveSausagesToKaoPansByTaste("),
+            Triple("private suspend fun addHighHeatSausage(", "high_heat_25_33_planned", "KaoChangOperate.moveSausagesToKaoPansByTaste("),
+            Triple("private suspend fun resumeIncompleteHighHeatSupplement(", "high_heat_25_33_resume_planned", "KaoChangOperate.moveSausagesToKaoPansForResume(")
+        ).forEach { (functionName, expectedSource, dispatchCall) ->
             val body = extractFunctionBody(highSource, functionName)
             assertOrder(
                 body,
                 "\"$expectedSource\"",
-                "KaoChangOperate.moveSausagesToKaoPansByTaste(",
+                dispatchCall,
                 "$functionName 必须在机械补肠前同步规划状态"
             )
         }

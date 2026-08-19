@@ -4,6 +4,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionCodes
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionExecutor
 import cn.niuyannet.kaochang.android.services.actiongroup.AtomicActionResult
 import cn.niuyannet.kaochang.android.services.actiongroup.InActionGroupPipelineResult
+import cn.niuyannet.kaochang.android.services.actiongroup.MechanicalClaimState
+import cn.niuyannet.kaochang.android.services.actiongroup.ResourceMask
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementActionLifecycle
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPipelineSession
@@ -163,6 +165,61 @@ object ParallelSupplementE5ClosurePolicy {
             SupplementLaneRole.DELIVERY -> session.prefetchLane == null
             SupplementLaneRole.PREFETCH -> session.deliveryLane?.let { delivery ->
                 delivery.currentAction == "in7" &&
+                    delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
+                    delivery.boxDeductionApplied &&
+                    delivery.panPlacementApplied
+            } == true
+        }
+    }
+}
+
+object ParallelSupplementSemiFaultClosurePolicy {
+    private val SAFE_ACTIONS = setOf("in1", "in2", "in3")
+    private val EXPECTED_RESOURCE_MASK = ResourceMask.bottom or ResourceMask.lift or ResourceMask.above
+
+    fun canClose(
+        actionName: String,
+        sourceBoxNo: Int?,
+        targetPanNo: Int?,
+        result: AtomicActionResult,
+        session: SupplementPrefetchPipelineSession?,
+        expectedSessionId: String,
+        laneRole: SupplementLaneRole,
+        durableStateSaved: Boolean
+    ): Boolean {
+        val failed = result as? AtomicActionResult.Failed ?: return false
+        if (!durableStateSaved || actionName !in SAFE_ACTIONS || !failed.freshExecutionObserved) return false
+        if (session == null || session.sessionId != expectedSessionId ||
+            session.mechanicalClaimState != MechanicalClaimState.CLAIMED ||
+            session.mechanicalClaimRevision <= 0L ||
+            session.resourceMask != EXPECTED_RESOURCE_MASK
+        ) {
+            return false
+        }
+        val failedLane = when (laneRole) {
+            SupplementLaneRole.DELIVERY -> session.deliveryLane
+            SupplementLaneRole.PREFETCH -> session.prefetchLane
+        } ?: return false
+        if (sourceBoxNo == null || targetPanNo == null ||
+            failedLane.sourceBoxNo != sourceBoxNo || failedLane.targetPanNo != targetPanNo ||
+            failedLane.currentAction != actionName || failedLane.lastConfirmedStage != actionName ||
+            failedLane.lifecycle != SupplementActionLifecycle.TERMINAL_CONFIRMED ||
+            failedLane.panPlacementApplied
+        ) {
+            return false
+        }
+        val inventoryFactsMatch = when (actionName) {
+            "in1", "in2" -> !failedLane.boxDeductionApplied
+            "in3" -> failedLane.boxDeductionApplied
+            else -> false
+        }
+        if (!inventoryFactsMatch) return false
+
+        return when (laneRole) {
+            SupplementLaneRole.DELIVERY -> session.prefetchLane == null
+            SupplementLaneRole.PREFETCH -> session.deliveryLane?.let { delivery ->
+                delivery.currentAction == "in7" &&
+                    delivery.lastConfirmedStage == "in7" &&
                     delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
                     delivery.boxDeductionApplied &&
                     delivery.panPlacementApplied

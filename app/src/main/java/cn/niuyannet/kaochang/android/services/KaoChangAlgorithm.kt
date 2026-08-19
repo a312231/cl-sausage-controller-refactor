@@ -18,6 +18,7 @@ import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.RepeatedLogGate
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -71,11 +72,16 @@ object KaoChangAlgorithm {
     private var lastPollStateSnapshot: String? = null
     private var lastPollStateName: String? = null
     private var lastAutoDispatchBlockSnapshot: String? = null
-    private var lastFaultHeatDiagnosticLogKey: String? = null
+    private val faultHeatDiagnosticLogPolicy = FaultHeatDiagnosticLogPolicy()
     private val faultCloseoutLogGate = RepeatedLogGate(summaryIntervalMs = null)
     private var orphanDeliveryBusyRecoveryCandidate: String? = null
     private var lastOrphanDeliveryBusyRecoveryAttemptAtMs: Long = 0L
     private var lastStableHighOldLowHeatDiagnosticKey: String? = null
+    private val businessCloseoutPendingRepository = BusinessCloseoutPendingRepository(
+        SharedPreferenceBusinessCloseoutPendingStore()
+    )
+    private var businessCloseoutHeatingPausedInProcess = false
+    private var lastBusinessCloseoutBlockKey = ""
     var isEnabled = false
 
     private fun logD(category: String, message: String) = LogUtils.d(TAG, "[$category] $message")
@@ -179,15 +185,29 @@ object KaoChangAlgorithm {
             isRunning,
             config.faultHeatPauseActive
         ).joinToString("|")
-        if (lastFaultHeatDiagnosticLogKey == logKey) {
-            return
-        }
-        lastFaultHeatDiagnosticLogKey = logKey
+        val decision = faultHeatDiagnosticLogPolicy.evaluate(logKey, System.currentTimeMillis()) ?: return
+        val emission = if (decision.stateChanged) "edge" else "periodic_summary"
         logW(
             LOG_DEVICE,
-            "【故障停热诊断】stage=$stage，" +
+            "【故障停热诊断】emission=$emission，suppressedCount=${decision.suppressedCount}，stage=$stage，" +
                 faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
         )
+    }
+
+    private fun logFaultHeatDiagnosticRecoveryIfNeeded(
+        config: AppConfigBean,
+        currentTime: String,
+        isWithinBusinessHours: Boolean
+    ) {
+        val decision = faultHeatDiagnosticLogPolicy.evaluate(state = null, nowMs = System.currentTimeMillis())
+            ?: return
+        if (decision.kind == FaultHeatDiagnosticLogPolicy.Kind.RECOVERED) {
+            logI(
+                LOG_DEVICE,
+                "【故障停热诊断】recovered=true，" +
+                    faultHeatDiagnosticText(config, currentTime, isWithinBusinessHours)
+            )
+        }
     }
 
     private fun residualDrainText(value: Int): String = when (value) {
@@ -221,8 +241,84 @@ object KaoChangAlgorithm {
         )
     }
 
+    fun requestBusinessCloseout(source: String): Boolean {
+        if (businessCloseoutPendingRepository.isPending()) {
+            return true
+        }
+        if (!businessCloseoutPendingRepository.requestDurably()) {
+            logE(LOG_DEVICE, "营业结束请求落盘失败，保持当前状态等待下轮重试：source=$source")
+            return false
+        }
+        businessCloseoutHeatingPausedInProcess = false
+        logI(LOG_DEVICE, "营业结束请求已耐久保存：source=$source")
+        return true
+    }
+
+    fun prepareBusinessCloseoutForManualPanClear(): Boolean {
+        if (!businessCloseoutPendingRepository.isPending()) {
+            return true
+        }
+        val config = AppConfig.getAppConfig()
+        val previousOnlineStatus = config.onlineStatus
+        val previousIsEnable = config.isEnable
+        val previousRestStatusSource = config.restStatusSource
+        config.onlineStatus = 3
+        config.isEnable = 0
+        return runCatching {
+            AppConfig.saveAppConfigDurable(config)
+            HomeUiRefreshBridge.requestRefresh("business_closeout:manual_takeover")
+            logI(LOG_DEVICE, "人工清盘接管营业收口：已耐久进入维护态并关闭算法")
+            true
+        }.getOrElse { error ->
+            config.onlineStatus = previousOnlineStatus
+            config.isEnable = previousIsEnable
+            config.restStatusSource = previousRestStatusSource
+            logE(LOG_DEVICE, "人工清盘接管营业收口进入维护态失败，保留 pending：${error.message}")
+            false
+        }
+    }
+
+    fun finalizeBusinessCloseoutAfterManualPanClear(): Boolean {
+        if (!businessCloseoutPendingRepository.isPending()) {
+            return true
+        }
+        if (KaoPanHelper.getKaoPanList().any { it.isHasSausage }) {
+            return false
+        }
+        val config = AppConfig.getAppConfig()
+        val previousModeType = config.modeType
+        val previousTransitionMode = config.transitionMode
+        val previousResidualDrain = config.highConcurrencyResidualDrain
+        foldBusinessCloseoutAfterManualPanClear(config)
+        val committed = runCatching {
+            AppConfig.saveAppConfigDurable(config)
+            true
+        }.getOrElse { error ->
+            config.modeType = previousModeType
+            config.transitionMode = previousTransitionMode
+            config.highConcurrencyResidualDrain = previousResidualDrain
+            logE(LOG_DEVICE, "人工清盘后的营业收口低并发提交失败，保留 pending：${error.message}")
+            false
+        }
+        if (!committed) {
+            return false
+        }
+        if (!businessCloseoutPendingRepository.clearDurably()) {
+            logE(LOG_DEVICE, "人工清盘已提交低并发，但营业结束 pending 清理失败，等待人工重试")
+            return false
+        }
+        businessCloseoutHeatingPausedInProcess = false
+        lastBusinessCloseoutBlockKey = ""
+        logI(LOG_DEVICE, "人工清盘已完成营业收口：保持维护态并提交低并发")
+        return true
+    }
+
     fun recoverBusinessStartIfNeeded(source: String): Boolean {
         val config = AppConfig.getAppConfig()
+        if (businessCloseoutPendingRepository.isPending()) {
+            logBusinessStartSkipOnce(source, "营业结束收口尚未完成", config)
+            return false
+        }
         val businessTime = config.businessTime ?: return false
         if (!isWithinBusinessHours(getCurrentTime(), businessTime)) {
             lastBusinessStartRecoveryLogKey = ""
@@ -768,16 +864,22 @@ object KaoChangAlgorithm {
         normalizeSupplementSourceKeepWarmBeforeEarlyReturns(config, kaoPanList)
         val currentTime = getCurrentTime()
         val isWithinBusinessHours = isWithinBusinessHours(currentTime, config.businessTime)
+        captureBusinessCloseoutBeforeEarlyReturns(config, isWithinBusinessHours)
 
         if (config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL) {
-            lastFaultHeatDiagnosticLogKey = null
             faultCloseoutLogGate.reset()
+            if (isWithinBusinessHours) {
+                logFaultHeatDiagnosticRecoveryIfNeeded(config, currentTime, isWithinBusinessHours)
+            }
         }
 
         if (config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL) {
             logFaultHeatDiagnosticOnce("error_status_before_fault_stop", config, currentTime, isWithinBusinessHours)
             stopHeatingAndDispatchForFault("算法轮询检测到设备故障")
             SendServerHelper.publishServiceUpdateStatus()
+            return
+        }
+        if (processBusinessCloseoutPendingIfAny()) {
             return
         }
         if (
@@ -793,15 +895,7 @@ object KaoChangAlgorithm {
 
         if (!isWithinBusinessHours) {
             logFaultHeatDiagnosticOnce("not_within_business_hours_before_return", config, currentTime, isWithinBusinessHours)
-            // 只有运营中（1）才需要执行停业收尾切换到休息中（2）；
-            // 待投运/维护中等后台管理员设置的状态，不触发自动切换
-            if (onlineStatus == 1) {
-                logD(LOG_ALGORITHM, "当前不在营业时间内，设备运营中，执行停业收尾")
-                KaoChangOperate.pauseBusiness()
-                KaoChangOperate.endBusinessHours(config)
-            } else {
-                logD(LOG_ALGORITHM, "当前不在营业时间内，设备状态=${onlineStatusText(onlineStatus)}，跳过停业收尾")
-            }
+            logD(LOG_ALGORITHM, "当前不在营业时间内，设备状态=${onlineStatusText(onlineStatus)}，跳过普通算法调度")
             return
         }
 
@@ -1018,6 +1112,299 @@ object KaoChangAlgorithm {
                 )
             }
         }
+    }
+
+    private fun captureBusinessCloseoutBeforeEarlyReturns(
+        config: AppConfigBean,
+        isWithinBusinessHours: Boolean
+    ) {
+        if (
+            shouldCaptureBusinessCloseout(
+                isWithinBusinessHours = isWithinBusinessHours,
+                onlineStatus = config.onlineStatus,
+                errorStatus = config.errorStatus
+            )
+        ) {
+            requestBusinessCloseout("算法轮询检测到营业结束")
+        }
+    }
+
+    private fun logBusinessCloseoutBlocked(reason: String, config: AppConfigBean) {
+        val key = listOf(
+            reason,
+            config.onlineStatus,
+            config.errorStatus,
+            config.inspectionMode,
+            config.isEnable,
+            config.moveStatus,
+            SupplementPauseController.shouldPauseForOrder()
+        ).joinToString("|")
+        if (key == lastBusinessCloseoutBlockKey) {
+            return
+        }
+        lastBusinessCloseoutBlockKey = key
+        logD(
+            LOG_DEVICE,
+            "营业结束收口暂缓：reason=$reason，onlineStatus=${onlineStatusText(config.onlineStatus)}，" +
+                "errorStatus=${errorStatusText(config.errorStatus)}，moveStatus=${moveStatusText(config.moveStatus)}，" +
+                "inspectionMode=${config.inspectionMode}，isEnable=${isEnableText(config.isEnable)}"
+        )
+    }
+
+    private fun ensureBusinessCloseoutRestGate(): Boolean {
+        var restStateChanged = false
+        var lockedBlockReason: String? = null
+        val restGateReady = KaoChangOperate.withFaultHeatTransitionLock {
+            val lockedConfig = AppConfig.getAppConfig()
+            if (SupplementPauseController.shouldPauseForOrder() || lockedConfig.onlineStatus == 4) {
+                lockedBlockReason = "订单尚未结束"
+                false
+            } else if (lockedConfig.onlineStatus == 1) {
+                val previousOnlineStatus = lockedConfig.onlineStatus
+                val previousRestStatusSource = lockedConfig.restStatusSource
+                lockedConfig.onlineStatus = 2
+                lockedConfig.restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
+                runCatching {
+                    AppConfig.saveAppConfigDurable(lockedConfig)
+                    restStateChanged = true
+                    true
+                }.getOrElse { error ->
+                    lockedConfig.onlineStatus = previousOnlineStatus
+                    lockedConfig.restStatusSource = previousRestStatusSource
+                    lockedBlockReason = "营业结束休息态落盘失败：${error.message}"
+                    false
+                }
+            } else {
+                true
+            }
+        }
+        if (!restGateReady) {
+            val latest = AppConfig.getAppConfig()
+            logBusinessCloseoutBlocked(lockedBlockReason ?: "休息态提交被拒绝", latest)
+            return false
+        }
+        if (restStateChanged) {
+            HomeUiRefreshBridge.requestRefresh("business_closeout:rest_gate")
+            SendServerHelper.publishServiceUpdateStatus()
+        }
+        val latest = AppConfig.getAppConfig()
+        if (
+            latest.onlineStatus != 2 ||
+            AppConfig.normalizeRestStatusSource(latest.restStatusSource) !=
+            AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
+        ) {
+            logBusinessCloseoutBlocked("当前状态不允许自动营业收口", latest)
+            return false
+        }
+        return true
+    }
+
+    private fun currentBusinessCloseoutDiscardGate(config: AppConfigBean): Boolean {
+        val lowerPlatformBlocked = AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+            config.lowerPlatformStatus,
+            config.lowerPlatformIsolationActionName
+        )
+        return canRunBusinessCloseoutDiscard(
+            onlineStatus = config.onlineStatus,
+            automaticRestSource = AppConfig.normalizeRestStatusSource(config.restStatusSource) ==
+                AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS,
+            errorStatus = config.errorStatus,
+            inspectionMode = config.inspectionMode,
+            modbusConnected = VMModbusHelper.connectStatus(),
+            moveStatus = config.moveStatus,
+            orderPending = SupplementPauseController.shouldPauseForOrder(),
+            recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked(),
+            emergencyResetPending = KaoChangOperate.hasPendingEmergencyResetRecovery(),
+            lowerPlatformBlocked = lowerPlatformBlocked
+        )
+    }
+
+    private suspend fun processBusinessCloseoutPendingIfAny(): Boolean {
+        if (!businessCloseoutPendingRepository.isPending()) {
+            return false
+        }
+        if (!ensureBusinessCloseoutRestGate()) {
+            return true
+        }
+        val latest = AppConfig.getAppConfig()
+        if (!currentBusinessCloseoutDiscardGate(latest)) {
+            logBusinessCloseoutBlocked("订单、故障、检修、通信或机械恢复门禁未清", latest)
+            return true
+        }
+        if (!businessCloseoutHeatingPausedInProcess) {
+            if (!KaoChangOperate.pauseBusiness()) {
+                logBusinessCloseoutBlocked("三区停热未全部确认成功", AppConfig.getAppConfig())
+                return true
+            }
+            businessCloseoutHeatingPausedInProcess = true
+        }
+        if (finalizeBusinessCloseoutIfAllClear()) {
+            return true
+        }
+
+        KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+            types = setOf(
+                SupplementBatchType.LOW_HEAT_13_15,
+                SupplementBatchType.LOW_HEAT_16_18,
+                SupplementBatchType.HIGH_HEAT_25_33
+            ),
+            sourcePositionsWithSausage = KaoPanHelper.getKaoPanList()
+                .filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
+                .filter { it.isHasSausage }
+                .map { it.positionSn }
+                .toSet(),
+            reason = "营业结束收口清理已空补热源盘 binding"
+        )
+        KaoChangOperate.clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(
+            "营业结束停止未完成补肠目标"
+        )
+        val remainingSupplementTargets = KaoChangOperate.maintenanceKaoPanIntentForUi()
+            ?.remainingTargets()
+            .orEmpty()
+        if (remainingSupplementTargets.isNotEmpty()) {
+            logBusinessCloseoutBlocked("仍有待人工确认或未收口的补肠目标", AppConfig.getAppConfig())
+            return true
+        }
+
+        val targetPans = KaoPanHelper.getKaoPanList()
+            .filter { it.isHasSausage }
+            .sortedBy { it.positionSn }
+        for (kaoPan in targetPans) {
+            val beforeDiscard = AppConfig.getAppConfig()
+            if (!currentBusinessCloseoutDiscardGate(beforeDiscard)) {
+                logBusinessCloseoutBlocked("下一盘丢弃前门禁已变化", beforeDiscard)
+                return true
+            }
+            val discarded = try {
+                KaoChangOperate.discardSausage(
+                    kaoPan = kaoPan,
+                    source = BUSINESS_CLOSEOUT_DISCARD_SOURCE,
+                    detail = "营业结束耐久收口",
+                    automatic = false,
+                    businessCloseout = true
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                logE(
+                    LOG_DEVICE,
+                    "营业结束丢弃异常，保留 pending 并停止本轮：pan=${kaoPan.positionSn}，" +
+                        "error=${error.message ?: error.javaClass.simpleName}"
+                )
+                return true
+            }
+            if (!discarded) {
+                logBusinessCloseoutBlocked("烤盘${kaoPan.positionSn}丢弃未确认成功，停止本轮", AppConfig.getAppConfig())
+                return true
+            }
+        }
+        finalizeBusinessCloseoutIfAllClear()
+        return true
+    }
+
+    private fun finalizeBusinessCloseoutIfAllClear(): Boolean {
+        var config = AppConfig.getAppConfig()
+        if (
+            config.errorStatus != AppConfigBean.ERROR_STATUS_NORMAL ||
+            config.onlineStatus != 2 ||
+            AppConfig.normalizeRestStatusSource(config.restStatusSource) !=
+            AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
+        ) {
+            return false
+        }
+        val pans = KaoPanHelper.getKaoPanList()
+        if (pans.any { it.isHasSausage }) {
+            return false
+        }
+        if (
+            !canFinalizeBusinessCloseout(
+                hasSausage = false,
+                hasPendingDiscard = config.pendingDiscardPositions.isNotEmpty(),
+                moveStatus = config.moveStatus,
+                orderPending = SupplementPauseController.shouldPauseForOrder(),
+                recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked(),
+                emergencyResetPending = KaoChangOperate.hasPendingEmergencyResetRecovery(),
+                hasSupplementEvidence = false
+            )
+        ) {
+            return false
+        }
+        KaoChangOperate.clearCompletedHeatReturnBindingIfSourcesCleared(
+            types = setOf(
+                SupplementBatchType.LOW_HEAT_13_15,
+                SupplementBatchType.LOW_HEAT_16_18,
+                SupplementBatchType.HIGH_HEAT_25_33
+            ),
+            sourcePositionsWithSausage = emptySet(),
+            reason = "营业结束全盘为空后收口补热 binding"
+        )
+        KaoChangOperate.clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(
+            "营业结束全盘为空后收口补肠 intent"
+        )
+        config = AppConfig.getAppConfig()
+        val hasSupplementEvidence = KaoChangOperate.maintenanceKaoPanIntentForUi() != null
+        if (
+            !canFinalizeBusinessCloseout(
+                hasSausage = pans.any { it.isHasSausage },
+                hasPendingDiscard = config.pendingDiscardPositions.isNotEmpty(),
+                moveStatus = config.moveStatus,
+                orderPending = SupplementPauseController.shouldPauseForOrder(),
+                recoveryBlocked = KaoChangOperate.isActionGroupRecoveryBlocked(),
+                emergencyResetPending = KaoChangOperate.hasPendingEmergencyResetRecovery(),
+                hasSupplementEvidence = hasSupplementEvidence
+            )
+        ) {
+            return false
+        }
+
+        val previousModeType = config.modeType
+        val previousTransitionMode = config.transitionMode
+        val previousResidualDrain = config.highConcurrencyResidualDrain
+        val previousOnlineStatus = config.onlineStatus
+        val previousRestStatusSource = config.restStatusSource
+        val previousIsEnable = config.isEnable
+        val configAlreadyCommitted = config.modeType == 1 &&
+            config.transitionMode == 0 &&
+            config.highConcurrencyResidualDrain == 0 &&
+            config.onlineStatus == 2 &&
+            AppConfig.normalizeRestStatusSource(config.restStatusSource) ==
+            AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS &&
+            config.isEnable == 0
+        if (!configAlreadyCommitted) {
+            config.modeType = 1
+            config.transitionMode = 0
+            config.highConcurrencyResidualDrain = 0
+            config.onlineStatus = 2
+            config.restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
+            config.isEnable = 0
+            val committed = runCatching {
+                AppConfig.saveAppConfigDurable(config)
+                true
+            }.getOrElse { error ->
+                config.modeType = previousModeType
+                config.transitionMode = previousTransitionMode
+                config.highConcurrencyResidualDrain = previousResidualDrain
+                config.onlineStatus = previousOnlineStatus
+                config.restStatusSource = previousRestStatusSource
+                config.isEnable = previousIsEnable
+                logE(LOG_DEVICE, "营业结束低并发提交失败，保留 pending：${error.message}")
+                false
+            }
+            if (!committed) {
+                return false
+            }
+        }
+        isEnabled = false
+        if (!businessCloseoutPendingRepository.clearDurably()) {
+            logE(LOG_DEVICE, "低并发已提交但营业结束 pending 清理失败，等待下轮幂等收口")
+            return false
+        }
+        businessCloseoutHeatingPausedInProcess = false
+        lastBusinessCloseoutBlockKey = ""
+        HomeUiRefreshBridge.requestRefresh("business_closeout:low_committed")
+        SendServerHelper.publishServiceUpdateStatus()
+        logI(LOG_DEVICE, "营业结束全部烤肠已确认丢弃，已提交低并发休息态并清除 pending")
+        return true
     }
 
     private fun shouldAttemptOrphanDeliveryBusyRecovery(config: AppConfigBean): Boolean {

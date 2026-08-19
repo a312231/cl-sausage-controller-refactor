@@ -103,37 +103,24 @@ class LowerBoardMaintenancePolicyTest {
     }
 
     @Test
-    fun emergencyReset_shouldRequireAdminConfirmationAndFenceThe999Write() {
+    fun emergencyReset_shouldRequireAdminConfirmationAndUseUnifiedDurableResetFlow() {
         val fragment = sourceFile(
             "app/src/main/java/cn/niuyannet/kaochang/android/fragments/TestFragment.kt"
         )
         val confirmBody = extractFunctionBody(fragment, "private fun emergencyResetLowerBoardSystem()")
         val executeBody = extractFunctionBody(fragment, "private fun executeEmergencyResetLowerBoardSystem()")
-        val prepareFence = executeBody.indexOf("KaoChangOperate.prepareEmergencyResetRecoveryFence(")
-        val write999 = executeBody.indexOf("KaoChangOperate.writeEmergencyResetAndBlockMechanicalCommands()")
-        val completeFence = executeBody.indexOf("KaoChangOperate.completeEmergencyResetWrite(")
-        val coldRestart = executeBody.indexOf("EmergencyResetAppRestarter.scheduleAndTerminate(")
 
         assertTrue("紧急复位必须先弹出管理员确认", confirmBody.contains("确认紧急复位"))
         assertTrue("确认后才允许进入实际写入流程", confirmBody.contains("executeEmergencyResetLowerBoardSystem()"))
-        assertTrue("必须在 999 写入前建立 fence", prepareFence >= 0 && prepareFence < write999)
-        assertTrue("必须在 999 返回后记录写入结果", completeFence > write999)
-        assertTrue("999 成功后必须安排冷重启", coldRestart > completeFence)
+        assertTrue(executeBody.contains("executeLowerBoardReset(ResetKind.EMERGENCY)"))
 
-        val operate = sourceFile(
-            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
-        )
-        val prepareBody = extractFunctionBody(operate, "fun prepareEmergencyResetRecoveryFence(")
-        val completeBody = extractFunctionBody(operate, "fun completeEmergencyResetWrite(")
-        assertTrue(prepareBody.contains("withFaultHeatTransitionLock"))
-        assertTrue(prepareBody.contains("onlineStatus = ORDER_CLAIM_MAINTENANCE_STATUS"))
-        assertTrue(prepareBody.contains("isEnable = 0"))
-        assertTrue(prepareBody.contains("publishRuntimeStateWithHttpFallback"))
-        assertTrue(prepareBody.contains("EmergencyResetRecoveryFence.prepared("))
-        assertTrue("重复紧急复位必须覆盖旧 fence", !prepareBody.contains("emergencyResetRecoveryFenceStore.load()"))
-        assertTrue(!prepareBody.contains("orderDeliveryClaimStore.load()"))
-        assertTrue(!prepareBody.contains("readSupplementPrefetchEvidence()"))
-        assertTrue("999 失败只能保留 PREPARED 待重试，不能误清未知结果栅栏", !completeBody.contains("emergencyResetRecoveryFenceStore.clear()"))
+        val unifiedBody = extractFunctionBody(fragment, "private fun executeLowerBoardReset(")
+        assertTrue(unifiedBody.contains("LowerBoardResetCoordinator("))
+        assertTrue(unifiedBody.contains("KaoChangOperate.withFaultHeatTransitionLock"))
+        assertTrue(unifiedBody.contains("KaoChangOperate.writeEmergencyResetAndBlockMechanicalCommands()"))
+        assertTrue(unifiedBody.contains("EmergencyResetAppRestarter.scheduleAndTerminate(appContext)"))
+        assertTrue(unifiedBody.contains("onlineStatus = if (prepared.kind == ResetKind.EMERGENCY) 3"))
+        assertTrue(unifiedBody.contains("isEnable = if (prepared.kind == ResetKind.EMERGENCY) 0"))
     }
 
     @Test

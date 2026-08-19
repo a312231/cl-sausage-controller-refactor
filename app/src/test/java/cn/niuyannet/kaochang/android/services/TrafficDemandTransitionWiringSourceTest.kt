@@ -84,14 +84,16 @@ class TrafficDemandTransitionWiringSourceTest {
     @Test
     fun lowTraffic_shouldKeepAppGatesBeforePureDemandStrategy() {
         val lowTrafficSource = sourceText("LowCurrentTrafficMode.kt")
-        val gateStart = lowTrafficSource.indexOf("if (schedulingEnabled &&\n            boxSupplyAvailable")
-        val schedulingGate = lowTrafficSource.indexOf("schedulingEnabled", gateStart)
+        val gateStart = lowTrafficSource.indexOf("if (!pendingBatchHandling.blocksNewSupplement &&")
+        val pendingBatchGate = lowTrafficSource.indexOf("pendingBatchHandling.blocksNewSupplement", gateStart)
+        val schedulingGate = lowTrafficSource.indexOf("schedulingEnabled", pendingBatchGate)
         val supplyGate = lowTrafficSource.indexOf("boxSupplyAvailable", schedulingGate)
         val modeGate = lowTrafficSource.indexOf("config.modeType == 1", supplyGate)
         val transitionGate = lowTrafficSource.indexOf("config.transitionMode == 0", modeGate)
         val demandGate = lowTrafficSource.indexOf("LowToHighDemandGate.canTriggerLowToHigh(", transitionGate)
 
         assertTrue(gateStart >= 0)
+        assertTrue(pendingBatchGate >= gateStart)
         assertTrue(supplyGate > schedulingGate)
         assertTrue(modeGate > supplyGate)
         assertTrue(transitionGate > modeGate)
@@ -113,35 +115,28 @@ class TrafficDemandTransitionWiringSourceTest {
         val functionStart = source.indexOf("private fun checkSwitchToLow(")
         val functionEnd = source.indexOf("private fun getRemainingTimeUntilClose(", functionStart)
         val body = source.substring(functionStart, functionEnd)
-        val strategyCall = body.indexOf("acceptedHighToLowDemandOutcome(")
-        val closeBranch = body.indexOf(
-            "outcome == TrafficTransitionOutcome.HIGH_TO_LOW_BEFORE_CLOSE",
-            strategyCall
-        )
-        val closeSwitch = body.indexOf("switchHighToLow(\"接近营业结束\"", closeBranch)
-        val anchorBranch = body.indexOf(
-            "outcome == TrafficTransitionOutcome.NONE && validLastFillPitTime == null",
-            closeSwitch
-        )
-        val anchorWrite = body.indexOf("applySupplementTrackingState(", anchorBranch)
+        val closeGate = body.indexOf("remainingTimeUntilClose > 0")
+        val closeSwitch = body.indexOf("switchHighToLow(\"接近营业结束\"", closeGate)
+        val durableTimerGate = body.indexOf("restoreOrArmHighToLowTimerIfSafe(", closeSwitch)
+        val strategyCall = body.indexOf("acceptedHighToLowDemandOutcome(", durableTimerGate)
         val timeoutBranch = body.indexOf(
             "outcome == TrafficTransitionOutcome.HIGH_TO_LOW_INACTIVITY_TIMEOUT",
-            anchorWrite
+            strategyCall
         )
         val supplyReason = body.indexOf("val reason = if (boxSupplyAvailable)", timeoutBranch)
 
         assertTrue(body.contains("validHighSupplementTime(lastFillPitTime)"))
-        assertTrue(strategyCall >= 0)
+        assertTrue(closeGate >= 0)
+        assertTrue(closeSwitch > closeGate)
+        assertTrue(durableTimerGate > closeSwitch)
+        assertTrue(strategyCall > durableTimerGate)
         assertTrue(body.indexOf("acceptedHighToLowDemandOutcome(", strategyCall + 1) < 0)
-        assertTrue(closeBranch > strategyCall)
-        assertTrue(closeSwitch > closeBranch)
-        assertTrue(anchorBranch > closeSwitch)
-        assertTrue(anchorWrite > anchorBranch)
-        assertTrue(timeoutBranch > anchorWrite)
+        assertTrue(timeoutBranch > strategyCall)
         assertTrue(supplyReason > timeoutBranch)
+        assertFalse(body.contains("applySupplementTrackingState("))
 
         val strategyInputStart = body.indexOf("HighToLowDemandInput(", strategyCall)
-        val strategyInputEnd = body.indexOf(")\n        ) ?: return", strategyInputStart)
+        val strategyInputEnd = body.indexOf(")\n        )", strategyInputStart)
         assertTrue(strategyInputStart >= 0 && strategyInputEnd > strategyInputStart)
         assertFalse(body.substring(strategyInputStart, strategyInputEnd).contains("boxSupplyAvailable"))
     }

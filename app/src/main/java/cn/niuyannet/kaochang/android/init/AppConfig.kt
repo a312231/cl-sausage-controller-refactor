@@ -641,6 +641,111 @@ object AppConfig {
         return saved
     }
 
+    @Synchronized
+    fun saveLowerBoardResetLocalCloseoutDurable(
+        claimKey: String,
+        actionGroupSessionKey: String,
+        pausedSupplementSessionKey: String,
+        prefetchSessionKey: String
+    ): Boolean {
+        val current = getAppConfig()
+        val next = JSON.parseObject(JSON.toJSONString(current), AppConfigBean::class.java)
+        next.moveStatus = 0
+        next.apiBaseUrl = normalizeApiBaseUrl(next.apiBaseUrl)
+        syncHomeQrHiddenFields(next)
+        alignRestStatusSource(next)
+        val saved = PreferenceUtils.saveStringPreferencesDurable(
+            Sp_File_URL,
+            mapOf(
+                KEY_APP_CONFIG_JSON to JSON.toJSONString(next),
+                claimKey to "",
+                actionGroupSessionKey to "",
+                pausedSupplementSessionKey to "",
+                prefetchSessionKey to ""
+            )
+        )
+        if (saved) {
+            current.moveStatus = 0
+            current.apiBaseUrl = next.apiBaseUrl
+            current.homeQrHidden = next.homeQrHidden
+            current.scanBlockStatus = next.scanBlockStatus
+            current.restStatusSource = next.restStatusSource
+        }
+        return saved
+    }
+
+    @Synchronized
+    fun saveLowerBoardResetPreparedDurable(
+        resetRecordKey: String,
+        resetRecordJson: String,
+        onlineStatus: Int,
+        isEnable: Int,
+        orderBlockReason: String,
+        homeQrHidden: Int,
+        scanBlockStatus: Int
+    ): Boolean {
+        val current = getAppConfig()
+        val next = JSON.parseObject(JSON.toJSONString(current), AppConfigBean::class.java)
+        next.onlineStatus = onlineStatus
+        next.isEnable = isEnable
+        next.orderBlockReason = orderBlockReason
+        next.homeQrHidden = homeQrHidden
+        next.scanBlockStatus = scanBlockStatus
+        next.apiBaseUrl = normalizeApiBaseUrl(next.apiBaseUrl)
+        alignRestStatusSource(next)
+        val saved = PreferenceUtils.saveStringPreferencesDurable(
+            Sp_File_URL,
+            mapOf(
+                KEY_APP_CONFIG_JSON to JSON.toJSONString(next),
+                resetRecordKey to resetRecordJson
+            )
+        )
+        if (saved) {
+            current.onlineStatus = next.onlineStatus
+            current.isEnable = next.isEnable
+            current.orderBlockReason = next.orderBlockReason
+            current.homeQrHidden = next.homeQrHidden
+            current.scanBlockStatus = next.scanBlockStatus
+            current.apiBaseUrl = next.apiBaseUrl
+            current.restStatusSource = next.restStatusSource
+        }
+        return saved
+    }
+
+    @Synchronized
+    fun saveLowerBoardResetFinalizationDurable(
+        resetRecordKey: String,
+        onlineStatus: Int,
+        orderBlockReason: String,
+        homeQrHidden: Int,
+        scanBlockStatus: Int
+    ): Boolean {
+        val current = getAppConfig()
+        val next = JSON.parseObject(JSON.toJSONString(current), AppConfigBean::class.java)
+        next.onlineStatus = onlineStatus
+        next.orderBlockReason = orderBlockReason
+        next.homeQrHidden = homeQrHidden
+        next.scanBlockStatus = scanBlockStatus
+        next.apiBaseUrl = normalizeApiBaseUrl(next.apiBaseUrl)
+        alignRestStatusSource(next)
+        val saved = PreferenceUtils.saveStringPreferencesDurable(
+            Sp_File_URL,
+            mapOf(
+                KEY_APP_CONFIG_JSON to JSON.toJSONString(next),
+                resetRecordKey to ""
+            )
+        )
+        if (saved) {
+            current.onlineStatus = next.onlineStatus
+            current.orderBlockReason = next.orderBlockReason
+            current.homeQrHidden = next.homeQrHidden
+            current.scanBlockStatus = next.scanBlockStatus
+            current.apiBaseUrl = next.apiBaseUrl
+            current.restStatusSource = next.restStatusSource
+        }
+        return saved
+    }
+
     fun hasValidDeviceConfig(): Boolean {
         val config = getAppConfig()
         return !config.deviceCode.isNullOrBlank() &&

@@ -5,6 +5,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.reset.ResetStartupCloseoutManager
 import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileRuntime
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.scheduler.LegacySchedulerProfileA
@@ -37,11 +38,13 @@ class MyApp: Application() {
         //烤盘初始化 （改到MainActivity中再次初始化）
         //KaoPanHelper.init()
         // 紧急复位 fence 必须早于任何云端拉取生效，避免旧配置和库存覆盖现场待核对事实。
-        val emergencyResetPending = KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()
-        if (!emergencyResetPending) {
+        val lowerBoardResetPending = ResetStartupCloseoutManager.resumeIfNeeded(this)
+        val emergencyResetPending = !lowerBoardResetPending &&
+            KaoChangOperate.enforceEmergencyResetRecoveryOnStartup()
+        if (!lowerBoardResetPending && !emergencyResetPending) {
             DataManagementAPI.dataSyncServer()
         } else {
-            DataManagementAPI.uploadDeviceInfo(source = "emergency_reset_application_startup")
+            DataManagementAPI.uploadDeviceInfo(source = "reset_application_startup")
         }
         //是否初始化，如果没有初始化就先进行初始化， 否则进行初始化
         ParserConfig.getGlobalInstance().isAutoTypeSupport = true

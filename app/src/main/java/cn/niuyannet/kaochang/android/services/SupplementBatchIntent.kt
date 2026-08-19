@@ -35,6 +35,14 @@ data class ManualSupplementReturnBinding(
     val originBatchType: SupplementBatchType
 )
 
+data class ReturnBindingConflictSnapshot(
+    val batchId: String,
+    val updatedAtMs: Long,
+    val fingerprint: String,
+    val details: String,
+    val sourcePositions: Set<Int>
+)
+
 data class SupplementBatchIntent(
     var batchId: String = "",
     var type: SupplementBatchType = SupplementBatchType.UNKNOWN,
@@ -48,6 +56,10 @@ data class SupplementBatchIntent(
     var maturityCloseoutMaturedPositions: MutableList<Int> = mutableListOf(),
     var maturityCloseoutRemainingPositions: MutableList<Int> = mutableListOf(),
     var manualConfirmStrategy: String = "",
+    var returnBindingConflictActive: Boolean = false,
+    var returnBindingConflictFingerprint: String = "",
+    var returnBindingConflictDetails: String = "",
+    var returnBindingConflictDetectedAtMs: Long = 0L,
     var createdAtMs: Long = 0L,
     var updatedAtMs: Long = 0L
 ) {
@@ -56,6 +68,9 @@ data class SupplementBatchIntent(
 
     fun isComplete(): Boolean =
         targets.isNotEmpty() && targets.all { it.completed || it.skippedBySupplyDegrade || it.cancelledByFaultTimeout }
+
+    fun requiresAnyManualConfirmation(): Boolean =
+        requiresManualConfirm || returnBindingConflictActive
 }
 
 interface SupplementBatchIntentStore {
@@ -125,10 +140,13 @@ class SupplementBatchIntentRepository(
 ) {
     fun loadActive(): SupplementBatchIntent? {
         val intent = store.load() ?: return null
-        if (migrateLegacyTargetOrigins(intent)) {
+        val changed = migrateLegacyTargetOrigins(intent) or refreshReturnBindingConflictEvidence(intent)
+        if (changed) {
             saveDurableOrThrow(intent)
         }
-        if (intent.targets.isEmpty() || shouldClearCompletedIntentOnLoad(intent)) {
+        if ((intent.targets.isEmpty() && !intent.requiresAnyManualConfirmation()) ||
+            shouldClearCompletedIntentOnLoad(intent)
+        ) {
             clearDurableOrThrow()
             return null
         }
@@ -182,6 +200,14 @@ class SupplementBatchIntentRepository(
             warnLogger(
                 "【补肠批次恢复】已有同源盘待回搬绑定，拒绝启动会覆盖绑定的新批次：" +
                     "sources=$duplicateRetainedSources，newTargets=${normalizedTargets.map { it.positionSn }}"
+            )
+            return null
+        }
+        val duplicateReturnBindings = duplicateReturnBindings(retainedReturnBindings + normalizedTargets)
+        if (duplicateReturnBindings.isNotEmpty()) {
+            warnLogger(
+                "【补肠批次恢复】拒绝创建重复回搬目标的补肠批次：" +
+                    conflictDetails(duplicateReturnBindings)
             )
             return null
         }
@@ -351,6 +377,13 @@ class SupplementBatchIntentRepository(
 
     fun confirmManualSafety(reason: String): SupplementBatchIntent? {
         val intent = loadActive() ?: return null
+        if (intent.returnBindingConflictActive) {
+            warnLogger(
+                "【补肠批次恢复】回搬目标存在重复所有者，普通现场确认不能解除专用门禁：" +
+                    "reason=$reason，batchId=${intent.batchId}，conflicts=${intent.returnBindingConflictDetails}"
+            )
+            return null
+        }
         if (intent.manualConfirmStrategy == MANUAL_CONFIRM_STRATEGY_PREFETCH_PRESERVE_REMAINING) {
             return confirmManualSafetyPreservingRemainingTargets(reason)
         }
@@ -415,6 +448,13 @@ class SupplementBatchIntentRepository(
 
     fun confirmManualSafetyPreservingRemainingTargets(reason: String): SupplementBatchIntent? {
         val intent = loadActive() ?: return null
+        if (intent.returnBindingConflictActive) {
+            warnLogger(
+                "【补肠批次恢复】回搬目标存在重复所有者，双 lane 普通确认不能解除专用门禁：" +
+                    "reason=$reason，batchId=${intent.batchId}，conflicts=${intent.returnBindingConflictDetails}"
+            )
+            return null
+        }
         if (!intent.requiresManualConfirm && intent.manualConfirmStrategy.isBlank()) {
             return intent
         }
@@ -721,7 +761,7 @@ class SupplementBatchIntentRepository(
 
     private fun shouldClearCompletedIntentOnLoad(intent: SupplementBatchIntent): Boolean {
         return intent.isComplete() &&
-            !intent.requiresManualConfirm &&
+            !intent.requiresAnyManualConfirmation() &&
             !shouldRetainCompletedHeatIntentForReturn(intent)
     }
 
@@ -746,6 +786,56 @@ class SupplementBatchIntentRepository(
         originBatchType: SupplementBatchType,
         sourcePositionSn: Int
     ): Boolean = removeBinding(originBatchId, originBatchType, sourcePositionSn, null)
+
+    fun returnBindingConflictSnapshot(): ReturnBindingConflictSnapshot? {
+        val intent = loadActive() ?: return null
+        if (!intent.returnBindingConflictActive) return null
+        val sources = duplicateReturnBindings(intent.targets)
+            .values
+            .flatten()
+            .map { it.positionSn }
+            .toSet()
+        return ReturnBindingConflictSnapshot(
+            batchId = intent.batchId,
+            updatedAtMs = intent.updatedAtMs,
+            fingerprint = intent.returnBindingConflictFingerprint,
+            details = intent.returnBindingConflictDetails,
+            sourcePositions = sources
+        )
+    }
+
+    fun resolveReturnBindingConflictAfterSourcesCleared(
+        expectedBatchId: String,
+        expectedUpdatedAtMs: Long,
+        expectedFingerprint: String,
+        confirmedEmptySourcePositions: Set<Int>
+    ): Boolean {
+        val intent = loadActive() ?: return false
+        if (!intent.returnBindingConflictActive ||
+            intent.batchId != expectedBatchId ||
+            intent.updatedAtMs != expectedUpdatedAtMs ||
+            intent.returnBindingConflictFingerprint != expectedFingerprint
+        ) return false
+
+        val conflictTargets = duplicateReturnBindings(intent.targets).values.flatten()
+        val conflictSources = conflictTargets.map { it.positionSn }.toSet()
+        if (conflictSources.isEmpty() || !confirmedEmptySourcePositions.containsAll(conflictSources)) return false
+
+        val conflictKeys = conflictTargets.map(::bindingIdentity).toSet()
+        val remaining = intent.targets
+            .filterNot { bindingIdentity(it) in conflictKeys }
+            .map { it.copy() }
+            .toMutableList()
+        val resolved = intent.copy(targets = remaining, updatedAtMs = clock())
+        refreshReturnBindingConflictEvidence(resolved)
+        if (resolved.returnBindingConflictActive) return false
+        if (resolved.targets.isEmpty() && !resolved.requiresAnyManualConfirmation()) {
+            clearDurableOrThrow()
+        } else {
+            saveDurableOrThrow(resolved)
+        }
+        return true
+    }
 
     fun reopenSupplyDegradedTarget(batchId: String, targetPanNo: Int, reason: String): Boolean {
         val intent = store.load() ?: return false
@@ -795,7 +885,7 @@ class SupplementBatchIntentRepository(
         }
 
         val active = loadActive()
-        if (active != null && (active.remainingTargets().isNotEmpty() || active.requiresManualConfirm)) {
+        if (active != null && (active.remainingTargets().isNotEmpty() || active.requiresAnyManualConfirmation())) {
             warnLogger(
                 "【补肠批次恢复】存在未完成或待人工确认批次，拒绝人工孤儿回搬绑定：" +
                     "batchId=${active.batchId}，reason=$reason"
@@ -879,7 +969,7 @@ class SupplementBatchIntentRepository(
         sourcePositionSn: Int,
         returnPositionSn: Int?
     ): Boolean {
-        val intent = store.load() ?: return false
+        val intent = loadActive() ?: return false
         val target = intent.targets.firstOrNull {
             it.completed &&
                 it.originBatchId == originBatchId &&
@@ -887,11 +977,13 @@ class SupplementBatchIntentRepository(
                 it.positionSn == sourcePositionSn &&
                 (returnPositionSn == null || it.returnPositionSn == returnPositionSn)
         } ?: return false
-        val remaining = intent.targets.filterNot { it === target }.toMutableList()
-        if (remaining.isEmpty()) {
+        val remaining = intent.targets.filterNot { it === target }.map { it.copy() }.toMutableList()
+        val updated = intent.copy(targets = remaining, updatedAtMs = clock())
+        refreshReturnBindingConflictEvidence(updated)
+        if (remaining.isEmpty() && !updated.requiresAnyManualConfirmation()) {
             clearDurableOrThrow()
         } else {
-            saveDurableOrThrow(intent.copy(targets = remaining, updatedAtMs = clock()))
+            saveDurableOrThrow(updated)
         }
         return true
     }
@@ -899,6 +991,93 @@ class SupplementBatchIntentRepository(
     private fun saveDurableOrThrow(intent: SupplementBatchIntent) {
         check(store.saveDurable(intent)) { "关键补肠批次状态落盘失败" }
     }
+
+    private fun refreshReturnBindingConflictEvidence(intent: SupplementBatchIntent): Boolean {
+        val conflicts = duplicateReturnBindings(intent.targets)
+        if (conflicts.isEmpty()) {
+            if (!intent.returnBindingConflictActive &&
+                intent.returnBindingConflictFingerprint.isBlank() &&
+                intent.returnBindingConflictDetails.isBlank() &&
+                intent.returnBindingConflictDetectedAtMs <= 0L
+            ) {
+                return false
+            }
+            intent.returnBindingConflictActive = false
+            intent.returnBindingConflictFingerprint = ""
+            intent.returnBindingConflictDetails = ""
+            intent.returnBindingConflictDetectedAtMs = 0L
+            intent.updatedAtMs = clock()
+            return true
+        }
+
+        val fingerprint = conflictFingerprint(conflicts)
+        if (intent.returnBindingConflictActive && intent.returnBindingConflictFingerprint == fingerprint) {
+            return false
+        }
+        intent.returnBindingConflictActive = true
+        intent.returnBindingConflictFingerprint = fingerprint
+        intent.returnBindingConflictDetails = conflictDetails(conflicts)
+        intent.returnBindingConflictDetectedAtMs = clock()
+        intent.updatedAtMs = clock()
+        warnLogger(
+            "【补肠批次恢复】检测到重复回搬目标，保留完整意图并进入专用人工门禁：" +
+                "batchId=${intent.batchId}，conflicts=${intent.returnBindingConflictDetails}"
+        )
+        return true
+    }
+
+    private fun duplicateReturnBindings(
+            targets: Collection<SupplementBatchIntentTarget>
+        ): Map<Int, List<SupplementBatchIntentTarget>> =
+            targets
+                .filter {
+                    it.returnPositionSn != null &&
+                        !it.cancelledByFaultTimeout &&
+                        !it.skippedBySupplyDegrade
+                }
+                .groupBy { it.returnPositionSn!! }
+                .filterValues { owners -> owners.map { it.positionSn }.distinct().size > 1 }
+                .toSortedMap()
+
+    private fun bindingIdentity(target: SupplementBatchIntentTarget): String =
+        listOf(
+            target.positionSn.toString(),
+            target.returnPositionSn.toString(),
+            target.originBatchId.orEmpty(),
+            target.resolvedOriginBatchType()?.name.orEmpty()
+        ).joinToString(":")
+
+    private fun conflictFingerprint(
+            conflicts: Map<Int, List<SupplementBatchIntentTarget>>
+        ): String = conflicts
+            .toSortedMap()
+            .flatMap { (returnPosition, owners) ->
+                owners.sortedWith(
+                    compareBy<SupplementBatchIntentTarget> { it.positionSn }
+                        .thenBy { it.originBatchId.orEmpty() }
+                        .thenBy { it.resolvedOriginBatchType()?.name.orEmpty() }
+                ).map { owner ->
+                    listOf(
+                        returnPosition.toString(),
+                        owner.positionSn.toString(),
+                        owner.originBatchId.orEmpty(),
+                        owner.resolvedOriginBatchType()?.name.orEmpty()
+                    ).joinToString(":")
+                }
+            }
+            .joinToString("|")
+
+    private fun conflictDetails(
+            conflicts: Map<Int, List<SupplementBatchIntentTarget>>
+        ): String = conflicts
+            .toSortedMap()
+            .entries
+            .joinToString(";") { (returnPosition, owners) ->
+                owners.sortedBy { it.positionSn }.joinToString(",") { owner ->
+                    "${owner.positionSn}->$returnPosition" +
+                        "(${owner.originBatchId.orEmpty()}/${owner.resolvedOriginBatchType()?.name.orEmpty()})"
+                }
+            }
 
     private fun clearDurableOrThrow() {
         check(store.clearDurable()) { "关键补肠批次状态清理落盘失败" }

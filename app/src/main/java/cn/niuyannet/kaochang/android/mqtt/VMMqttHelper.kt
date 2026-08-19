@@ -2,8 +2,10 @@
 
 import android.os.Handler
 import android.os.Looper
+import cn.niuyannet.kaochang.android.MyApp
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.log.DeviceLogPackageManager
+import cn.niuyannet.kaochang.android.services.reset.ResetStartupCloseoutManager
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
@@ -479,6 +481,7 @@ object VMMqttHelper : VMMqtt() {
         super.bindCallbackAndSubscribe(client, generation) { subscribed ->
             if (subscribed && generation == connectionGeneration) {
                 AppLogCloudReporter.onMqttConnected()
+                ResetStartupCloseoutManager.resumeIfNeeded(MyApp.instance())
             }
             callback(subscribed)
         }
@@ -562,4 +565,3 @@ object VMMqttHelper : VMMqtt() {
         }
     }
 }
-

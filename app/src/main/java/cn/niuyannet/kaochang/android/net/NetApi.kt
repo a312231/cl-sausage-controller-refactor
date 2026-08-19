@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.mqtt.RuntimeStateSignatureBuilder
 import cn.niuyannet.kaochang.android.services.LowerPlatformEpisodeReducer
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutRecord
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
@@ -43,6 +44,7 @@ object NetApi {
     var reportSnapshot_url = "$API_URL_START/reportSnapshot"
     var updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
     var actionTelemetry_url = "$API_URL_START/actionTelemetry"
+    var manualResetCloseout_url = "$API_URL_START/manualResetCloseout"
     var consumableEvent_url = "$API_URL_START/consumable/event"
     var consumableRefillStickFull_url = "$API_URL_START/consumable/refillStickFull"
     var consumableClearWaste_url = "$API_URL_START/consumable/clearWaste"
@@ -76,6 +78,7 @@ object NetApi {
         reportSnapshot_url = "$API_URL_START/reportSnapshot"
         updateDeviceInfo_url = "$API_URL_START/updateDeviceInfo"
         actionTelemetry_url = "$API_URL_START/actionTelemetry"
+        manualResetCloseout_url = "$API_URL_START/manualResetCloseout"
         consumableEvent_url = "$API_URL_START/consumable/event"
         consumableRefillStickFull_url = "$API_URL_START/consumable/refillStickFull"
         consumableClearWaste_url = "$API_URL_START/consumable/clearWaste"
@@ -119,6 +122,35 @@ object NetApi {
                     super.onError(response)
                     LogUtils.e("【网络请求】设备初始化失败：deviceCode=$deviceId, error=${response?.exception?.message}")
                     callback(1, null)
+                }
+            })
+    }
+
+    fun manualResetCloseout(record: ResetCloseoutRecord, callback: (Boolean) -> Unit) {
+        ensureEndpointUrlsFresh()
+        val config = AppConfig.getAppConfig()
+        val json = JSONObject()
+        json["deviceCode"] = config.deviceCode
+        json["credential"] = config.mqttPassword
+        json["resetId"] = record.resetId
+        json["orderNo"] = record.orderNo
+        json["items"] = record.items.map { item ->
+            JSONObject().also { itemJson ->
+                itemJson["itemId"] = item.itemId
+                itemJson["confirmedOut4"] = item.confirmedOut4
+            }
+        }
+        OkGo.post<String>(manualResetCloseout_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    callback(isSuccessBody(response?.body()))
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.w("【下位机复位】旧订单 HTTP 收口失败：${response?.exception?.message}")
+                    callback(false)
                 }
             })
     }
@@ -419,20 +451,13 @@ object NetApi {
                         )
                         callback?.invoke(0, body)
                     } else {
-                        val errorMessage =
-                            "云端未接收设备数据快照：$snapshotContext, reason=${result.reason}, raw=$body"
-                        LogUtils.e("【网络请求】$errorMessage")
-                        callback?.invoke(1, errorMessage)
+                        callback?.invoke(1, body)
                     }
                 }
 
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
-                    LogUtils.e(
-                        "【网络请求】上报设备数据快照失败：" +
-                            "$snapshotContext, error=${response?.exception?.message}"
-                    )
-                    callback?.invoke(1, response?.body())
+                    SnapshotHttpErrorCallback.deliver(response, callback)
                 }
             })
     }

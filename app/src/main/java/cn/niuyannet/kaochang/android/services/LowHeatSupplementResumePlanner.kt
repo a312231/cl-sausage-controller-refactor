@@ -27,39 +27,22 @@ internal object LowHeatSupplementResumePlanner {
         if (occupiedCount == 0 || emptyPans.isEmpty()) {
             return emptyList()
         }
+        if (activeIntent != null) {
+            return emptyList()
+        }
 
         val reservedFrontPans = frontPans
             .filter { !it.isHasSausage && it.isHasGrilling && !it.taste?.tasteCode.isNullOrBlank() }
             .sortedBy { it.positionSn }
         val groupStart = sortedGroup.firstOrNull()?.positionSn ?: return emptyList()
-        val groupPositions = sortedGroup.map { it.positionSn }.toSet()
-        val intentTargetsByPosition = activeIntent
-            ?.takeIf { it.type in setOf(SupplementBatchType.LOW_HEAT_13_15, SupplementBatchType.LOW_HEAT_16_18) }
-            ?.remainingTargets()
-            ?.filter {
-                it.positionSn in groupPositions
-            }
-            ?.associateBy { it.positionSn }
-            .orEmpty()
-
         return emptyPans.mapNotNull { targetPan ->
-            val intentTarget = intentTargetsByPosition[targetPan.positionSn]
             val reservedFrontPan = reservedFrontPanForGroupPosition(targetPan, groupStart, reservedFrontPans)
-            val intentReturnPositionSn = intentTarget?.returnPositionSn?.takeIf { it in 1..9 }
-            val returnPositionSn = intentReturnPositionSn
-                ?: reservedFrontPan?.positionSn
+            val returnPositionSn = reservedFrontPan?.positionSn
                 ?: return@mapNotNull null
-            val tasteCode = intentTarget
-                ?.takeIf { intentReturnPositionSn != null }
-                ?.tasteCode
-                ?.takeIf { it.isNotBlank() }
-                ?: reservedFrontPan?.taste?.tasteCode?.takeIf { it.isNotBlank() }
+            val tasteCode = reservedFrontPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
                 ?: targetPan.taste?.tasteCode?.takeIf { it.isNotBlank() }
             if (tasteCode.isNullOrBlank()) {
                 return@mapNotNull null
-            }
-            if (targetPan.taste?.tasteCode != tasteCode) {
-                targetPan.taste = Taste(tasteCode)
             }
             ResumeTarget(
                 kaoPan = targetPan,

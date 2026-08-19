@@ -11,8 +11,9 @@ class SupplementBatchHeatPositionWiringSourceTest {
     fun lowTraffic_shouldKeepPendingBeforeStopAndStopDeduplicationOrder() {
         val source = sourceText("LowCurrentTrafficMode.kt")
         val pendingReturn = source.indexOf(
-            "if (pendingBatchHandling != KaoChangOperate.PendingSupplementBatchHandling.NONE"
+            "if (pendingBatchHandling.completedMechanicalWorkThisRound)"
         )
+        val pendingBlockGate = source.indexOf("pendingBatchHandling.blocksNewSupplement", pendingReturn)
         val stopBranch = source.indexOf(
             "if (supplementPlan.action == LowHeatAction.STOP_ZONE_2 && TEMPERATURE_OFF != 1)"
         )
@@ -20,7 +21,8 @@ class SupplementBatchHeatPositionWiringSourceTest {
         val stopHeating = source.indexOf("KaoChangOperate.stopHeating(2)", setStopped)
 
         assertTrue(pendingReturn >= 0)
-        assertTrue(stopBranch > pendingReturn)
+        assertTrue(pendingBlockGate > pendingReturn)
+        assertTrue(stopBranch > pendingBlockGate)
         assertTrue(setStopped > stopBranch)
         assertTrue(stopHeating > setStopped)
         assertTrue(source.contains("batchHeatPositionStrategy.planLowHeat("))

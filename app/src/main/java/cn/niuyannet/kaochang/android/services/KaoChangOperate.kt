@@ -80,6 +80,9 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementDeliveryComm
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementLaneRole
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalCheckpointResult
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPhysicalMutation
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementMechanicalCloseoutCoordinator
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementMechanicalCloseoutRequest
+import cn.niuyannet.kaochang.android.services.actiongroup.SupplementMechanicalCloseoutResult
 import cn.niuyannet.kaochang.android.services.actiongroup.SupplementPrefetchPhysicalStateCoordinator
 import cn.niuyannet.kaochang.android.services.actiongroup.claimOrderDeliveryMove
 import cn.niuyannet.kaochang.android.services.actiongroup.closeOrderDeliveryMoveForMaintenance
@@ -104,6 +107,8 @@ import cn.niuyannet.kaochang.android.services.actiongroup.SupplementRuntimeResum
 import cn.niuyannet.kaochang.android.services.actiongroup.TakeSausageVoiceReminderPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutPolicy
+import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
 import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchConfigEvidence
 import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchEvidence
 import cn.niuyannet.kaochang.android.services.scheduler.SchedulerProfileSwitchOwnerEvidence
@@ -242,6 +247,41 @@ object KaoChangOperate {
         val pauseEndResult: FaultHeatPauseManager.EndPauseResult?
     )
 
+    internal data class SupplementBatchAttemptResult(
+        val admitted: Boolean,
+        val movedCount: Int,
+        val batchId: String?
+    )
+
+    internal data class ReturnBindingConflictCloseoutEvidence(
+        val moveStatus: Int,
+        val hasProcessingOrder: Boolean,
+        val hasOrderPause: Boolean,
+        val hasOrderDeliveryClaim: Boolean,
+        val actionSessionAbsent: Boolean,
+        val pausedSessionAbsent: Boolean,
+        val prefetchEvidenceAbsent: Boolean,
+        val hasPanMoveJournal: Boolean,
+        val hasDiscardJournal: Boolean,
+        val resourceLocksIdle: Boolean
+    )
+
+    internal fun returnBindingConflictCloseoutRejection(
+        evidence: ReturnBindingConflictCloseoutEvidence
+    ): String? = when {
+        evidence.moveStatus != 0 -> "机械状态非空闲"
+        evidence.hasProcessingOrder -> "存在处理中订单"
+        evidence.hasOrderPause -> "订单正在等待机械动作"
+        evidence.hasOrderDeliveryClaim -> "存在订单出餐claim"
+        !evidence.actionSessionAbsent -> "存在或损坏的动作组会话"
+        !evidence.pausedSessionAbsent -> "存在或损坏的暂停补肠会话"
+        !evidence.prefetchEvidenceAbsent -> "存在或损坏的双lane预取证据"
+        evidence.hasPanMoveJournal -> "存在搬盘journal"
+        evidence.hasDiscardJournal -> "存在丢弃journal"
+        !evidence.resourceLocksIdle -> "动作组资源锁未释放"
+        else -> null
+    }
+
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     /**
      * 机械动作对象内部的主线程作用域。
@@ -272,6 +312,8 @@ object KaoChangOperate {
     private val supplementBatchIntentStore = SharedPreferenceSupplementBatchIntentStore()
     private val supplementBatchIntentRepository =
         SupplementBatchIntentRepository(supplementBatchIntentStore)
+    @Volatile
+    private var lastReturnBindingConflictMaintenanceFingerprint: String? = null
     private val orphanSupplementReturnCoordinator = OrphanSupplementReturnCoordinator(
         repository = supplementBatchIntentRepository,
         savePansDurable = { pans -> KaoPanHelper.saveKaoPanListDurable(pans) }
@@ -948,6 +990,35 @@ object KaoChangOperate {
         return true
     }
 
+    fun closeMechanicalStateAfterLowerBoardReset(): Boolean {
+        val committed = withFaultHeatTransitionLock {
+            val saved = AppConfig.saveLowerBoardResetLocalCloseoutDurable(
+                claimKey = OrderDeliveryClaimStore.KEY_ORDER_DELIVERY_CLAIM,
+                actionGroupSessionKey = SharedPreferenceActionGroupSessionStore.KEY_ACTION_GROUP_SESSION,
+                pausedSupplementSessionKey =
+                    SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION,
+                prefetchSessionKey =
+                    SharedPreferenceSupplementPrefetchSessionStore.KEY_SUPPLEMENT_PREFETCH_SESSION
+            )
+            if (!saved) return@withFaultHeatTransitionLock false
+            actionGroupLocks.clear()
+            serialSupplementFailureProof = null
+            supplementResumeSingleFlight.exit()
+            true
+        }
+        if (!committed) return false
+        OrderStateManager.releaseAllProcessingForEmergencyReset()
+        manualOutOrderRecoveryCoordinator.clearForEmergencyReset()
+        SupplementPauseController.clearForEmergencyReset()
+        lastActionGroupRecoveryFailureReason = null
+        HomeUiRefreshBridge.requestRefresh("lower_board_reset:local_closed")
+        logW(
+            LOG_ACTION_GROUP,
+            "下位机复位后已清理旧机械协调状态；烤盘、库存、搬盘和丢弃 journal 保持不变"
+        )
+        return true
+    }
+
     private fun isEmergencyResetRecoveryPending(): Boolean =
         try {
             emergencyResetRecoveryFenceStore.load() != null
@@ -1480,6 +1551,21 @@ object KaoChangOperate {
         val panCleared: Boolean = false
     )
 
+    suspend fun takeOverBusinessCloseoutDiscardForManualPanClear(
+        reason: String
+    ): DiscardJournalRecoveryResult {
+        val journal = pendingDiscardJournalForRecovery()
+            ?: return DiscardJournalRecoveryResult(true, "没有营业收口丢弃残留")
+        if (!canManuallyTakeOverBusinessCloseoutDiscard(journal)) {
+            return DiscardJournalRecoveryResult(
+                false,
+                "存在非营业收口丢弃残留，拒绝自动接管",
+                journal.positionSn
+            )
+        }
+        return confirmDiscardJournalRecovery(DiscardPhysicalResult.DISCARDED, reason)
+    }
+
     suspend fun confirmDiscardJournalRecovery(
         physicalResult: DiscardPhysicalResult?,
         reason: String
@@ -1722,6 +1808,8 @@ object KaoChangOperate {
             config.errorStatus == 0 &&
             config.inspectionMode == 0 &&
             config.supplyStatus == 0 &&
+            config.lowerPlatformStatus != AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED &&
+            config.supplementEnabled == AppConfigBean.SUPPLEMENT_ENABLED_YES &&
             config.isEnable == 1 &&
             VMModbusHelper.connectStatus()
     }
@@ -1924,6 +2012,9 @@ object KaoChangOperate {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
             val config = AppConfig.getAppConfig()
+            if (config.orderBlockReason == AppConfigBean.ORDER_BLOCK_REASON_SYSTEM_RESET_IN_PROGRESS) {
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
+            }
             if (hasGuardedSupplementCloseoutResidue(config)) {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
@@ -2027,7 +2118,11 @@ object KaoChangOperate {
             }
         }
         if (parallelSession?.pendingOrderNo == orderNo) {
-            if (!actionGroupLocks.tryAcquire(parallelSession.resourceMask, parallelSession.sessionId)) {
+            val completedDeliveryNeedsOnlyCloseout =
+                hasCompletedParallelDeliveryCloseoutEvidence(parallelSession)
+            if (!completedDeliveryNeedsOnlyCloseout &&
+                !actionGroupLocks.tryAcquire(parallelSession.resourceMask, parallelSession.sessionId)
+            ) {
                 logW(LOG_SUPPLEMENT, "双 lane 订单结束续作资源忙，保留 barrier：session=${parallelSession.sessionId}")
                 return false
             }
@@ -2043,7 +2138,7 @@ object KaoChangOperate {
             val resumed = handleParallelSupplementResumePreparation(
                 preparation,
                 reason,
-                lockAlreadyOwned = true,
+                lockAlreadyOwned = !completedDeliveryNeedsOnlyCloseout,
                 lockOwner = parallelSession.sessionId,
                 allowRuntimeDefer = true
             )
@@ -2102,20 +2197,63 @@ object KaoChangOperate {
         }
         is SupplementPrefetchResumePreparation.ReplanRemaining -> {
             runCatching {
-                supplementBatchIntentRepository.markCompleted(
-                    preparation.batchId,
-                    preparation.targetPanNo
-                )
-                check(
-                    releaseMechanicalMove(
-                        "双 lane 当前根完成",
-                        preparation.sessionId,
-                        supplementPipelineClaimOwnerStore(),
-                        expectedMoveStatuses = setOf(1, 2),
-                        idleMoveStatus = 0
+                val closeout = withFaultHeatTransitionLock {
+                    val session = requireNotNull(supplementPrefetchSessionRepository.load()) {
+                        "双 lane 已完成会话不存在"
+                    }
+                    check(session.sessionId == preparation.sessionId) {
+                        "双 lane 已完成会话 owner 已变化"
+                    }
+                    check(session.revision == preparation.revision) {
+                        "双 lane 已完成会话 revision 已变化"
+                    }
+                    check(session.batchId == preparation.batchId) {
+                        "双 lane 已完成会话 batch 已变化"
+                    }
+                    check(session.deliveryLane?.targetPanNo == preparation.targetPanNo) {
+                        "双 lane 已完成会话目标盘已变化"
+                    }
+                    check(hasCompletedParallelDeliveryCloseoutEvidence(session)) {
+                        "双 lane 已完成会话缺少完整物理落盘证据"
+                    }
+                    supplementBatchIntentRepository.markCompleted(
+                        preparation.batchId,
+                        preparation.targetPanNo
                     )
-                ) { "双 lane 当前根 owner 条件释放失败" }
-                actionGroupLocks.release(preparation.sessionId)
+                    val result = SupplementMechanicalCloseoutCoordinator(
+                        transitionLock = faultHeatTransitionLock,
+                        supplementOwnerStore = supplementPipelineClaimOwnerStore(),
+                        orderOwnerStore = orderDeliveryClaimStore,
+                        moveStore = mechanicalMoveStatusStore,
+                        resourceLocks = actionGroupLocks
+                    ).closeOrConfirmAlreadyClosed(
+                        SupplementMechanicalCloseoutRequest(
+                            owner = preparation.sessionId,
+                            revision = session.mechanicalClaimRevision,
+                            resourceMask = session.resourceMask
+                        )
+                    )
+                    if (result == SupplementMechanicalCloseoutResult.ClosedIdle ||
+                        result == SupplementMechanicalCloseoutResult.ClosedKeepingOrder
+                    ) {
+                        supplementPrefetchSessionRepository.load()?.let { current ->
+                            check(current.sessionId == session.sessionId && current.revision == session.revision) {
+                                "双 lane 已完成会话在收口后发生变化"
+                            }
+                            check(
+                                supplementPrefetchSessionRepository.clearIfRevision(
+                                    current.sessionId,
+                                    current.revision
+                                )
+                            ) { "双 lane 已完成会话清理失败" }
+                        }
+                    }
+                    result
+                }
+                check(
+                    closeout == SupplementMechanicalCloseoutResult.ClosedIdle ||
+                        closeout == SupplementMechanicalCloseoutResult.ClosedKeepingOrder
+                ) { "双 lane 当前根精确收口失败：$closeout" }
                 publishRuntimeStateWithHttpFallback("双 lane 当前根已完成，等待重新规划")
             }.fold(
                 onSuccess = { true },
@@ -2210,7 +2348,10 @@ object KaoChangOperate {
         }
         val runtime = AppConfig.getAppConfig()
         if (runtime.onlineStatus != 1 || runtime.errorStatus != 0 || runtime.inspectionMode != 0 ||
-            runtime.supplyStatus != 0 || runtime.isEnable != 1 || !VMModbusHelper.connectStatus()
+            runtime.supplyStatus != 0 ||
+            runtime.lowerPlatformStatus == AppConfigBean.LOWER_PLATFORM_STATUS_ISOLATED ||
+            runtime.supplementEnabled != AppConfigBean.SUPPLEMENT_ENABLED_YES ||
+            runtime.isEnable != 1 || !VMModbusHelper.connectStatus()
         ) {
             logW(LOG_SUPPLEMENT, "双 lane 续作运行态门禁拒绝下发，保留会话并释放本次资源锁：reason=$reason")
             if (allowRuntimeDefer) {
@@ -2886,6 +3027,19 @@ object KaoChangOperate {
         LowerPlatformRuntimeStateReporter.markIsolated(reason, actionName, details)
     }
 
+    private fun persistLowerPlatformIsolatedRuntimeState(
+        reason: String,
+        actionName: String,
+        details: LowerPlatformEpisodeDetails
+    ): LowerPlatformEpisodeReducer.StateSnapshot =
+        LowerPlatformRuntimeStateReporter.persistIsolated(reason, actionName, details)
+
+    private fun publishPersistedLowerPlatformIsolation(
+        snapshot: LowerPlatformEpisodeReducer.StateSnapshot
+    ) {
+        LowerPlatformRuntimeStateReporter.publishPersistedIsolation(snapshot)
+    }
+
     private fun recordConfirmedSupplementSessionStage(
         sessionId: String,
         actionName: String,
@@ -3487,13 +3641,33 @@ object KaoChangOperate {
         orderContext: ActionGroupOrderContext?,
         panNo: Int
     ) {
-        if (telemetry.actionName != "out4" || orderContext == null || !orderContext.isValid()) {
+        if (
+            telemetry.actionName != "out4" ||
+            telemetry.eventPhase != AtomicActionExecutor.ACTION_EVENT_PHASE_FINISHED ||
+            orderContext == null ||
+            !orderContext.isValid()
+        ) {
             return
         }
         val status = when (telemetry.errorCode) {
             null -> ActionGroupOrderStatus.FINISHED
             AtomicActionCodes.OUT_EXIT_SAUSAGE_NOT_DETECTED -> ActionGroupOrderStatus.ERROR
             else -> return
+        }
+        if (ResetCloseoutPolicy.isConfirmedOut4Delivery(telemetry)) {
+            val evidenceSaved = withFaultHeatTransitionLock {
+                ResetCloseoutStore.sharedPreferences().confirmOut4Durable(
+                    orderContext.orderNo,
+                    orderContext.itemId.toLong()
+                )
+            }
+            if (!evidenceSaved) {
+                enterActionGroupMaintenance(
+                    "out4 已成功但复位退款证据落盘失败：orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}",
+                    preserveMoveStatus = true
+                )
+                return
+            }
         }
         savePendingActionGroupOrderEvent(
             orderContext = orderContext,
@@ -4020,6 +4194,12 @@ object KaoChangOperate {
         val actionSession = actionGroupSessionStore.load()
         val pausedSession = pausedSupplementSessionStore.load()
         val pendingIntent = supplementBatchIntentRepository.loadActive()
+        if (pendingIntent?.returnBindingConflictActive == true) {
+            return ManualDeviceRecoveryCloseoutResult(
+                false,
+                "回搬目标存在重复所有者，通用人工恢复不能解除专用门禁"
+            )
+        }
         val expectedOwners = listOfNotNull(
             prefetchSession?.let { it.sessionId to it.resourceMask },
             actionSession?.let { it.sessionId to it.resourceMask },
@@ -4035,7 +4215,7 @@ object KaoChangOperate {
         if (mismatchedOwner != null) {
             return ManualDeviceRecoveryCloseoutResult(false, "本地资源占用与恢复记录不一致，请重新检查设备状态")
         }
-        if (prefetchSession != null && pendingIntent?.requiresManualConfirm == true) {
+        if (prefetchSession != null && pendingIntent?.requiresAnyManualConfirmation() == true) {
             val marked = runCatching {
                 supplementBatchIntentRepository.markManualConfirmStrategyPrefetchPreserveRemaining(
                     pendingIntent.batchId,
@@ -4050,7 +4230,7 @@ object KaoChangOperate {
             }
         }
 
-        if (pendingIntent?.requiresManualConfirm == true) {
+        if (pendingIntent?.requiresAnyManualConfirmation() == true) {
             val confirmed = runCatching {
                 supplementBatchIntentRepository.confirmManualSafetyPreservingRemainingTargets(reason)
             }.getOrNull()
@@ -4822,6 +5002,9 @@ object KaoChangOperate {
     }
 
     private fun ensureSupplementBatchStartAllowedLocked(stage: String): Boolean {
+        if (enforceReturnBindingConflictMaintenanceLocked(stage)) {
+            return false
+        }
         val config = AppConfig.getAppConfig()
         val decision = SupplementStartGate.evaluate(
             onlineStatus = config.onlineStatus,
@@ -4840,6 +5023,43 @@ object KaoChangOperate {
                 "pendingDisableActionGroupV2（待关闭动作组标记）=${config.pendingDisableActionGroupV2}"
         )
         return false
+    }
+
+    private fun enforceReturnBindingConflictMaintenanceLocked(stage: String): Boolean {
+        val conflict = supplementBatchIntentRepository.returnBindingConflictSnapshot()
+        if (conflict == null) {
+            lastReturnBindingConflictMaintenanceFingerprint = null
+            return false
+        }
+        val config = AppConfig.getAppConfig()
+        val stateDrifted = config.isEnable != 0 || config.inspectionMode != 1 || config.onlineStatus != 3
+        val fingerprintChanged = lastReturnBindingConflictMaintenanceFingerprint != conflict.fingerprint
+        if (stateDrifted || fingerprintChanged) {
+            config.isEnable = 0
+            config.inspectionMode = 1
+            config.onlineStatus = 3
+            AppConfig.saveAppConfigDurable(config)
+            HomeUiRefreshBridge.requestRefresh("return_binding_conflict:maintenance")
+            lastReturnBindingConflictMaintenanceFingerprint = conflict.fingerprint
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠回搬绑定冲突】已锁定维护状态并禁止自动机械动作：stage=$stage，" +
+                    "batchId=${conflict.batchId}，conflicts=${conflict.details}"
+            )
+            operateScope.launch {
+                val runtimePublished = SendServerHelper.publishServiceUpdateStatus()
+                val availablePublished = SendServerHelper.publishAvailableState("return_binding_conflict:maintenance")
+                if (!runtimePublished || !availablePublished) {
+                    logW(
+                        LOG_DEVICE,
+                        "补肠回搬绑定冲突维护状态上报不完整，回退HTTP：" +
+                            "runtimePublished=$runtimePublished，availablePublished=$availablePublished"
+                    )
+                    DataManagementAPI.uploadDeviceInfo()
+                }
+            }
+        }
+        return true
     }
 
     private fun claimPreparedSupplementMove(
@@ -4876,13 +5096,14 @@ object KaoChangOperate {
 
     private fun admitDiscardCommandIntent(
         owner: String,
-        automatic: Boolean
+        automatic: Boolean,
+        businessCloseout: Boolean = false
     ): AutomaticMechanicalCommandAdmissionResult = AutomaticMechanicalCommandAdmissionCoordinator(
         transitionLock = faultHeatTransitionLock,
         orderPending = SupplementPauseController::shouldPauseForOrder,
         currentOwner = { discardJournalStore.load()?.owner },
         currentMoveStatus = mechanicalMoveStatusStore::load,
-        automaticCommandAllowed = ::isAutomaticDiscardStillAllowed,
+        automaticCommandAllowed = { isDiscardCommandStillAllowed(owner, businessCloseout) },
         emergencyResetRecoveryPending = ::isEmergencyResetRecoveryPending,
         saveCommandIntent = {
             val current = discardJournalStore.load()
@@ -5337,11 +5558,29 @@ object KaoChangOperate {
         clearOwner()
     }
 
+    private fun hasCompletedParallelDeliveryCloseoutEvidence(
+        session: SupplementPrefetchPipelineSession
+    ): Boolean {
+        val delivery = session.deliveryLane ?: return false
+        return session.prefetchLane == null &&
+            delivery.currentAction == "in7" &&
+            delivery.lastConfirmedStage == "in7" &&
+            delivery.lifecycle == SupplementActionLifecycle.PHYSICAL_APPLIED &&
+            delivery.boxDeductionApplied &&
+            delivery.panPlacementApplied
+    }
+
     enum class PendingSupplementBatchHandling {
         NONE,
         WAITING_MANUAL_CONFIRMATION,
         BLOCKED,
-        RESUMED
+        RESUMED;
+
+        val completedMechanicalWorkThisRound: Boolean
+            get() = this == RESUMED
+
+        val blocksNewSupplement: Boolean
+            get() = this != NONE
     }
 
     internal fun prepareLowInitializationMaturityCloseout(
@@ -5401,12 +5640,21 @@ object KaoChangOperate {
 
     fun pendingSupplementBatchRequiresManualConfirm(): SupplementBatchIntent? {
         val intent = supplementBatchIntentRepository.loadActive() ?: return null
-        return if (intent.requiresManualConfirm) intent else null
+        return if (intent.requiresAnyManualConfirmation()) intent else null
     }
+
+    fun returnBindingConflictSnapshot(): ReturnBindingConflictSnapshot? =
+        supplementBatchIntentRepository.returnBindingConflictSnapshot()
 
     suspend fun confirmPendingSupplementBatchSafety(reason: String): ManualSupplementConfirmResult {
         val pending = pendingSupplementBatchRequiresManualConfirm()
             ?: return ManualSupplementConfirmResult(false, "当前没有待确认批次")
+        if (pending.returnBindingConflictActive) {
+            return ManualSupplementConfirmResult(
+                false,
+                "回搬目标存在重复所有者，普通确认不能解除：${pending.returnBindingConflictDetails}"
+            )
+        }
         when (val evidence = readSupplementPrefetchEvidence()) {
             DurableEvidenceReadResult.Absent -> Unit
             is DurableEvidenceReadResult.Corrupted -> {
@@ -5589,11 +5837,27 @@ object KaoChangOperate {
     }
 
     fun clearPendingSupplementBatchIntent(reason: String) {
+        val conflict = supplementBatchIntentRepository.returnBindingConflictSnapshot()
+        if (conflict != null) {
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠回搬绑定冲突】拒绝普通清除intent：reason=$reason，conflicts=${conflict.details}"
+            )
+            return
+        }
         supplementBatchIntentRepository.clear(reason)
     }
 
     fun clearPendingSupplementBatchIntentUnlessHighHeatManualConfirmation(reason: String): Boolean {
         val intent = supplementBatchIntentRepository.loadActive()
+        if (intent?.returnBindingConflictActive == true) {
+            logW(
+                LOG_SUPPLEMENT,
+                "【补肠回搬绑定冲突】拒绝绕过专用收口清除intent：reason=$reason，" +
+                    "conflicts=${intent.returnBindingConflictDetails}"
+            )
+            return false
+        }
         if (intent != null && intent.remainingTargets().isEmpty() && intent.retainedCompletedHeatReturnTargets().isNotEmpty()) {
             logD(
                 LOG_SUPPLEMENT,
@@ -5618,6 +5882,61 @@ object KaoChangOperate {
         return supplementBatchIntentRepository.clearPendingTargetsRetainingCompletedHeatReturnBindings(reason)
     }
 
+    fun resolveReturnBindingConflictAfterAllSourcesCleared(
+        expected: ReturnBindingConflictSnapshot,
+        reason: String
+    ): ManualSupplementConfirmResult = withFaultHeatTransitionLock {
+        val current = supplementBatchIntentRepository.returnBindingConflictSnapshot()
+            ?: return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "当前没有回搬绑定冲突")
+        if (current.batchId != expected.batchId ||
+            current.updatedAtMs != expected.updatedAtMs ||
+            current.fingerprint != expected.fingerprint
+        ) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "冲突意图已变化，请刷新后重新核对")
+        }
+        val config = AppConfig.getAppConfig()
+        val orderClaimPresent = runCatching { orderDeliveryClaimStore.load() != null }.getOrElse {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "订单claim证据读取失败，禁止收口绑定")
+        }
+        val closeoutRejection = returnBindingConflictCloseoutRejection(
+            ReturnBindingConflictCloseoutEvidence(
+                moveStatus = config.moveStatus,
+                hasProcessingOrder = OrderStateManager.hasProcessingOrder(),
+                hasOrderPause = SupplementPauseController.shouldPauseForOrder(),
+                hasOrderDeliveryClaim = orderClaimPresent,
+                actionSessionAbsent = actionGroupSessionStore.readEvidence() is DurableEvidenceReadResult.Absent,
+                pausedSessionAbsent = pausedSupplementSessionStore.readEvidence() is DurableEvidenceReadResult.Absent,
+                prefetchEvidenceAbsent = readSupplementPrefetchEvidence() is DurableEvidenceReadResult.Absent,
+                hasPanMoveJournal = panMoveJournalStore.load() != null,
+                hasDiscardJournal = discardJournalStore.load() != null,
+                resourceLocksIdle = actionGroupLocks.isIdle()
+            )
+        )
+        if (closeoutRejection != null) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "$closeoutRejection，禁止收口绑定")
+        }
+        val heatPans = KaoPanHelper.getKaoPanList().filter { it.positionSn in 13..18 || it.positionSn in 25..33 }
+        val occupied = heatPans.filter { it.isHasSausage }.map { it.positionSn }
+        if (occupied.isNotEmpty()) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(
+                false,
+                "补热源盘仍有烤肠，必须现场清空后再收口：$occupied"
+            )
+        }
+        val resolved = supplementBatchIntentRepository.resolveReturnBindingConflictAfterSourcesCleared(
+            expectedBatchId = expected.batchId,
+            expectedUpdatedAtMs = expected.updatedAtMs,
+            expectedFingerprint = expected.fingerprint,
+            confirmedEmptySourcePositions = heatPans.map { it.positionSn }.toSet()
+        )
+        if (!resolved) {
+            return@withFaultHeatTransitionLock ManualSupplementConfirmResult(false, "冲突绑定未能按精确来源收口")
+        }
+        lastReturnBindingConflictMaintenanceFingerprint = null
+        logW(LOG_SUPPLEMENT, "【补肠回搬绑定冲突】全部补热源盘已确认清空，完成无机械绑定收口：reason=$reason")
+        ManualSupplementConfirmResult(true, "冲突绑定已收口，设备保持维护状态，需另行确认恢复")
+    }
+
     fun activeSupplementBatchTargetPositions(types: Set<SupplementBatchType>): Set<Int> {
         val intent = supplementBatchIntentRepository.loadActive() ?: return emptySet()
         return intent.remainingTargets()
@@ -5632,10 +5951,14 @@ object KaoChangOperate {
     }
 
     fun activeSupplementBatchIntentForUi(): SupplementBatchIntent? {
+        val intent = supplementBatchIntentRepository.loadActive() ?: return null
+        withFaultHeatTransitionLock {
+            enforceReturnBindingConflictMaintenanceLocked("算法轮询活动意图查询")
+        }
         if (isActionGroupRecoveryBlocked()) {
             return null
         }
-        return supplementBatchIntentRepository.loadActive()
+        return intent
     }
 
     fun maintenanceKaoPanIntentForUi(): SupplementBatchIntent? {
@@ -5806,6 +6129,9 @@ object KaoChangOperate {
         isBeforeCloseWindow: Boolean
     ): PendingSupplementBatchHandling {
         val intent = supplementBatchIntentRepository.loadActive() ?: return PendingSupplementBatchHandling.NONE
+        if (withFaultHeatTransitionLock { enforceReturnBindingConflictMaintenanceLocked(reason) }) {
+            return PendingSupplementBatchHandling.WAITING_MANUAL_CONFIRMATION
+        }
         if (intent.remainingTargets().isEmpty()) {
             logD(
                 LOG_SUPPLEMENT,
@@ -6114,12 +6440,37 @@ object KaoChangOperate {
         )
     }
 
+    internal suspend fun moveSausagesToKaoPansForResume(
+        targets: List<SupplementTarget>,
+        batchTypeOverride: SupplementBatchType,
+        onAdmitted: () -> Unit
+    ): SupplementBatchAttemptResult {
+        var admittedBatchId: String? = null
+        val movedCount = moveSausagesToKaoPansByTasteInternal(
+            targets = targets,
+            existingBatchId = null,
+            createIntent = true,
+            stageForSerial = "补热残缺组恢复",
+            batchTypeOverride = batchTypeOverride,
+            admissionObserver = { batchId ->
+                admittedBatchId = batchId
+                onAdmitted()
+            }
+        )
+        return SupplementBatchAttemptResult(
+            admitted = admittedBatchId != null,
+            movedCount = movedCount,
+            batchId = admittedBatchId
+        )
+    }
+
     private suspend fun moveSausagesToKaoPansByTasteInternal(
         targets: List<SupplementTarget>,
         existingBatchId: String?,
         createIntent: Boolean,
         stageForSerial: String,
-        batchTypeOverride: SupplementBatchType? = null
+        batchTypeOverride: SupplementBatchType? = null,
+        admissionObserver: (String) -> Unit = {}
     ): Int {
         val validTargets = targets.filter { it.kaoPan.positionSn in 1..33 }
         if (validTargets.isEmpty()) {
@@ -6175,6 +6526,9 @@ object KaoChangOperate {
             val batchType = batchTypeOverride ?: batchId?.let {
                 supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
             }
+            if (existingBatchId == null && batchId != null) {
+                admissionObserver(batchId)
+            }
             return moveSausagesToKaoPansByTasteSerial(executableTargets, stageForSerial, batchId, batchType)
         }
         if (AppConfig.getAppConfig().errorStatus > 0) {
@@ -6220,6 +6574,9 @@ object KaoChangOperate {
             } else {
                 existingBatchId
             }
+            if (existingBatchId == null && batchId != null) {
+                admissionObserver(batchId)
+            }
             return moveSausagesToKaoPansByTasteSerial(
                 plannedMoves.map {
                     SupplementTarget(
@@ -6249,6 +6606,9 @@ object KaoChangOperate {
                 ?: return 0
         } else {
             existingBatchId
+        }
+        if (existingBatchId == null && batchId != null) {
+            admissionObserver(batchId)
         }
 
         if (shouldPauseSupplementForOrder("补肠预取流水线启动前")) {
@@ -7178,12 +7538,9 @@ object KaoChangOperate {
                     taskByPanNo,
                     batchId,
                     timeoutResolution,
-                    parallelSessionActive = parallelEnabled
-                )
-                logW(
-                    LOG_ACTION_GROUP,
-                    "补肠预取失败后保留session、资源锁和moveStatus，等待维护/启动恢复：" +
-                        "action=${result.actionName}，targetPan=${result.task?.targetPanNo}"
+                    parallelSessionActive = parallelEnabled,
+                    parallelSessionId = sessionId,
+                    durableStateSaved = !durableCompletionFailed
                 )
                 return completedCount
             }
@@ -7733,12 +8090,51 @@ object KaoChangOperate {
         )
     }
 
+    private fun closeParallelSupplementSemiFaultIfSafe(
+        result: InActionGroupPipelineResult.Failed,
+        resolvedAtomicResult: AtomicActionResult,
+        expectedSessionId: String,
+        durableStateSaved: Boolean
+    ): SupplementMechanicalCloseoutResult {
+        val session = activeSupplementPrefetchSessionOrNull("双 lane 下平台半故障原子收口")
+            ?: return SupplementMechanicalCloseoutResult.Rejected("双 lane session 不存在或损坏")
+        if (!ParallelSupplementSemiFaultClosurePolicy.canClose(
+                actionName = result.actionName,
+                sourceBoxNo = result.sourceBoxNo,
+                targetPanNo = result.task?.targetPanNo,
+                result = resolvedAtomicResult,
+                session = session,
+                expectedSessionId = expectedSessionId,
+                laneRole = result.laneRole,
+                durableStateSaved = durableStateSaved
+            )
+        ) {
+            return SupplementMechanicalCloseoutResult.Rejected("in4 前物理证据未通过精准收口策略")
+        }
+        val closeout = SupplementMechanicalCloseoutCoordinator(
+            transitionLock = faultHeatTransitionLock,
+            supplementOwnerStore = supplementPipelineClaimOwnerStore(),
+            orderOwnerStore = orderDeliveryClaimStore,
+            moveStore = mechanicalMoveStatusStore,
+            resourceLocks = actionGroupLocks
+        ).close(
+            SupplementMechanicalCloseoutRequest(
+                owner = expectedSessionId,
+                revision = session.mechanicalClaimRevision,
+                resourceMask = session.resourceMask
+            )
+        )
+        return closeout
+    }
+
     private suspend fun handlePipelineSupplementFailure(
         result: InActionGroupPipelineResult.Failed,
         taskByPanNo: Map<Int, PlannedPipelineSupplementMove>,
         batchId: String?,
         timeoutProbe: TimeoutProbe? = null,
-        parallelSessionActive: Boolean
+        parallelSessionActive: Boolean,
+        parallelSessionId: String? = null,
+        durableStateSaved: Boolean
     ) {
         val batchType = batchId?.let {
             supplementBatchIntentRepository.loadActive()?.takeIf { intent -> intent.batchId == batchId }?.type
@@ -7820,13 +8216,65 @@ object KaoChangOperate {
                     )
                 }
             }
-            markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
+            val persistedIsolation = if (parallelSessionActive && parallelSessionId != null) {
+                try {
+                    persistLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
+                } catch (error: Throwable) {
+                    enterActionGroupMaintenance(
+                        "双 lane 下平台隔离状态耐久保存失败，保留 session/owner/资源，禁止订单进入：${error.message}",
+                        preserveMoveStatus = true
+                    )
+                    return
+                }
+            } else {
+                markLowerPlatformIsolatedRuntimeState(isolationReason, result.actionName, episodeDetails)
+                null
+            }
+            val closeout = if (parallelSessionActive && parallelSessionId != null) {
+                closeParallelSupplementSemiFaultIfSafe(
+                    result = result,
+                    resolvedAtomicResult = resolvedAtomicResult,
+                    expectedSessionId = parallelSessionId,
+                    durableStateSaved = durableStateSaved
+                )
+            } else {
+                SupplementMechanicalCloseoutResult.Rejected("非双 lane 会话")
+            }
+            when (closeout) {
+                SupplementMechanicalCloseoutResult.ClosedIdle,
+                SupplementMechanicalCloseoutResult.ClosedKeepingOrder -> {
+                    checkNotNull(persistedIsolation) { "双 lane 下平台隔离快照缺失" }
+                    publishPersistedLowerPlatformIsolation(persistedIsolation)
+                    applyPendingActionGroupDisableIfIdle("双 lane 下平台半故障原子收口")
+                }
+                is SupplementMechanicalCloseoutResult.Inconsistent -> {
+                    enterActionGroupMaintenance(
+                        "双 lane 下平台半故障原子收口发生状态不一致，保留 owner/资源等待人工处置：${closeout.reason}",
+                        preserveMoveStatus = true
+                    )
+                    return
+                }
+                is SupplementMechanicalCloseoutResult.Failed,
+                is SupplementMechanicalCloseoutResult.Rejected -> {
+                    if (parallelSessionActive) {
+                        enterActionGroupMaintenance(
+                            "双 lane 下平台故障无法安全释放，保留 session/owner/资源，禁止订单进入：closeout=$closeout",
+                            preserveMoveStatus = true
+                        )
+                        return
+                    }
+                    logW(
+                        LOG_ACTION_GROUP,
+                        "非双 lane 下平台半故障沿用既有隔离收口：closeout=$closeout"
+                    )
+                }
+            }
             logW(
                 LOG_SUPPLEMENT,
                 "补肠预取流水线下平台失败已隔离，不进入维护：" +
                     "targetPan=$targetPanNo，sourceBox=$sourceBoxNo，action=${result.actionName}，" +
                     "result=${describeAtomicActionResult(resolvedAtomicResult)}，batchType=${batchType?.let { SupplementBatchIntentRepository.typeText(it) } ?: "未知"}，" +
-                    "requiresManualConfirm=$requiresManualConfirm，reason=$isolationReason"
+                    "requiresManualConfirm=$requiresManualConfirm，closeout=$closeout，reason=$isolationReason"
             )
             return
         }
@@ -8701,6 +9149,10 @@ object KaoChangOperate {
         operationReason: String,
         ownerPrefix: String
     ): Boolean {
+        if (withFaultHeatTransitionLock { enforceReturnBindingConflictMaintenanceLocked("搬盘入口") }) {
+            logW(LOG_PAN_MOVE, "回搬目标存在重复所有者，拒绝启动搬盘")
+            return false
+        }
         val sourcePosition = kaoPan.positionSn
         val targetPosition = newKaoPan.positionSn
         if (sourcePosition==targetPosition){
@@ -9719,7 +10171,8 @@ object KaoChangOperate {
         kaoPan: KaoPan,
         source: String = "过保到期",
         detail: String? = null,
-        automatic: Boolean = true
+        automatic: Boolean = true,
+        businessCloseout: Boolean = false
     ) :Boolean {
         val owner = "discard:${kaoPan.positionSn}:${System.currentTimeMillis()}"
         val tasteLabel = getPanTasteLabel(kaoPan)
@@ -9745,11 +10198,13 @@ object KaoChangOperate {
                 ownerStore = discardClaimOwnerStore(discardJournal),
                 allowedMoveStatuses = setOf(0),
                 claimedMoveStatus = 4,
-                requireSupplementGate = automatic
+                requireSupplementGate = automatic && !businessCloseout,
+                claimGate = { !businessCloseout || isBusinessCloseoutDiscardStillAllowed(owner) }
             )
         ) {
             return false
         }
+        val requiresLockedAdmission = automatic || businessCloseout
         if (automatic && !isAutomaticDiscardStillAllowed()) {
             val released = releaseMechanicalMove(
                 "过保丢弃认领后订单门禁失败",
@@ -9781,7 +10236,11 @@ object KaoChangOperate {
                 runningTimeoutMs = 120_000L,
                 requireRunningBeforeIdleSuccess = true
             ) {
-                when (val admission = admitDiscardCommandIntent(owner, automatic)) {
+                when (val admission = admitDiscardCommandIntent(
+                    owner = owner,
+                    automatic = requiresLockedAdmission,
+                    businessCloseout = businessCloseout
+                )) {
                     AutomaticMechanicalCommandAdmissionResult.Admitted -> commandAttempted = true
                     is AutomaticMechanicalCommandAdmissionResult.Rejected -> {
                         throw AutomaticMechanicalDispatchPreemptedException()
@@ -9901,7 +10360,9 @@ object KaoChangOperate {
             )
             KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList())
             clearReturnBindingForSourceIfAny(kaoPan.positionSn)
-            refreshTemperatureAfterStablePanMutation("过保丢弃完成清空烤盘：pan=${kaoPan.positionSn}")
+            if (shouldRefreshTemperatureAfterDiscard(businessCloseout)) {
+                refreshTemperatureAfterStablePanMutation("过保丢弃完成清空烤盘：pan=${kaoPan.positionSn}")
+            }
             PanPhysicalStateDeltaReporter.reportPanChanged(
                 changedPan = kaoPan,
                 reason = "discardSausage_success:pan=${kaoPan.positionSn}:source=$source",
@@ -9965,6 +10426,37 @@ object KaoChangOperate {
 
     private fun isAutomaticDiscardStillAllowed(): Boolean =
         isAutomaticMechanicalCommandStillAllowed()
+
+    private fun isDiscardCommandStillAllowed(owner: String, businessCloseout: Boolean): Boolean =
+        if (businessCloseout) {
+            isBusinessCloseoutDiscardStillAllowed(owner)
+        } else {
+            isAutomaticDiscardStillAllowed()
+        }
+
+    private fun isBusinessCloseoutDiscardStillAllowed(owner: String): Boolean {
+        val config = AppConfig.getAppConfig()
+        val recoveryBlocked = !actionGroupRecoveryVerified ||
+            actionGroupSessionStore.load() != null ||
+            panMoveJournalStore.load() != null ||
+            discardJournalStore.load()?.owner?.let { it != owner } == true ||
+            hasBlockingSupplementPrefetchEvidence()
+        return canIssueBusinessCloseoutDiscardCommand(
+            onlineStatus = config.onlineStatus,
+            automaticRestSource = AppConfig.normalizeRestStatusSource(config.restStatusSource) ==
+                AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS,
+            errorStatus = config.errorStatus,
+            inspectionMode = config.inspectionMode,
+            faultHeatPauseActive = config.faultHeatPauseActive,
+            orderPending = SupplementPauseController.shouldPauseForOrder(),
+            recoveryBlocked = recoveryBlocked,
+            lowerPlatformBlocked = AutoMechanicalDispatchPolicy.shouldBlockAutoDispatchForLowerPlatformIsolation(
+                config.lowerPlatformStatus,
+                config.lowerPlatformIsolationActionName
+            ),
+            modbusMasterAvailable = VMModbusHelper.currentDiagnosisSnapshot().connected
+        )
+    }
     /**
      * 读取烤盘温度
      * area 1，2，3区
@@ -10551,12 +11043,11 @@ object KaoChangOperate {
      * 暂停营业时间
      * 停止加热和保温
      */
-    fun pauseBusiness() {
-        //1，2，3 区停止保温
-        writeAreaTargetTemperatureRaw(1, 0, "pauseBusiness")
-        writeAreaTargetTemperatureRaw(2, 0, "pauseBusiness")
-        writeAreaTargetTemperatureRaw(3, 0, "pauseBusiness")
-
+    fun pauseBusiness(): Boolean {
+        val area1 = writeAreaTargetTemperatureRaw(1, 0, "pauseBusiness")
+        val area2 = writeAreaTargetTemperatureRaw(2, 0, "pauseBusiness")
+        val area3 = writeAreaTargetTemperatureRaw(3, 0, "pauseBusiness")
+        return area1.isSuccess && area2.isSuccess && area3.isSuccess
     }
 
     /**
@@ -10659,65 +11150,9 @@ object KaoChangOperate {
      * 若后台已手动设为维护中/待投运，不覆盖。
      */
     suspend fun endBusinessHours(config: AppConfigBean){
-        if (config.errorStatus != 0) {
-            config.onlineStatus = 3
-            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
-            AppConfig.saveAppConfig(config)
-            HomeUiRefreshBridge.requestRefresh("business_end:fault")
-            logW(
-                LOG_DEVICE,
-                "营业时间结束：检测到设备故障标记，保持维护中 | errorStatus=${config.errorStatus}(0=正常, 非0=故障), " +
-                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
-            )
-            SendServerHelper.publishServiceUpdateStatus()
-            return
-        }
-        if (config.onlineStatus != 1) {
-            logD(
-                LOG_DEVICE,
-                "营业时间结束：当前状态非运营中，跳过自动切换休息中（尊重后台设置） | " +
-                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}"
-            )
-            return
-        }
-        // 当前是运营中，自动切换为休息中
-        config.apply {
-            onlineStatus = 2
-            restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
-        }
-        AppConfig.saveAppConfig(config)
-        HomeUiRefreshBridge.requestRefresh("business_end:operating_to_rest")
-        logD(
-            LOG_DEVICE,
-            "营业时间结束：已自动切换为休息中（2），" +
-                "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
+        KaoChangAlgorithm.requestBusinessCloseout(
+            "兼容入口 endBusinessHours：onlineStatus=${config.onlineStatus}，errorStatus=${config.errorStatus}"
         )
-        //同步更新云端状态
-        SendServerHelper.publishServiceUpdateStatus()
-        //执行丢弃操作
-        try {
-            KaoChangAlgorithm.resetKaoPan()
-        } catch (e: Exception) {
-            // 营业结束时若重置烤盘失败，不应抛未实现异常导致崩溃；
-            // 这里降级为维护中并上报，等待人工排查。
-            config.errorStatus = 2
-            config.onlineStatus = 3
-            config.errorCode = FaultCode.KAOPAN_RESET_FAILED.name
-            config.errorCategory = FaultCode.KAOPAN_RESET_FAILED.category.display
-            config.errorReason = "营业结束重置烤盘失败：${e.javaClass.simpleName}：${e.message}"
-            config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
-            AppConfig.saveAppConfig(config)
-            HomeUiRefreshBridge.requestRefresh("business_end:reset_failed")
-            logE(
-                LOG_DEVICE,
-                "营业时间结束：重置烤盘失败，已降级为维护中并上报 | " +
-                    "onlineStatus=${onlineStatusDesc(config.onlineStatus)}, " +
-                    "errorStatus=${config.errorStatus}(2=设备故障), " +
-                    "exception=${e.javaClass.simpleName}, message=${e.message}",
-                e
-            )
-            SendServerHelper.publishServiceUpdateStatus()
-        }
     }
 
     /**
