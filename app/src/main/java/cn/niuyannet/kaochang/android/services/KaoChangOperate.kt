@@ -110,6 +110,10 @@ import cn.niuyannet.kaochang.android.services.actiongroup.VmAtomicModbusGateway
 import cn.niuyannet.kaochang.android.services.recovery.DurableEvidenceReadResult
 import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutPolicy
 import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
+import cn.niuyannet.kaochang.android.services.reset.Out4CurrentCallEvidence
+import cn.niuyannet.kaochang.android.services.reset.Out4CurrentCallEvidenceState
+import cn.niuyannet.kaochang.android.services.reset.Out4DeliveryCloseoutPolicy
+import cn.niuyannet.kaochang.android.services.reset.Out4DeliveryCloseoutResult
 import cn.niuyannet.kaochang.android.ui.OrderMoveStatusPolicy
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
@@ -2658,6 +2662,7 @@ object KaoChangOperate {
         DISCARDED,
         NO_SELLABLE_STOCK,
         NO_DISPATCH,
+        DELIVERED_CLOSEOUT_UNKNOWN,
         EVIDENCE_UNKNOWN,
         ERROR
     }
@@ -3362,8 +3367,8 @@ object KaoChangOperate {
         panNo: Int,
         discarded: Boolean,
         failureMetadata: cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata? = null
-    ) {
-        actionGroupOrderEventStore.save(
+    ): Boolean {
+        val saved = actionGroupOrderEventStore.save(
             PendingActionGroupOrderEvent(
                 orderContext = orderContext,
                 status = status,
@@ -3374,11 +3379,20 @@ object KaoChangOperate {
                 out1Dispatched = failureMetadata?.out1Dispatched
             )
         )
-        logW(
-            LOG_ACTION_GROUP,
-            "已持久化动作组订单终态待补偿事件：orderNo=${orderContext.orderNo}，" +
-                "itemId=${orderContext.itemId}，panNo=$panNo，status=${orderEventStatusDesc(status)}"
-        )
+        if (saved) {
+            logW(
+                LOG_ACTION_GROUP,
+                "已持久化动作组订单终态待补偿事件：orderNo=${orderContext.orderNo}，" +
+                    "itemId=${orderContext.itemId}，panNo=$panNo，status=${orderEventStatusDesc(status)}"
+            )
+        } else {
+            logE(
+                LOG_ACTION_GROUP,
+                "动作组订单终态待补偿事件持久化失败：orderNo=${orderContext.orderNo}，" +
+                    "itemId=${orderContext.itemId}，panNo=$panNo，status=${orderEventStatusDesc(status)}"
+            )
+        }
+        return saved
     }
 
     fun reportActionGroupOrderTerminalEvent(
@@ -3452,13 +3466,14 @@ object KaoChangOperate {
             logE(LOG_ORDER, "出餐失败订单终态补偿保存失败：订单上下文不完整，source=$source，orderContext=$orderContext")
             return false
         }
-        savePendingActionGroupOrderEvent(
+        val saved = savePendingActionGroupOrderEvent(
             orderContext = orderContext,
             status = ActionGroupOrderStatus.ERROR,
             panNo = panNo,
             discarded = false,
             failureMetadata = failureMetadata
         )
+        if (!saved) return false
         return flushPendingActionGroupOrderEvent(source)
     }
 
@@ -3487,7 +3502,8 @@ object KaoChangOperate {
     private fun persistOutTerminalEventFromTelemetry(
         telemetry: ActionGroupTelemetry,
         orderContext: ActionGroupOrderContext?,
-        panNo: Int
+        panNo: Int,
+        currentCallEvidence: Out4CurrentCallEvidence
     ) {
         if (
             telemetry.actionName != "out4" ||
@@ -3503,19 +3519,42 @@ object KaoChangOperate {
             else -> return
         }
         if (ResetCloseoutPolicy.isConfirmedOut4Delivery(telemetry)) {
-            val evidenceSaved = withFaultHeatTransitionLock {
-                ResetCloseoutStore.sharedPreferences().confirmOut4Durable(
-                    orderContext.orderNo,
-                    orderContext.itemId.toLong()
-                )
+            val state = currentCallEvidence.observeConfirmedOut4(
+                confirmDurably = {
+                    withFaultHeatTransitionLock {
+                        ResetCloseoutStore.sharedPreferences().confirmOut4Durable(
+                            orderContext.orderNo,
+                            orderContext.itemId.toLong()
+                        )
+                    }
+                },
+                savePendingDurably = {
+                    savePendingActionGroupOrderEvent(
+                        orderContext = orderContext,
+                        status = status,
+                        panNo = panNo,
+                        discarded = false
+                    )
+                }
+            )
+            if (state == Out4CurrentCallEvidenceState.CONFIRMED_PENDING_MISSING) {
+                runCatching {
+                    enterActionGroupMaintenance(
+                        "out4 已确认交付且复位证据已推进，但订单终态 pending 落盘失败：" +
+                            "orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}",
+                        preserveMoveStatus = true
+                    )
+                }
+            } else if (state == Out4CurrentCallEvidenceState.UNKNOWN) {
+                runCatching {
+                    enterActionGroupMaintenance(
+                        "out4 已成功但本次调用未能推进复位订单证据：" +
+                            "orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}",
+                        preserveMoveStatus = true
+                    )
+                }
             }
-            if (!evidenceSaved) {
-                enterActionGroupMaintenance(
-                    "out4 已成功但复位退款证据落盘失败：orderNo=${orderContext.orderNo}，itemId=${orderContext.itemId}",
-                    preserveMoveStatus = true
-                )
-                return
-            }
+            return
         }
         savePendingActionGroupOrderEvent(
             orderContext = orderContext,
@@ -9840,6 +9879,7 @@ object KaoChangOperate {
             }
 
             var outPanClearedByTelemetry = false
+            val out4CurrentCallEvidence = Out4CurrentCallEvidence()
             val actionGroupResult = run {
                 val claimed = requireNotNull(actionGroupSessionStore.load())
                 check(claimed.sessionId == owner) { "正式出餐 owner 已变化" }
@@ -9868,7 +9908,12 @@ object KaoChangOperate {
                         )) {
                             outPanClearedByTelemetry = true
                         }
-                        persistOutTerminalEventFromTelemetry(telemetry, orderContext, kaoPan.positionSn)
+                        persistOutTerminalEventFromTelemetry(
+                            telemetry,
+                            orderContext,
+                            kaoPan.positionSn,
+                            out4CurrentCallEvidence
+                        )
                     },
                     logger = { message -> logD(LOG_ACTION_GROUP, message) },
                     operationLogContext = ActionGroupOperationLogContext(
@@ -9944,27 +9989,40 @@ object KaoChangOperate {
                 ActionGroupResult.Discarded -> TakeSausageResult.TAKEN_BY_USER
                 is ActionGroupResult.Failed -> {
                     kaoPan.cmdStatusTake = atomicFailureCode(actionGroupResult)
-                    val evidence = actionGroupSessionStore.load()
-                        ?.takeIf { it.sessionId == owner }
-                        ?.out1DispatchEvidence
-                    when {
-                        actionGroupResult.result is AtomicActionResult.Failed &&
-                            actionGroupResult.result.freshExecutionObserved &&
-                            evidence == Out1DispatchEvidence.DISPATCHED -> {
-                            markActionGroupFailure("正式出餐", actionGroupResult)
-                            if (closeConfirmedFailedOutSession(owner)) {
-                                TakeSausageResult.ERROR
-                            } else {
-                                enterActionGroupMaintenance(
-                                    "正式出餐已确认失败，但 OUT 会话或资源未能精确释放：owner=$owner",
-                                    preserveMoveStatus = true
-                                )
-                                TakeSausageResult.EVIDENCE_UNKNOWN
-                            }
+                    val deliveredCloseout = Out4DeliveryCloseoutPolicy.resolveAfterActionGroupFailure(
+                        evidence = out4CurrentCallEvidence,
+                        enterMaintenance = {
+                            enterActionGroupMaintenance(
+                                "out4 已确认交付，但后续 ${actionGroupResult.actionName} 收口失败：owner=$owner",
+                                preserveMoveStatus = true
+                            )
                         }
-                        evidence == Out1DispatchEvidence.NOT_DISPATCHED_CONFIRMED ->
-                            TakeSausageResult.NO_DISPATCH
-                        else -> TakeSausageResult.EVIDENCE_UNKNOWN
+                    )
+                    if (deliveredCloseout != null) {
+                        TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN
+                    } else {
+                        val evidence = actionGroupSessionStore.load()
+                            ?.takeIf { it.sessionId == owner }
+                            ?.out1DispatchEvidence
+                        when {
+                            actionGroupResult.result is AtomicActionResult.Failed &&
+                                actionGroupResult.result.freshExecutionObserved &&
+                                evidence == Out1DispatchEvidence.DISPATCHED -> {
+                                markActionGroupFailure("正式出餐", actionGroupResult)
+                                if (closeConfirmedFailedOutSession(owner)) {
+                                    TakeSausageResult.ERROR
+                                } else {
+                                    enterActionGroupMaintenance(
+                                        "正式出餐已确认失败，但 OUT 会话或资源未能精确释放：owner=$owner",
+                                        preserveMoveStatus = true
+                                    )
+                                    TakeSausageResult.EVIDENCE_UNKNOWN
+                                }
+                            }
+                            evidence == Out1DispatchEvidence.NOT_DISPATCHED_CONFIRMED ->
+                                TakeSausageResult.NO_DISPATCH
+                            else -> TakeSausageResult.EVIDENCE_UNKNOWN
+                        }
                     }
                 }
             }
@@ -9990,6 +10048,11 @@ object KaoChangOperate {
                 return takeResult
             }
 
+            if (takeResult == TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN) {
+                runCatching { KaoPanHelper.saveKaoPanListDurable(KaoPanHelper.getKaoPanList()) }
+                return takeResult
+            }
+
             if (takeResult == TakeSausageResult.ERROR ||
                 takeResult == TakeSausageResult.EVIDENCE_UNKNOWN
             ) {
@@ -10006,25 +10069,11 @@ object KaoChangOperate {
                 )
                 TakeSausageResult.NO_SELLABLE_STOCK,
                 TakeSausageResult.NO_DISPATCH,
+                TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN,
                 TakeSausageResult.EVIDENCE_UNKNOWN,
                 TakeSausageResult.ERROR -> Unit
             }
 
-            val terminalStatus = ActionGroupOrderStatus.statusFor(takeResult)
-            if (orderContext != null && orderContext.isValid()) {
-                savePendingActionGroupOrderEvent(
-                    orderContext = orderContext,
-                    status = terminalStatus,
-                    panNo = kaoPan.positionSn,
-                    discarded = false
-                )
-            } else {
-                logW(
-                    LOG_ACTION_GROUP,
-                    "正式出餐完成但缺少订单上下文，无法建立订单终态补偿事件：panNo=${kaoPan.positionSn}，" +
-                        "takeResult=$takeResult，orderContext=$orderContext"
-                )
-            }
             val beforeSellable = KaoPanCloudSyncReporter.captureSellableSnapshot(KaoPanHelper.getKaoPanList())
             applySuccessfulTakePanState(kaoPan)
             armPostSellSupplementGuard("out5 已完成关门回零/出餐收尾")
@@ -10043,20 +10092,35 @@ object KaoChangOperate {
                 KaoPanHelper.getKaoPanList(),
                 "单根出餐完成后清空可售烤盘"
             )
-            if (!releaseMechanicalMove(
-                    "正式出餐完成",
-                    owner,
-                    actionGroupClaimOwnerStore(),
-                    expectedMoveStatus = 2,
-                    idleMoveStatus = if (acquiredByThisCall) 0 else 2
-                )
-            ) {
-                enterActionGroupMaintenance("正式出餐完成但 owner/moveStatus 收口失败")
-                return TakeSausageResult.ERROR
-            }
-            actionGroupLocks.release(owner)
+            val closeoutResult = Out4DeliveryCloseoutPolicy.resolve(
+                evidence = out4CurrentCallEvidence,
+                releaseMechanical = {
+                    val released = releaseMechanicalMove(
+                        "正式出餐完成",
+                        owner,
+                        actionGroupClaimOwnerStore(),
+                        expectedMoveStatus = 2,
+                        idleMoveStatus = if (acquiredByThisCall) 0 else 2
+                    )
+                    if (released) {
+                        actionGroupLocks.release(owner)
+                    }
+                    released
+                },
+                enterMaintenance = {
+                    enterActionGroupMaintenance(
+                        "正式出餐已确认交付但订单终态或 owner/moveStatus 收口不完整",
+                        preserveMoveStatus = true
+                    )
+                }
+            )
 
-            return takeResult
+            return when (closeoutResult) {
+                Out4DeliveryCloseoutResult.DELIVERED -> takeResult
+                Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN ->
+                    TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN
+                Out4DeliveryCloseoutResult.EVIDENCE_UNKNOWN -> TakeSausageResult.EVIDENCE_UNKNOWN
+            }
         } finally {
             val hasUnsettledSession = actionGroupSessionStore.load()?.sessionId == owner
             if (!hasUnsettledSession) {

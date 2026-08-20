@@ -10,6 +10,7 @@ class ActionGroupOrderStatusTest {
     fun statusForTakeResult_shouldReportDiscardedAsFinishedInFourFMainFlow() {
         assertEquals(2, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.TAKEN_BY_USER))
         assertEquals(2, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.DISCARDED))
+        assertEquals(2, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN))
         assertEquals(5, ActionGroupOrderStatus.statusFor(KaoChangOperate.TakeSausageResult.ERROR))
     }
 }

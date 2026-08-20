@@ -117,6 +117,74 @@ class ResetCloseoutPolicyTest {
         assertFalse(store.clearDurable())
     }
 
+    @Test
+    fun deliveredCloseout_shouldReturnUnknownWhenPendingSaveOrReleaseFails() {
+        val pendingMissing = advancedEvidence(pendingSaved = false)
+        val pendingResult = Out4DeliveryCloseoutPolicy.resolve(
+            evidence = pendingMissing,
+            releaseMechanical = { true },
+            enterMaintenance = {}
+        )
+        assertEquals(Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN, pendingResult)
+
+        listOf<() -> Boolean>({ false }, { error("release failed") }).forEach { release ->
+            var maintenanceCalls = 0
+            val result = Out4DeliveryCloseoutPolicy.resolve(
+                evidence = advancedEvidence(pendingSaved = true),
+                releaseMechanical = release,
+                enterMaintenance = { maintenanceCalls++ }
+            )
+
+            assertEquals(Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN, result)
+            assertEquals(1, maintenanceCalls)
+        }
+    }
+
+    @Test
+    fun deliveredCloseout_shouldRemainUnknownWhenMaintenanceThrows() {
+        val result = Out4DeliveryCloseoutPolicy.resolve(
+            evidence = advancedEvidence(pendingSaved = true),
+            releaseMechanical = { false },
+            enterMaintenance = { error("maintenance failed") }
+        )
+
+        assertEquals(Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN, result)
+    }
+
+    @Test
+    fun deliveredCloseout_withoutCurrentCallAdvance_shouldFailClosedAsEvidenceUnknown() {
+        val evidence = Out4CurrentCallEvidence().apply {
+            observeConfirmedOut4(
+                confirmDurably = { Out4ConfirmResult.ALREADY_AT_QUANTITY },
+                savePendingDurably = { error("must not save") }
+            )
+        }
+
+        val result = Out4DeliveryCloseoutPolicy.resolve(
+            evidence = evidence,
+            releaseMechanical = { false },
+            enterMaintenance = {}
+        )
+
+        assertEquals(Out4DeliveryCloseoutResult.EVIDENCE_UNKNOWN, result)
+    }
+
+    @Test
+    fun actionGroupFailureAfterCurrentOut4Advance_shouldRemainDeliveredWhenMaintenanceThrows() {
+        val result = Out4DeliveryCloseoutPolicy.resolveAfterActionGroupFailure(
+            evidence = advancedEvidence(pendingSaved = true),
+            enterMaintenance = { error("maintenance failed") }
+        )
+
+        assertEquals(Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN, result)
+        assertNull(
+            Out4DeliveryCloseoutPolicy.resolveAfterActionGroupFailure(
+                evidence = Out4CurrentCallEvidence(),
+                enterMaintenance = { error("must not enter maintenance") }
+            )
+        )
+    }
+
     private fun record(phase: ResetCloseoutPhase): ResetCloseoutRecord = ResetCloseoutRecord(
         resetId = if (phase == ResetCloseoutPhase.ORDER_ACTIVE) null else "reset-1",
         originProcessId = if (phase == ResetCloseoutPhase.ORDER_ACTIVE) null else "process-1",
@@ -137,6 +205,14 @@ class ResetCloseoutPolicyTest {
             // expected
         }
     }
+
+    private fun advancedEvidence(pendingSaved: Boolean): Out4CurrentCallEvidence =
+        Out4CurrentCallEvidence().apply {
+            observeConfirmedOut4(
+                confirmDurably = { Out4ConfirmResult.ADVANCED_THIS_CALL },
+                savePendingDurably = { pendingSaved }
+            )
+        }
 
     private fun out4Telemetry(eventPhase: String, resultCode: Int?, errorCode: Int?): ActionGroupTelemetry =
         ActionGroupTelemetry(

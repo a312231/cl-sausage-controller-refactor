@@ -2,6 +2,7 @@ package cn.niuyannet.kaochang.android.services.actiongroup
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.alibaba.fastjson.JSON
 
@@ -75,5 +76,33 @@ class ActionGroupOrderEventTest {
         assertEquals("NO_SELLABLE_STOCK", payload.getString("failure_reason"))
         assertEquals("NOT_DISPATCHED", payload.getString("delivery_evidence"))
         assertEquals(false, payload.getBoolean("out1_dispatched"))
+    }
+
+    @Test
+    fun pendingStore_shouldExposeDurableSaveSuccessAndFailure() {
+        fun store(saveResult: Boolean) = object : ActionGroupOrderEventStore {
+            override fun load(): PendingActionGroupOrderEvent? = null
+            override fun save(event: PendingActionGroupOrderEvent): Boolean = saveResult
+            override fun clear() = Unit
+        }
+        val event = PendingActionGroupOrderEvent(status = ActionGroupOrderStatus.FINISHED)
+
+        assertTrue(store(true).save(event))
+        assertFalse(store(false).save(event))
+    }
+
+    @Test
+    fun deliveredCloseoutUnknownStatus2_shouldAttemptOnceAndSwallowFalseOrThrow() {
+        listOf<() -> Boolean>({ false }, { error("mqtt failed") }).forEach { report ->
+            var attempts = 0
+
+            val reported = DeliveredCloseoutUnknownOrderEventPolicy.reportFinishedBestEffort {
+                attempts++
+                report()
+            }
+
+            assertFalse(reported)
+            assertEquals(1, attempts)
+        }
     }
 }

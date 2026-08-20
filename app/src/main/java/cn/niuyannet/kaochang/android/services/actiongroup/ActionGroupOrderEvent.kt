@@ -51,6 +51,11 @@ object ActionGroupOrderEventPayloadBuilder {
 
 interface ActionGroupOrderEventStore {
     fun load(): PendingActionGroupOrderEvent?
-    fun save(event: PendingActionGroupOrderEvent)
+    fun save(event: PendingActionGroupOrderEvent): Boolean
     fun clear()
+}
+
+object DeliveredCloseoutUnknownOrderEventPolicy {
+    fun reportFinishedBestEffort(reportFinished: () -> Boolean): Boolean =
+        runCatching(reportFinished).getOrDefault(false)
 }

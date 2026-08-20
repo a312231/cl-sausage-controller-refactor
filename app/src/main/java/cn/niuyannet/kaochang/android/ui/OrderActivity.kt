@@ -19,6 +19,7 @@ import cn.niuyannet.kaochang.android.services.OrderSupplementResumePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventCompensationPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
+import cn.niuyannet.kaochang.android.services.actiongroup.DeliveredCloseoutUnknownOrderEventPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata
 import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
@@ -606,6 +607,7 @@ abstract class OrderActivity: BaseSauceDetection() {
             }
 
             var failureEventReported = false
+            var deliveryConfirmedForCurrentUnit = false
             val readinessBeforeModbus = evaluateSingleDeliveryReadiness(
                 orderNo = orderNo,
                 itemId = item.id,
@@ -714,6 +716,36 @@ abstract class OrderActivity: BaseSauceDetection() {
                         LogUtils.w("【订单流转】本轮出餐按 4F 完成收口，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
                     }
 
+                    KaoChangOperate.TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN -> {
+                        deliveryConfirmedForCurrentUnit = true
+                        deliveredCount++
+                        runCatching {
+                            LogUtils.e(
+                                "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根已由 out4 确认交付，" +
+                                    "但本地收口证据不完整，停止后续出餐：orderNo=$orderNo, itemId=${item.id}"
+                            )
+                        }
+                        val status2Reported = DeliveredCloseoutUnknownOrderEventPolicy.reportFinishedBestEffort {
+                            KaoChangOperate.reportActionGroupOrderTerminalEvent(
+                                orderContext,
+                                ActionGroupOrderStatus.statusFor(
+                                    KaoChangOperate.TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN
+                                ),
+                                "out4 已确认交付但本地收口未知"
+                            )
+                        }
+                        if (!status2Reported) {
+                            runCatching {
+                                LogUtils.e(
+                                    "【订单流转】已确认交付后的 status=2 上报未成功；pending 可能未落盘，" +
+                                        "已保留 Reset out4 履约证据并保持维护：" +
+                                        "orderNo=$orderNo, itemId=${item.id}"
+                                )
+                            }
+                        }
+                        return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.EVIDENCE_UNKNOWN)
+                    }
+
                     KaoChangOperate.TakeSausageResult.NO_SELLABLE_STOCK -> {
                         reportOrderEvent(
                             orderNo,
@@ -766,6 +798,25 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                 }
             } catch (e: Exception) {
+                if (deliveryConfirmedForCurrentUnit) {
+                    runCatching {
+                        LogUtils.e(
+                            "【订单流转】已确认交付后的收口处理异常，禁止降级为 status=5：" +
+                                "orderNo=$orderNo, itemId=${item.id}, " +
+                                "evidence=${OrderFailureMetadata.EVIDENCE_UNKNOWN}, " +
+                                "error=${e.message ?: e.javaClass.simpleName}"
+                        )
+                    }
+                    runCatching {
+                        withContext(Dispatchers.Main) {
+                            val config = AppConfig.getAppConfig()
+                            OrderDeliveryFaultPolicy.applySingleDeliveryExceptionFault(config, e)
+                            AppConfig.saveAppConfig(config)
+                            syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
+                        }
+                    }
+                    return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.EVIDENCE_UNKNOWN)
+                }
                 LogUtils.e("【失败原因】第$currentIndex/${totalCount}根出餐失败：${e.message ?: "未知原因"}")
                 LogUtils.e("【订单流转】处理单根烤肠时发生异常：${e.message}")
                 if (!failureEventReported) {
