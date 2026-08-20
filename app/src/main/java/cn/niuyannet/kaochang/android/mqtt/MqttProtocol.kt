@@ -26,6 +26,11 @@ object MqttProtocol {
     const val TYPE_APP_UPDATE_CHECK_ACK = "app_update_check_ack"
     const val TYPE_APP_UPDATE_CHECK_RESULT = "app_update_check_result"
     const val TYPE_DEVICE_LOG_PACKAGE_REQUEST = "device_log_package_request"
+    const val TYPE_ORDER_DISPATCH_OFFER_V2 = "order_dispatch_offer_v2"
+    const val TYPE_ORDER_DISPATCH_OFFER_ACK_V2 = "order_dispatch_offer_ack_v2"
+    const val TYPE_ORDER_DISPATCH_COMMIT_V2 = "order_dispatch_commit_v2"
+    const val TYPE_ORDER_DISPATCH_COMMIT_REJECTED_V2 = "order_dispatch_commit_rejected_v2"
+    const val ORDER_DISPATCH_PROTOCOL_VERSION = 2
 
     const val SOURCE_MQTT_ACTION_2 = "mqtt-action=2"
 }

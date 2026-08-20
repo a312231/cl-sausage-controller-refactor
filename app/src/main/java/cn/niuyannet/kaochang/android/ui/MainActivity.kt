@@ -20,6 +20,9 @@ import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
+import cn.niuyannet.kaochang.android.mqtt.OrderDispatchInboxRecord
+import cn.niuyannet.kaochang.android.mqtt.OrderDispatchInboxStore
+import cn.niuyannet.kaochang.android.mqtt.OrderDispatchV2Handler
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.mqtt.VMMqttHelper
 import cn.niuyannet.kaochang.android.mqtt.nativeprotocol.NativeEnrollmentHttpClient
@@ -77,6 +80,25 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     private val recentBusyOrderLogAtMs = ConcurrentHashMap<String, Long>()
     private var deviceStateRefreshJob: Job? = null
     private var lastHomeDisplayLogSignature = ""
+    private val orderDispatchInboxStore by lazy { OrderDispatchInboxStore.sharedPreferences() }
+    private val orderDispatchV2Handler by lazy {
+        OrderDispatchV2Handler(
+            store = orderDispatchInboxStore,
+            expectedDeviceId = AppConfig.getDeviceId().toString(),
+            nowMs = System::currentTimeMillis,
+            canAcceptOffer = { _ -> canAcceptOrderDispatchOfferV2() },
+            publishOfferAck = SendServerHelper::publishOrderDispatchOfferAckV2,
+            admitCommit = { record, beforeAccept -> admitOrderDispatchCommitV2(record, beforeAccept) },
+            executeAcceptedCommit = { record ->
+                startAcceptedOrder(
+                    orderMessage = record.rawPayload,
+                    dispatchId = record.dispatchId,
+                    protocolVersion = MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION
+                )
+            },
+            publishCommitRejected = SendServerHelper::publishOrderDispatchCommitRejectedV2
+        )
+    }
     private val homeUiRefreshCallback: (String) -> Unit = { _ ->
         if (!isFinishing && !isDestroyed) {
             runOnUiThread {
@@ -302,31 +324,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                                     return@runOnUiThread
                                 }
                             }
-                            OrderProcessingStageBridge.publish(
-                                if (moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
-                                    OrderProcessingStage.SUPPLEMENTING
-                                } else {
-                                    OrderProcessingStage.WAITING
-                                }
+                            startAcceptedOrder(
+                                orderMessage = orderMessage,
+                                observedMoveStatus = moveStatus,
+                                observedOnlineStatus = onlineStatus
                             )
-                            LogUtils.d(
-                                "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
-                                    "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
-                                    "onlineStatus=$onlineStatus, moveStatus=$moveStatus"
-                            )
-                            LogUtils.i(
-                                "【状态切换】设备进入出餐：onlineStatus（设备营业状态）=" +
-                                    "${onlineStatusLabelForLog(onlineStatus)}->${onlineStatusLabelForLog(4)}"
-                            )
-                            AppConfig.getAppConfig().onlineStatus = 4
-                            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                            syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
-                            showProcessingDialog(
-                                OrderProcessingProgressPolicy.INITIAL_CURRENT_COUNT,
-                                OrderProcessingProgressPolicy.initialTotalCount(orderMessage)
-                            )
-                            setDataToView()
-                            purchaseOrder(orderMessage)
                         }
                     }
                     MqttProtocol.ACTION_SERVICE_STATE -> handleServiceStateMessage(data.content)
@@ -343,6 +345,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             return
         }
         when (json.getString("messageType").orEmpty()) {
+            MqttProtocol.TYPE_ORDER_DISPATCH_OFFER_V2 -> handleOrderDispatchOfferV2(content)
+            MqttProtocol.TYPE_ORDER_DISPATCH_COMMIT_V2 -> handleOrderDispatchCommitV2(content)
             MqttProtocol.TYPE_RUNTIME_CONTROL -> handleRuntimeControlMessage(content)
             MqttProtocol.TYPE_CONCURRENCY_CONTROL -> handleConcurrencyControlMessage(content)
             MqttProtocol.TYPE_APP_UPDATE_CHECK -> AppUpdateManager.handleMqttUpdateCheck(this, content)
@@ -351,6 +355,89 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                     "messageType=${json.getString("messageType").orEmpty().ifBlank { "unknown" }}"
             )
         }
+    }
+
+    private fun handleOrderDispatchOfferV2(content: String) {
+        val result = orderDispatchV2Handler.handleAction2(content)
+        LogUtils.i("【订单派发V2】offer 处理完成：result=$result")
+    }
+
+    private fun handleOrderDispatchCommitV2(content: String) {
+        val result = orderDispatchV2Handler.handleAction2(content)
+        LogUtils.i("【订单派发V2】commit 处理完成：result=$result")
+    }
+
+    private fun startAcceptedOrder(
+        orderMessage: String,
+        dispatchId: String? = null,
+        protocolVersion: Int? = null,
+        observedMoveStatus: Int? = null,
+        observedOnlineStatus: Int? = null
+    ) {
+        val config = AppConfig.getAppConfig()
+        val moveStatus = observedMoveStatus ?: config.moveStatus
+        val onlineStatus = observedOnlineStatus ?: config.onlineStatus
+        OrderProcessingStageBridge.publish(
+            if (moveStatus != OrderMoveStatusPolicy.MOVE_STATUS_IDLE) {
+                OrderProcessingStage.SUPPLEMENTING
+            } else {
+                OrderProcessingStage.WAITING
+            }
+        )
+        val orderNo = extractOrderNo(orderMessage)
+        LogUtils.d(
+            "【订单流转】收到新的顾客下单请求，准备进入出餐流程：" +
+                "orderNo=${orderNo.ifBlank { "未知" }}, deviceId=${AppConfig.getDeviceId()}, " +
+                "onlineStatus=$onlineStatus, moveStatus=$moveStatus, dispatchId=${dispatchId ?: "legacy"}"
+        )
+        LogUtils.i(
+            "【状态切换】设备进入出餐：onlineStatus（设备营业状态）=" +
+                "${onlineStatusLabelForLog(onlineStatus)}->${onlineStatusLabelForLog(4)}"
+        )
+        config.onlineStatus = 4
+        AppConfig.saveAppConfig(config)
+        syncDeviceStatusToServer(retryDelaysMs = listOf(2000L))
+        showProcessingDialog(
+            OrderProcessingProgressPolicy.INITIAL_CURRENT_COUNT,
+            OrderProcessingProgressPolicy.initialTotalCount(orderMessage)
+        )
+        setDataToView()
+        purchaseOrder(orderMessage, dispatchId, protocolVersion)
+    }
+
+    private fun canAcceptOrderDispatchOfferV2(): Boolean {
+        val config = AppConfig.getAppConfig()
+        val actionGroupBusy = KaoChangOperate.isActionGroupBusyForOrderGate()
+        val canAccept = OrderMoveStatusPolicy.canAcceptIncomingOrder(
+            moveStatus = config.moveStatus,
+            onlineStatus = config.onlineStatus,
+            actionGroupBusy = actionGroupBusy,
+            errorStatus = config.errorStatus,
+            inspectionMode = config.inspectionMode
+        )
+        return canAccept && !OrderStateManager.hasProcessingOrder()
+    }
+
+    private fun admitOrderDispatchCommitV2(
+        record: OrderDispatchInboxRecord,
+        beforeAccept: () -> Boolean
+    ): Boolean = KaoChangOperate.withFaultHeatTransitionLock {
+        val evidence = prepareResetOrderEvidence(record.rawPayload)
+        if (evidence == PrepareOrderEvidenceResult.REJECTED) {
+            return@withFaultHeatTransitionLock false
+        }
+        val admission = KaoChangOperate.acceptIncomingOrderForMechanicalDispatch(
+            record.orderNo,
+            beforeAccept
+        )
+        if (admission != KaoChangOperate.IncomingOrderMechanicalAdmission.ACCEPTED &&
+            evidence == PrepareOrderEvidenceResult.NEW
+        ) {
+            check(clearResetOrderEvidence(record.orderNo)) {
+                "V2 接单失败后清理新建复位订单证据失败：orderNo=${record.orderNo}"
+            }
+        }
+        admission == KaoChangOperate.IncomingOrderMechanicalAdmission.ACCEPTED
     }
 
     private fun handleRuntimeControlMessage(content: String) {

@@ -105,4 +105,58 @@ class ActionGroupOrderEventTest {
             assertEquals(1, attempts)
         }
     }
+
+    @Test
+    fun v2Payload_shouldCarryDispatchIdentityForAllOrderStatuses() {
+        val context = ActionGroupOrderContext(
+            orderNo = "ORDER-V2",
+            itemId = 1,
+            productId = 2,
+            tasteCode = "hot",
+            dispatchId = "DISPATCH-1",
+            protocolVersion = 2
+        )
+
+        listOf(1, 2, 3, 5, 6).forEach { status ->
+            val payload = ActionGroupOrderEventPayloadBuilder.build(context, status)
+            assertEquals("DISPATCH-1", payload.getString("dispatch_id"))
+            assertEquals(2, payload.getIntValue("protocol_version"))
+        }
+    }
+
+    @Test
+    fun legacyPayload_shouldRemainWithoutV2DispatchFields() {
+        val payload = ActionGroupOrderEventPayloadBuilder.build(
+            ActionGroupOrderContext("ORDER-LEGACY", 1, 2, "hot"),
+            status = 2
+        )
+
+        assertFalse(payload.containsKey("dispatch_id"))
+        assertFalse(payload.containsKey("protocol_version"))
+    }
+
+    @Test
+    fun v2OfflinePendingEvents_shouldRoundTripDispatchIdentityForAllStatuses() {
+        listOf(1, 2, 3, 5, 6).forEach { status ->
+            val original = PendingActionGroupOrderEvent(
+                orderContext = ActionGroupOrderContext(
+                    orderNo = "ORDER-OFFLINE",
+                    itemId = 1,
+                    productId = 2,
+                    tasteCode = "hot",
+                    dispatchId = "DISPATCH-OFFLINE",
+                    protocolVersion = 2
+                ),
+                status = status
+            )
+            val restored = JSON.parseObject(
+                JSON.toJSONString(original),
+                PendingActionGroupOrderEvent::class.java
+            )
+            val payload = ActionGroupOrderEventPayloadBuilder.build(restored.orderContext, restored.status)
+
+            assertEquals("DISPATCH-OFFLINE", payload.getString("dispatch_id"))
+            assertEquals(2, payload.getIntValue("protocol_version"))
+        }
+    }
 }

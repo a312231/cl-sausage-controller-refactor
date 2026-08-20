@@ -6,7 +6,9 @@ data class ActionGroupOrderContext(
     val orderNo: String = "",
     val itemId: Int = 0,
     val productId: Int = 0,
-    val tasteCode: String = ""
+    val tasteCode: String = "",
+    val dispatchId: String? = null,
+    val protocolVersion: Int? = null
 ) {
     fun isValid(): Boolean {
         return orderNo.isNotBlank() && itemId > 0 && productId > 0 && tasteCode.isNotBlank()
@@ -38,6 +40,10 @@ object ActionGroupOrderEventPayloadBuilder {
             put("product_id", orderContext.productId)
             put("taste_code", orderContext.tasteCode)
             put("status", status)
+            if (!orderContext.dispatchId.isNullOrBlank() && orderContext.protocolVersion == 2) {
+                put("dispatch_id", orderContext.dispatchId)
+                put("protocol_version", orderContext.protocolVersion)
+            }
             if (status == ActionGroupOrderStatus.ERROR && failureReason != null) {
                 put("failure_reason", failureReason.name)
                 put("delivery_evidence", deliveryEvidence?.name)

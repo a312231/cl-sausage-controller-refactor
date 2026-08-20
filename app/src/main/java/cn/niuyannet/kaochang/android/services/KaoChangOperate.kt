@@ -11,6 +11,8 @@ import cn.niuyannet.kaochang.android.model.bean.Taste
 import cn.niuyannet.kaochang.android.utils.OrderStateManager
 import cn.niuyannet.kaochang.android.mqtt.ConsumableEventPayloadBuilder
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
+import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
+import cn.niuyannet.kaochang.android.mqtt.OrderDispatchInboxStore
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBootstrap
@@ -166,6 +168,7 @@ private const val ACTION_GROUP_FAILURE_REASON_MAX_LENGTH = 300
  * - “201=2”只表示设备忙，不等价于通信断开。
  */
 object KaoChangOperate {
+    private val allowOrderAcceptance: () -> Boolean = { true }
     private const val ORDER_CLAIM_MAINTENANCE_STATUS = 3
     private const val LOG_ORDER = "订单履约"
     private const val LOG_ACTION = "动作执行"
@@ -301,6 +304,7 @@ object KaoChangOperate {
         key = SharedPreferenceActionGroupSessionStore.KEY_PAUSED_SUPPLEMENT_SESSION
     )
     private val actionGroupOrderEventStore = SharedPreferenceActionGroupOrderEventStore()
+    private val orderDispatchInboxStore = OrderDispatchInboxStore.sharedPreferences()
     private val orderDeliveryClaimStore = OrderDeliveryClaimStore()
     private val panMoveJournalStore = SharedPreferencePanMoveJournalStore()
     private val supplementBatchIntentRepository =
@@ -1783,7 +1787,10 @@ object KaoChangOperate {
             actionGroupLocks.ownedMask(session.sessionId) != session.resourceMask
     }
 
-    fun acceptIncomingOrderForMechanicalDispatch(orderNo: String): IncomingOrderMechanicalAdmission {
+    fun acceptIncomingOrderForMechanicalDispatch(
+        orderNo: String,
+        beforeAccept: () -> Boolean = allowOrderAcceptance
+    ): IncomingOrderMechanicalAdmission {
         return withFaultHeatTransitionLock {
             if (hasPendingEmergencyResetRecovery()) {
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
@@ -1819,13 +1826,33 @@ object KaoChangOperate {
                 }
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
             }
-            if (!OrderStateManager.checkAndAcceptOrder(orderNo)) {
+            val orderAccepted = if (beforeAccept === allowOrderAcceptance) {
+                OrderStateManager.checkAndAcceptOrder(orderNo)
+            } else {
+                OrderStateManager.checkAndAcceptOrder(orderNo, beforeAccept)
+            }
+            if (!orderAccepted) {
                 if (ownsRecoveryReservation) {
                     manualOutOrderRecoveryCoordinator.release(orderNo)
                 }
                 return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.DUPLICATE
             }
-            requestSupplementPauseForOrder(orderNo)
+            try {
+                requestSupplementPauseForOrder(orderNo)
+            } catch (error: Exception) {
+                OrderStateManager.releaseProcessing(orderNo)
+                runCatching { SupplementPauseController.clearOrderPause(orderNo) }
+                if (ownsRecoveryReservation) {
+                    manualOutOrderRecoveryCoordinator.release(orderNo)
+                }
+                runCatching {
+                    logE(
+                        LOG_ORDER,
+                        "订单准入后建立补肠暂停失败，已 fail closed：orderNo=$orderNo，error=${error.message}"
+                    )
+                }
+                return@withFaultHeatTransitionLock IncomingOrderMechanicalAdmission.BECAME_BUSY
+            }
             IncomingOrderMechanicalAdmission.ACCEPTED
         }
     }
@@ -3358,7 +3385,16 @@ object KaoChangOperate {
             pending.orderContext.orderNo == orderContext.orderNo &&
             pending.orderContext.itemId == orderContext.itemId &&
             pending.orderContext.productId == orderContext.productId &&
-            pending.orderContext.tasteCode == orderContext.tasteCode
+            pending.orderContext.tasteCode == orderContext.tasteCode &&
+            pending.orderContext.dispatchId == orderContext.dispatchId &&
+            pending.orderContext.protocolVersion == orderContext.protocolVersion
+    }
+
+    private fun canPublishOrderEvent(orderContext: ActionGroupOrderContext): Boolean {
+        val dispatchId = orderContext.dispatchId
+        if (dispatchId.isNullOrBlank()) return true
+        return orderContext.protocolVersion == MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION &&
+            orderDispatchInboxStore.canPublishOrderEvent(dispatchId, orderContext.orderNo)
     }
 
     private fun savePendingActionGroupOrderEvent(
@@ -3405,6 +3441,14 @@ object KaoChangOperate {
             logE(LOG_ORDER, "动作组订单终态上报失败：订单上下文不完整，source=$source，orderContext=$orderContext")
             return false
         }
+        if (!canPublishOrderEvent(orderContext)) {
+            logE(
+                LOG_ORDER,
+                "V2 inbox 尚未进入 EXECUTION_STARTED/TERMINAL，拒绝发送 action=1：" +
+                    "source=$source，dispatchId=${orderContext.dispatchId}，orderNo=${orderContext.orderNo}"
+            )
+            return false
+        }
         val ok = SendServerHelper.publishServiceUpdateOrder(
             ActionGroupOrderEventPayloadBuilder.build(
                 orderContext = orderContext,
@@ -3438,6 +3482,14 @@ object KaoChangOperate {
 
     private fun reportActionGroupOrderStartedEvent(orderContext: ActionGroupOrderContext, panNo: Int) {
         if (!orderContext.isValid()) return
+        if (!canPublishOrderEvent(orderContext)) {
+            logE(
+                LOG_ORDER,
+                "V2 inbox 尚未进入 EXECUTION_STARTED/TERMINAL，拒绝发送开始夹取 action=1：" +
+                    "dispatchId=${orderContext.dispatchId}，orderNo=${orderContext.orderNo}"
+            )
+            return
+        }
         val ok = SendServerHelper.publishServiceUpdateOrder(
             ActionGroupOrderEventPayloadBuilder.build(orderContext, ActionGroupOrderStatus.DELIVERING)
         )
