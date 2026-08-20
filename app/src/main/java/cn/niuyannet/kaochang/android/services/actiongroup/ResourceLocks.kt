@@ -108,6 +108,9 @@ class ResourceLocks {
     fun ownerIds(): Set<String> = owners.keys.toSet()
 
     @Synchronized
+    fun ownerMasksSnapshot(): Map<String, Int> = owners.toMap()
+
+    @Synchronized
     fun ownedMask(owner: String): Int? = owners[owner]
 
     companion object {

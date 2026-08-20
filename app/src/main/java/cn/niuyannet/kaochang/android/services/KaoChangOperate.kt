@@ -14,6 +14,7 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryBootstrap
+import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryGateDecision
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupRecoveryResult
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventPayloadBuilder
@@ -836,23 +837,6 @@ object KaoChangOperate {
         enterMaintenance = true
     )
 
-    private suspend fun tryAutoCloseStaleOrderDeliveryClaim(
-        reason: String
-    ): OrderClaimMaintenanceCloseoutResult? {
-        val claim = try {
-            withFaultHeatTransitionLock { orderDeliveryClaimStore.load() }
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (error: Exception) {
-            return OrderClaimMaintenanceCloseoutResult(false, "订单 claim 读取失败或损坏：${error.message}")
-        } ?: return null
-        return closeStaleOrderDeliveryClaim(
-            claim = claim,
-            reason = reason,
-            enterMaintenance = false
-        )
-    }
-
     private suspend fun closeMechanicalStateAfterEmergencyReset(
         administratorConfirmed: Boolean,
         reason: String
@@ -1108,7 +1092,7 @@ object KaoChangOperate {
             return "存在其他处理中订单，或当前订单尚无耐久终态"
         }
         val current = orderDeliveryClaimStore.load()
-        if (current?.owner != claim.owner || current.revision != claim.revision) return "订单 claim 已变化"
+        if (current != claim) return "订单 claim 完整指纹已变化"
         if (actionGroupSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的动作组会话"
         if (pausedSupplementSessionStore.readEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的暂停补肠会话"
         if (readSupplementPrefetchEvidence() !is DurableEvidenceReadResult.Absent) return "存在或损坏的双 lane 预取证据"
@@ -2769,7 +2753,36 @@ object KaoChangOperate {
         }
     }
 
+    private data class DeviceFaultTransitionSnapshot(
+        val previousOnlineStatus: Int,
+        val previousErrorStatus: Int,
+        val onlineStatus: Int,
+        val errorStatus: Int,
+        val errorCode: String,
+        val errorCategory: String,
+        val moveStatus: Int,
+        val isEnable: Int
+    )
+
     private fun markDeviceErrorAndUpload(code: FaultCode, logMessage: String) {
+        val snapshot = withFaultHeatTransitionLock {
+            val transition = applyDeviceFaultTransitionLocked(
+                code = code,
+                logMessage = logMessage,
+                disableAlgorithm = false
+            )
+            AppConfig.saveAppConfigDurable(AppConfig.getAppConfig())
+            transition
+        }
+        publishDeviceFaultTransitionOutsideLock(snapshot, code, logMessage)
+    }
+
+    /** 调用方必须持有 faultHeatTransitionLock；这里只改变内存态，不保存、不发布。 */
+    private fun applyDeviceFaultTransitionLocked(
+        code: FaultCode,
+        logMessage: String,
+        disableAlgorithm: Boolean
+    ): DeviceFaultTransitionSnapshot {
         invalidateActionGroupRecoveryVerification("设备故障锁存：errorCode=${code.name}")
         val config = AppConfig.getAppConfig()
         val previousOnlineStatus = config.onlineStatus
@@ -2779,22 +2792,41 @@ object KaoChangOperate {
         config.errorCode = code.name
         config.errorCategory = code.category.display
         config.errorReason = logMessage.ifBlank { code.defaultReason }
+        if (disableAlgorithm) {
+            config.isEnable = 0
+        }
+        return DeviceFaultTransitionSnapshot(
+            previousOnlineStatus = previousOnlineStatus,
+            previousErrorStatus = previousErrorStatus,
+            onlineStatus = config.onlineStatus,
+            errorStatus = config.errorStatus,
+            errorCode = config.errorCode,
+            errorCategory = config.errorCategory,
+            moveStatus = config.moveStatus,
+            isEnable = config.isEnable
+        )
+    }
+
+    private fun publishDeviceFaultTransitionOutsideLock(
+        snapshot: DeviceFaultTransitionSnapshot,
+        code: FaultCode,
+        logMessage: String
+    ) {
         LogUtils.e(
             "【动作组故障锁存】已锁存设备故障，禁止自动补肠/续补继续启动：" +
-                "onlineStatus（设备营业状态）=${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
-                "errorStatus（设备故障状态）=$previousErrorStatus(0=正常, 非0=故障)->${config.errorStatus}(2=通信/硬件级故障)，" +
+                "onlineStatus（设备营业状态）=${onlineStatusDesc(snapshot.previousOnlineStatus)}->${onlineStatusDesc(snapshot.onlineStatus)}，" +
+                "errorStatus（设备故障状态）=${snapshot.previousErrorStatus}(0=正常, 非0=故障)->${snapshot.errorStatus}(2=通信/硬件级故障)，" +
                 "errorCode=${code.name}（${code.category.display}），" +
-                "moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，reason=$logMessage"
+                "moveStatus（机械动作状态）=${moveStatusDesc(snapshot.moveStatus)}，reason=$logMessage"
         )
         HomeUiRefreshBridge.requestRefresh("device_fault:${code.name}")
-        AppConfig.saveAppConfigDurable(config)
         operateScope.launch {
             publishRuntimeStateWithHttpFallback("设备故障状态上报")
         }
         LogUtils.e(
             "【状态切换】设备进入维护：onlineStatus（设备营业状态）=" +
-                "${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
-                "errorStatus（设备故障状态）=$previousErrorStatus(0=正常, 非0=故障)->${config.errorStatus}(2=通信/硬件级故障)，" +
+                "${onlineStatusDesc(snapshot.previousOnlineStatus)}->${onlineStatusDesc(snapshot.onlineStatus)}，" +
+                "errorStatus（设备故障状态）=${snapshot.previousErrorStatus}(0=正常, 非0=故障)->${snapshot.errorStatus}(2=通信/硬件级故障)，" +
                 "errorCode=${code.name}"
         )
         logE(LOG_DEVICE, logMessage)
@@ -3259,20 +3291,47 @@ object KaoChangOperate {
         code: FaultCode = FaultCode.ACTION_GROUP_FAILED,
         preserveMoveStatus: Boolean = false
     ) {
-        markDeviceErrorAndUpload(code, reason)
-        val config = AppConfig.getAppConfig()
-        if (preserveMoveStatus || hasBlockingSupplementPrefetchEvidence()) {
-            logW(LOG_ACTION_GROUP, "进入维护时保留双 lane 恢复证据和 moveStatus：reason=$reason")
-        } else {
-            config.moveStatus = 0
+        val (snapshot, shouldPreserveMoveStatus) = withFaultHeatTransitionLock {
+            val transition = applyDeviceFaultTransitionLocked(
+                code = code,
+                logMessage = reason,
+                disableAlgorithm = true
+            )
+            val config = AppConfig.getAppConfig()
+            val sessionRead = runCatching { actionGroupSessionStore.readEvidence() }
+            val claimRead = runCatching { orderDeliveryClaimStore.load() }
+            val resourceOwnersRead = runCatching { actionGroupLocks.ownerMasksSnapshot() }
+            val sessionEvidence = sessionRead.getOrNull()
+            val shouldPreserve = ActionGroupMaintenanceMoveStatusPolicy.shouldPreserve(
+                ActionGroupMaintenanceMoveStatusEvidence(
+                    callerRequestedPreserve = preserveMoveStatus || hasBlockingSupplementPrefetchEvidence(),
+                    moveStatus = config.moveStatus,
+                    session = (sessionEvidence as? DurableEvidenceReadResult.Valid)?.value,
+                    orderClaim = claimRead.getOrNull(),
+                    resourceOwners = resourceOwnersRead.getOrDefault(emptyMap()),
+                    sessionEvidenceReadable = sessionRead.isSuccess &&
+                        sessionEvidence !is DurableEvidenceReadResult.Corrupted,
+                    claimEvidenceReadable = claimRead.isSuccess,
+                    resourceEvidenceReadable = resourceOwnersRead.isSuccess
+                )
+            )
+            if (!shouldPreserve) {
+                config.moveStatus = 0
+            }
+            AppConfig.saveAppConfigDurable(config)
+            transition.copy(
+                moveStatus = config.moveStatus,
+                isEnable = config.isEnable
+            ) to shouldPreserve
         }
-        config.onlineStatus = 3
-        config.isEnable = 0
-        AppConfig.saveAppConfig(config)
+        publishDeviceFaultTransitionOutsideLock(snapshot, code, reason)
+        if (shouldPreserveMoveStatus) {
+            logW(LOG_ACTION_GROUP, "进入维护时检测到机械忙态或恢复证据，保留 moveStatus：reason=$reason")
+        }
         LogUtils.e(
-            "【动作组故障锁存】动作组进入维护收口完成：onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}，" +
-                "errorStatus（设备故障状态）=${config.errorStatus}(2=通信/硬件级故障)，" +
-                "isEnable（烤肠算法开关）=${config.isEnable}(0=关闭)，moveStatus（机械动作状态）=${moveStatusDesc(config.moveStatus)}，" +
+            "【动作组故障锁存】动作组进入维护收口完成：onlineStatus（设备营业状态）=${onlineStatusDesc(snapshot.onlineStatus)}，" +
+                "errorStatus（设备故障状态）=${snapshot.errorStatus}(2=通信/硬件级故障)，" +
+                "isEnable（烤肠算法开关）=${snapshot.isEnable}(0=关闭)，moveStatus（机械动作状态）=${moveStatusDesc(snapshot.moveStatus)}，" +
                 "reason=$reason"
         )
     }
@@ -3506,9 +3565,51 @@ object KaoChangOperate {
         return recoverActionGroupStateAfterModbusReady(reason)
     }
 
+    private fun evaluateClaimGraceBeforeActionGroupRecovery(
+        recoveryContext: ActionGroupRecoveryContext
+    ): ClaimBeforeOutSessionGraceDecision = try {
+        withFaultHeatTransitionLock {
+            val evidence = readActionGroupRecoveryGateEvidenceLocked(expectedSession = null)
+            if (evidence.currentSession == null) {
+                ActionGroupRecoveryGatePolicy.evaluateClaimBeforeOutSessionGrace(
+                    evidence = evidence,
+                    context = recoveryContext
+                )
+            } else {
+                ClaimBeforeOutSessionGraceDecision.NoClaim
+            }
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        ClaimBeforeOutSessionGraceDecision.Maintenance(
+            "订单 claim 宽限证据读取失败或损坏：${error.message}"
+        )
+    }
+
+    private fun evaluateExpectedClaimCloseoutGateBeforeRecovery(
+        expectedClaim: OrderDeliveryClaim,
+        recoveryContext: ActionGroupRecoveryContext
+    ): ActionGroupRecoveryGateDecision = try {
+        withFaultHeatTransitionLock {
+            ActionGroupRecoveryGatePolicy.evaluateExpectedClaimCloseoutGate(
+                expectedClaim = expectedClaim,
+                context = recoveryContext,
+                evidence = readActionGroupRecoveryGateEvidenceLocked(expectedSession = null)
+            )
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        ActionGroupRecoveryGateDecision.Maintenance(
+            "订单 claim 精确收口门禁读取失败或损坏：${error.message}"
+        )
+    }
+
     suspend fun recoverActionGroupStateAfterModbusReady(
         reason: String,
-        stopAfterParallelSessionHandled: Boolean = false
+        stopAfterParallelSessionHandled: Boolean = false,
+        recoveryContext: ActionGroupRecoveryContext = ActionGroupRecoveryContext.FAIL_CLOSED
     ): Boolean {
         if (!VMModbusHelper.connectStatus()) {
             val evidence = buildActionGroupRecoveryResidueEvidence(reason)
@@ -3518,26 +3619,92 @@ object KaoChangOperate {
             enterActionGroupMaintenance(detail, FaultCode.MODBUS_COMM_DROP)
             return false
         }
-        val autoClaimCloseout = tryAutoCloseStaleOrderDeliveryClaim("$reason:claim-only自动收口")
-        if (autoClaimCloseout != null) {
-            if (!autoClaimCloseout.ok) {
+        val claimGraceDecision = evaluateClaimGraceBeforeActionGroupRecovery(recoveryContext)
+        when (claimGraceDecision) {
+            is ClaimBeforeOutSessionGraceDecision.Defer -> {
+                logW(LOG_ACTION_GROUP, "动作组恢复入口处于订单 claim 宽限期：${claimGraceDecision.reason}，reason=$reason")
+                return false
+            }
+            is ClaimBeforeOutSessionGraceDecision.Maintenance -> {
                 enterActionGroupMaintenance(
-                    "订单出餐 claim 自动收口失败：${autoClaimCloseout.reason}，reason=$reason",
+                    "订单 claim 宽限门禁要求维护：${claimGraceDecision.reason}，reason=$reason",
                     preserveMoveStatus = true
                 )
                 return false
             }
-            logW(LOG_ORDER, "订单出餐 claim 自动收口完成：${autoClaimCloseout.reason}，reason=$reason")
+            is ClaimBeforeOutSessionGraceDecision.AttemptExactCloseout -> {
+                val expectedClaim = claimGraceDecision.expectedClaim
+                when (val beforeCloseout = evaluateExpectedClaimCloseoutGateBeforeRecovery(
+                    expectedClaim,
+                    recoveryContext
+                )) {
+                    is ActionGroupRecoveryGateDecision.Defer -> {
+                        logW(LOG_ACTION_GROUP, "订单 claim 超窗收口前检测到活动 OUT，恢复延期：${beforeCloseout.reason}")
+                        return false
+                    }
+                    is ActionGroupRecoveryGateDecision.Maintenance -> {
+                        enterActionGroupMaintenance(
+                            "订单 claim 超窗收口前门禁要求维护：${beforeCloseout.reason}，reason=$reason",
+                            preserveMoveStatus = true
+                        )
+                        return false
+                    }
+                    ActionGroupRecoveryGateDecision.Allow -> Unit
+                }
+                val autoClaimCloseout = closeStaleOrderDeliveryClaim(
+                    claim = claimGraceDecision.expectedClaim,
+                    reason = "$reason:claim-only自动收口",
+                    enterMaintenance = false
+                )
+                if (!autoClaimCloseout.ok) {
+                    val afterFailure = evaluateExpectedClaimCloseoutGateBeforeRecovery(
+                        expectedClaim,
+                        recoveryContext
+                    )
+                    if (afterFailure is ActionGroupRecoveryGateDecision.Defer) {
+                        logW(LOG_ACTION_GROUP, "订单 claim 超窗收口失败后检测到活动 OUT，恢复延期：${afterFailure.reason}")
+                        return false
+                    }
+                    enterActionGroupMaintenance(
+                        "订单出餐 claim 自动收口失败：${autoClaimCloseout.reason}，reason=$reason",
+                        preserveMoveStatus = true
+                    )
+                    return false
+                }
+                logW(LOG_ORDER, "订单出餐 claim 自动收口完成：${autoClaimCloseout.reason}，reason=$reason")
+            }
+            ClaimBeforeOutSessionGraceDecision.NoClaim -> Unit
         }
-        val initialClaimBlockReason = withFaultHeatTransitionLock {
-            automaticRecoveryOrderClaimBlockReason()
-        }
-        if (initialClaimBlockReason != null) {
+        val initialClaimBlockReason = runCatching {
+            withFaultHeatTransitionLock { automaticRecoveryOrderClaimBlockReason() }
+        }.getOrElse { error ->
             enterActionGroupMaintenance(
-                "订单出餐 claim 阻断通用动作组恢复：$initialClaimBlockReason，reason=$reason",
+                "订单 claim 证据读取失败或损坏，禁止通用动作组恢复：${error.message}，reason=$reason",
                 preserveMoveStatus = true
             )
             return false
+        }
+        if (initialClaimBlockReason != null) {
+            val initialGateDecision = withFaultHeatTransitionLock {
+                evaluateActionGroupRecoveryGateLocked(
+                    expectedSession = actionGroupSessionStore.load(),
+                    context = recoveryContext
+                )
+            }
+            when (initialGateDecision) {
+                is ActionGroupRecoveryGateDecision.Defer -> {
+                    logW(LOG_ACTION_GROUP, "动作组恢复入口已延期：${initialGateDecision.reason}，reason=$reason")
+                    return false
+                }
+                is ActionGroupRecoveryGateDecision.Maintenance -> {
+                    enterActionGroupMaintenance(
+                        "动作组恢复入口门禁要求维护：${initialGateDecision.reason}，reason=$reason",
+                        preserveMoveStatus = true
+                    )
+                    return false
+                }
+                ActionGroupRecoveryGateDecision.Allow -> Unit
+            }
         }
         discardJournalStore.load()?.let { journal ->
             enterActionGroupMaintenance(
@@ -3615,80 +3782,61 @@ object KaoChangOperate {
                     MechanicalMoveReleaseResult.Released
             },
             moveStatusProvider = mechanicalMoveStatusStore::load,
-            allowAutomaticTakeover = {
+            automaticRecoveryGate = { expectedSession ->
                 withFaultHeatTransitionLock {
-                    AppConfig.getAppConfig().lowerPlatformEpisodes.none {
-                        it.lifecycle == "OPEN" && it.closeoutGuarded
-                    }
-                }
-            },
-            recheckAutomaticTakeover = { expectedSession ->
-                withFaultHeatTransitionLock {
-                    val config = AppConfig.getAppConfig()
-                    if (automaticRecoveryOrderClaimBlockReason() != null ||
-                        hasGuardedSupplementCloseoutResidue(config)
-                    ) {
-                        false
-                    } else {
-                        val currentSession = actionGroupSessionStore.load()
-                        currentSession != null &&
-                            currentSession.sessionId == expectedSession.sessionId &&
-                            currentSession.mechanicalClaimRevision == expectedSession.mechanicalClaimRevision &&
-                            currentSession.type == expectedSession.type &&
-                            currentSession.resourceMask == expectedSession.resourceMask
-                    }
+                    evaluateActionGroupRecoveryGateLocked(expectedSession, recoveryContext)
                 }
             },
             performAutomaticRecoveryMutation = { expectedSession, mutation ->
                 withFaultHeatTransitionLock {
-                    val config = AppConfig.getAppConfig()
-                    val currentSession = actionGroupSessionStore.load()
-                    val allowed = automaticRecoveryOrderClaimBlockReason() == null &&
-                        !hasGuardedSupplementCloseoutResidue(config) &&
-                        currentSession != null &&
-                        currentSession.sessionId == expectedSession.sessionId &&
-                        currentSession.mechanicalClaimRevision == expectedSession.mechanicalClaimRevision &&
-                        currentSession.type == expectedSession.type &&
-                        currentSession.resourceMask == expectedSession.resourceMask
-                    if (!allowed) {
-                        false
-                    } else {
+                    val decision = evaluateActionGroupRecoveryGateLocked(expectedSession, recoveryContext)
+                    if (decision == ActionGroupRecoveryGateDecision.Allow) {
                         mutation()
-                        true
                     }
+                    decision
                 }
             }
         ).recover()
         return when (result) {
             ActionGroupRecoveryResult.Idle -> {
-                lastActionGroupRecoveryFailureReason = null
                 val idleClaimBlockReason = withFaultHeatTransitionLock {
-                    automaticRecoveryOrderClaimBlockReason()?.let { return@withFaultHeatTransitionLock it }
-                    val config = AppConfig.getAppConfig()
-                    if (config.moveStatus in listOf(1, 2)) {
-                        if (AutoMechanicalDispatchPolicy.shouldPreserveDeliveringMoveStatusDuringRecovery(config.onlineStatus, config.moveStatus)) {
-                            logW(
-                                LOG_ACTION_GROUP,
-                                "动作组恢复：下位机无执行中动作，但整单仍在出餐中，保留 moveStatus=2（取肠/出餐中），防止自动调度插队，reason=$reason"
-                            )
-                        } else {
-                            config.moveStatus = 0
-                            AppConfig.saveAppConfig(config)
-                            logW(LOG_ACTION_GROUP, "动作组恢复：下位机无执行中动作，已清理本地 moveStatus=${config.moveStatus}，reason=$reason")
+                    val decision = evaluateActionGroupRecoveryGateLocked(null, recoveryContext)
+                    if (decision == ActionGroupRecoveryGateDecision.Allow) {
+                        val config = AppConfig.getAppConfig()
+                        if (config.moveStatus in listOf(1, 2)) {
+                            if (AutoMechanicalDispatchPolicy.shouldPreserveDeliveringMoveStatusDuringRecovery(config.onlineStatus, config.moveStatus)) {
+                                logW(
+                                    LOG_ACTION_GROUP,
+                                    "动作组恢复：下位机无执行中动作，但整单仍在出餐中，保留 moveStatus=2（取肠/出餐中），防止自动调度插队，reason=$reason"
+                                )
+                            } else {
+                                config.moveStatus = 0
+                                AppConfig.saveAppConfig(config)
+                                logW(LOG_ACTION_GROUP, "动作组恢复：下位机无执行中动作，已清理本地 moveStatus=${config.moveStatus}，reason=$reason")
+                            }
                         }
                     }
-                    null
+                    decision
                 }
-                if (idleClaimBlockReason != null) {
-                    enterActionGroupMaintenance(
-                        "订单出餐 claim 在动作组恢复期间出现，拒绝清理忙态：$idleClaimBlockReason，reason=$reason",
-                        preserveMoveStatus = true
-                    )
-                    return false
+                when (idleClaimBlockReason) {
+                    ActionGroupRecoveryGateDecision.Allow -> {
+                        lastActionGroupRecoveryFailureReason = null
+                        flushPendingActionGroupOrderEvent(reason)
+                        markActionGroupRecoveryVerified(reason)
+                        true
+                    }
+                    is ActionGroupRecoveryGateDecision.Defer -> {
+                        logW(LOG_ACTION_GROUP, "动作组空闲收口已延期：${idleClaimBlockReason.reason}，reason=$reason")
+                        false
+                    }
+                    is ActionGroupRecoveryGateDecision.Maintenance -> {
+                        enterActionGroupMaintenance(
+                            "动作组空闲收口最终门禁要求维护：${idleClaimBlockReason.reason}，reason=$reason",
+                            preserveMoveStatus = true
+                        )
+                        false
+                    }
                 }
-                flushPendingActionGroupOrderEvent(reason)
-                markActionGroupRecoveryVerified(reason)
-                true
             }
             is ActionGroupRecoveryResult.StaleSessionCleared -> {
                 lastActionGroupRecoveryFailureReason = null
@@ -3724,6 +3872,13 @@ object KaoChangOperate {
                 )
                 markActionGroupRecoveryVerified(reason)
                 true
+            }
+            is ActionGroupRecoveryResult.DeferredActiveOperation -> {
+                logW(
+                    LOG_ACTION_GROUP,
+                    "动作组恢复已延期：reason=$reason，detail=${result.reason}"
+                )
+                false
             }
             is ActionGroupRecoveryResult.MaintenanceRequired -> {
                 val evidence = buildActionGroupRecoveryResidueEvidence(reason)
@@ -3769,13 +3924,50 @@ object KaoChangOperate {
         }
     }
 
-    private fun automaticRecoveryOrderClaimBlockReason(): String? = try {
+    /** 调用方必须持有 faultHeatTransitionLock，保证这些证据来自同一个最终快照。 */
+    private fun evaluateActionGroupRecoveryGateLocked(
+        expectedSession: ActionGroupSession?,
+        context: ActionGroupRecoveryContext
+    ): ActionGroupRecoveryGateDecision = try {
+        ActionGroupRecoveryGatePolicy.evaluate(
+            context = context,
+            evidence = readActionGroupRecoveryGateEvidenceLocked(expectedSession)
+        )
+    } catch (error: Throwable) {
+        ActionGroupRecoveryGateDecision.Maintenance(
+            "动作组最终门禁证据读取失败或损坏：${error.message}"
+        )
+    }
+
+    /** 调用方必须持有 faultHeatTransitionLock。 */
+    private fun readActionGroupRecoveryGateEvidenceLocked(
+        expectedSession: ActionGroupSession?
+    ): ActionGroupRecoveryGateEvidence {
+        val config = AppConfig.getAppConfig()
+        val currentSession = actionGroupSessionStore.load()
+        val claim = orderDeliveryClaimStore.load()
+        val ownerMasks = actionGroupLocks.ownerMasksSnapshot()
+        check((automaticRecoveryOrderClaimBlockReason() == null) == claim?.orderNo.isNullOrBlank()) {
+            "订单 claim 最终快照读取不一致"
+        }
+        return ActionGroupRecoveryGateEvidence(
+            expectedSession = expectedSession,
+            currentSession = currentSession,
+            orderDeliveryClaim = claim,
+            livePauseOrderNo = SupplementPauseController.currentOrderNo(),
+            nowMs = System.currentTimeMillis(),
+            moveStatus = mechanicalMoveStatusStore.load(),
+            currentSessionOwnedMask = currentSession?.sessionId?.let(ownerMasks::get),
+            resourceOwners = ownerMasks.keys,
+            hasGuardedSupplementResidue = hasGuardedSupplementCloseoutResidue(config),
+            evidenceReadable = true
+        )
+    }
+
+    private fun automaticRecoveryOrderClaimBlockReason(): String? =
         orderDeliveryClaimStore.load()?.let { claim ->
             "orderNo=${claim.orderNo}，owner=${claim.owner}，revision=${claim.revision}"
         }
-    } catch (error: Throwable) {
-        "claim 读取失败或损坏：${error.message}"
-    }
 
     private fun recoverPanMoveJournalAfterModbusReady(reason: String): Boolean {
         val journal = panMoveJournalStore.load() ?: return true
@@ -6333,7 +6525,8 @@ object KaoChangOperate {
         }
         if (!recoverActionGroupStateAfterModbusReady(
                 "补肠预取流水线入口前恢复检查",
-                stopAfterParallelSessionHandled = true
+                stopAfterParallelSessionHandled = true,
+                recoveryContext = ActionGroupRecoveryContext.SUPPLEMENT_ENTRY
             )
         ) {
             return 0
@@ -7317,7 +7510,10 @@ object KaoChangOperate {
                         return completedCount
                     }
                     SupplementTimeoutResolutionPolicy.Resolution.RECONCILE_COMPLETED -> {
-                        recoverActionGroupStateAfterModbusReady("补肠Timeout复核为COMPLETED")
+                        recoverActionGroupStateAfterModbusReady(
+                            "补肠Timeout复核为COMPLETED",
+                            recoveryContext = ActionGroupRecoveryContext.SUPPLEMENT_ENTRY
+                        )
                         return completedCount
                     }
                     else -> Unit
@@ -8314,7 +8510,11 @@ object KaoChangOperate {
             )
             return SingleSupplementMoveResult(false)
         }
-        if (!recoverActionGroupStateAfterModbusReady("补肠入口前恢复检查")) {
+        if (!recoverActionGroupStateAfterModbusReady(
+                "补肠入口前恢复检查",
+                recoveryContext = ActionGroupRecoveryContext.SUPPLEMENT_ENTRY
+            )
+        ) {
             return SingleSupplementMoveResult(false)
         }
 
@@ -8502,7 +8702,10 @@ object KaoChangOperate {
                 return SingleSupplementMoveResult(false, actionGroupResult = actionGroupResult)
             }
             SupplementTimeoutResolutionPolicy.Resolution.RECONCILE_COMPLETED -> {
-                val recovered = recoverActionGroupStateAfterModbusReady("单根补肠Timeout复核为COMPLETED")
+                val recovered = recoverActionGroupStateAfterModbusReady(
+                    "单根补肠Timeout复核为COMPLETED",
+                    recoveryContext = ActionGroupRecoveryContext.SUPPLEMENT_ENTRY
+                )
                 return SingleSupplementMoveResult(recovered, actionGroupResult = actionGroupResult)
             }
             SupplementTimeoutResolutionPolicy.Resolution.ISOLATE_TERMINAL_ERROR -> {

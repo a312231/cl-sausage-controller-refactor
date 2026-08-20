@@ -7,6 +7,35 @@ import java.io.File
 class ActionGroupModbusRecoveryLockingSourceTest {
 
     @Test
+    fun enterMaintenance_shouldCommitFaultAndMoveStatusAtomicallyBeforeOutsidePublish() {
+        val source = sourceText()
+        val functionStart = source.indexOf("private fun enterActionGroupMaintenance(")
+        assertTrue("必须存在动作组维护入口", functionStart >= 0)
+        val functionEnd = source.indexOf("private fun orderEventStatusDesc", functionStart)
+            .let { if (it >= 0) it else source.length }
+        val functionSource = source.substring(functionStart, functionEnd)
+
+        assertTrue(
+            "维护入口不得先调用会在锁外保存并发布中间态的 markDeviceErrorAndUpload",
+            !functionSource.contains("markDeviceErrorAndUpload(")
+        )
+        val lockIndex = functionSource.indexOf("withFaultHeatTransitionLock {")
+        val lockedCoreIndex = functionSource.indexOf("applyDeviceFaultTransitionLocked(")
+        val ownerSnapshotIndex = functionSource.indexOf("actionGroupLocks.ownerMasksSnapshot()")
+        val durableSaveIndex = functionSource.indexOf("AppConfig.saveAppConfigDurable(config)")
+        val outsidePublishIndex = functionSource.indexOf("publishDeviceFaultTransitionOutsideLock(")
+        assertTrue("维护入口必须先进入 faultHeatTransitionLock", lockIndex >= 0)
+        assertTrue("故障状态核心转换必须位于锁内", lockedCoreIndex > lockIndex)
+        assertTrue("资源 owner/mask 必须通过一次同步快照采集", ownerSnapshotIndex > lockedCoreIndex)
+        assertTrue("故障与 moveStatus 最终态必须一次耐久保存", durableSaveIndex > ownerSnapshotIndex)
+        assertTrue("UI/MQTT 发布必须在锁内保存完成后执行", outsidePublishIndex > durableSaveIndex)
+        assertTrue(
+            "维护入口不得再分次读取 ownerIds 和 ownedMask",
+            !functionSource.contains("ownerIds()") && !functionSource.contains("ownedMask(")
+        )
+    }
+
+    @Test
     fun recoverActionGroupState_shouldLockDisconnectedEarlyReturnInsideRecover() {
         val source = sourceText()
 

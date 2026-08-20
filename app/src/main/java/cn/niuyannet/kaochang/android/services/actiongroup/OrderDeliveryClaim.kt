@@ -95,7 +95,7 @@ class OrderDeliveryClaimStore(
         orderFailed: Boolean
     ): Boolean {
         val current = load() ?: return false
-        if (current.owner != expected.owner || current.revision != expected.revision) return false
+        if (current != expected) return false
         val config = AppConfig.getAppConfig()
         return AppConfig.saveOrderClaimCloseoutDurable(
             claimKey = KEY_ORDER_DELIVERY_CLAIM,
@@ -200,7 +200,7 @@ internal fun closeOrderDeliveryMoveForMaintenance(
     } catch (_: Throwable) {
         return@synchronized false
     }
-    if (current?.owner != claim.owner || current.revision != claim.revision) {
+    if (current != claim) {
         return@synchronized false
     }
     if (moveStore.load() !in setOf(0, 2)) return@synchronized false

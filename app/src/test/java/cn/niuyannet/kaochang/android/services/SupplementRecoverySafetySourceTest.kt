@@ -339,7 +339,7 @@ class SupplementRecoverySafetySourceTest {
         val block = source.substring(start, end)
 
         assertTrue(block.contains("hasBlockingSupplementPrefetchEvidence"))
-        assertTrue(block.contains("保留双 lane 恢复证据和 moveStatus"))
+        assertTrue(block.contains("进入维护时检测到机械忙态或恢复证据，保留 moveStatus"))
     }
 
     private fun operateSource(): String {

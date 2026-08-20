@@ -7,6 +7,22 @@ import org.junit.Test
 class ResourceLocksOwnerFenceTest {
 
     @Test
+    fun ownerMasksSnapshot_returnsOneStableCopyWithoutExposingInternalOwners() {
+        val locks = ResourceLocks()
+        locks.tryAcquire(ResourceMask.bottom, "session-a")
+        locks.tryAcquire(ResourceMask.above, "session-b")
+
+        val snapshot = locks.ownerMasksSnapshot()
+        locks.release("session-a")
+
+        assertEquals(
+            mapOf("session-a" to ResourceMask.bottom, "session-b" to ResourceMask.above),
+            snapshot
+        )
+        assertEquals(mapOf("session-b" to ResourceMask.above), locks.ownerMasksSnapshot())
+    }
+
+    @Test
     fun ownerIds_returnsExactOwnersWithoutClearingThem() {
         val locks = ResourceLocks()
         locks.tryAcquire(ResourceMask.bottom, "session-a")

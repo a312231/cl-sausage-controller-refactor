@@ -148,11 +148,11 @@ class OrderDeliveryRecoverySourceTest {
             "private fun confirmManualDeviceRecoveryResidueLocked("
         )
 
-        val autoCloseout = genericRecovery.indexOf("tryAutoCloseStaleOrderDeliveryClaim(")
+        val autoCloseout = genericRecovery.indexOf("closeStaleOrderDeliveryClaim(")
         val claimBlock = genericRecovery.indexOf("automaticRecoveryOrderClaimBlockReason()")
         val manualClaimCloseout = manualRecovery.indexOf("closeStaleOrderDeliveryClaimForMaintenance(")
         val manualGenericCloseout = manualRecovery.indexOf("confirmManualDeviceRecoveryResidueLocked(")
-        assertTrue("自动claim收口必须先于通用claim阻断", autoCloseout >= 0 && autoCloseout < claimBlock)
+        assertTrue("精确claim收口必须先于通用claim阻断", autoCloseout >= 0 && autoCloseout < claimBlock)
         assertTrue(
             "恢复正常状态必须复用同一个订单claim收口入口",
             manualClaimCloseout >= 0
@@ -318,6 +318,56 @@ class OrderDeliveryRecoverySourceTest {
             "原子commit异常必须保持阻断",
             closeout.contains("订单 claim 原子收口提交异常")
         )
+    }
+
+    @Test
+    fun claimGraceOrchestration_shouldBindExpectedClaimAndRecheckAroundExactCloseout() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val recovery = functionBlock(
+            operate,
+            "suspend fun recoverActionGroupStateAfterModbusReady(",
+            "private fun recoverPanMoveJournalAfterModbusReady("
+        )
+        val closeout = functionBlock(
+            operate,
+            "private suspend fun closeStaleOrderDeliveryClaim(",
+            "private fun staleOrderClaimCloseoutRejectionSafely("
+        )
+
+        val grace = recovery.indexOf("evaluateClaimGraceBeforeActionGroupRecovery(")
+        val exactCloseout = recovery.indexOf("closeStaleOrderDeliveryClaim(")
+        assertTrue("claim宽限判断必须早于精确收口", grace >= 0 && grace < exactCloseout)
+        assertTrue(recovery.contains("claim = claimGraceDecision.expectedClaim"))
+        assertTrue(
+            "精确收口前后都必须重评活动OUT门禁",
+            Regex("evaluateExpectedClaimCloseoutGate").findAll(recovery).count() >= 2
+        )
+        assertTrue(closeout.contains("delay(500L)"))
+        assertTrue(closeout.contains("OrderStateManager.ensureTerminalForStaleCloseoutDurable(claim.orderNo)"))
+        assertTrue(closeout.contains("expected = claim"))
+    }
+
+    @Test
+    fun recoveryEvidence_shouldReadOwnerAndMaskFromOneAtomicMapSnapshot() {
+        val operate = sourceText(
+            "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt"
+        )
+        val evidenceReader = functionBlock(
+            operate,
+            "private fun readActionGroupRecoveryGateEvidenceLocked(",
+            "private fun automaticRecoveryOrderClaimBlockReason("
+        )
+
+        assertTrue(
+            "owner/mask必须来自一次原子快照",
+            evidenceReader.contains("val ownerMasks = actionGroupLocks.ownerMasksSnapshot()")
+        )
+        assertTrue(evidenceReader.contains("currentSessionOwnedMask = currentSession?.sessionId?.let(ownerMasks::get)"))
+        assertTrue(evidenceReader.contains("resourceOwners = ownerMasks.keys"))
+        assertTrue(!evidenceReader.contains("actionGroupLocks.ownedMask("))
+        assertTrue(!evidenceReader.contains("actionGroupLocks.ownerIds()"))
     }
 
     private fun functionBlock(source: String, startMarker: String, endMarker: String): String {
