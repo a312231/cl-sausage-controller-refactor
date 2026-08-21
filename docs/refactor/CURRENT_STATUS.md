@@ -2,23 +2,25 @@
 
 ## 1. 状态元数据
 
-- 更新时间（Asia/Singapore）：`2026-08-21 16:19:00 +08:00`
-- 切片状态：`BASELINE_2_5_51_SYNC_MERGE_COMMITTED_PENDING_LOCAL_INTEGRATION`
+- 更新时间（Asia/Singapore）：`2026-08-21 16:26:28 +08:00`
+- 切片状态：`BASELINE_2_5_51_SYNC_COMPLETED`（以V提交、develop指向V、集成后测试通过、远端push到V及原fix删除为生效条件）
 - 实施审核：`Approve`（审核会话A：P0=0、P1=0、P2=0、P3=0）
-- 当前唯一切片：2.5.51同步状态收口与本地develop集成
-- 下一唯一切片：未激活；本地develop集成、复验和push完成后才允许2.5.51 mechanical-core重新基线化
+- 当前唯一切片：2.5.51生产基线同步最终远端收口
+- 下一唯一切片：未激活；上述完成条件全部满足后才允许2.5.51 mechanical-core重新基线化
 
 本文件只记录当前里程碑状态，不替代源码、Git、测试报告、独立审核或现场证据。
 
 ## 2. 仓库与版本门禁
 
 - 重构仓绝对路径：`D:\LeYe\cl-sausage-controller-refactor`
-- 当前分支：`fix/mechanical-core-foundation`
+- 当前分支：`develop`
 - 已审核Q同步merge commit：`676bf0d2a1bd37ad4bec6c26fa97ed09500915ed`
 - Q同步merge第一父：`524027e34d61fcacbfde5bac3200ef0329e2f423`
 - Q同步merge第二父：`2f0b36e08cedb8f4c06cd4d2550e2cec08558bd7`
 - 本状态提交成功后：fix分支HEAD为U，且`U^=676bf0d`；U精确SHA以提交后的Git为准，不在U自身内容中自引用
-- 当前分支远端仍为文档提交：`origin/fix/mechanical-core-foundation=524027e34d61fcacbfde5bac3200ef0329e2f423`（merge尚未推送）
+- 已提交状态收口U：`0a065ea832909b1c42e15ee82311ca47edb6c020`，且`U^=676bf0d`
+- 本次最终状态提交成功后：develop HEAD为V，且`V^=U`；V精确SHA以提交后的Git为准，不在V自身内容中自引用
+- 原fix远端仍为文档提交：`origin/fix/mechanical-core-foundation=524027e34d61fcacbfde5bac3200ef0329e2f423`，待V push后删除
 - 已审核merge里程碑 M：`92eeb8b1252908c3de8dab34814126517d7e308f`
 - M 第一父：`812abf5af5f7e8b60bbbc445250e718576f6c70f`
 - M 第二父：`5e0d2f78d21fa3e3529c04da2cb9edd6c68a61cb`
@@ -27,7 +29,7 @@
 - 本次集成状态提交成功后：fix分支HEAD为T，且 `T^=S`；T的精确SHA以提交后的当前Git为准，不在T自身内容中自引用
 - 本地 `develop` 快进成功后：`develop=T`
 - 本地fix清理成功后：`fix/baseline-2.5.48-sync` 不再存在
-- 本地 `develop`：`49f9ce431b38f35d561ab8098d0a118fb556c439`
+- V提交前本地 `develop`：`0a065ea832909b1c42e15ee82311ca47edb6c020`
 - 本地 `origin/develop`：`49f9ce431b38f35d561ab8098d0a118fb556c439`
 - 实时 GitHub `develop`：`49f9ce431b38f35d561ab8098d0a118fb556c439`
 - 重构仓本地 `production/develop`：`2f0b36e08cedb8f4c06cd4d2550e2cec08558bd7`
@@ -36,7 +38,7 @@
 - 当前重构仓源码版本：`2.5.51/301`
 - partial core保全分支本地/远端SHA：`3d5918aa19944b6b4765532f2977c5db43253a3d`；第一父=`524027e`
 - partial core仍为WIP/RED：Coordinator测试存在、Coordinator实现不存在；未混入Q同步merge。
-- 本文件审核时cached仅`CURRENT_STATUS.md`；U提交后工作树应干净。
+- 本文件审核时工作树仅修改`CURRENT_STATUS.md`；V提交后工作树应干净。
 
 生产仓 `D:\LeYe\cl-sausage-controller` 只读，且存在用户未提交修改；禁止覆盖、回滚或混入这些修改。
 
@@ -54,7 +56,7 @@ P 已作为第二父合入本地merge commit M，并成为M、S及后续T的祖�
 
 ## 4. 当前唯一切片
 
-Q已作为第二父进入本地merge commit `676bf0d`；37个Q路径与一份验证记录已通过自动化、构建、独立审核和主会话复核。U提交成功且工作树干净后，只允许将本地develop以`--ff-only`推进到U、复验，再普通push develop。
+Q已作为第二父进入merge commit `676bf0d`，U已提交，本地develop已`--ff-only`到U，集成后聚合测试通过。V提交并审核通过后，只允许普通push develop到V、核对SHA并删除已合入原fix。
 
 partial core已独立远端保全，不在本同步里程碑中；旧mechanical-core计划继续暂停。
 
@@ -81,10 +83,11 @@ partial core已独立远端保全，不在本同步里程碑中；旧mechanical-
 
 ## 6. 证据分栏
 
-- 源码与 Git：已审核Q merge=`676bf0d`且Q为第二父；U提交成功后fix=`U`且`U^=676bf0d`。本地/GitHub develop在集成前仍=`49f9ce4`；生产Android live develop=Q。生产仓保持只读。
+- 源码与 Git：已审核Q merge=`676bf0d`且Q为第二父；V提交前本地develop和原fix均为U=`0a065ea`。V成功后develop=`V`且`V^=U`，原fix仍为U直至删除。GitHub develop在V推送前仍=`49f9ce4`；生产Android live develop=Q。生产仓保持只读。
 - Q同步定向JVM：`BUILD SUCCESSFUL in 3m 2s`，94 tasks全部executed。
 - Q同步聚合JVM：`BUILD SUCCESSFUL in 2m 9s`，200 tasks全部executed；fresh XML scheduler58、recovery36、order34、App Debug1930、App Release1930，failures/errors/skipped均为0。
 - Q同步Debug构建：`BUILD SUCCESSFUL in 1m 15s`，122 tasks全部executed；APK 49,745,545 bytes，SHA-256=`1697AF5E11D9EDE011603BAAE83D1B6ED952D8D8D14C0BE6FE2DC4C2EB0600D3`。
+- develop集成后聚合JVM：`BUILD SUCCESSFUL in 2m 23s`，200 tasks全部executed。
 - 历史P基线 JVM 测试：曾强制运行 `:scheduler-core:test :recovery-core:test :order-core:test :app:testDebugUnitTest --rerun-tasks` 和聚合 `test --rerun-tasks`；XML 为 scheduler 58、recovery 36、order 34、App Debug 1851、App Release 1851，failures/errors/skipped 均为 0。该证据不证明当前partial core或Q同步。
 - 历史P基线构建：曾fresh运行 `:app:assembleDebug --rerun-tasks`，139个任务全部执行；Debug APK 49,696,377 bytes，SHA-256=`4B6EC5BC90AAC57F6E1CAF3858B5B6543D218442B7C76C966D27504EF1D84A4C`。该制品不证明Q、当前partial core或现场运行。
 - 历史P本地集成：`develop` 快进到T后聚合测试曾成功，200个任务全部执行；旧fix分支已删除。该证据不证明Q同步。
@@ -95,7 +98,7 @@ partial core已独立远端保全，不在本同步里程碑中；旧mechanical-
 
 ## 7. 当前架构阻断与风险
 
-1. Q已进入本地fix merge，但本地/GitHub develop尚未集成，不能写成远端同步完成。
+1. Q已进入本地develop；GitHub develop尚未push到V，完成条件满足前不能写成远端同步完成。
 2. 当前仍有 OrderDeliveryClaim、ActionGroupSession、SupplementPrefetchPipelineSession、SupplementBatchIntent、PanMoveJournal、DiscardJournal、ResetCloseoutRecord、ResourceLocks 和 `moveStatus` 等多套权威。
 3. 搬盘结果不明时会保留 journal 与 `moveStatus=3`，但 `finally` 释放 ResourceLocks，资源状态与恢复责任分裂。
 4. callback 和资源释放缺少统一的 `operationId + revision` 围栏。
@@ -111,7 +114,7 @@ partial core已独立远端保全，不在本同步里程碑中；旧mechanical-
 
 ## 9. 下一切片门禁
 
-本文件审核阶段只允许审核并提交U。U成功且工作树干净后，只允许：本地develop `--ff-only`到U→在develop重跑聚合JVM测试→普通push `origin develop:develop`并核对SHA→删除已合入的原fix分支。partial保全分支继续保留。全部完成后再激活2.5.51 mechanical-core重新基线化切片。
+本文件审核阶段只允许审核并提交V。V成功且工作树干净后，只允许：普通push `origin develop:develop`到V并核对SHA→删除已合入的本地/远端`fix/mechanical-core-foundation`。partial保全分支继续保留。全部完成后再激活2.5.51 mechanical-core重新基线化切片。
 
 ## 10. 更新纪律
 
