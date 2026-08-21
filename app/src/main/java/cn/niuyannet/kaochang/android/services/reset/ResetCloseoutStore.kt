@@ -10,6 +10,14 @@ enum class PrepareOrderEvidenceResult {
     REJECTED
 }
 
+enum class Out4ConfirmResult {
+    ADVANCED_THIS_CALL,
+    ALREADY_AT_QUANTITY,
+    NOT_PREPARED,
+    WRITE_FAILED,
+    CORRUPTED
+}
+
 class ResetCloseoutStore(
     private val readRaw: () -> String?,
     private val writeRawDurably: (String) -> Boolean
@@ -63,17 +71,27 @@ class ResetCloseoutStore(
     }
 
     @Synchronized
-    fun confirmOut4Durable(orderNo: String, itemId: Long): Boolean {
-        val current = load() ?: return false
+    fun confirmOut4Durable(orderNo: String, itemId: Long): Out4ConfirmResult {
+        val current = runCatching { load() }.getOrElse { return Out4ConfirmResult.CORRUPTED }
+            ?: return Out4ConfirmResult.NOT_PREPARED
         if (
             current.phase !in setOf(
                 ResetCloseoutPhase.ORDER_ACTIVE,
                 ResetCloseoutPhase.PREPARED,
                 ResetCloseoutPhase.RESET_WRITTEN
             ) || current.orderNo != orderNo
-        ) return false
+        ) return Out4ConfirmResult.NOT_PREPARED
+        val item = current.items.firstOrNull { it.itemId == itemId }
+            ?: return Out4ConfirmResult.NOT_PREPARED
+        if (item.confirmedOut4 >= item.quantity) {
+            return Out4ConfirmResult.ALREADY_AT_QUANTITY
+        }
         val updated = ResetCloseoutPolicy.confirmOut4(current, itemId)
-        return updated == current || saveDurable(updated)
+        return if (saveDurable(updated)) {
+            Out4ConfirmResult.ADVANCED_THIS_CALL
+        } else {
+            Out4ConfirmResult.WRITE_FAILED
+        }
     }
 
     @Synchronized

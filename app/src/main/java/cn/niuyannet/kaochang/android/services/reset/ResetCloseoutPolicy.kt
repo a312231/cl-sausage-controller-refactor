@@ -50,3 +50,78 @@ object ResetCloseoutPolicy {
         return (MIN_RESET_GATE_MS - (nowMs - writtenAt).coerceAtLeast(0L)).coerceAtLeast(0L)
     }
 }
+
+enum class Out4CurrentCallEvidenceState {
+    UNSEEN,
+    CONFIRMED_DURABLE_PENDING,
+    CONFIRMED_PENDING_MISSING,
+    UNKNOWN
+}
+
+class Out4CurrentCallEvidence {
+    var state: Out4CurrentCallEvidenceState = Out4CurrentCallEvidenceState.UNSEEN
+        private set
+
+    var pendingSaveFailure: Boolean = false
+        private set
+
+    val advancedThisCall: Boolean
+        get() = state == Out4CurrentCallEvidenceState.CONFIRMED_DURABLE_PENDING ||
+            state == Out4CurrentCallEvidenceState.CONFIRMED_PENDING_MISSING
+
+    fun observeConfirmedOut4(
+        confirmDurably: () -> Out4ConfirmResult,
+        savePendingDurably: () -> Boolean
+    ): Out4CurrentCallEvidenceState {
+        if (state != Out4CurrentCallEvidenceState.UNSEEN) return state
+        state = Out4CurrentCallEvidenceState.UNKNOWN
+        if (runCatching(confirmDurably).getOrDefault(Out4ConfirmResult.CORRUPTED) != Out4ConfirmResult.ADVANCED_THIS_CALL) {
+            return state
+        }
+        val pendingSaved = runCatching(savePendingDurably).getOrDefault(false)
+        if (pendingSaved) {
+            state = Out4CurrentCallEvidenceState.CONFIRMED_DURABLE_PENDING
+        } else {
+            pendingSaveFailure = true
+            state = Out4CurrentCallEvidenceState.CONFIRMED_PENDING_MISSING
+        }
+        return state
+    }
+}
+
+enum class Out4DeliveryCloseoutResult {
+    DELIVERED,
+    DELIVERED_CLOSEOUT_UNKNOWN,
+    EVIDENCE_UNKNOWN
+}
+
+object Out4DeliveryCloseoutPolicy {
+    fun resolveAfterActionGroupFailure(
+        evidence: Out4CurrentCallEvidence,
+        enterMaintenance: () -> Unit
+    ): Out4DeliveryCloseoutResult? {
+        if (!evidence.advancedThisCall) return null
+        runCatching(enterMaintenance)
+        return Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN
+    }
+
+    fun resolve(
+        evidence: Out4CurrentCallEvidence,
+        releaseMechanical: () -> Boolean,
+        enterMaintenance: () -> Unit
+    ): Out4DeliveryCloseoutResult {
+        val released = runCatching(releaseMechanical).getOrDefault(false)
+        val requiresMaintenance = !evidence.advancedThisCall || evidence.pendingSaveFailure || !released
+        if (requiresMaintenance) {
+            runCatching(enterMaintenance)
+        }
+        if (!evidence.advancedThisCall) {
+            return Out4DeliveryCloseoutResult.EVIDENCE_UNKNOWN
+        }
+        return if (evidence.pendingSaveFailure || !released) {
+            Out4DeliveryCloseoutResult.DELIVERED_CLOSEOUT_UNKNOWN
+        } else {
+            Out4DeliveryCloseoutResult.DELIVERED
+        }
+    }
+}

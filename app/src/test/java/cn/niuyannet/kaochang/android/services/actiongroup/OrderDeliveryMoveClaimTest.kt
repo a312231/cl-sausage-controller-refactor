@@ -140,6 +140,33 @@ class OrderDeliveryMoveClaimTest {
     }
 
     @Test
+    fun closeOrderDeliveryMoveForMaintenance_shouldRejectSameOwnerRevisionWithDifferentCreatedAt() {
+        val fixture = fixture()
+        val claim = requireNotNull(
+            claimOrderDeliveryMove(
+                orderNo = "CL1",
+                transitionLock = fixture.transitionLock,
+                claimStore = fixture.claimStore,
+                moveStore = fixture.moveStore
+            ) { true }
+        )
+        val replacedFingerprint = claim.copy(createdAtMs = claim.createdAtMs + 1L)
+
+        val closed = closeOrderDeliveryMoveForMaintenance(
+            claim = replacedFingerprint,
+            transitionLock = fixture.transitionLock,
+            claimStore = fixture.claimStore,
+            moveStore = fixture.moveStore,
+            commitIdleAndClearClaim = fixture.commitIdleAndClearClaim
+        ) { true }
+
+        assertTrue(!closed)
+        assertEquals(2, fixture.moveStore.status)
+        assertEquals(claim, fixture.claimStore.load())
+        assertEquals(0, fixture.atomicCloseoutCount())
+    }
+
+    @Test
     fun closeOrderDeliveryMoveForMaintenance_shouldRespectSafetyGate() {
         val fixture = fixture()
         val claim = requireNotNull(

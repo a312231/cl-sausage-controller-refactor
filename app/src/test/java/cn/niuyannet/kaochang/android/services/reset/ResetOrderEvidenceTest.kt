@@ -35,9 +35,12 @@ class ResetOrderEvidenceTest {
         val store = ResetCloseoutStore({ raw }, { value -> raw = value; true })
         store.prepareOrderDurable("ORDER-1", listOf(ResetOrderItem(11L, 2, 0)), 1, "")
 
-        assertTrue(store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(Out4ConfirmResult.ADVANCED_THIS_CALL, store.confirmOut4Durable("ORDER-1", 11L))
         assertEquals(1, store.load()!!.items.single().confirmedOut4)
-        assertEquals(1, store.load()!!.items.single().confirmedOut4)
+        assertEquals(Out4ConfirmResult.ADVANCED_THIS_CALL, store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(2, store.load()!!.items.single().confirmedOut4)
+        assertEquals(Out4ConfirmResult.ALREADY_AT_QUANTITY, store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(2, store.load()!!.items.single().confirmedOut4)
     }
 
     @Test
@@ -58,7 +61,7 @@ class ResetOrderEvidenceTest {
         )
         assertTrue(store.saveDurable(prepared))
 
-        assertTrue(store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(Out4ConfirmResult.ADVANCED_THIS_CALL, store.confirmOut4Durable("ORDER-1", 11L))
         assertEquals(1, store.load()!!.items.single().confirmedOut4)
 
         assertTrue(
@@ -69,7 +72,7 @@ class ResetOrderEvidenceTest {
                 )
             )
         )
-        assertTrue(store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(Out4ConfirmResult.ADVANCED_THIS_CALL, store.confirmOut4Durable("ORDER-1", 11L))
         assertEquals(2, store.load()!!.items.single().confirmedOut4)
     }
 
@@ -99,7 +102,7 @@ class ResetOrderEvidenceTest {
         })
         store.prepareOrderDurable("ORDER-1", listOf(ResetOrderItem(11L, 1, 0)), 1, "")
 
-        assertFalse(store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(Out4ConfirmResult.WRITE_FAILED, store.confirmOut4Durable("ORDER-1", 11L))
         assertEquals(0, store.load()!!.items.single().confirmedOut4)
     }
 
@@ -111,7 +114,7 @@ class ResetOrderEvidenceTest {
             PrepareOrderEvidenceResult.NEW,
             store.prepareOrderDurable("ORDER-1", listOf(ResetOrderItem(11L, 2, 0)), 1, "")
         )
-        assertTrue(store.confirmOut4Durable("ORDER-1", 11L))
+        assertEquals(Out4ConfirmResult.ADVANCED_THIS_CALL, store.confirmOut4Durable("ORDER-1", 11L))
 
         assertEquals(
             PrepareOrderEvidenceResult.EXISTING,
@@ -131,6 +134,24 @@ class ResetOrderEvidenceTest {
             store.prepareOrderDurable("ORDER-2", listOf(ResetOrderItem(12L, 1, 0)), 1, "")
         )
         assertEquals("ORDER-1", store.load()!!.orderNo)
+    }
+
+    @Test
+    fun confirmOut4_shouldReturnNotPreparedForMissingOrMismatchedEvidence() {
+        var raw: String? = null
+        val store = ResetCloseoutStore({ raw }, { value -> raw = value; true })
+
+        assertEquals(Out4ConfirmResult.NOT_PREPARED, store.confirmOut4Durable("ORDER-1", 11L))
+        store.prepareOrderDurable("ORDER-1", listOf(ResetOrderItem(11L, 1, 0)), 1, "")
+        assertEquals(Out4ConfirmResult.NOT_PREPARED, store.confirmOut4Durable("ORDER-2", 11L))
+        assertEquals(Out4ConfirmResult.NOT_PREPARED, store.confirmOut4Durable("ORDER-1", 12L))
+    }
+
+    @Test
+    fun confirmOut4_shouldReturnCorruptedInsteadOfThrowing() {
+        val store = ResetCloseoutStore({ "{broken-json" }, { true })
+
+        assertEquals(Out4ConfirmResult.CORRUPTED, store.confirmOut4Durable("ORDER-1", 11L))
     }
 
 }

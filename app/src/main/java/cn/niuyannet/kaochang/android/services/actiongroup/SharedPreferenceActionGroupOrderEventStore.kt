@@ -23,9 +23,8 @@ class SharedPreferenceActionGroupOrderEventStore(
         }
     }
 
-    override fun save(event: PendingActionGroupOrderEvent) {
-        PreferenceUtils.saveStringPreference(file, key, JSON.toJSONString(event))
-    }
+    override fun save(event: PendingActionGroupOrderEvent): Boolean =
+        PreferenceUtils.saveStringPreferenceDurable(file, key, JSON.toJSONString(event))
 
     override fun clear() {
         PreferenceUtils.saveStringPreference(file, key, "")

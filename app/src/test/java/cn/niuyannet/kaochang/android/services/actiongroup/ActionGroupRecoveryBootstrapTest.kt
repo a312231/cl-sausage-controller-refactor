@@ -159,6 +159,105 @@ class ActionGroupRecoveryBootstrapTest {
     }
 
     @Test
+    fun recover_shouldDeferWhenNewOutSellSessionAppearsDuringRegisterScan() = runBlocking {
+        val activeOut = ActionGroupSession(
+            sessionId = "active-out",
+            type = ActionGroupSessionType.OUT_SELL,
+            sourceNo = 4,
+            currentAction = "out1",
+            resourceMask = ResourceMask.above or ResourceMask.gate or ResourceMask.stick or ResourceMask.lift,
+            checkpointVersion = 1L,
+            mechanicalClaimState = MechanicalClaimState.CLAIMED,
+            mechanicalClaimRevision = 2L
+        )
+        val store = MemorySessionStore(null)
+        val locks = ResourceLocks()
+        val client = FakeClient(
+            onRead = { spec ->
+                if (spec.name == "in7") {
+                    store.save(activeOut)
+                    locks.tryAcquire(activeOut.resourceMask, activeOut.sessionId)
+                }
+            }
+        )
+
+        val result = ActionGroupRecoveryBootstrap(client, store, locks).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.DeferredActiveOperation)
+        assertEquals(activeOut, store.session)
+        assertFalse(locks.isIdle())
+        assertTrue((result as ActionGroupRecoveryResult.DeferredActiveOperation).reason.contains("扫描期间"))
+    }
+
+    @Test
+    fun recover_shouldDeferWhenExistingSessionCheckpointOrRevisionChangesDuringRegisterScan() = runBlocking {
+        val initial = ActionGroupSession(
+            sessionId = "changing-out",
+            type = ActionGroupSessionType.OUT_SELL,
+            sourceNo = 4,
+            currentAction = null,
+            resourceMask = ResourceMask.above,
+            checkpointVersion = 0L,
+            mechanicalClaimState = MechanicalClaimState.PREPARED,
+            mechanicalClaimRevision = 1L
+        )
+        val advanced = initial.copy(
+            currentAction = "out1",
+            resourceMask = ResourceMask.above or ResourceMask.gate,
+            checkpointVersion = 1L,
+            mechanicalClaimState = MechanicalClaimState.CLAIMED,
+            mechanicalClaimRevision = 2L
+        )
+        val store = MemorySessionStore(initial)
+        val locks = ResourceLocks().apply { tryAcquire(initial.resourceMask, initial.sessionId) }
+        val client = FakeClient(
+            onRead = { spec ->
+                if (spec.name == "in7") store.save(advanced)
+            }
+        )
+
+        val result = ActionGroupRecoveryBootstrap(client, store, locks).recover()
+
+        assertTrue(result is ActionGroupRecoveryResult.DeferredActiveOperation)
+        assertEquals(advanced, store.session)
+        assertFalse(locks.isIdle())
+    }
+
+    @Test
+    fun recover_shouldDeferWhenNewOutAppearsAfterPostScanSnapshotBeforeFinalGate() = runBlocking {
+        val activeOut = ActionGroupSession(
+            sessionId = "late-active-out",
+            type = ActionGroupSessionType.OUT_SELL,
+            sourceNo = 5,
+            currentAction = "out1",
+            resourceMask = ResourceMask.above or ResourceMask.gate or ResourceMask.stick or ResourceMask.lift,
+            checkpointVersion = 1L,
+            mechanicalClaimState = MechanicalClaimState.CLAIMED,
+            mechanicalClaimRevision = 2L
+        )
+        val store = MemorySessionStore(null)
+        val locks = ResourceLocks()
+        var gateExpectedSession: ActionGroupSession? = activeOut
+
+        val result = ActionGroupRecoveryBootstrap(
+            client = FakeClient(),
+            sessionStore = store,
+            resourceLocks = locks,
+            automaticRecoveryGate = { expectedSession ->
+                gateExpectedSession = expectedSession
+                store.save(activeOut)
+                locks.tryAcquire(activeOut.resourceMask, activeOut.sessionId)
+                ActionGroupRecoveryGateDecision.Defer("新订单在最终门禁前取得机械资源")
+            }
+        ).recover()
+
+        assertNull(gateExpectedSession)
+        assertTrue(result is ActionGroupRecoveryResult.DeferredActiveOperation)
+        assertEquals(activeOut, store.session)
+        assertFalse(locks.isIdle())
+    }
+
+    @Test
     fun recover_shouldFailClosedWhenMoveIsBusyWithoutOwner() = runBlocking {
         val result = ActionGroupRecoveryBootstrap(
             client = FakeClient(),
@@ -424,10 +523,10 @@ class ActionGroupRecoveryBootstrapTest {
             client = client,
             sessionStore = store,
             resourceLocks = locks,
-            allowAutomaticTakeover = { true },
+            automaticRecoveryGate = { ActionGroupRecoveryGateDecision.Allow },
             performAutomaticRecoveryMutation = { _, _ ->
                 mutationAttempts++
-                false
+                ActionGroupRecoveryGateDecision.Maintenance("guarded mutation rejected")
             }
         ).recover()
 
@@ -590,7 +689,8 @@ class ActionGroupRecoveryBootstrapTest {
     private class FakeClient(
         private val states: MutableMap<String, Int> = mutableMapOf(),
         private val results: ArrayDeque<AtomicActionResult> = ArrayDeque(),
-        private val failedReadAction: String? = null
+        private val failedReadAction: String? = null,
+        private val onRead: ((AtomicActionSpec) -> Unit)? = null
     ) : AtomicActionClient, AtomicActionStateReader {
         val calls = mutableListOf<String>()
 
@@ -608,6 +708,7 @@ class ActionGroupRecoveryBootstrapTest {
         }
 
         override suspend fun readResult(spec: AtomicActionSpec): AtomicReadResult {
+            onRead?.invoke(spec)
             if (spec.name == failedReadAction) {
                 return AtomicReadResult.Failure("injected read failure")
             }

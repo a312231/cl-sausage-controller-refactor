@@ -11,6 +11,8 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.mqtt.KcOrderItem
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
+import cn.niuyannet.kaochang.android.mqtt.MqttProtocol
+import cn.niuyannet.kaochang.android.mqtt.OrderDispatchInboxStore
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
@@ -19,6 +21,7 @@ import cn.niuyannet.kaochang.android.services.OrderSupplementResumePolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderEventCompensationPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderContext
 import cn.niuyannet.kaochang.android.services.actiongroup.ActionGroupOrderStatus
+import cn.niuyannet.kaochang.android.services.actiongroup.DeliveredCloseoutUnknownOrderEventPolicy
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderDeliveryClaim
 import cn.niuyannet.kaochang.android.services.actiongroup.OrderFailureMetadata
 import cn.niuyannet.kaochang.android.services.reset.ResetCloseoutStore
@@ -52,6 +55,9 @@ import kotlin.coroutines.cancellation.CancellationException
 abstract class OrderActivity: BaseSauceDetection() {
 
     private val resetCloseoutStore by lazy { ResetCloseoutStore.sharedPreferences() }
+    private val orderDispatchInboxStore by lazy { OrderDispatchInboxStore.sharedPreferences() }
+    private var activeDispatchId: String? = null
+    private var activeDispatchProtocolVersion: Int? = null
 
     private data class DeliveryResult(
         val success: Boolean,
@@ -224,8 +230,14 @@ abstract class OrderActivity: BaseSauceDetection() {
      * 执行整单履约。
      * 一个订单可能包含多个商品项，每个商品项又可能包含多根烤肠，这里按根串行处理。
      */
-    fun purchaseOrder(orderMessage:String) {
+    fun purchaseOrder(
+        orderMessage: String,
+        dispatchId: String? = null,
+        protocolVersion: Int? = null
+    ) {
         val safeOrderNo = try { com.alibaba.fastjson.JSON.parseObject(orderMessage).getString("order_no") ?: "" } catch (_: Exception) { "" }
+        activeDispatchId = dispatchId
+        activeDispatchProtocolVersion = protocolVersion
         KaoChangOperate.requestSupplementPauseForOrder(safeOrderNo)
         var orderOutcome = OrderExecutionOutcome.UNKNOWN
         var normalCloseoutCompleted = false
@@ -378,6 +390,17 @@ abstract class OrderActivity: BaseSauceDetection() {
                 if (!terminalStatePersisted) {
                     orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
                     orderCompleted = false
+                }
+                if (terminalStatePersisted &&
+                    !activeDispatchId.isNullOrBlank() &&
+                    activeDispatchProtocolVersion == MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION &&
+                    orderOutcome in setOf(OrderExecutionOutcome.SUCCESS, OrderExecutionOutcome.MECHANICAL_FAILED)
+                ) {
+                    val inboxTerminalSaved = orderDispatchInboxStore.markTerminalDurably(activeDispatchId!!)
+                    if (!inboxTerminalSaved) {
+                        orderOutcome = OrderExecutionOutcome.EVIDENCE_UNKNOWN
+                        orderCompleted = false
+                    }
                 }
 
                 // 当前订单动作结束后，本地动作状态恢复为空闲；如果本单没有拿到出餐控制权，
@@ -606,6 +629,7 @@ abstract class OrderActivity: BaseSauceDetection() {
             }
 
             var failureEventReported = false
+            var deliveryConfirmedForCurrentUnit = false
             val readinessBeforeModbus = evaluateSingleDeliveryReadiness(
                 orderNo = orderNo,
                 itemId = item.id,
@@ -671,7 +695,9 @@ abstract class OrderActivity: BaseSauceDetection() {
                     orderNo = orderNo,
                     itemId = item.id,
                     productId = item.productId,
-                    tasteCode = item.tasteCode
+                    tasteCode = item.tasteCode,
+                    dispatchId = activeDispatchId,
+                    protocolVersion = activeDispatchProtocolVersion
                 )
 
                 when (KaoChangAlgorithm.purchase(
@@ -712,6 +738,36 @@ abstract class OrderActivity: BaseSauceDetection() {
                             "正常订单出餐历史丢弃结果按完成收口"
                         )
                         LogUtils.w("【订单流转】本轮出餐按 4F 完成收口，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                    }
+
+                    KaoChangOperate.TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN -> {
+                        deliveryConfirmedForCurrentUnit = true
+                        deliveredCount++
+                        runCatching {
+                            LogUtils.e(
+                                "【订单流转】第${deliveredBase + deliveredCount}/${totalCount}根已由 out4 确认交付，" +
+                                    "但本地收口证据不完整，停止后续出餐：orderNo=$orderNo, itemId=${item.id}"
+                            )
+                        }
+                        val status2Reported = DeliveredCloseoutUnknownOrderEventPolicy.reportFinishedBestEffort {
+                            KaoChangOperate.reportActionGroupOrderTerminalEvent(
+                                orderContext,
+                                ActionGroupOrderStatus.statusFor(
+                                    KaoChangOperate.TakeSausageResult.DELIVERED_CLOSEOUT_UNKNOWN
+                                ),
+                                "out4 已确认交付但本地收口未知"
+                            )
+                        }
+                        if (!status2Reported) {
+                            runCatching {
+                                LogUtils.e(
+                                    "【订单流转】已确认交付后的 status=2 上报未成功；pending 可能未落盘，" +
+                                        "已保留 Reset out4 履约证据并保持维护：" +
+                                        "orderNo=$orderNo, itemId=${item.id}"
+                                )
+                            }
+                        }
+                        return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.EVIDENCE_UNKNOWN)
                     }
 
                     KaoChangOperate.TakeSausageResult.NO_SELLABLE_STOCK -> {
@@ -766,6 +822,25 @@ abstract class OrderActivity: BaseSauceDetection() {
                     }
                 }
             } catch (e: Exception) {
+                if (deliveryConfirmedForCurrentUnit) {
+                    runCatching {
+                        LogUtils.e(
+                            "【订单流转】已确认交付后的收口处理异常，禁止降级为 status=5：" +
+                                "orderNo=$orderNo, itemId=${item.id}, " +
+                                "evidence=${OrderFailureMetadata.EVIDENCE_UNKNOWN}, " +
+                                "error=${e.message ?: e.javaClass.simpleName}"
+                        )
+                    }
+                    runCatching {
+                        withContext(Dispatchers.Main) {
+                            val config = AppConfig.getAppConfig()
+                            OrderDeliveryFaultPolicy.applySingleDeliveryExceptionFault(config, e)
+                            AppConfig.saveAppConfig(config)
+                            syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
+                        }
+                    }
+                    return DeliveryResult(false, deliveredCount, OrderExecutionOutcome.EVIDENCE_UNKNOWN)
+                }
                 LogUtils.e("【失败原因】第$currentIndex/${totalCount}根出餐失败：${e.message ?: "未知原因"}")
                 LogUtils.e("【订单流转】处理单根烤肠时发生异常：${e.message}")
                 if (!failureEventReported) {
@@ -1096,12 +1171,29 @@ abstract class OrderActivity: BaseSauceDetection() {
         failureMetadata: OrderFailureMetadata? = null
     ): Boolean {
         val eventDesc = orderEventStatusText(status)
+        val dispatchId = activeDispatchId
+        val protocolVersion = activeDispatchProtocolVersion
+        if (!dispatchId.isNullOrBlank()) {
+            if (protocolVersion != MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION ||
+                !orderDispatchInboxStore.canPublishOrderEvent(dispatchId, orderNo)
+            ) {
+                LogUtils.e(
+                    "【订单派发V2】inbox 尚未进入 EXECUTION_STARTED/TERMINAL，拒绝发送 action=1：" +
+                        "dispatchId=$dispatchId, orderNo=$orderNo, status=$status"
+                )
+                return false
+            }
+        }
         val payload = com.alibaba.fastjson.JSONObject().apply {
             put("order_no", orderNo)
             put("item_id", itemId)
             put("product_id", productId)
             put("taste_code", tasteCode)
             put("status", status)
+            if (!dispatchId.isNullOrBlank() && protocolVersion == MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION) {
+                put("dispatch_id", dispatchId)
+                put("protocol_version", protocolVersion)
+            }
             if (status == ActionGroupOrderStatus.ERROR && failureMetadata != null) {
                 put("failure_reason", failureMetadata.failureReason.name)
                 put("delivery_evidence", failureMetadata.deliveryEvidence.name)
@@ -1121,7 +1213,9 @@ abstract class OrderActivity: BaseSauceDetection() {
                         orderNo = orderNo,
                         itemId = itemId,
                         productId = productId,
-                        tasteCode = tasteCode
+                        tasteCode = tasteCode,
+                        dispatchId = dispatchId,
+                        protocolVersion = protocolVersion
                     ),
                     panNo = 0,
                     source = "正式出餐 status=5 MQTT 发送队列拒绝",

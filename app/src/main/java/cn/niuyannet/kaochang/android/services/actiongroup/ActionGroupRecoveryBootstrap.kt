@@ -6,6 +6,12 @@ interface ActionGroupSessionStore {
     fun clear()
 }
 
+sealed class ActionGroupRecoveryGateDecision {
+    data object Allow : ActionGroupRecoveryGateDecision()
+    data class Defer(val reason: String) : ActionGroupRecoveryGateDecision()
+    data class Maintenance(val reason: String) : ActionGroupRecoveryGateDecision()
+}
+
 sealed class ActionGroupRecoveryResult {
     data object Idle : ActionGroupRecoveryResult()
     data class TakeoverFinished(
@@ -25,6 +31,10 @@ sealed class ActionGroupRecoveryResult {
     data class MaintenanceRequired(
         val reason: String,
         val recoverableResidueSession: ActionGroupSession? = null
+    ) : ActionGroupRecoveryResult()
+
+    data class DeferredActiveOperation(
+        val reason: String
     ) : ActionGroupRecoveryResult()
 
     data class IsolatedSupplementFailurePreserved(
@@ -53,20 +63,31 @@ class ActionGroupRecoveryBootstrap(
     },
     private val abandonPreparedClaim: (ActionGroupSession) -> Boolean = clearSessionIfCurrent,
     private val moveStatusProvider: () -> Int = { 0 },
-    private val allowAutomaticTakeover: () -> Boolean = { true },
-    private val recheckAutomaticTakeover: (ActionGroupSession) -> Boolean = { allowAutomaticTakeover() },
-    private val performAutomaticRecoveryMutation: (ActionGroupSession, () -> Unit) -> Boolean = { _, mutation ->
+    private val automaticRecoveryGate: (ActionGroupSession?) -> ActionGroupRecoveryGateDecision = {
+        ActionGroupRecoveryGateDecision.Allow
+    },
+    private val performAutomaticRecoveryMutation: (
+        ActionGroupSession,
+        () -> Unit
+    ) -> ActionGroupRecoveryGateDecision = { _, mutation ->
         mutation()
-        true
+        ActionGroupRecoveryGateDecision.Allow
     }
 ) {
-    private fun automaticTakeoverAllowed(session: ActionGroupSession): Boolean =
-        recheckAutomaticTakeover(session)
+    private fun gateFailure(decision: ActionGroupRecoveryGateDecision): ActionGroupRecoveryResult? =
+        when (decision) {
+            ActionGroupRecoveryGateDecision.Allow -> null
+            is ActionGroupRecoveryGateDecision.Defer ->
+                ActionGroupRecoveryResult.DeferredActiveOperation(decision.reason)
+            is ActionGroupRecoveryGateDecision.Maintenance ->
+                ActionGroupRecoveryResult.MaintenanceRequired(decision.reason)
+        }
 
     suspend fun recover(): ActionGroupRecoveryResult {
         val reader = client as? AtomicActionStateReader
             ?: return ActionGroupRecoveryResult.MaintenanceRequired("动作组恢复失败：AtomicActionClient 不支持读取结果寄存器")
 
+        val sessionBeforeScan = sessionStore.load()
         val states = readAllStates(reader)
         states.firstOrNull { it.value is AtomicReadResult.Failure }?.let { failed ->
             val message = (failed.value as AtomicReadResult.Failure).message
@@ -74,12 +95,6 @@ class ActionGroupRecoveryBootstrap(
                 "动作组恢复失败：读取 ${failed.spec.name} 结果寄存器 ${failed.spec.resultRegister} 失败：$message"
             )
         }
-        if (!allowAutomaticTakeover()) {
-            return ActionGroupRecoveryResult.MaintenanceRequired(
-                "动作组自动恢复被当前 guarded 收口门禁阻止，需人工精确恢复"
-            )
-        }
-
         val terminalFailures = states.filter { state ->
             val value = (state.value as AtomicReadResult.Success).value
             value >= AtomicActionCodes.PARAM_ERROR
@@ -88,7 +103,7 @@ class ActionGroupRecoveryBootstrap(
             val failedState = terminalFailures.single()
             val code = (failedState.value as AtomicReadResult.Success).value
             val session = sessionStore.load()
-            if (session != null && automaticTakeoverAllowed(session) &&
+            if (session != null && automaticRecoveryGate(session) == ActionGroupRecoveryGateDecision.Allow &&
                 closeKnownIsolatedTerminalFailure(session, failedState.spec.name, code)
             ) {
                 logger(
@@ -111,11 +126,20 @@ class ActionGroupRecoveryBootstrap(
             )
         }
 
+        val sessionAfterScan = sessionStore.load()
+        if (sessionBeforeScan.toRecoveryEvidence() != sessionAfterScan.toRecoveryEvidence()) {
+            gateFailure(automaticRecoveryGate(sessionBeforeScan))?.let { return it }
+            return ActionGroupRecoveryResult.DeferredActiveOperation(
+                "动作组恢复扫描期间活动会话发生变化，延期到下一轮处理"
+            )
+        }
+        gateFailure(automaticRecoveryGate(sessionAfterScan))?.let { return it }
+
         val runningStates = states.filter { state ->
             (state.value as AtomicReadResult.Success).value == AtomicActionCodes.RUNNING
         }
         if (runningStates.isEmpty()) {
-            val session = sessionStore.load()
+            val session = sessionAfterScan
             if (session != null) {
                 val sessionSteps = stepsForSession(session)
                 val sessionValues = sessionSteps.map { step ->
@@ -123,17 +147,14 @@ class ActionGroupRecoveryBootstrap(
                 }
                 if (session.mechanicalClaimState == MechanicalClaimState.PREPARED) {
                     if (sessionValues.all { it == AtomicActionCodes.IDLE }) {
-                        if (!automaticTakeoverAllowed(session)) {
-                            return ActionGroupRecoveryResult.MaintenanceRequired(
-                                "动作组自动恢复在放弃 PREPARED 会话前被 guarded 收口门禁阻止，需人工精确恢复"
-                            )
-                        }
+                        gateFailure(automaticRecoveryGate(session))?.let { return it }
                         var abandonAllowed = true
-                        val abandonSucceeded = performAutomaticRecoveryMutation(session) {
+                        val abandonDecision = performAutomaticRecoveryMutation(session) {
                             abandonAllowed = abandonPreparedClaim(session)
                             if (abandonAllowed) resourceLocks.release(session.sessionId)
                         }
-                        if (!abandonAllowed || !abandonSucceeded) {
+                        gateFailure(abandonDecision)?.let { return it }
+                        if (!abandonAllowed) {
                             return ActionGroupRecoveryResult.MaintenanceRequired(
                                 "动作组 PREPARED 会话安全放弃失败，保持忙态：sessionId=${session.sessionId}"
                             )
@@ -146,14 +167,11 @@ class ActionGroupRecoveryBootstrap(
                     )
                 }
                 if (sessionValues.all { it == AtomicActionCodes.COMPLETED }) {
-                    if (!automaticTakeoverAllowed(session)) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired(
-                            "动作组自动恢复在释放已完成会话资源前被 guarded 收口门禁阻止，保持忙态"
-                        )
+                    gateFailure(automaticRecoveryGate(session))?.let { return it }
+                    val releaseDecision = performAutomaticRecoveryMutation(session) {
+                        resourceLocks.release(session.sessionId)
                     }
-                    if (!performAutomaticRecoveryMutation(session) { resourceLocks.release(session.sessionId) }) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复释放已完成会话资源被 guarded 收口门禁阻止，保持忙态")
-                    }
+                    gateFailure(releaseDecision)?.let { return it }
                     logger(
                         "动作组恢复完成：按结果寄存器=0x0002（完成）推断本会话已完成，" +
                             "sessionId=${session.sessionId}，type=${session.type}，sourceNo=${session.sourceNo}，targetNo=${session.targetNo}"
@@ -168,61 +186,45 @@ class ActionGroupRecoveryBootstrap(
                                 "states=${formatSessionStates(sessionSteps, sessionValues)}"
                         )
                     }
-                    if (!automaticTakeoverAllowed(session)) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired(
-                            "动作组自动恢复在 forceAcquire 前被 guarded 收口门禁阻止，需人工精确恢复"
-                        )
-                    }
-                    var mutationAllowed = true
+                    gateFailure(automaticRecoveryGate(session))?.let { return it }
+                    var mutationDecision: ActionGroupRecoveryGateDecision = ActionGroupRecoveryGateDecision.Allow
                     val claimFailure = runCatching {
-                        mutationAllowed = performAutomaticRecoveryMutation(session) {
+                        mutationDecision = performAutomaticRecoveryMutation(session) {
                             resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
                         }
                     }.exceptionOrNull()
-                    if (!mutationAllowed) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复 forceAcquire 被 guarded 收口门禁阻止，需人工精确恢复")
-                    }
+                    gateFailure(mutationDecision)?.let { return it }
                     if (claimFailure != null) {
                         return ActionGroupRecoveryResult.MaintenanceRequired(
                             "动作组恢复资源 owner 冲突，拒绝清理其他 owner：" +
                                 "sessionId=${session.sessionId}，error=${claimFailure.message}"
                         )
                     }
-                    if (!automaticTakeoverAllowed(session)) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired(
-                            "动作组自动恢复在续作前被 guarded 收口门禁阻止，保持资源现场"
-                        )
-                    }
+                    gateFailure(automaticRecoveryGate(session))?.let { return it }
                     logger(
                         "动作组恢复接管开始：sessionId=${session.sessionId}，type=${session.type}，" +
                             "已识别连续完成前缀，resourceLocks=${resourceLocks.snapshot()}"
                     )
                     val actionResult = runSession(session, resumeFromRunningState = true)
-                    if (!automaticTakeoverAllowed(session)) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired(
-                            "动作组自动恢复在续作结束后被 guarded 收口门禁阻止，保持资源现场"
-                        )
+                    gateFailure(automaticRecoveryGate(session))?.let { return it }
+                    val releaseDecision = performAutomaticRecoveryMutation(session) {
+                        resourceLocks.release(session.sessionId)
                     }
-                    if (!performAutomaticRecoveryMutation(session) { resourceLocks.release(session.sessionId) }) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复释放续作资源被 guarded 收口门禁阻止，保持资源现场")
-                    }
+                    gateFailure(releaseDecision)?.let { return it }
                     logger(
                         "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"
                     )
                     return ActionGroupRecoveryResult.TakeoverFinished(session, actionResult)
                 }
                 if (session.type == ActionGroupSessionType.OUT_SELL || session.type == ActionGroupSessionType.OUT_MANUAL) {
-                    if (!automaticTakeoverAllowed(session)) {
-                        return ActionGroupRecoveryResult.MaintenanceRequired(
-                            "出餐动作组自动收口在清理旧会话前被 guarded 收口门禁阻止，保持忙态"
-                        )
-                    }
+                    gateFailure(automaticRecoveryGate(session))?.let { return it }
                     var clearAllowed = true
-                    val clearSucceeded = performAutomaticRecoveryMutation(session) {
+                    val clearDecision = performAutomaticRecoveryMutation(session) {
                         clearAllowed = clearSessionIfCurrent(session)
                         if (clearAllowed) resourceLocks.release(session.sessionId)
                     }
-                    if (!clearAllowed || !clearSucceeded) {
+                    gateFailure(clearDecision)?.let { return it }
+                    if (!clearAllowed) {
                         return ActionGroupRecoveryResult.MaintenanceRequired(
                             "出餐动作组旧会话发生 owner/revision 变化，拒绝清理新会话：" +
                                 "sessionId=${session.sessionId}，revision=${session.mechanicalClaimRevision}"
@@ -259,7 +261,7 @@ class ActionGroupRecoveryBootstrap(
             )
         }
 
-        val session = sessionStore.load()
+        val session = sessionAfterScan
             ?: return ActionGroupRecoveryResult.MaintenanceRequired(
                 "动作组恢复失败：${runningStates.first().spec.name} 正在执行，但没有本地会话，需人工确认物理位置"
             )
@@ -281,44 +283,31 @@ class ActionGroupRecoveryBootstrap(
             )
         }
 
-        if (!automaticTakeoverAllowed(session)) {
-            return ActionGroupRecoveryResult.MaintenanceRequired(
-                "动作组自动恢复在 forceAcquire 前被 guarded 收口门禁阻止，需人工精确恢复"
-            )
-        }
-        var mutationAllowed = true
+        gateFailure(automaticRecoveryGate(session))?.let { return it }
+        var mutationDecision: ActionGroupRecoveryGateDecision = ActionGroupRecoveryGateDecision.Allow
         val claimFailure = runCatching {
-            mutationAllowed = performAutomaticRecoveryMutation(session) {
+            mutationDecision = performAutomaticRecoveryMutation(session) {
                 resourceLocks.forceAcquire(session.resourceMask, session.sessionId)
             }
         }.exceptionOrNull()
-        if (!mutationAllowed) {
-            return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复 forceAcquire 被 guarded 收口门禁阻止，需人工精确恢复")
-        }
+        gateFailure(mutationDecision)?.let { return it }
         if (claimFailure != null) {
             return ActionGroupRecoveryResult.MaintenanceRequired(
                 "动作组恢复资源 owner 冲突，拒绝清理其他 owner：" +
                     "sessionId=${session.sessionId}，error=${claimFailure.message}"
             )
         }
-        if (!automaticTakeoverAllowed(session)) {
-            return ActionGroupRecoveryResult.MaintenanceRequired(
-                "动作组自动恢复在续作前被 guarded 收口门禁阻止，保持资源现场"
-            )
-        }
+        gateFailure(automaticRecoveryGate(session))?.let { return it }
         logger(
             "动作组恢复接管开始：sessionId=${session.sessionId}，type=${session.type}，" +
                 "runningAction=${runningStates.first().spec.name}，resourceLocks=${resourceLocks.snapshot()}"
         )
         val actionResult = runSession(session, resumeFromRunningState = true)
-        if (!automaticTakeoverAllowed(session)) {
-            return ActionGroupRecoveryResult.MaintenanceRequired(
-                "动作组自动恢复在续作结束后被 guarded 收口门禁阻止，保持资源现场"
-            )
+        gateFailure(automaticRecoveryGate(session))?.let { return it }
+        val releaseDecision = performAutomaticRecoveryMutation(session) {
+            resourceLocks.release(session.sessionId)
         }
-        if (!performAutomaticRecoveryMutation(session) { resourceLocks.release(session.sessionId) }) {
-            return ActionGroupRecoveryResult.MaintenanceRequired("动作组自动恢复释放续作资源被 guarded 收口门禁阻止，保持资源现场")
-        }
+        gateFailure(releaseDecision)?.let { return it }
         logger(
             "动作组恢复接管结束：sessionId=${session.sessionId}，type=${session.type}，result=$actionResult"
         )
@@ -381,6 +370,26 @@ class ActionGroupRecoveryBootstrap(
         val spec: AtomicActionSpec,
         val value: AtomicReadResult
     )
+
+    private data class RecoverySessionEvidence(
+        val sessionId: String,
+        val type: ActionGroupSessionType,
+        val currentAction: String?,
+        val resourceMask: Int,
+        val checkpointVersion: Long,
+        val mechanicalClaimRevision: Long
+    )
+
+    private fun ActionGroupSession?.toRecoveryEvidence(): RecoverySessionEvidence? = this?.let { session ->
+        RecoverySessionEvidence(
+            sessionId = session.sessionId,
+            type = session.type,
+            currentAction = session.currentAction,
+            resourceMask = session.resourceMask,
+            checkpointVersion = session.checkpointVersion,
+            mechanicalClaimRevision = session.mechanicalClaimRevision
+        )
+    }
 
     companion object {
         val inSpecs = listOf(

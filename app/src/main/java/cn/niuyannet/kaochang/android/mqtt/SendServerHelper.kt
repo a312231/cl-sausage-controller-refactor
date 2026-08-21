@@ -226,6 +226,48 @@ object SendServerHelper {
         )
     }
 
+    fun publishOrderDispatchOfferAckV2(ack: OrderDispatchOfferAckV2): Boolean {
+        val payload = JSONObject().apply {
+            put("messageType", MqttProtocol.TYPE_ORDER_DISPATCH_OFFER_ACK_V2)
+            put("protocolVersion", MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION)
+            put("dispatch_id", ack.dispatchId)
+            put("order_no", ack.orderNo)
+            put("device_id", ack.deviceId)
+            put("payload_hash", ack.payloadHash)
+            put("accepted", ack.accepted)
+            put("reason", ack.reason)
+            put("reported_at_ms", ack.reportedAtMs)
+        }
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+    }
+
+    fun publishOrderDispatchCommitRejectedV2(rejected: OrderDispatchCommitRejectedV2): Boolean {
+        val payload = JSONObject().apply {
+            put("messageType", MqttProtocol.TYPE_ORDER_DISPATCH_COMMIT_REJECTED_V2)
+            put("protocolVersion", MqttProtocol.ORDER_DISPATCH_PROTOCOL_VERSION)
+            put("dispatch_id", rejected.dispatchId)
+            put("order_no", rejected.orderNo)
+            put("device_id", rejected.deviceId)
+            put("payload_hash", rejected.payloadHash)
+            put("accepted", false)
+            put("reason", rejected.reason)
+            put("reported_at_ms", rejected.reportedAtMs)
+        }
+        return VMMqttHelper.publishService(
+            TopicMessage().apply {
+                action = MqttProtocol.ACTION_SERVICE_STATE
+                content = JSON.toJSONString(payload)
+            },
+            priority = MqttPublishPriority.HIGH
+        )
+    }
+
     /**
      * 通过 MQTT 上报设备运行时状态（action=2）。
      * 当前第一批收口的主字段：

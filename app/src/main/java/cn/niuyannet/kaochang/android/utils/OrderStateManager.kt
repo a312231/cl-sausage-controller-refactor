@@ -36,9 +36,12 @@ object OrderStateManager {
      * @return true = 允许接单出餐; false = 已被拦截（属于重复执行请求或已经处于终态）
      */
     @Synchronized
-    fun checkAndAcceptOrder(orderNo: String): Boolean {
+    fun checkAndAcceptOrder(
+        orderNo: String,
+        beforeAccept: () -> Boolean = { true }
+    ): Boolean {
         if (orderNo.isBlank()) {
-            LogUtils.e("【订单防重】拦截极高危异常报文：orderNo 缺失，立刻拒绝业务执行防 Phantom 出餐漏洞！")
+            runCatching { LogUtils.e("【订单防重】拦截极高危异常报文：orderNo 缺失，立刻拒绝业务执行防 Phantom 出餐漏洞！") }
             return false 
         }
 
@@ -47,25 +50,36 @@ object OrderStateManager {
         val existState = getOrderState(orderNo)
         when (existState?.state) {
             STATE_ACCEPTED_PROCESSING -> {
-                LogUtils.w("【订单状态机】防重复拦截：该订单已经在下位机处理队列中：orderNo=$orderNo")
+                runCatching { LogUtils.w("【订单状态机】防重复拦截：该订单已经在下位机处理队列中：orderNo=$orderNo") }
                 return false
             }
             STATE_FINISHED, STATE_FAILED -> {
-                LogUtils.w("【订单状态机】防重复拦截：该订单已处于历史终态机制内：orderNo=$orderNo, 终态=${existState.state}")
+                runCatching { LogUtils.w("【订单状态机】防重复拦截：该订单已处于历史终态机制内：orderNo=$orderNo, 终态=${existState.state}") }
                 return false
             }
             STATE_RECEIVED_BUT_BUSY -> {
-                LogUtils.d("【订单状态机】合法补发单入场允许！该单上次因设备忙碌被暂拒，现允许执行出餐阶段：orderNo=$orderNo")
+                runCatching { LogUtils.d("【订单状态机】合法补发单入场允许！该单上次因设备忙碌被暂拒，现允许执行出餐阶段：orderNo=$orderNo") }
             }
             else -> {
                 // 新单子，符合首次接收链路
             }
         }
 
+        val durableAdmissionReady = try {
+            beforeAccept()
+        } catch (error: Exception) {
+            runCatching { LogUtils.e("【订单状态机】准入前耐久门禁异常，拒绝写入 PROCESSING：orderNo=$orderNo，error=${error.message}") }
+            false
+        }
+        if (!durableAdmissionReady) {
+            runCatching { LogUtils.e("【订单状态机】准入前耐久门禁失败，拒绝写入 PROCESSING：orderNo=$orderNo") }
+            return false
+        }
+
         // 统一原子切换为主处理态
         val stateObj = OrderState(orderNo, STATE_ACCEPTED_PROCESSING, System.currentTimeMillis())
         memoryStates[orderNo] = stateObj
-        LogUtils.w("【订单状态机】状态锁定期：订单进入执行闭环态 (ACCEPTED_PROCESSING)，其他同号消息将遭拦截：orderNo=$orderNo")
+        runCatching { LogUtils.w("【订单状态机】状态锁定期：订单进入执行闭环态 (ACCEPTED_PROCESSING)，其他同号消息将遭拦截：orderNo=$orderNo") }
         return true
     }
 
@@ -134,7 +148,7 @@ object OrderStateManager {
         val existState = memoryStates[orderNo]
         if (existState?.state == STATE_ACCEPTED_PROCESSING) {
             memoryStates.remove(orderNo)
-            LogUtils.w("【订单状态机】释放单次执行处理锁 (PROCESSING 解锁)，允许未来合法流转与重投进入：orderNo=$orderNo")
+            runCatching { LogUtils.w("【订单状态机】释放单次执行处理锁 (PROCESSING 解锁)，允许未来合法流转与重投进入：orderNo=$orderNo") }
         }
     }
 

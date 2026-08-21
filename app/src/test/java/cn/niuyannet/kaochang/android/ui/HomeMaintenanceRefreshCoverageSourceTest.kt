@@ -16,9 +16,9 @@ class HomeMaintenanceRefreshCoverageSourceTest {
         val violations = sources.flatMap { (sourceName, source) -> analyze(sourceName, source) }
 
         assertEquals(
-            "当前主源码中锚定正则 `.onlineStatus = 3` 应只命中 11 处真实维护态赋值；" +
+            "当前主源码中锚定正则 `.onlineStatus = 3` 应只命中 10 处真实维护态赋值；" +
                 "新增命中点必须补首页刷新或显式白名单",
-            11,
+            10,
             assignments.size
         )
         assertTrue(
@@ -220,6 +220,11 @@ class HomeMaintenanceRefreshCoverageSourceTest {
             "markSelfCleanFailure("
         )
         private val whitelist = listOf(
+            WhitelistEntry(
+                sourceSuffix = "app/src/main/java/cn/niuyannet/kaochang/android/services/KaoChangOperate.kt",
+                functionName = "applyDeviceFaultTransitionLocked",
+                reason = "锁内只提交故障状态；调用方耐久保存后统一由 publishDeviceFaultTransitionOutsideLock 刷新首页"
+            ),
             WhitelistEntry(
                 sourceSuffix = "app/src/main/java/cn/niuyannet/kaochang/android/ui/OrderDeliveryFaultPolicy.kt",
                 functionName = "applySingleDeliveryExceptionFault",
