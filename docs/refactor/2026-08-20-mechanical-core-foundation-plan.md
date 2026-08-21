@@ -1,5 +1,7 @@
 # Mechanical Core Foundation Implementation Plan
 
+> **状态（2026-08-21）：PAUSED_FOR_2_5_51_REBASELINE。** 生产 Android 已前进到 Q=`2f0b36e08cedb8f4c06cd4d2550e2cec08558bd7`（`2.5.51/301`）。本计划和当前 partial core 原样保留，但在完成 `2026-08-21-baseline-2.5.51-sync-plan.md`、重新基线化并复审前不得继续执行 Coordinator 或 App 接线步骤。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `executing-plans` to implement this plan task-by-task. This repository uses one shared checkout and one implementation slice; do not dispatch parallel editing agents. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不接入 App、不触碰 Modbus/MQTT/HTTP/库存的前提下，建立纯 Kotlin/JVM `mechanical-core`，用单一 `MechanicalOperationCoordinator` 和 `OperationLedgerSnapshot` 定义机械 operation、状态推进、资源租约、固定仲裁、安全 checkpoint、迟到回调围栏、`moveStatus` 投影和冷启动恢复决策。

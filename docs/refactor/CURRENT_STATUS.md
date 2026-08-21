@@ -2,11 +2,11 @@
 
 ## 1. 状态元数据
 
-- 更新时间（Asia/Singapore）：`2026-08-20 01:33:45 +08:00`
-- 切片状态：`MECHANICAL_CORE_FOUNDATION_PLAN_APPROVED`
-- 方案审核：`Approve`（重构上位机审核会话A；P0=0、P1=0；最后一个非阻断P2已在计划中补充直接 CAS 调用次数断言）
-- 当前唯一切片：纯 `mechanical-core` 模型、状态机、资源、仲裁、checkpoint 与恢复决策
-- 下一唯一切片：未激活；当前切片实现、验证、审核和集成完成前不得进入旧状态影子观察
+- 更新时间（Asia/Singapore）：`2026-08-21 15:53:23 +08:00`
+- 切片状态：`BASELINE_2_5_51_SYNC_PLAN_APPROVED`（以本文件和同步计划最终cached diff经审核会话A `Approve` 为生效条件）
+- 增量审计：`Approve审计结论 / Reject继续旧基线实现`；同步计划技术问题已闭环，最终cached diff以审核会话A `Approve` 为批准生效门禁
+- 当前唯一切片：2.5.48→2.5.51生产基线同步与partial core安全保全
+- 下一唯一切片：未激活；同步完成后才允许2.5.51 mechanical-core重新基线化
 
 本文件只记录当前里程碑状态，不替代源码、Git、测试报告、独立审核或现场证据。
 
@@ -14,7 +14,8 @@
 
 - 重构仓绝对路径：`D:\LeYe\cl-sausage-controller-refactor`
 - 当前分支：`fix/mechanical-core-foundation`
-- 当前 HEAD / 切片起点：`49f9ce431b38f35d561ab8098d0a118fb556c439`
+- 当前 HEAD：`f96b08594cff8bfd31998b7413e3120eba426ae3`
+- 当前分支远端：`origin/fix/mechanical-core-foundation=f96b08594cff8bfd31998b7413e3120eba426ae3`
 - 已审核merge里程碑 M：`92eeb8b1252908c3de8dab34814126517d7e308f`
 - M 第一父：`812abf5af5f7e8b60bbbc445250e718576f6c70f`
 - M 第二父：`5e0d2f78d21fa3e3529c04da2cb9edd6c68a61cb`
@@ -26,11 +27,13 @@
 - 本地 `develop`：`49f9ce431b38f35d561ab8098d0a118fb556c439`
 - 本地 `origin/develop`：`49f9ce431b38f35d561ab8098d0a118fb556c439`
 - 实时 GitHub `develop`：`49f9ce431b38f35d561ab8098d0a118fb556c439`
-- 本地 `production/develop`：`5e0d2f78d21fa3e3529c04da2cb9edd6c68a61cb`
-- 当前 `MERGE_HEAD`：不存在，merge已形成提交
-- 当前源码版本：`2.5.48/298`
-- 切片起点：远端集成状态提交 `49f9ce4`，起点工作树干净
-- 当前计划阶段修改：`docs/refactor/2026-08-20-mechanical-core-foundation-plan.md` 与 `docs/refactor/CURRENT_STATUS.md`
+- 重构仓本地 `production/develop` 跟踪引用（尚未fetch Q）：`5e0d2f78d21fa3e3529c04da2cb9edd6c68a61cb`
+- 实时生产 Android `develop`：`2f0b36e08cedb8f4c06cd4d2550e2cec08558bd7`（`2.5.51/301`）
+- 当前 `MERGE_HEAD`：不存在，尚未开始Q merge
+- 当前重构仓源码版本：`2.5.48/298`（尚未同步Q）
+- 当前同步计划起点：`f96b085`；其下partial core工作树尚未保全
+- 当前partial core现场：`settings.gradle.kts`已修改；`mechanical-core`模块构建文件、5个main源码和5个测试未跟踪；Coordinator测试存在但Coordinator实现不存在。
+- 当前文档修改：章程、状态台账、原mechanical-core计划暂停标记和本次2.5.51同步计划。
 
 生产仓 `D:\LeYe\cl-sausage-controller` 只读，且存在用户未提交修改；禁止覆盖、回滚或混入这些修改。
 
@@ -38,6 +41,7 @@
 
 - 共同基点 A：`fad00d530bb88c0fb3ace82dcdda038f24626438`，`2.5.42/292`。
 - 生产目标基线 P：`5e0d2f78d21fa3e3529c04da2cb9edd6c68a61cb`，`2.5.48/298`。
+- 当前生产同步目标 Q：`2f0b36e08cedb8f4c06cd4d2550e2cec08558bd7`，`2.5.51/301`。P是Q祖先，P→Q恰3提交、37路径。
 - 旧重构里程碑 R：`8b81a47d1b94171d25095c875c62f4a56ceb1535`，`2.5.42/292`。
 - 文档里程碑 D：`812abf5af5f7e8b60bbbc445250e718576f6c70f`，第一父为 R，仅增加两份权威文档。
 
@@ -47,9 +51,9 @@ P 已作为第二父合入本地merge commit M，并成为M、S及后续T的祖�
 
 ## 4. 当前唯一切片
 
-本切片方案已形成唯一计划 `docs/refactor/2026-08-20-mechanical-core-foundation-plan.md`，并经审核会话A十轮只读审查后 `Approve`。计划固定为纯 Kotlin/JVM core，不接入 App，不修改现有 `moveStatus` 写入、Modbus/MQTT/HTTP/库存和旧 owner/session/claim；实施必须严格遵守计划白名单、TDD 红绿循环、故障注入、验证和逐文件回滚边界。
+生产 Android 已由P前进到Q，旧mechanical-core计划暂停。当前只允许执行 `docs/refactor/2026-08-21-baseline-2.5.51-sync-plan.md` 的文档审核和安全保全门禁；在计划审核通过前，不fetch、不merge、不切换分支、不提交partial core。
 
-本阶段只提交并推送计划与当前状态；计划提交后才按同一切片开始生产代码 TDD。任何需要修改 `app/**` 或计划白名单外路径的发现都必须停止并重新审核。
+partial core原样保留：模型、状态机、资源、仲裁、恢复策略已有定向GREEN历史证据；Coordinator测试为RED且实现不存在。本状态不把它写成完成或可编译里程碑。
 
 ## 5. 已完成里程碑与当前模块层级
 
@@ -62,7 +66,8 @@ P 已作为第二父合入本地merge commit M，并成为M、S及后续T的祖�
 - 本地merge commit `92eeb8b` 已建立并验证父提交顺序。
 - 状态收口提交 S=`49e2517` 已建立并验证 `S^=M`；本地和 GitHub `develop` 已到T=`51d4150`。
 - 远端集成状态提交 `49f9ce4` 已推送，本地与 GitHub `develop` 均为 `49f9ce4`。
-- `mechanical-core` 地基计划已审核 `Approve`，生产代码尚未开始。
+- `mechanical-core` 地基计划曾审核 `Approve`，现因Q基线变化暂停；已有partial源码但未提交、未完成。
+- P→Q只读增量审计完成：2.5.49动作恢复门禁、2.5.50 out4终态单调、2.5.51派单ACK均与机械重构热区直接相关。
 
 审计过程中已纠正两项关键口径：
 
@@ -71,22 +76,24 @@ P 已作为第二父合入本地merge commit M，并成为M、S及后续T的祖�
 
 ## 6. 证据分栏
 
-- 源码与 Git：当前 fix 分支与本地/GitHub `develop` 起点均为 `49f9ce4`；生产远端 `develop` 仍为P=`5e0d2f78`。当前只有计划与状态两份文档变化，尚无 `mechanical-core` 生产代码。
-- JVM 测试：最终强制运行 `:scheduler-core:test :recovery-core:test :order-core:test :app:testDebugUnitTest --rerun-tasks`，并运行聚合 `test --rerun-tasks`。最终 XML 为 scheduler 58、recovery 36、order 34、App Debug 1851、App Release 1851，failures/errors/skipped 均为 0。
-- 构建：提交前 fresh 强制命令包含 `:app:assembleDebug --rerun-tasks`，139 个 actionable tasks 全部 executed。最终 Debug APK 为 49,696,377 bytes，SHA-256=`4B6EC5BC90AAC57F6E1CAF3858B5B6543D218442B7C76C966D27504EF1D84A4C`。APK 每次重打包的字节结果不作为可复现构建保证，仅记录本次最终制品。
-- 本地集成后验证：`develop` 快进到T后聚合 `test --rerun-tasks` 成功，200 个任务全部执行；本地fix分支已删除。
-- 推送前复验：`2026-08-20` 再次运行聚合 `test --rerun-tasks`，`BUILD SUCCESSFUL in 3m 49s`，200 个任务全部执行；随后以非强制方式将 GitHub `develop` 从R推进到T，并核对远端SHA等于本地SHA。
+- 源码与 Git：重构fix=`f96b085`、重构GitHub develop=`49f9ce4`、生产Android live develop=Q=`2f0b36e0`。Q尚未导入重构仓；生产仓保持只读。
+- 历史P基线 JVM 测试：曾强制运行 `:scheduler-core:test :recovery-core:test :order-core:test :app:testDebugUnitTest --rerun-tasks` 和聚合 `test --rerun-tasks`；XML 为 scheduler 58、recovery 36、order 34、App Debug 1851、App Release 1851，failures/errors/skipped 均为 0。该证据不证明当前partial core或Q同步。
+- 历史P基线构建：曾fresh运行 `:app:assembleDebug --rerun-tasks`，139个任务全部执行；Debug APK 49,696,377 bytes，SHA-256=`4B6EC5BC90AAC57F6E1CAF3858B5B6543D218442B7C76C966D27504EF1D84A4C`。该制品不证明Q、当前partial core或现场运行。
+- 历史P本地集成：`develop` 快进到T后聚合测试曾成功，200个任务全部执行；旧fix分支已删除。该证据不证明Q同步。
+- 历史P推送前复验：`2026-08-20` 聚合测试曾 `BUILD SUCCESSFUL in 3m 49s`，200个任务全部执行，并核对当时GitHub SHA。该证据不证明当前Q同步。
 - 测试 MQTT/HTTP/后端：未执行；本地 JVM 测试未连接真实 broker 或后端。
 - 真实 RS485/Modbus/机械/断电/温控/长稳：未验证。
-- 独立审核：基线同步历史审核均已 `Approve`；本切片计划经审核会话A十轮修订后最终 `Approve`，P0/P1=0。审核未执行构建、测试或设备操作。
+- 独立审核：P→Q增量审计确认主会话A/B/C/D判断成立并`Reject`继续旧Coordinator实现；同步计划技术问题已闭环。本文件最终cached diff一旦获`Approve`，计划批准状态生效，下一动作仅为partial core独立分支保全。
 
 ## 7. 当前架构阻断与风险
 
-1. P 的 32 个提交语义已进入 merge commit 并推送；纯 `mechanical-core` 计划已批准但实现尚未开始。
+1. 当前生产基线已从P前进到Q；重构仓仍是2.5.48，禁止继续宣称已对齐当前生产。
 2. 当前仍有 OrderDeliveryClaim、ActionGroupSession、SupplementPrefetchPipelineSession、SupplementBatchIntent、PanMoveJournal、DiscardJournal、ResetCloseoutRecord、ResourceLocks 和 `moveStatus` 等多套权威。
 3. 搬盘结果不明时会保留 journal 与 `moveStatus=3`，但 `finally` 释放 ResourceLocks，资源状态与恢复责任分裂。
 4. callback 和资源释放缺少统一的 `operationId + revision` 围栏。
 5. OUT 的 `out2..out5` 缺少耐久逐步 checkpoint，进程崩溃或 `out5` 超时后不能精确映射到固定状态机。
+6. 当前partial core没有out4成功终态单调门禁；需在Q同步后的下一切片补充。
+7. V2 Inbox与MechanicalOperation跨SharedPreferences耐久交接尚未设计；属于同步后的独立adapter问题，不塞入pure core协议。
 
 上述项目是后续架构阻断，尚未修复，不得写成已完成。
 
@@ -96,7 +103,7 @@ P 已作为第二父合入本地merge commit M，并成为M、S及后续T的祖�
 
 ## 9. 下一切片门禁
 
-当前只允许执行已审核的 `2026-08-20-mechanical-core-foundation-plan.md`：先提交并推送计划里程碑，再按 TDD 依次建立模块、模型、状态机、资源、仲裁、恢复和唯一 Coordinator。实现完成后必须运行定向/聚合 JVM 测试及 Debug 构建，形成唯一验证记录，经审核会话A和主会话复核后才允许合入 `develop`。下一“旧状态影子观察”切片尚未激活。
+当前只允许先审核并执行 `2026-08-21-baseline-2.5.51-sync-plan.md`：文档提交→partial core独立远端分支保全→干净fix导入Q→自动化/构建/审核→合入develop。计划审核前不执行Git保全或同步动作。Q同步完成后再新建2.5.51 mechanical-core重新基线化切片。
 
 ## 10. 更新纪律
 
